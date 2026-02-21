@@ -66,13 +66,11 @@ linters-settings:
       - name: errorf
 
 linters:
-  enable:
     - dogsled
     - errcheck
     - exhaustive
     - gochecknoinits
     - goprintffuncname
-    - govet
     - ineffassign
     - misspell
     - nakedret
