@@ -15,7 +15,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.25.7'
+        go-version: '1.25'
     
     - name: Verify Go version
       run: go version
@@ -33,6 +33,9 @@ jobs:
     - name: Run golangci-lint
       run: |
         $(go env GOPATH)/bin/golangci-lint run --timeout=5m --verbose --issues-exit-code=0 ./...
+    
+    - name: Run go vet
+      run: go vet ./...
 
   test:
     runs-on: ubuntu-latest
@@ -42,7 +45,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.25.7'
+        go-version: '1.25'
     
     - name: Download dependencies
       run: go mod download
@@ -64,7 +67,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v4
       with:
-        go-version: '1.25.7'
+        go-version: '1.25'
     
     - name: Download dependencies
       run: go mod download
