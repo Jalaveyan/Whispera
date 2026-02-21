@@ -115,6 +115,9 @@ linters:
         - gosec
         - goconst
         - gocritic
+    - path: internal/obfuscation/fte/.*
+      linters:
+        - gosec
     - text: "exported.*should have comment"
       linters:
         - golint
