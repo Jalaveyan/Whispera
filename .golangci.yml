@@ -72,7 +72,6 @@ linters:
     - exhaustive
     - gochecknoinits
     - goprintffuncname
-    - gosec
     - govet
     - ineffassign
     - misspell
@@ -86,6 +85,7 @@ linters:
     - unconvert
     - unparam
     - nolintlint
+    - gosec
     - lll
     - prealloc
     - goconst
