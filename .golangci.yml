@@ -72,6 +72,8 @@ linters:
     - exhaustive
     - gochecknoinits
     - goprintffuncname
+    - gosec
+    - govet
     - ineffassign
     - misspell
     - nakedret
@@ -90,7 +92,6 @@ linters:
     - revive
     - gocritic
     - staticcheck
-    - gosec
 
   issues:
   exclude-rules:
@@ -114,9 +115,6 @@ linters:
         - gosec
         - goconst
         - gocritic
-    - path: internal/obfuscation/fte/.*
-      linters:
-        - gosec
     - text: "exported.*should have comment"
       linters:
         - golint
