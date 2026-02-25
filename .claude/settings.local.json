@@ -6,7 +6,10 @@
       "Bash(git add .github/workflows/ci.yml .github/workflows/release.yml)",
       "Bash(git commit:*)",
       "Bash(git push origin main)",
-      "Bash(go build ./...)"
+      "Bash(go build ./...)",
+      "Bash(cat internal/mux/*.go)",
+      "Bash(xargs grep -l \"RST\\\\|reset\\\\|DialStream\\\\|proxy\\\\|socks\")",
+      "Bash(go build ./internal/modules/socks5/...)"
     ]
   }
 }

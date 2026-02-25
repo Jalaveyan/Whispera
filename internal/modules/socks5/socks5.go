@@ -86,9 +86,11 @@ type ClientStream struct {
 	Connected  bool
 	Closed     bool
 
-	dataChan  chan DataPacket
-	closeChan chan struct{}
-	closeOnce sync.Once
+	dataChan     chan DataPacket
+	closeChan    chan struct{}
+	closeOnce    sync.Once
+	connectedCh  chan struct{}
+	connectedOnce sync.Once
 
 	mu sync.Mutex
 }
@@ -295,6 +297,7 @@ func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket,
 		stream.mu.Lock()
 		stream.Connected = true
 		stream.mu.Unlock()
+		stream.connectedOnce.Do(func() { close(stream.connectedCh) })
 		tunnel.Recycle(dp.Raw)
 
 	case relay.FrameConnectFail:
@@ -392,18 +395,19 @@ Loop:
 
 
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		tcpConn.SetReadBuffer(2 * 1024 * 1024)   // 2MB (increased from 512KB)
-		tcpConn.SetWriteBuffer(2 * 1024 * 1024) // 2MB (increased from 512KB)
+		tcpConn.SetReadBuffer(128 * 1024)
+		tcpConn.SetWriteBuffer(128 * 1024)
 		tcpConn.SetNoDelay(true)
 	}
 
 	streamID := m.nextStreamID()
 	stream := &ClientStream{
-		ID:         streamID,
-		TargetAddr: targetAddr,
-		TargetPort: targetPort,
-		dataChan:   make(chan DataPacket, 20000),  // Increased from 4096 to 20000
-		closeChan:  make(chan struct{}),
+		ID:          streamID,
+		TargetAddr:  targetAddr,
+		TargetPort:  targetPort,
+		dataChan:    make(chan DataPacket, 512),
+		closeChan:   make(chan struct{}),
+		connectedCh: make(chan struct{}),
 	}
 
 	m.streamsMu.Lock()
@@ -452,7 +456,21 @@ Loop:
 		const safeMTU = 16000
 		const headerSize = 8
 
-		firstPacket := true
+		// Wait for server to confirm the remote connection before forwarding data.
+		// Without this, DATA frames arrive at the server before it has connected to
+		// the destination, causing the server to drop them. The game's TCP stack then
+		// hits its retransmission timeout (~1000ms) before retrying — the root cause
+		// of the 1000ms ping in games.
+		select {
+		case <-stream.connectedCh:
+			// ready
+		case <-stream.closeChan:
+			errChan <- fmt.Errorf("connection failed")
+			return
+		case <-time.After(5 * time.Second):
+			errChan <- fmt.Errorf("connect timeout waiting for server ack")
+			return
+		}
 
 		for {
 			bufRaw := streamBufferPool.Get().([]byte)
@@ -481,10 +499,6 @@ Loop:
 				streamBufferPool.Put(bufRaw)
 				errChan <- err
 				return
-			}
-
-			if firstPacket {
-				firstPacket = false
 			}
 
 			buf[0] = byte(streamID >> 8)
@@ -593,11 +607,12 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	streamID := m.nextStreamID()
 	stream := &ClientStream{
-		ID:         streamID,
-		TargetAddr: "0.0.0.0",
-		TargetPort: 0,
-		dataChan:   make(chan DataPacket, 20000),
-		closeChan:  make(chan struct{}),
+		ID:          streamID,
+		TargetAddr:  "0.0.0.0",
+		TargetPort:  0,
+		dataChan:    make(chan DataPacket, 512),
+		closeChan:   make(chan struct{}),
+		connectedCh: make(chan struct{}),
 	}
 
 	m.streamsMu.Lock()
