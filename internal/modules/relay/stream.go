@@ -578,7 +578,7 @@ func (s *Stream) readFromTarget() {
 				parityPackets := s.fecEncoder.GetParityPackets(s.seqNum, HeaderSize)
 				for _, pkt := range parityPackets {
 					WriteFrameHeader(pkt, s.ID, FrameData, 0, len(pkt)-HeaderSize)
-					s.writer.Write(pkt) // parity failure non-fatal — data already delivered
+					s.writer.Write(pkt)
 					packetPool.Put(pkt)
 					s.seqNum++
 				}
