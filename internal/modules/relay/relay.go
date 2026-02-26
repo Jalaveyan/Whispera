@@ -329,11 +329,11 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 	muxCfg := &mux.Config{
-		MaxFrameSize:         65535,          // match client (was 32768)
+		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     256 * 1024 * 1024,
-		MaxStreamBuffer:      512 * 1024,     // match client 512KB (was 32MB) — eliminates burst/stall
-		KeepAliveInterval:    2 * time.Second,
-		KeepAliveTimeout:     90 * time.Second, // must be > client interval (30s); was 30s → race condition
+		MaxStreamBuffer:      8 * 1024 * 1024,  // 8MB: allows ~640 Mbit/s at 100ms RTT; was 512KB (too small)
+		KeepAliveInterval:    10 * time.Second, // was 2s — caused periodic 2s data stalls
+		KeepAliveTimeout:     90 * time.Second,
 		MaxConcurrentStreams: 1024,
 	}
 
