@@ -575,6 +575,7 @@ Loop:
 				if tcpConn, ok := clientConn.(*net.TCPConn); ok {
 					tcpConn.CloseWrite()
 					tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+					return
 				}
 				errChan <- io.EOF
 				return
