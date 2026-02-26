@@ -540,7 +540,7 @@ Loop:
 
 				if n > 0 {
 					pendingWindow += uint32(n)
-					if pendingWindow >= 8192 { 
+					if pendingWindow >= 256*1024 {
 						wf := relay.NewWindowUpdateFrame(streamID, pendingWindow)
 						if data, err := wf.Encode(); err == nil {
 							tunnel.Send(data)
@@ -559,7 +559,7 @@ Loop:
 						tunnel.Recycle(dp.Raw)
 						if err == nil && n > 0 {
 							pendingWindow += uint32(n)
-							if pendingWindow >= 8192 {
+							if pendingWindow >= 256*1024 {
 								wf := relay.NewWindowUpdateFrame(streamID, pendingWindow)
 								if data, err := wf.Encode(); err == nil {
 									tunnel.Send(data)

@@ -149,7 +149,7 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		TargetAddr:      addr,
 		TargetPort:      port,
 		writer:          writer,
-		sendWindow:      64 * 1024, // 64KB: matches client window-update threshold to avoid burst/stall
+		sendWindow:      4 * 1024 * 1024, // 4MB: large window to avoid stalls on high-latency links
 		incoming:        make(chan []byte, 65536),
 		outgoing:        make(chan []byte, 65536),
 		closeChan:       make(chan struct{}),
@@ -548,20 +548,7 @@ func (s *Stream) readFromTarget() {
 				s.seqNum++
 			}
 
-			if s.Protocol == ProtoTCP {
-				s.mu.Lock()
-				for s.sendWindow <= 0 {
-					select {
-					case <-s.closeChan:
-						s.mu.Unlock()
-						return
-					default:
-					}
-					s.windowCond.Wait()
-				}
-				s.sendWindow -= int64(n)
-				s.mu.Unlock()
-			}
+			// No application-level window throttle - TCP backpressure handles flow control
 
 			if s.fecEnabled || s.packetLossRate > 2.0 {
 				encodedBuf := s.fecEncoder.EncodeFEC(buf[HeaderSize:HeaderSize+n], s.seqNum, HeaderSize)
