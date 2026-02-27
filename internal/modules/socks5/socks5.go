@@ -13,6 +13,7 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/proxy"
+	"whispera/internal/modules/relay"
 )
 
 const (
