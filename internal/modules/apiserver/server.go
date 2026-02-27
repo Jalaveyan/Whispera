@@ -310,7 +310,7 @@ func (s *Server) buildHandler() http.Handler {
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"name":   "Whispera API",
 					"status": "running",
-					"panel":  "http://" + r.Host[:strings.LastIndex(r.Host, ":")] + ":3000",
+					"panel":  "http://" + func() string { if i := strings.LastIndex(r.Host, ":"); i >= 0 { return r.Host[:i] }; return r.Host }() + ":3000",
 					"api":    "/api/v1/health",
 				})
 				return
