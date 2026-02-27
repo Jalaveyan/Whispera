@@ -14,7 +14,12 @@
       "Bash(python -c \":*)",
       "Bash(git add internal/modules/relay/stream.go)",
       "Bash(git add internal/modules/relay/relay.go internal/modules/tunnel/tunnel.go)",
-      "Bash(git add internal/modules/tunnel/tunnel.go internal/modules/socks5/socks5.go internal/modules/relay/relay.go)"
+      "Bash(git add internal/modules/tunnel/tunnel.go internal/modules/socks5/socks5.go internal/modules/relay/relay.go)",
+      "Bash(git stash pop)",
+      "Bash(git stash drop)",
+      "Bash(go build ./cmd/server)",
+      "Bash(git pull --rebase origin main)",
+      "Bash(git stash)"
     ]
   }
 }
