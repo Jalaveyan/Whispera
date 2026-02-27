@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/url"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -322,17 +321,16 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	s.log.Info("Starting tunnel session for %s", clientID)
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		if err := tcpConn.SetNoDelay(true); err != nil {
-			s.log.Debug("Failed to set NoDelay on tunnel: %v", err)
-		}
+		_ = tcpConn.SetNoDelay(true)
 		_ = tcpConn.SetKeepAlive(true)
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
+
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     256 * 1024 * 1024,
-		MaxStreamBuffer:      8 * 1024 * 1024,  // 8MB: allows ~640 Mbit/s at 100ms RTT; was 512KB (too small)
-		KeepAliveInterval:    10 * time.Second, // was 2s — caused periodic 2s data stalls
+		MaxStreamBuffer:      8 * 1024 * 1024,
+		KeepAliveInterval:    10 * time.Second,
 		KeepAliveTimeout:     90 * time.Second,
 		MaxConcurrentStreams: 1024,
 	}
@@ -344,234 +342,63 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	}
 	defer session.Close()
 
-	stream, err := session.AcceptStream()
-	if err != nil {
-		s.log.Error("Failed to accept SMUX stream from %s: %v", clientID, err)
-		return
-	}
-	conn = stream
-
-	var writeMu sync.Mutex
-
-	writer := &tunnelWriter{
-		conn:       conn,
-		obfuscator: obfuscator,
-		mu:         &writeMu,
-	}
-
-	sm := NewStreamManager(s.proxyDialer)
-	defer sm.CloseAll()
-	var exitReason string = "clean exit"
-	var exitLevel logger.Level = logger.LevelInfo
-
-	defer func() {
-		if exitLevel == logger.LevelWarn {
-			s.log.Warn("Tunnel closed for %s (Reason: %s)", clientID, exitReason)
-		} else if exitLevel == logger.LevelError {
-			s.log.Error("Tunnel closed for %s (Reason: %s)", clientID, exitReason)
-		} else {
-			s.log.Info("Tunnel closed for %s (Reason: %s)", clientID, exitReason)
-		}
-	}()
-
-	sendFrame := func(f *Frame) error {
-		encoded, err := f.Encode()
-		if err != nil {
-			return err
-		}
-		return writer.Write(encoded)
-	}
-
-	const bufSize = 2 * 1024 * 1024
-	packetBuf := make([]byte, bufSize)
-	bufOffset := 0
-
-	readBuf := make([]byte, 256*1024)
-
-	welcomeFrame := NewPongFrame()
-	if err := sendFrame(welcomeFrame); err != nil {
-		s.log.Warn("Failed to send welcome PONG: %v", err)
-	} else {
-		s.log.Debug("Sent welcome PONG to %s", clientID)
-	}
-
-	isFirstRead := true
+	s.log.Info("Tunnel session ready for %s", clientID)
 
 	for {
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		n, err := conn.Read(readBuf)
+		stream, err := session.AcceptStream()
 		if err != nil {
-			if err == io.EOF {
-				exitReason = "client disconnected (EOF)"
-				return
-			}
-
-			errStr := err.Error()
-			if strings.Contains(errStr, "connection reset") || strings.Contains(errStr, "broken pipe") {
-				exitReason = fmt.Sprintf("read error: %v", err)
-				exitLevel = logger.LevelWarn
-				s.log.Debug("Connection reset from %s, attempting cleanup", clientID)
-				return
-			}
-
-			if strings.Contains(errStr, "i/o timeout") {
-				s.log.Debug("Read timeout from %s, resetting deadline and retrying", clientID)
-				continue
-			}
-
-			exitReason = fmt.Sprintf("read error: %v", err)
-			exitLevel = logger.LevelWarn
+			s.log.Info("Tunnel session closed for %s: %v", clientID, err)
 			return
 		}
-
-		data := readBuf[:n]
-
-		if n >= 8 && s.config.Debug {
-			s.log.Debug("Tunnel data from %s: first 8 bytes = [%02x %02x %02x %02x %02x %02x %02x %02x]",
-				clientID, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7])
-		}
-
-		if isFirstRead {
-			isFirstRead = false
-			if n >= 5 && data[0] >= 0x14 && data[0] <= 0x17 && data[1] == 0x03 {
-				tlsLen := int(data[3])<<8 | int(data[4])
-				s.log.Warn("Detected TLS data from %s (type=0x%02x, len=%d), skipping...", clientID, data[0], tlsLen)
-				continue
-			}
-		}
-
-		if obfuscator != nil {
-			deobfuscated, _, err := obfuscator.Process(data, interfaces.DirectionInbound)
-			if err != nil {
-				s.log.Warn("Deobfuscation failed from %s: %v", clientID, err)
-				return
-			}
-			data = deobfuscated
-		}
-
-		if bufOffset+len(data) > len(packetBuf) {
-			s.log.Warn("Buffer overflow from %s (offset=%d, len=%d), disconnecting", clientID, bufOffset, len(data))
-			return
-		}
-		copy(packetBuf[bufOffset:], data)
-		bufOffset += len(data)
-
-		processed := 0
-		currentBuf := packetBuf[:bufOffset]
-
-		for len(currentBuf) >= HeaderSize {
-			if currentBuf[0] >= 0x14 && currentBuf[0] <= 0x17 && currentBuf[1] == 0x03 && len(currentBuf) >= 5 {
-				tlsLen := int(currentBuf[3])<<8 | int(currentBuf[4])
-				skipLen := 5 + tlsLen
-				if skipLen <= len(currentBuf) {
-					s.log.Warn("Skipping TLS record in buffer from %s (len=%d)", clientID, tlsLen)
-					processed += skipLen
-					currentBuf = currentBuf[skipLen:]
-					continue
-				}
-				break
-			}
-			payloadLen := binary.BigEndian.Uint32(currentBuf[4:8])
-			frameSize := HeaderSize + int(payloadLen)
-
-			if frameSize > MaxPayloadLen+HeaderSize {
-				s.log.Error("Frame too large from %s: %d", clientID, frameSize)
-				return
-			}
-
-			if len(currentBuf) < frameSize {
-				break
-			}
-
-			frameData := currentBuf[:frameSize]
-
-			fr, err := Decode(frameData)
-			if err != nil {
-				s.log.Error("Frame decode error from %s: %v", clientID, err)
-				return
-			}
-
-			switch fr.Type {
-			case FrameConnect:
-				// Decode payload and pre-register stream synchronously before spawning
-				// the goroutine. This prevents a race where FrameData (e.g. TLS ClientHello)
-				// arrives before the goroutine registers the stream, causing HandleData to
-				// return ErrStreamNotFound and silently drop early data.
-				connPayload, decErr := DecodeConnectPayload(fr.Payload)
-				if decErr != nil {
-					sendFrame(NewConnectFailFrame(fr.StreamID, "InvPayload: "+decErr.Error()))
-					break
-				}
-				if connPayload.Protocol == ProtoUDP && !s.config.EnableUDP {
-					sendFrame(NewConnectFailFrame(fr.StreamID, "UDP disabled"))
-					break
-				}
-				preStream, preErr := sm.HandlePreConnect(fr.StreamID, connPayload, writer)
-				if preErr != nil {
-					sendFrame(NewConnectFailFrame(fr.StreamID, preErr.Error()))
-					break
-				}
-				streamID := fr.StreamID
-				go func() {
-					defer func() {
-						if r := recover(); r != nil {
-							s.log.Error("Panic in Connect handler: %v", r)
-							sendFrame(NewConnectFailFrame(streamID, "Internal Error"))
-						}
-					}()
-					ctx, cancel := context.WithTimeout(sm.ctx, 10*time.Second)
-					defer cancel()
-					if err := preStream.Connect(ctx); err != nil {
-						sm.RemoveStream(streamID)
-						s.log.Warn("Stream %d connect failed: %v", streamID, err)
-						sendFrame(NewConnectFailFrame(streamID, err.Error()))
-					} else {
-						sendFrame(NewConnectOKFrame(streamID))
-					}
-				}()
-
-			case FrameData:
-				sm.HandleData(fr.StreamID, fr.Payload)
-
-			case FrameUDPData:
-				poolBuf := packetPool.Get().([]byte)
-				payloadLen := len(fr.Payload)
-				if payloadLen > len(poolBuf) {
-					payloadLen = len(poolBuf)
-				}
-				payload := poolBuf[:payloadLen]
-				copy(payload, fr.Payload[:payloadLen])
-				streamID := fr.StreamID
-				go func() {
-					defer packetPool.Put(poolBuf)
-					sm.HandleUDPData(streamID, payload)
-				}()
-
-			case FrameClose:
-				sm.HandleClose(fr.StreamID)
-
-			case FramePing:
-				sendFrame(NewPongFrame())
-
-			case FrameWindowUpdate:
-				if len(fr.Payload) >= 4 {
-					increment := binary.BigEndian.Uint32(fr.Payload)
-					sm.HandleWindowUpdate(fr.StreamID, increment)
-				}
-			}
-
-			processed += frameSize
-			currentBuf = currentBuf[frameSize:]
-		}
-
-		if processed > 0 {
-			remaining := bufOffset - processed
-			if remaining > 0 {
-				copy(packetBuf, packetBuf[processed:bufOffset])
-			}
-			bufOffset = remaining
-		}
+		go s.handleProxyStream(stream)
 	}
+}
+
+func (s *Server) handleProxyStream(stream net.Conn) {
+	defer stream.Close()
+
+	hdr := make([]byte, 3)
+	if _, err := io.ReadFull(stream, hdr); err != nil {
+		return
+	}
+	proto := hdr[0]
+	addrLen := binary.BigEndian.Uint16(hdr[1:3])
+	if addrLen == 0 || addrLen > 255 {
+		return
+	}
+
+	rest := make([]byte, int(addrLen)+2)
+	if _, err := io.ReadFull(stream, rest); err != nil {
+		return
+	}
+	addr := string(rest[:addrLen])
+	port := binary.BigEndian.Uint16(rest[addrLen:])
+
+	network := "tcp"
+	if proto == 0x11 {
+		network = "udp"
+	}
+
+	target, err := s.proxyDialer.Dial(network, fmt.Sprintf("%s:%d", addr, port))
+	if err != nil {
+		stream.Write([]byte{0x01})
+		s.log.Warn("Dial %s:%d failed: %v", addr, port, err)
+		return
+	}
+	defer target.Close()
+
+	if _, err := stream.Write([]byte{0x00}); err != nil {
+		return
+	}
+
+	if tcpTarget, ok := target.(*net.TCPConn); ok {
+		tcpTarget.SetNoDelay(true)
+	}
+
+	errCh := make(chan error, 2)
+	go func() { _, err := io.Copy(target, stream); errCh <- err }()
+	go func() { _, err := io.Copy(stream, target); errCh <- err }()
+	<-errCh
 }
 
 func Factory(cfg interface{}) (interfaces.Module, error) {

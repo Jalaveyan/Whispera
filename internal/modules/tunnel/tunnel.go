@@ -164,6 +164,7 @@ func (c *Config) Validate() error {
 
 type managedConn struct {
 	net.Conn
+	session   *mux.Session
 	id        string
 	createdAt time.Time
 	closing   chan struct{}
@@ -200,6 +201,7 @@ type Manager struct {
 	rekeyTicker     *time.Ticker
 	rekeyCancel     context.CancelFunc
 
+	streamIdx         uint32
 	reconnectAttempts uint32
 	bytesUp           uint64
 	bytesDown         uint64
@@ -487,7 +489,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		log.Debug("[%s] Upgrading connection %d to SMUX...", op, idx)
 
 		muxCfg := m.getMuxConfig()
-		session, err := mux.Client(conn, muxCfg)
+		muxSess, err := mux.Client(conn, muxCfg)
 		if err != nil {
 			log.Warn("[%s] Failed to create SMUX session for conn %d: %v", op, idx, err)
 			conn.Close()
@@ -498,10 +500,10 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 			return
 		}
 
-		stream, err := session.OpenStream()
+		stream, err := muxSess.OpenStream()
 		if err != nil {
 			log.Warn("[%s] Failed to open SMUX stream for conn %d: %v", op, idx, err)
-			session.Close()
+			muxSess.Close()
 			select {
 			case firstConnErr <- err:
 			default:
@@ -511,6 +513,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 		mc := &managedConn{
 			Conn:      stream,
+			session:   muxSess,
 			id:        fmt.Sprintf("pool-%d-%d", start.Unix(), idx),
 			createdAt: time.Now(),
 			closing:   make(chan struct{}),
@@ -1386,6 +1389,48 @@ func (m *Manager) ReceivePacket() ([]byte, error) {
 
 func (m *Manager) Recycle(buf []byte) {
 	bufferPool.Put(buf)
+}
+
+func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
+	m.connMu.RLock()
+	pool := m.activePool
+	m.connMu.RUnlock()
+
+	if len(pool) == 0 {
+		return nil, fmt.Errorf("not connected")
+	}
+
+	idx := atomic.AddUint32(&m.streamIdx, 1) % uint32(len(pool))
+	mc := pool[idx]
+
+	stream, err := mc.session.OpenStream()
+	if err != nil {
+		return nil, fmt.Errorf("open stream: %w", err)
+	}
+
+	addrBytes := []byte(addr)
+	header := make([]byte, 1+2+len(addrBytes)+2)
+	header[0] = proto
+	binary.BigEndian.PutUint16(header[1:3], uint16(len(addrBytes)))
+	copy(header[3:], addrBytes)
+	binary.BigEndian.PutUint16(header[3+len(addrBytes):], port)
+
+	if _, err := stream.Write(header); err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("write connect header: %w", err)
+	}
+
+	resp := make([]byte, 1)
+	if _, err := io.ReadFull(stream, resp); err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("read connect response: %w", err)
+	}
+	if resp[0] != 0x00 {
+		stream.Close()
+		return nil, fmt.Errorf("relay refused connection")
+	}
+
+	return stream, nil
 }
 
 func (m *Manager) Send(data []byte) error {
