@@ -385,7 +385,14 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		network = "udp"
 	}
 
-	target, err := s.proxyDialer.Dial(network, fmt.Sprintf("%s:%d", addr, port))
+	// SOCKS5 proxies (including WARP) do not support UDP ASSOCIATE.
+	// For UDP streams, always dial directly.
+	dialer := s.proxyDialer
+	if network == "udp" {
+		dialer = proxy.Direct
+	}
+
+	target, err := dialer.Dial(network, fmt.Sprintf("%s:%d", addr, port))
 	if err != nil {
 		stream.Write([]byte{0x01})
 		s.log.Warn("Dial %s:%d failed: %v", addr, port, err)

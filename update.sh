@@ -538,6 +538,7 @@ show_extras_menu() {
         _row " 16.  View Logs     - Watch live logs"
         _row " 17.  Edit Config   - Modify config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
+        _row " 18.  Reinstall     - Fresh install from GitHub"
         _row "  0.  Exit"
         echo -e "${BLUE}╚${SEP}╝${PLAIN}"
         echo ""
@@ -562,6 +563,7 @@ show_extras_menu() {
             15) systemctl status whispera ;;
             16) journalctl -u whispera -f ;;
             17) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
+            18) bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/update.sh) ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
         esac
