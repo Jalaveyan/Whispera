@@ -688,6 +688,8 @@ ENVEOF
             sed -i "s/max_time_diff: $MTD/max_time_diff: 300000/" "$CONF_PATH/config.yaml"
             log_success "max_time_diff updated: $MTD -> 300000"
         fi
+        # Always recompute checksum so server accepts the (possibly migrated) config
+        "$BIN_PATH/whispera" update-checksum "$CONF_PATH/config.yaml" && log_info "Config checksum updated"
     fi
 
     log_info "Starting service..."

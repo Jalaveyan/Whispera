@@ -422,6 +422,23 @@ func main() {
 			}
 			fmt.Printf("User %s is now an admin\n", *email)
 			os.Exit(0)
+		case "update-checksum":
+			// Recompute and save config checksum — call this after editing config.yaml
+			cfgPath := "/etc/whispera/config.yaml"
+			if len(os.Args) >= 3 {
+				cfgPath = os.Args[2]
+			}
+			p, err := modconfig.New(cfgPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if err := p.UpdateChecksum(); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to update checksum: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Println("Checksum updated successfully")
+			os.Exit(0)
 		}
 	}
 
