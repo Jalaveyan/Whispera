@@ -329,7 +329,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     256 * 1024 * 1024,
-		MaxStreamBuffer:      8 * 1024 * 1024,
+		MaxStreamBuffer:      4 * 1024 * 1024, // 4MB: match client to prevent inter-stream starvation
 		KeepAliveInterval:    10 * time.Second,
 		KeepAliveTimeout:     90 * time.Second,
 		MaxConcurrentStreams: 1024,
@@ -402,8 +402,16 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 
 	errCh := make(chan error, 2)
-	go func() { _, err := io.Copy(target, stream); errCh <- err }()
-	go func() { _, err := io.Copy(stream, target); errCh <- err }()
+	go func() {
+		buf := make([]byte, 256*1024)
+		_, err := io.CopyBuffer(target, stream, buf)
+		errCh <- err
+	}()
+	go func() {
+		buf := make([]byte, 256*1024)
+		_, err := io.CopyBuffer(stream, target, buf)
+		errCh <- err
+	}()
 	<-errCh
 }
 

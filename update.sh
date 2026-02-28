@@ -107,12 +107,8 @@ EOF
 setup_warp() {
     log_info "Setting up Cloudflare WARP..."
     
-    if command -v warp-cli &>/dev/null; then
-        if warp-cli status 2>/dev/null | grep -q "Connected"; then
-            log_success "WARP already connected"
-            return
-        fi
-    else
+    # Install warp-cli if not present
+    if ! command -v warp-cli &>/dev/null; then
         case $RELEASE in
             ubuntu|debian)
                 curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg 2>/dev/null
@@ -129,41 +125,54 @@ setup_warp() {
                 return
                 ;;
         esac
+        if ! command -v warp-cli &>/dev/null; then
+            log_warn "WARP installation failed"
+            return
+        fi
     fi
-    
-    if ! command -v warp-cli &>/dev/null; then
-        log_warn "WARP installation failed"
-        return
-    fi
-    
-    warp-cli --accept-tos register 2>/dev/null || true
-    warp-cli set-mode proxy 2>/dev/null || true
-    warp-cli connect 2>/dev/null || true
+
+    systemctl enable warp-svc --now 2>/dev/null || true
     sleep 2
-    
+
+    # Connect if not already connected
+    if ! warp-cli status 2>/dev/null | grep -q "Connected"; then
+        # Support both old and new warp-cli syntax
+        if warp-cli registration new &>/dev/null; then
+            warp-cli mode proxy 2>/dev/null || true
+        else
+            warp-cli --accept-tos register 2>/dev/null || true
+            warp-cli set-mode proxy 2>/dev/null || true
+        fi
+        warp-cli connect 2>/dev/null || true
+        # Wait up to 15s for connection
+        for i in $(seq 1 5); do
+            sleep 3
+            warp-cli status 2>/dev/null | grep -q "Connected" && break
+            log_info "Waiting for WARP... ($((i*3))s)"
+        done
+    fi
+
     if warp-cli status 2>/dev/null | grep -q "Connected"; then
         log_success "WARP connected (SOCKS5 proxy on 127.0.0.1:40000)"
-        
+
         if [[ -f "$CONF_PATH/config.yaml" ]]; then
             log_info "Auto-configuring Whispera to use WARP..."
-            
+
             if grep -q "^relay:" "$CONF_PATH/config.yaml"; then
                 if grep -q "upstream_proxy:" "$CONF_PATH/config.yaml"; then
-                   sed -i 's|upstream_proxy:.*|upstream_proxy: "socks5://127.0.0.1:40000"|' "$CONF_PATH/config.yaml"
+                    sed -i 's|upstream_proxy:.*|upstream_proxy: "socks5://127.0.0.1:40000"|' "$CONF_PATH/config.yaml"
                 else
-                   sed -i '/^relay:/a \ \ upstream_proxy: "socks5://127.0.0.1:40000"' "$CONF_PATH/config.yaml"
+                    sed -i '/^relay:/a \ \ upstream_proxy: "socks5://127.0.0.1:40000"' "$CONF_PATH/config.yaml"
                 fi
             else
-                echo "" >> "$CONF_PATH/config.yaml"
-                echo "relay:" >> "$CONF_PATH/config.yaml"
-                echo "  upstream_proxy: \"socks5://127.0.0.1:40000\"" >> "$CONF_PATH/config.yaml"
+                printf '\nrelay:\n  upstream_proxy: "socks5://127.0.0.1:40000"\n' >> "$CONF_PATH/config.yaml"
             fi
-            
+
             log_success "Configuration updated."
             refresh_config
             systemctl restart whispera 2>/dev/null || true
         else
-             log_warn "Config file not found at $CONF_PATH/config.yaml - please configure manually"
+            log_warn "Config file not found at $CONF_PATH/config.yaml - please configure manually"
         fi
     else
         log_warn "WARP connection failed. Run 'warp-cli connect' manually."
@@ -395,21 +404,29 @@ setup_telegram() {
     echo "1. Start bot @WhisperaStatusBot (or your configured bot)."
     echo "2. Use /start to get your ID."
     echo ""
-    read -p "Enter your Telegram User ID (leave empty to cancel): " TG_ID
-    
+    read -p "Enter your Telegram User ID (numbers only, leave empty to cancel): " TG_ID
+
     if [[ -z "$TG_ID" ]]; then
         log_warn "Cancelled."
         return
     fi
-    
+
+    # Validate: must be a numeric ID (Telegram user/chat IDs are integers)
+    if ! [[ "$TG_ID" =~ ^-?[0-9]+$ ]]; then
+        log_err "Invalid Telegram ID: must be a number (e.g. 123456789). Got: $TG_ID"
+        log_info "Open @userinfobot in Telegram and send /start to get your numeric ID."
+        return
+    fi
+
     if [[ ! -f "$CONF_PATH/config.yaml" ]]; then
         log_err "Config file not found!"
         return
     fi
-    
+
     log_info "Updating config..."
-    sed -i "s/admin_id: .*/admin_id: $TG_ID/" "$CONF_PATH/config.yaml"
-    sed -i "s/chat_id: .*/chat_id: \"$TG_ID\"/" "$CONF_PATH/config.yaml"
+    # Use | as sed delimiter to avoid issues with special characters
+    sed -i "s|admin_id: .*|admin_id: $TG_ID|" "$CONF_PATH/config.yaml"
+    sed -i "s|chat_id: .*|chat_id: \"$TG_ID\"|" "$CONF_PATH/config.yaml"
     
     log_info "Restarting Whispera..."
     refresh_config
@@ -690,8 +707,9 @@ ENVEOF
         systemctl daemon-reload
     fi
 
-    # Migrate config: fix max_time_diff if it was set too small (< 1000ms)
+    # Migrate config
     if [[ -f "$CONF_PATH/config.yaml" ]]; then
+        # Fix max_time_diff if it was set too small (< 1000ms means someone used seconds instead of ms)
         local MTD
         MTD=$(grep 'max_time_diff:' "$CONF_PATH/config.yaml" | awk '{print $2}' | tr -d '[:space:]')
         if [[ -n "$MTD" && "$MTD" -lt 1000 ]] 2>/dev/null; then
@@ -699,6 +717,34 @@ ENVEOF
             sed -i "s/max_time_diff: $MTD/max_time_diff: 300000/" "$CONF_PATH/config.yaml"
             log_success "max_time_diff updated: $MTD -> 300000"
         fi
+
+        # Fix duplicate relay: blocks (can happen after manual edits or old update scripts)
+        local RELAY_COUNT
+        RELAY_COUNT=$(grep -c "^relay:" "$CONF_PATH/config.yaml" 2>/dev/null || echo 0)
+        if [[ "$RELAY_COUNT" -gt 1 ]]; then
+            log_warn "Config: duplicate relay: blocks detected ($RELAY_COUNT). Merging..."
+            python3 - <<'PYEOF' "$CONF_PATH/config.yaml"
+import sys, re
+
+path = sys.argv[1]
+content = open(path).read()
+
+# Remove any short duplicate relay: block that only has upstream_proxy before a full relay: block
+content = re.sub(r'\nrelay:\n( {2}[^\n]+\n)+(?=relay:)', '\n', content)
+
+# If still more than one relay: block, keep only the last (most complete) one
+blocks = list(re.finditer(r'^relay:.*?(?=\n\S|\Z)', content, re.MULTILINE | re.DOTALL))
+if len(blocks) > 1:
+    # Remove all but the last relay: block
+    for b in blocks[:-1]:
+        content = content[:b.start()] + content[b.end():]
+
+open(path, 'w').write(content)
+print('Done')
+PYEOF
+            log_success "relay: blocks merged"
+        fi
+
         # Always recompute checksum so server accepts the (possibly migrated) config
         "$BIN_PATH/whispera" update-checksum "$CONF_PATH/config.yaml" && log_info "Config checksum updated"
     fi

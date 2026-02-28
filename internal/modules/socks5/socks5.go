@@ -163,8 +163,16 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	defer stream.Close()
 
 	errCh := make(chan error, 2)
-	go func() { _, err := io.Copy(stream, clientConn); errCh <- err }()
-	go func() { _, err := io.Copy(clientConn, stream); errCh <- err }()
+	go func() {
+		buf := make([]byte, 256*1024)
+		_, err := io.CopyBuffer(stream, clientConn, buf)
+		errCh <- err
+	}()
+	go func() {
+		buf := make([]byte, 256*1024)
+		_, err := io.CopyBuffer(clientConn, stream, buf)
+		errCh <- err
+	}()
 	<-errCh
 	return nil
 }
@@ -258,7 +266,18 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 					if err != nil || nr == 0 {
 						return
 					}
-					reply := buildUDPReply(dstHost, dstPort, respBuf[:nr])
+					// Server wraps UDP responses with a SealUDPData header:
+					// [addrType(1), IP(4|16), port(2), payload...]
+					// Parse it so Discord receives the raw UDP payload with
+					// the correct source address in the SOCKS5 UDP reply.
+					srcHost, srcPort, payload, parseErr := parseUDPDataHeader(respBuf[:nr])
+					var reply []byte
+					if parseErr != nil {
+						// Fallback: treat as raw payload with original destination
+						reply = buildUDPReply(dstHost, dstPort, respBuf[:nr])
+					} else {
+						reply = buildUDPReply(srcHost, srcPort, payload)
+					}
 					if clientAddr != nil {
 						udpConn.WriteToUDP(reply, clientAddr)
 					}
@@ -321,6 +340,45 @@ func parseUDPHeader(data []byte) (host string, port uint16, payload []byte, err 
 		return "", 0, nil, fmt.Errorf("unsupported ATYP 0x%02x", atyp)
 	}
 	return host, port, data[offset:], nil
+}
+
+// parseUDPDataHeader parses the SealUDPData header prepended by the relay server
+// to UDP responses. Format: [addrType(1), IP(4|16), port(2), payload...]
+func parseUDPDataHeader(data []byte) (host string, port uint16, payload []byte, err error) {
+	if len(data) < 4 {
+		return "", 0, nil, fmt.Errorf("udp data header too short")
+	}
+	atyp := data[0]
+	switch atyp {
+	case 0x01: // IPv4
+		if len(data) < 7 {
+			return "", 0, nil, fmt.Errorf("udp IPv4 header too short")
+		}
+		host = net.IP(data[1:5]).String()
+		port = binary.BigEndian.Uint16(data[5:7])
+		payload = data[7:]
+	case 0x04: // IPv6
+		if len(data) < 19 {
+			return "", 0, nil, fmt.Errorf("udp IPv6 header too short")
+		}
+		host = net.IP(data[1:17]).String()
+		port = binary.BigEndian.Uint16(data[17:19])
+		payload = data[19:]
+	case 0x03: // Domain
+		if len(data) < 2 {
+			return "", 0, nil, fmt.Errorf("udp domain header too short")
+		}
+		dl := int(data[1])
+		if len(data) < 2+dl+2 {
+			return "", 0, nil, fmt.Errorf("udp domain header truncated")
+		}
+		host = string(data[2 : 2+dl])
+		port = binary.BigEndian.Uint16(data[2+dl : 2+dl+2])
+		payload = data[2+dl+2:]
+	default:
+		return "", 0, nil, fmt.Errorf("unknown addrtype 0x%02x", atyp)
+	}
+	return host, port, payload, nil
 }
 
 // buildUDPReply wraps payload in a SOCKS5 UDP reply header addressed from
