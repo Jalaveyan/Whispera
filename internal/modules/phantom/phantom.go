@@ -537,6 +537,11 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 	diff := now.Sub(clientTime)
 	if diff < 0 {
 		diff = -diff
+		if diff < 0 {
+			// -diff overflowed (diff was math.MinInt64) — timestamp wildly out of range
+			log.Printf("[Phantom] Auth rejected: timestamp overflow (invalid format?)")
+			return "", false
+		}
 	}
 	if diff > h.maxTimeDiff {
 		log.Printf("[Phantom] Auth rejected: timestamp too far off (diff=%v)", diff)
