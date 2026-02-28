@@ -3,11 +3,15 @@ module whispera
 go 1.25.6
 
 require (
+	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/google/uuid v1.6.0
+	github.com/hashicorp/yamux v0.1.2
+	github.com/jackc/pgx/v5 v5.8.0
 	github.com/pion/stun v0.6.1
 	github.com/pion/webrtc/v3 v3.2.24
 	github.com/quic-go/quic-go v0.59.0
+	github.com/redis/go-redis/v9 v9.17.3
 	github.com/refraction-networking/utls v1.8.1
-	github.com/xtaci/smux v1.5.50
 	golang.org/x/crypto v0.47.0
 	golang.org/x/net v0.47.0
 	google.golang.org/grpc v1.75.1
@@ -19,11 +23,8 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
-	github.com/jackc/pgx/v5 v5.8.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/pion/datachannel v1.5.5 // indirect
 	github.com/pion/ice/v2 v2.3.11 // indirect
@@ -37,7 +38,6 @@ require (
 	github.com/pion/srtp/v2 v2.0.18 // indirect
 	github.com/pion/turn/v2 v2.1.3 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
-	github.com/redis/go-redis/v9 v9.17.3 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	golang.org/x/sync v0.17.0 // indirect
 )

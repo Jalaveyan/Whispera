@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/hkdf"
 
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
@@ -292,7 +293,7 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 
 	conn.SetReadDeadline(time.Time{})
 
-	sni, authData, clientRandom, sessionID, err := h.parseClientHello(clientHello)
+	sni, _, clientRandom, sessionID, err := h.parseClientHello(clientHello)
 	if err != nil {
 		log.Printf("Failed to parse ClientHello from %s: %v - activating fallback", remoteAddr, err)
 		h.proxyToDestination(conn, clientHello)
@@ -300,9 +301,6 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 	}
 
 	clientID, ok := h.authenticateClient(clientRandom, sessionID)
-	if !ok && len(authData) > 0 && len(h.privateKey) > 0 {
-		clientID, ok = h.authenticateClientLegacy(authData)
-	}
 
 	if ok {
 		h.stats.AuthenticatedClients++
@@ -519,6 +517,14 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return "", false
 	}
 
+	// Derive auth key: HKDF(sharedSecret, "whispera-auth-key")
+	hkdfR := hkdf.New(sha256.New, sharedSecret, nil, []byte("whispera-auth-key"))
+	authKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdfR, authKey); err != nil {
+		return "", false
+	}
+
+	// sessionID format: [timestamp_ms:8][HMAC(authKey,"whispera-session-id"+timestamp)[:24]:24]
 	timestamp := binary.BigEndian.Uint64(sessionID[0:8])
 	clientTime := time.UnixMilli(int64(timestamp))
 	now := time.Now()
@@ -532,30 +538,21 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return "", false
 	}
 
-	mac := hmac.New(sha256.New, sharedSecret)
+	mac := hmac.New(sha256.New, authKey)
 	mac.Write([]byte("whispera-session-id"))
 	timestampBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(timestampBytes, timestamp)
 	mac.Write(timestampBytes)
 	expected := mac.Sum(nil)
 
-	if hmac.Equal(sessionID[8:32], expected[:24]) {
-		h.markAsSeen(clientRandomHex)
-		log.Printf("[Phantom] Auth SUCCESS from client")
-		return "default", true
+	if !hmac.Equal(sessionID[8:32], expected[:24]) {
+		log.Printf("[Phantom] Auth FAILED: SessionID mismatch")
+		return "", false
 	}
 
-	macLegacy := hmac.New(sha256.New, sharedSecret)
-	macLegacy.Write([]byte("whispera-session-id"))
-	expectedLegacy := macLegacy.Sum(nil)
-	if hmac.Equal(sessionID, expectedLegacy[:32]) {
-		h.markAsSeen(clientRandomHex)
-		log.Printf("[Phantom] Auth SUCCESS (legacy format - client should update)")
-		return "default", true
-	}
-
-	log.Printf("[Phantom] Auth FAILED: SessionID mismatch")
-	return "", false
+	h.markAsSeen(clientRandomHex)
+	log.Printf("[Phantom] Auth SUCCESS from client")
+	return "default", true
 }
 
 func (h *Handler) isReplay(clientRandomHex string) bool {
@@ -593,36 +590,6 @@ func (h *Handler) replayCacheCleanupLoop() {
 	}
 }
 
-func (h *Handler) authenticateClientLegacy(authData []byte) (string, bool) {
-	if len(authData) < 16 {
-		return "", false
-	}
-
-	timestamp := binary.BigEndian.Uint64(authData[0:8])
-	now := uint64(time.Now().UnixMilli())
-	diff := int64(now) - int64(timestamp)
-	if diff < 0 {
-		diff = -diff
-	}
-	if diff > int64(h.config.MaxTimeDiff) {
-		return "", false
-	}
-
-	shortId := base64.StdEncoding.EncodeToString(authData[8:16])
-
-	found := false
-	for _, allowed := range h.config.ShortIds {
-		if shortId == allowed {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return "", false
-	}
-
-	return shortId, true
-}
 
 func (h *Handler) proxyToDestination(clientConn net.Conn, clientHello []byte) {
 	destConn, err := h.dialDestination()

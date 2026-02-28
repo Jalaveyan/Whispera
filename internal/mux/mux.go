@@ -10,16 +10,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xtaci/smux"
+	"github.com/hashicorp/yamux"
 )
 
 type Config struct {
-	MaxFrameSize         int
-	MaxReceiveBuffer     int
-	MaxStreamBuffer      int
-	KeepAliveInterval    time.Duration
-	KeepAliveTimeout     time.Duration
-	MaxConcurrentStreams int
+	MaxFrameSize         int           // unused by yamux (uses its own framing)
+	MaxReceiveBuffer     int           // unused by yamux
+	MaxStreamBuffer      int           // maps to yamux MaxStreamWindowSize (max 16MB)
+	KeepAliveInterval    time.Duration // maps to yamux KeepAliveInterval
+	KeepAliveTimeout     time.Duration // maps to yamux ConnectionWriteTimeout
+	MaxConcurrentStreams int           // maps to yamux AcceptBacklog
 }
 
 func DefaultConfig() *Config {
@@ -33,28 +33,32 @@ func DefaultConfig() *Config {
 	}
 }
 
-func (c *Config) toSMUXConfig() *smux.Config {
-	cfg := smux.DefaultConfig()
-	if c.MaxFrameSize > 0 {
-		cfg.MaxFrameSize = c.MaxFrameSize
-	}
-	if c.MaxReceiveBuffer > 0 {
-		cfg.MaxReceiveBuffer = c.MaxReceiveBuffer
-	}
-	if c.MaxStreamBuffer > 0 {
-		cfg.MaxStreamBuffer = c.MaxStreamBuffer
-	}
+func (c *Config) toYamuxConfig() *yamux.Config {
+	cfg := yamux.DefaultConfig()
+	cfg.LogOutput = io.Discard // silence yamux internal logs
+
 	if c.KeepAliveInterval > 0 {
 		cfg.KeepAliveInterval = c.KeepAliveInterval
 	}
 	if c.KeepAliveTimeout > 0 {
-		cfg.KeepAliveTimeout = c.KeepAliveTimeout
+		cfg.ConnectionWriteTimeout = c.KeepAliveTimeout
+	}
+	if c.MaxStreamBuffer > 0 {
+		maxWin := uint32(c.MaxStreamBuffer)
+		const yamuxMax = 256 * 1024 * 1024 // 256MB hard cap
+		if maxWin > yamuxMax {
+			maxWin = yamuxMax
+		}
+		cfg.MaxStreamWindowSize = maxWin
+	}
+	if c.MaxConcurrentStreams > 0 {
+		cfg.AcceptBacklog = c.MaxConcurrentStreams
 	}
 	return cfg
 }
 
 type Session struct {
-	session  *smux.Session
+	session  *yamux.Session
 	conn     net.Conn
 	isServer bool
 	config   *Config
@@ -72,9 +76,9 @@ func Client(conn net.Conn, cfg *Config) (*Session, error) {
 		cfg = DefaultConfig()
 	}
 
-	session, err := smux.Client(conn, cfg.toSMUXConfig())
+	session, err := yamux.Client(conn, cfg.toYamuxConfig())
 	if err != nil {
-		return nil, fmt.Errorf("smux client create failed: %w", err)
+		return nil, fmt.Errorf("yamux client create failed: %w", err)
 	}
 
 	return &Session{
@@ -90,9 +94,9 @@ func Server(conn net.Conn, cfg *Config) (*Session, error) {
 		cfg = DefaultConfig()
 	}
 
-	session, err := smux.Server(conn, cfg.toSMUXConfig())
+	session, err := yamux.Server(conn, cfg.toYamuxConfig())
 	if err != nil {
-		return nil, fmt.Errorf("smux server create failed: %w", err)
+		return nil, fmt.Errorf("yamux server create failed: %w", err)
 	}
 
 	return &Session{
@@ -111,7 +115,7 @@ func (s *Session) OpenStream() (net.Conn, error) {
 	}
 	s.mu.RUnlock()
 
-	stream, err := s.session.OpenStream()
+	stream, err := s.session.Open()
 	if err != nil {
 		return nil, fmt.Errorf("open stream failed: %w", err)
 	}
@@ -119,7 +123,7 @@ func (s *Session) OpenStream() (net.Conn, error) {
 	atomic.AddUint64(&s.streamsOpened, 1)
 
 	return &muxStream{
-		Stream:  stream,
+		Conn:    stream,
 		session: s,
 	}, nil
 }
@@ -152,7 +156,7 @@ func (s *Session) AcceptStream() (net.Conn, error) {
 	}
 	s.mu.RUnlock()
 
-	stream, err := s.session.AcceptStream()
+	stream, err := s.session.Accept()
 	if err != nil {
 		return nil, fmt.Errorf("accept stream failed: %w", err)
 	}
@@ -160,7 +164,7 @@ func (s *Session) AcceptStream() (net.Conn, error) {
 	atomic.AddUint64(&s.streamsOpened, 1)
 
 	return &muxStream{
-		Stream:  stream,
+		Conn:    stream,
 		session: s,
 	}, nil
 }
@@ -204,7 +208,10 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) IsClosed() bool {
-	return atomic.LoadInt32(&s.closed) == 1 || s.session.IsClosed()
+	if atomic.LoadInt32(&s.closed) == 1 {
+		return true
+	}
+	return s.session.IsClosed()
 }
 
 func (s *Session) NumStreams() int {
@@ -227,13 +234,13 @@ func (s *Session) RemoteAddr() net.Addr {
 }
 
 type muxStream struct {
-	*smux.Stream
-	session *Session
-	closed  int32
+	net.Conn // *yamux.Stream implements net.Conn
+	session  *Session
+	closed   int32
 }
 
 func (m *muxStream) Read(b []byte) (n int, err error) {
-	n, err = m.Stream.Read(b)
+	n, err = m.Conn.Read(b)
 	if n > 0 {
 		atomic.AddUint64(&m.session.bytesRx, uint64(n))
 	}
@@ -241,7 +248,7 @@ func (m *muxStream) Read(b []byte) (n int, err error) {
 }
 
 func (m *muxStream) Write(b []byte) (n int, err error) {
-	n, err = m.Stream.Write(b)
+	n, err = m.Conn.Write(b)
 	if n > 0 {
 		atomic.AddUint64(&m.session.bytesTx, uint64(n))
 	}
@@ -251,7 +258,7 @@ func (m *muxStream) Write(b []byte) (n int, err error) {
 func (m *muxStream) Close() error {
 	if atomic.CompareAndSwapInt32(&m.closed, 0, 1) {
 		atomic.AddUint64(&m.session.streamsClosed, 1)
-		return m.Stream.Close()
+		return m.Conn.Close()
 	}
 	return nil
 }

@@ -19,7 +19,11 @@
       "Bash(git stash drop)",
       "Bash(go build ./cmd/server)",
       "Bash(git pull --rebase origin main)",
-      "Bash(git stash)"
+      "Bash(git stash)",
+      "Bash(go get github.com/hashicorp/yamux@latest)",
+      "Bash(go mod tidy)",
+      "Bash(go build ./cmd/server/)",
+      "Bash(go build ./cmd/client/)"
     ]
   }
 }

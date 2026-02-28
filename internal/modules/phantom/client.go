@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/hkdf"
 )
 
 type ClientConfig struct {
@@ -106,8 +108,15 @@ func (c *ClientAuth) GenerateSessionID() (clientRandom, sessionID []byte, err er
 		return nil, nil, err
 	}
 
+	// Derive a dedicated auth key via HKDF (mirrors server-side derivation)
+	hkdfR := hkdf.New(sha256.New, sharedSecret, nil, []byte("whispera-auth-key"))
+	authKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdfR, authKey); err != nil {
+		return nil, nil, err
+	}
+
 	timestamp := uint64(time.Now().UnixMilli())
-	mac := hmac.New(sha256.New, sharedSecret)
+	mac := hmac.New(sha256.New, authKey)
 	mac.Write([]byte("whispera-session-id"))
 	timestampBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(timestampBytes, timestamp)
