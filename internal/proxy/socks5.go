@@ -68,18 +68,24 @@ func mapErrorToReplyCode(err error) byte {
 }
 
 type SOCKS5Server struct {
-	listenAddr    string
-	handler       func(net.Conn, string, uint16) error
-	authHandler   AuthHandler
-	packetHandler PacketHandler
-	udpHandler    func(net.Conn) error
-	udpConn       *net.UDPConn
-	udpAddr       *net.UDPAddr
-	mu            sync.RWMutex
-	log           *logger.Logger
+	listenAddr       string
+	handler          func(net.Conn, string, uint16) error
+	authHandler      AuthHandler
+	packetHandler    PacketHandler
+	udpRelayHandler  UDPRelayHandler
+	udpHandler       func(net.Conn) error
+	udpConn          *net.UDPConn
+	udpAddr          *net.UDPAddr
+	mu               sync.RWMutex
+	log              *logger.Logger
 }
 
 type PacketHandler func(data []byte, from net.Addr) error
+
+// UDPRelayHandler receives full control of the UDP relay socket and the
+// TCP control connection. It is responsible for reading UDP packets,
+// forwarding them through the tunnel, and sending responses back.
+type UDPRelayHandler func(udpConn *net.UDPConn, tcpConn net.Conn)
 
 func NewSOCKS5Server(addr string, handler func(net.Conn, string, uint16) error) *SOCKS5Server {
 	return &SOCKS5Server{
@@ -105,6 +111,10 @@ func (s *SOCKS5Server) SetUDPHandler(h func(net.Conn) error) {
 
 func (s *SOCKS5Server) SetPacketHandler(h PacketHandler) {
 	s.packetHandler = h
+}
+
+func (s *SOCKS5Server) SetUDPRelayHandler(h UDPRelayHandler) {
+	s.udpRelayHandler = h
 }
 
 func (s *SOCKS5Server) ListenAndServe() error {
@@ -465,7 +475,11 @@ func (s *SOCKS5Server) handleUDPAssociate(conn net.Conn, atyp byte) (string, uin
 
 	s.log.Debug("UDP ASSOCIATE: relay listening on %s", localAddr.String())
 
-	go s.handleUDPRelay(udpListener, conn)
+	if s.udpRelayHandler != nil {
+		go s.udpRelayHandler(udpListener, conn)
+	} else {
+		go s.handleUDPRelay(udpListener, conn)
+	}
 
 	return "", 0, nil
 }

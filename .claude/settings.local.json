@@ -23,7 +23,19 @@
       "Bash(go get github.com/hashicorp/yamux@latest)",
       "Bash(go mod tidy)",
       "Bash(go build ./cmd/server/)",
-      "Bash(go build ./cmd/client/)"
+      "Bash(go build ./cmd/client/)",
+      "Bash(go build ./cmd/server/ ./cmd/client/)",
+      "Bash(echo \"Exit: $?\")",
+      "Bash(git add config.yaml internal/modules/config/config.go internal/modules/phantom/phantom.go)",
+      "Bash(git push)",
+      "Bash(git add internal/modules/phantom/phantom.go)",
+      "Bash(GOOS=windows GOARCH=amd64 go build -o whisp/src-tauri/binaries/whispera-go-client-x86_64-pc-windows-msvc.exe ./cmd/client/)",
+      "Bash(go version)",
+      "Bash(cat /c/Whispera-test/cmd/client/*.go)",
+      "Bash(cargo check)",
+      "Bash(grep -n \"UDP\\\\|udp\\\\|ASSOCIATE\\\\|associate\\\\|CMD_UDP\" /c/Whispera-test/internal/proxy/*.go)",
+      "Bash(go build ./internal/modules/socks5/... ./internal/proxy/...)",
+      "Bash(go build ./cmd/client/...)"
     ]
   }
 }
