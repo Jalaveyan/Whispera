@@ -164,14 +164,29 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		if pPrivKey == "" {
 			pPrivKey = serverConfig.Server.PrivateKey
 		}
+		// Merge per-inbound settings with global phantom section.
+		// Per-inbound values take priority; fall back to global when zero/empty.
+		inboundServerNames := inbound.StreamSettings.Phantom.ServerNames
+		if len(inboundServerNames) == 0 {
+			inboundServerNames = serverConfig.Phantom.ServerNames
+		}
+		inboundShortIds := inbound.StreamSettings.Phantom.ShortIds
+		if len(inboundShortIds) == 0 {
+			inboundShortIds = serverConfig.Phantom.ShortIds
+		}
+		inboundMaxTimeDiff := inbound.StreamSettings.Phantom.MaxTimeDiff
+		if inboundMaxTimeDiff == 0 {
+			inboundMaxTimeDiff = serverConfig.Phantom.MaxTimeDiff
+		}
+
 		pCfg := &phantom.Config{
 			Enabled:     true,
 			ListenAddr:  listenAddr,
 			Dest:        inbound.StreamSettings.Phantom.Dest,
 			PrivateKey:  pPrivKey,
-			ServerNames: serverConfig.Phantom.ServerNames,
-			ShortIds:    serverConfig.Phantom.ShortIds,
-			MaxTimeDiff: serverConfig.Phantom.MaxTimeDiff,
+			ServerNames: inboundServerNames,
+			ShortIds:    inboundShortIds,
+			MaxTimeDiff: inboundMaxTimeDiff,
 			Fingerprint: serverConfig.Phantom.Fingerprint,
 			OnAuthenticated: func(conn net.Conn, clientID string) {
 				log.Printf("[Dynamic-Phantom] Authenticated: %s on inbound %s", clientID, inbound.Tag)
@@ -563,6 +578,7 @@ func createModules(manager *lifecycle.Manager) error {
 			Enabled:            true,
 			ServerNames:        serverConfig.Phantom.ServerNames,
 			PrivateKey:         serverConfig.Phantom.PrivateKey,
+			MaxTimeDiff:        serverConfig.Phantom.MaxTimeDiff,
 			UseRussianService:  serverConfig.Phantom.UseRussianService,
 			RussianServiceName: serverConfig.Phantom.RussianService,
 		}

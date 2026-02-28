@@ -35,7 +35,19 @@
       "Bash(cargo check)",
       "Bash(grep -n \"UDP\\\\|udp\\\\|ASSOCIATE\\\\|associate\\\\|CMD_UDP\" /c/Whispera-test/internal/proxy/*.go)",
       "Bash(go build ./internal/modules/socks5/... ./internal/proxy/...)",
-      "Bash(go build ./cmd/client/...)"
+      "Bash(go build ./cmd/client/...)",
+      "Bash(cargo metadata --no-deps)",
+      "Bash(python3 -c \"import json,sys; m=json.load\\(sys.stdin\\); [print\\(p[''name''], p[''version'']\\) for p in m.get\\(''packages'',[]\\) if ''tauri-build'' in p[''name'']]\")",
+      "Bash(cargo clean -p whisp)",
+      "Bash(taskkill /F /IM mihomo.exe /T)",
+      "Bash(taskkill /F /IM whispera-go-client.exe /T)",
+      "Bash(cmd /c \"taskkill /F /IM mihomo.exe /T\")",
+      "Bash(cmd /c \"taskkill /F /IM whispera-go-client.exe /T\")",
+      "Bash(xargs grep -l \"desktop\\\\|740\\\\|elevation\")",
+      "Bash(xargs grep -l \"desktop\\\\|interface\")",
+      "Bash(xargs grep -ln \"740\\\\|elevation\\\\|ELEVATION\")",
+      "Bash(cargo build)",
+      "Bash(go build ./cmd/server ./internal/modules/phantom/... ./internal/modules/config/...)"
     ]
   }
 }

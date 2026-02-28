@@ -263,6 +263,7 @@ type PhantomStreamConfig struct {
 	ServerNames []string `yaml:"server_names" json:"server_names"`
 	PrivateKey  string   `yaml:"private_key" json:"private_key"`
 	ShortIds    []string `yaml:"short_ids" json:"short_ids"`
+	MaxTimeDiff int      `yaml:"max_time_diff" json:"max_time_diff"` // ms; 0 = use global phantom.max_time_diff
 }
 
 type WebSocketConfig struct {

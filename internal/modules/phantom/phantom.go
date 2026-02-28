@@ -143,6 +143,10 @@ func New(cfg *Config) (*Handler, error) {
 	maxTimeDiff := 5 * time.Minute
 	if cfg.MaxTimeDiff > 0 {
 		maxTimeDiff = time.Duration(cfg.MaxTimeDiff) * time.Millisecond
+		if maxTimeDiff < 10*time.Second {
+			log.Printf("[Phantom] WARNING: max_time_diff=%dms is dangerously small, clamped to 10s (check config units — value must be in milliseconds)", cfg.MaxTimeDiff)
+			maxTimeDiff = 10 * time.Second
+		}
 	}
 
 	h := &Handler{
@@ -153,6 +157,9 @@ func New(cfg *Config) (*Handler, error) {
 		maxTimeDiff:    maxTimeDiff,
 		integrationMgr: obfuscation.NewIntegrationManager(),
 	}
+
+	log.Printf("[Phantom] Handler init: maxTimeDiff=%v, serverNames=%v, shortIds=%v",
+		maxTimeDiff, cfg.ServerNames, cfg.ShortIds)
 
 	if len(cfg.PrivateKey) > 0 {
 		var keyBytes []byte
