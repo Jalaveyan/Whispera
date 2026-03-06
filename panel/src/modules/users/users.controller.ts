@@ -23,8 +23,9 @@ export class UsersController {
             const users = await this.usersService.getUsers(token);
             return res.json({ success: true, users });
         } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch users';
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
+            return res.status(status).json({ success: false, error: msg });
         }
     }
 
@@ -46,8 +47,9 @@ export class UsersController {
             });
             return res.json({ success: true, user });
         } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to create user';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(status).json({ success: false, error: msg });
         }
     }
 
@@ -66,8 +68,9 @@ export class UsersController {
             });
             return res.json({ success: true, user });
         } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to update user';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(status).json({ success: false, error: msg });
         }
     }
 
@@ -82,8 +85,9 @@ export class UsersController {
             await this.usersService.deleteUser(token, id);
             return res.json({ success: true });
         } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to delete user';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(status).json({ success: false, error: msg });
         }
     }
 
@@ -98,8 +102,9 @@ export class UsersController {
             const stats = await this.usersService.getUserStats(token, id);
             return res.json(stats);
         } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch stats';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(status).json({ success: false, error: msg });
         }
     }
 }

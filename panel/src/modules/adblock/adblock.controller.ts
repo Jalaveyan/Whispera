@@ -14,7 +14,7 @@ export class AdblockController {
             return res.json(stats);
         } catch (err: any) {
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch adblock stats';
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
 
@@ -26,7 +26,7 @@ export class AdblockController {
             return res.json({ success: true, rules });
         } catch (err: any) {
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch adblock rules';
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
 
@@ -42,7 +42,7 @@ export class AdblockController {
             return res.json({ success: true, rule: result });
         } catch (err: any) {
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to add rule';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(err?.response?.status || HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 
@@ -58,7 +58,7 @@ export class AdblockController {
             return res.json({ success: true });
         } catch (err: any) {
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to delete rule';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(err?.response?.status || HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 
@@ -74,7 +74,7 @@ export class AdblockController {
             return res.json({ success: true });
         } catch (err: any) {
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to update settings';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(err?.response?.status || HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 }

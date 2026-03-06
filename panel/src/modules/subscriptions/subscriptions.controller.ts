@@ -15,7 +15,7 @@ export class SubscriptionsController {
             return res.json({ success: true, subscriptions });
         } catch (err: any) {
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch subscriptions';
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
 
@@ -31,7 +31,7 @@ export class SubscriptionsController {
             return res.json({ success: true, subscription: result });
         } catch (err: any) {
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to add subscription';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(err?.response?.status || HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 
@@ -48,7 +48,7 @@ export class SubscriptionsController {
             return res.json({ success: true, subscription: result });
         } catch (err: any) {
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to update subscription';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(err?.response?.status || HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 
@@ -64,7 +64,7 @@ export class SubscriptionsController {
             return res.json({ success: true });
         } catch (err: any) {
             const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to delete subscription';
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
+            return res.status(err?.response?.status || HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 

@@ -31,6 +31,7 @@ class WhisperaAPI {
 
         if (response.status === 401) {
             this.setToken(null);
+            window.location.href = '/';
             throw new Error('Unauthorized');
         }
 

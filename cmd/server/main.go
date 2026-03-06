@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -674,6 +675,22 @@ func createModules(manager *lifecycle.Manager) error {
 		serverConfig = modconfig.DefaultServerConfig()
 	}
 	globalServerConfig = serverConfig
+
+	// Persist auth_token to config.yaml so it survives server restarts
+	if serverConfig.API.AuthToken == "" && *configFile != "" {
+		tokenBytes := make([]byte, 32)
+		if _, err := rand.Read(tokenBytes); err == nil {
+			newToken := base64.StdEncoding.EncodeToString(tokenBytes)
+			if err := configProvider.Update(func(c *modconfig.ServerConfig) {
+				c.API.AuthToken = newToken
+			}); err == nil {
+				serverConfig = configProvider.GetConfig()
+				globalServerConfig = serverConfig
+				log.Printf("[API] Generated and persisted new auth token to config")
+			}
+		}
+	}
+
 	if serverConfig.API.AdminUsername == "admin" && serverConfig.API.AdminPassword == "admin" {
 		fmt.Println("")
 		fmt.Println("╔══════════════════════════════════════════════════════════════╗")
