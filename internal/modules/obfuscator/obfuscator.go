@@ -24,11 +24,12 @@ const (
 )
 
 type Config struct {
-	DefaultProfile string
-	ThreatLevel    int
-	EnableML       bool
-	EnableFTE      bool
-	WorkerCount    int
+	DefaultProfile   string
+	BehavioralProfile string
+	ThreatLevel      int
+	EnableML         bool
+	EnableFTE        bool
+	WorkerCount      int
 
 	EnableJitter             bool
 	EnableResidentialMimicry bool
@@ -89,6 +90,12 @@ func New(cfg *Config) (*Engine, error) {
 		manager:        manager,
 		currentProfile: cfg.DefaultProfile,
 		threatLevel:    cfg.ThreatLevel,
+	}
+
+	if cfg.BehavioralProfile != "" {
+		if err := manager.GetMarionetteAdapter().GetCore().SetBehavioralProfile(cfg.BehavioralProfile); err != nil {
+			return nil, fmt.Errorf("obfuscator: behavioral profile %q: %w", cfg.BehavioralProfile, err)
+		}
 	}
 
 	return e, nil

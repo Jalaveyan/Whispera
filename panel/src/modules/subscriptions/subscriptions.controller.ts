@@ -1,6 +1,7 @@
 import { Controller, Get, Post, Body, Headers, Res, HttpStatus } from '@nestjs/common';
 import type { Response } from 'express';
-import { SubscriptionsService, Subscription } from './subscriptions.service';
+import { SubscriptionsService } from './subscriptions.service';
+import type { CreateSubscriptionDto } from './subscriptions.service';
 
 @Controller()
 export class SubscriptionsController {
@@ -20,12 +21,12 @@ export class SubscriptionsController {
     @Post('api/subscriptions/add')
     async addSubscription(
         @Headers('authorization') auth: string,
-        @Body() subscription: Partial<Subscription>,
+        @Body() dto: CreateSubscriptionDto,
         @Res() res: Response,
     ) {
         try {
             const token = auth?.replace('Bearer ', '');
-            const result = await this.subscriptionsService.addSubscription(token, subscription);
+            const result = await this.subscriptionsService.addSubscription(token, dto);
             return res.json({ success: true, subscription: result });
         } catch {
             return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add subscription' });
@@ -35,13 +36,13 @@ export class SubscriptionsController {
     @Post('api/subscriptions/update')
     async updateSubscription(
         @Headers('authorization') auth: string,
-        @Body() body: { id: string } & Partial<Subscription>,
+        @Body() body: { id: string } & Partial<CreateSubscriptionDto>,
         @Res() res: Response,
     ) {
         try {
             const token = auth?.replace('Bearer ', '');
-            const { id, ...subscription } = body;
-            const result = await this.subscriptionsService.updateSubscription(token, id, subscription);
+            const { id, ...dto } = body;
+            const result = await this.subscriptionsService.updateSubscription(token, id, dto);
             return res.json({ success: true, subscription: result });
         } catch {
             return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update subscription' });
@@ -65,12 +66,8 @@ export class SubscriptionsController {
 
     @Post('api/subscriptions/update-all')
     async updateAll(@Headers('authorization') auth: string, @Res() res: Response) {
-        try {
-            const token = auth?.replace('Bearer ', '');
-            await this.subscriptionsService.updateAll(token);
-            return res.json({ success: true });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update all subscriptions' });
-        }
+        // No-op: subscriptions are served live, no polling needed
+        void auth;
+        return res.json({ success: true });
     }
 }

@@ -32,7 +32,7 @@ jobs:
       
       - uses: actions/setup-go@v4
         with:
-          go-version: '1.26.x'
+          go-version: '1.24.x'
 
       - name: Build
         env:
@@ -70,9 +70,9 @@ jobs:
         run: |
           npm ci
           npm run build
-          npm prune --omit=dev
-          echo "node_modules size: $(du -sh node_modules | cut -f1)"
-          tar -czvf ../whispera-panel.tar.gz dist public node_modules package.json .env.example
+          npm run bundle
+          echo "bundle size: $(du -sh bundle | cut -f1)"
+          tar -czvf ../whispera-panel.tar.gz bundle public package.json .env.example
           echo "whispera-panel.tar.gz: $(du -sh ../whispera-panel.tar.gz | cut -f1)"
 
       - name: Upload Panel Artifact

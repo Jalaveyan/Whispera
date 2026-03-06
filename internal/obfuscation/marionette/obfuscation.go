@@ -647,7 +647,7 @@ func (m *Marionette) applyAction(action types.Action, data []byte, params map[st
 			return m.shapeSize(data, params)
 		}
 	case "shape_timing":
-		return data, 0
+		return data, m.shapeTiming(action.Parameters)
 	case "enable_burst":
 		if len(data) > 2048 {
 			return m.enableBurst(data, params)
@@ -673,7 +673,13 @@ func (m *Marionette) applyAction(action types.Action, data []byte, params map[st
 			TargetService:    m.Active,
 		}
 
-		if sni, ok := params["sni"].(string); ok {
+		// Prefer SNI from the active behavioral profile's CDN (matches the real messenger).
+		m.Mutex.RLock()
+		behavioralProfile := m.ActiveBehavioralProfile
+		m.Mutex.RUnlock()
+		if behavioralProfile != nil && len(behavioralProfile.Context.CDN.Domains) > 0 {
+			prof.SNI = behavioralProfile.Context.CDN.Domains[0]
+		} else if sni, ok := params["sni"].(string); ok {
 			prof.SNI = sni
 		}
 		if pubKey, ok := params["reality_public_key"].(string); ok {
@@ -807,7 +813,40 @@ func (m *Marionette) learnPatterns(data []byte, params map[string]interface{}) (
 
 
 func (m *Marionette) applyProductionVKontakteEvasion(data []byte) ([]byte, time.Duration, error) {
-	return m.applyProductionGenericRussianEvasion(data)
+	if len(data) == 0 {
+		return data, 0, nil
+	}
+	r := m.Rand
+	switch {
+	case len(data) < 256:
+		// Simulate VK LongPoll keepalive: {"ts":"NNNNNNN","updates":[]}
+		// Typical size: 256–512 bytes.
+		target := 256 + r.Intn(256)
+		padding := make([]byte, target-len(data))
+		m.generateVKJSONPadding(padding, r)
+		data = append(data, padding...)
+	case len(data) < 2048:
+		// Simulate VK API response frame. Round up to the nearest 512-byte
+		// boundary matching VK's HTTP/2 DATA frame granularity.
+		target := ((len(data) + 511) / 512) * 512
+		if target == len(data) {
+			target += 512
+		}
+		if target > 4096 {
+			target = 4096
+		}
+		padding := make([]byte, target-len(data))
+		m.generateVKJSONPadding(padding, r)
+		data = append(data, padding...)
+	default:
+		// Large frame: add small random jitter to avoid exact-power-of-two sizes
+		// that are characteristic of VPN framing.
+		jitter := 32 + r.Intn(96)
+		padding := make([]byte, jitter)
+		m.generateVKJSONPadding(padding, r)
+		data = append(data, padding...)
+	}
+	return data, 0, nil
 }
 
 func (m *Marionette) applyProductionYandexEvasion(data []byte) ([]byte, time.Duration, error) {
@@ -815,7 +854,40 @@ func (m *Marionette) applyProductionYandexEvasion(data []byte) ([]byte, time.Dur
 }
 
 func (m *Marionette) applyProductionMailruEvasion(data []byte) ([]byte, time.Duration, error) {
-	return m.applyProductionGenericRussianEvasion(data)
+	// Used for MAX messenger (Mail.ru product) as well as Mail.ru.
+	if len(data) == 0 {
+		return data, 0, nil
+	}
+	r := m.Rand
+	switch {
+	case len(data) < 256:
+		// MAX API keepalive / small status packet.
+		target := 128 + r.Intn(384)
+		if target <= len(data) {
+			target = len(data) + 64
+		}
+		padding := make([]byte, target-len(data))
+		m.generateMailruEmailPadding(padding, r)
+		data = append(data, padding...)
+	case len(data) < 2048:
+		// MAX API response frame, 256-byte granularity.
+		target := ((len(data) + 255) / 256) * 256
+		if target == len(data) {
+			target += 256
+		}
+		if target > 4096 {
+			target = 4096
+		}
+		padding := make([]byte, target-len(data))
+		m.generateMailruEmailPadding(padding, r)
+		data = append(data, padding...)
+	default:
+		jitter := 16 + r.Intn(80)
+		padding := make([]byte, jitter)
+		m.generateMailruEmailPadding(padding, r)
+		data = append(data, padding...)
+	}
+	return data, 0, nil
 }
 
 func (m *Marionette) applyProductionRutubeEvasion(data []byte) ([]byte, time.Duration, error) {

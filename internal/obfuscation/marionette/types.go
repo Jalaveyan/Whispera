@@ -45,6 +45,7 @@ type Marionette struct {
 
 	BehaviorEngine          *behavioral.BehaviorEngine
 	ActiveBehavioralProfile *behavioral.MessengerProfile
+	lockedProfile           bool // true when profile was set explicitly via SetBehavioralProfile
 
 	Chaff *ChaffGenerator
 }

@@ -56,12 +56,31 @@ const (
 type TransportType string
 
 const (
-	TransportUDP       TransportType = "udp"
-	TransportTCP       TransportType = "tcp"
-	TransportWebSocket TransportType = "websocket"
-	TransportXHTTP     TransportType = "xhttp"
-	TransportQUIC      TransportType = "quic"
-	TransportH2C       TransportType = "h2c"
+	TransportUDP           TransportType = "udp"
+	TransportTCP           TransportType = "tcp"
+	TransportWebSocket     TransportType = "websocket"
+	TransportXHTTP         TransportType = "xhttp"
+	TransportQUIC          TransportType = "quic"
+	TransportH2C           TransportType = "h2c"
+	TransportObfs4         TransportType = "obfs4"
+	TransportMeek          TransportType = "meek"
+	TransportSnowflake     TransportType = "snowflake"
+	TransportShadowTLS     TransportType = "shadowtls"
+	TransportTUIC          TransportType = "tuic"
+	TransportHTTPUpgrade   TransportType = "httpupgrade"
+	TransportSplitHTTP     TransportType = "splithttp"
+	TransportShadowsocks   TransportType = "shadowsocks"
+	TransportTorSOCKS      TransportType = "torsocks"
+	TransportDomainFront   TransportType = "domainfront"
+	TransportVKVideo       TransportType = "vkvideo"
+	TransportYaTelemost   TransportType = "yatelemost"
+	TransportOKWebRTC     TransportType = "okwebrtc"
+	TransportYaCloud      TransportType = "yacloud"
+	TransportYaDisk       TransportType = "yadisk"
+	TransportVKWebRTC     TransportType = "vkwebrtc"
+	TransportVKBot        TransportType = "vkbot"
+	TransportTGBot        TransportType = "tgbot"
+	TransportCDNWorker    TransportType = "cdnworker"
 )
 
 

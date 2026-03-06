@@ -15,7 +15,7 @@ func GetAuthURL(appID string) string {
 	u.Set("client_id", appID)
 	u.Set("display", "page")
 	u.Set("redirect_uri", "https://oauth.vk.com/blank.html")
-	u.Set("scope", "messages,offline")
+	u.Set("scope", "offline")
 	u.Set("response_type", "token")
 	u.Set("v", "5.131")
 

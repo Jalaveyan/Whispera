@@ -568,6 +568,8 @@ func (d *Dialer) getUTLSFingerprint() *utls.ClientHelloID {
 		"safari":     &utls.HelloSafari_Auto,
 		"ios":        &utls.HelloIOS_Auto,
 		"android":    &utls.HelloAndroid_11_OkHttp,
+		"vk":         &utls.HelloAndroid_11_OkHttp, // VK Android uses OkHttp 4.x
+		"max":        &utls.HelloAndroid_11_OkHttp, // MAX (Mail.ru) uses OkHttp 4.x
 		"edge":       &utls.HelloEdge_Auto,
 		"360":        &utls.Hello360_Auto,
 		"qq":         &utls.HelloQQ_Auto,

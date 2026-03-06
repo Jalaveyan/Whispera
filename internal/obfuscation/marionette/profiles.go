@@ -182,7 +182,7 @@ func (m *Marionette) addRussianServiceRules(service string) {
 func (m *Marionette) initDefaultRules() {
 	m.Rules = append(m.Rules, types.ObfuscationRule{
 		Name:     "rule_default_timing",
-		Priority: 5,
+		Priority: 8,
 		Enabled:  true,
 		Condition: types.Condition{
 			Field:    "packet_count",

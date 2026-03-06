@@ -235,12 +235,30 @@ type InboundConfig struct {
 	Protocol string `yaml:"protocol" json:"protocol"`
 	Listen   string `yaml:"listen" json:"listen"`
 	Port     int    `yaml:"port" json:"port"`
+	// Ports lists additional ports to listen on (multiport).
+	// When set, the server starts one listener per port sharing the same config.
+	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
 
 	Settings map[string]interface{} `yaml:"settings" json:"settings"`
 
 	StreamSettings StreamConfig `yaml:"stream_settings" json:"stream_settings"`
 
 	Sniffing SniffingConfig `yaml:"sniffing" json:"sniffing"`
+}
+
+// AllPorts returns the deduplicated union of Port and Ports.
+func (c *InboundConfig) AllPorts() []int {
+	seen := make(map[int]struct{})
+	var out []int
+	for _, p := range append([]int{c.Port}, c.Ports...) {
+		if p > 0 {
+			if _, dup := seen[p]; !dup {
+				seen[p] = struct{}{}
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 type StreamConfig struct {

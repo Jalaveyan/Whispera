@@ -29,7 +29,7 @@ func MaxMessengerProfile() *MessengerProfile {
 
 		TLS: TLSProfile{
 			JA3: "771,4866-4867-4865-49196-49200-159-52393-52392-52394-49195-49199-158-49188-49192-107-49187-49191-103-49162-49172-57-49161-49171-51-157-156-61-60-53-47-255,0-11-10-35-22-23-13-43-45-51,29-23-30-25-24,0-1-2",
-			JA4: "t13d1517h2_max1e7e78f70_b0da82dd1658",
+			JA4: "t13d1513h2_e8f1e7e78f70_3a4b5c6d7e8f",
 
 			ClientHello: ClientHelloProfile{
 				CipherSuites: []uint16{

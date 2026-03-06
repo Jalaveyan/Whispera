@@ -24,9 +24,12 @@ import (
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
 	h2c_transport "whispera/internal/modules/transport/h2c"
 	quic_transport "whispera/internal/modules/transport/quic"
+	"whispera/internal/modules/transport/tgbot"
+	"whispera/internal/modules/transport/vkbot"
 	"whispera/internal/modules/transport/vkwebrtc"
 	"whispera/internal/mux"
 	"whispera/internal/obfuscation/russian"
+	"nhooyr.io/websocket"
 )
 
 var log = logger.Module("tunnel")
@@ -116,10 +119,31 @@ type Config struct {
 	PhantomShortId      string
 	PhantomServerPubKey string
 
-	RussianService string
+	RussianService    string
+	BehavioralProfile string // "vk", "max", "mailru", "yandex" — auto-selects Russian service for CIDR bypass
 
 	VKToken   string
 	VKGroupID int64
+
+	// VKBot relay transport (optional).
+	// When set, the tunnel can route through VK community messages (api.vk.com).
+	VKBotUserToken  string // VK user token (client side)
+	VKBotGroupToken string // VK community token with "messages" permission (server side)
+
+	// TGBot relay transport (optional).
+	// Tunnels through Telegram Bot API messages (api.telegram.org).
+	// Both sides need their own bot token + a shared supergroup chat ID.
+	// See tgbot package docs for setup instructions.
+	TGBotToken    string // this side's Telegram bot token
+	TGGroupChatID int64  // shared Telegram group chat ID
+	TGSessionID   string // tunnel session ID (random if empty)
+
+	// CDNWorkerURL activates the CDN Worker relay (optional).
+	// Value is a WebSocket URL pointing to a Cloudflare Worker / Vercel Edge relay,
+	// e.g. "wss://my-relay.workers.dev/tunnel".
+	// The worker proxies WebSocket frames to the actual VPN server.
+	// All traffic goes to major CDN IPs — uncensorable without breaking the internet.
+	CDNWorkerURL string
 
 	ServerList []string
 
@@ -651,24 +675,29 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	return nil
 }
 
+// dialCandidate is a named transport attempt used by parallelDial.
+type dialCandidate struct {
+	name   string
+	secure bool // transport provides its own encryption layer
+	fn     func(context.Context) (net.Conn, error)
+}
+
+// dial is the entry point for establishing a tunnel connection.
+// It prepares shared state (Phantom/ASN), then races ALL configured
+// transport candidates in parallel.  The first to succeed wins;
+// all others are cancelled and any late connections are closed.
 func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
-	var conn net.Conn
-	var err error
-
-	targetSNI := m.getRotationSNI()
-
-	if m.config.RussianService != "" && m.russianTunneler != nil {
-		log.Info("Tunneling via Russian Service: %s", m.config.RussianService)
-		st, err := m.russianTunneler.CreateTunnel(ctx, m.config.ServerAddr)
-		if err != nil {
-			log.Warn("Failed to create Russian tunnel: %v", err)
-		} else {
-			conn = NewRussianConnAdapter(st)
-			m.isTransportSecure = true
-			return conn, nil
-		}
+	m.preparePhantomASN()
+	candidates := m.buildCandidates()
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no transport candidates configured")
 	}
+	return m.parallelDial(ctx, candidates)
+}
 
+// preparePhantomASN configures Phantom/ASN bypass state before dialing.
+func (m *Manager) preparePhantomASN() {
+	targetSNI := m.getRotationSNI()
 	if m.config.EnablePhantom && m.phantomAuth != nil {
 		log.Info("Phantom protocol active - using SNI: %s", targetSNI)
 		if m.asnBypassDialer != nil {
@@ -682,117 +711,241 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			m.obfuscator.SetRealityKey("")
 		}
 	}
+}
 
-	if m.asnBypassDialer != nil && m.config.EnableASNBypass {
-		log.Info("Dialing via ASN Bypass...")
-		conn, err = m.asnBypassDialer.DialContext(ctx, "tcp4", m.config.ServerAddr)
-		if err != nil {
-			log.Warn("ASN bypass dial failed: %v", err)
-		} else {
-			log.Info("ASN bypass connection established")
-			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				log.Info("[TUNNEL] Using OS default buffers with NoDelay optimization")
-				tcpConn.SetNoDelay(true)
-			}
-			m.isTransportSecure = true
-			return conn, nil
-		}
-	}
+// buildCandidates returns the list of transport candidates based on config.
+// Order is used only as a tiebreaker when two succeed simultaneously.
+func (m *Manager) buildCandidates() []dialCandidate {
+	var cc []dialCandidate
 
-	log.Info("Connecting via QUIC to %s", m.config.ServerAddr)
-
-	udpAddr, resolveErr := net.ResolveUDPAddr("udp4", m.config.ServerAddr)
-	if resolveErr == nil {
-		targetAddr := udpAddr.String()
-
-		qConfig := &quic_transport.Config{
-			ListenAddr:     ":0",
-			MaxConns:       1,
-			MaxIdleTimeout: m.config.KeepaliveInterval * 3,
-		}
-		qTrans, err := quic_transport.New(qConfig)
-		if err != nil {
-			log.Warn("Failed to init QUIC transport: %v", err)
-		} else {
-			conn, err = qTrans.Dial(ctx, targetAddr)
-			if err == nil {
-				m.isTransportSecure = true
-				log.Info("QUIC connection established to %s", targetAddr)
-				return conn, nil
-			}
-			log.Warn("QUIC dial failed: %v", err)
-		}
-	} else {
-		log.Warn("Failed to resolve UDP4 address: %v", resolveErr)
-	}
-
-	if m.config.ServerAddrTCP != "" {
-		log.Info("Connecting via H2C to %s", m.config.ServerAddrTCP)
-		h2cConfig := &h2c_transport.Config{
-			ListenAddr: ":0",
-			Path:       "/",
-		}
-		h2cTrans, err := h2c_transport.New(h2cConfig)
-		if err != nil {
-			log.Warn("Failed to init H2C transport: %v", err)
-		} else {
-
-			conn, err = h2cTrans.Dial(ctx, m.config.ServerAddrTCP)
-			if err == nil {
-				m.isTransportSecure = false
-				log.Info("H2C connection established to %s", m.config.ServerAddrTCP)
-				return conn, nil
-			}
-			log.Warn("H2C dial failed: %v", err)
-		}
-	}
-
-	if m.config.ServerAddrTCP != "" {
-		log.Warn("Falling back to TCP: %s", m.config.ServerAddrTCP)
-		conn, err = net.DialTimeout("tcp4", m.config.ServerAddrTCP, 10*time.Second)
-		if err == nil {
-
-			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				tcpConn.SetNoDelay(true)
-			}
-			m.isTransportSecure = true
-			return conn, nil
-		}
-	}
-
+	// ── High-stealth relay transports ──────────────────────────────────────
 	if m.config.VKToken != "" && (m.config.Transport == "vk" || m.config.Transport == "auto") {
-		log.Info("Dialing via VK WebRTC...")
-		vkCfg := &vkwebrtc.Config{
-			Token:      m.config.VKToken,
-			ServerMode: false,
-			PeerID:     -m.config.VKGroupID,
-		}
-		if m.config.VKGroupID > 0 {
-			vkCfg.PeerID = -m.config.VKGroupID
-		} else {
-			vkCfg.PeerID = m.config.VKGroupID
-		}
+		cc = append(cc, dialCandidate{"vkwebrtc", true, m.dialVKWebRTC})
+	}
+	if m.config.VKBotUserToken != "" && m.config.VKGroupID != 0 {
+		cc = append(cc, dialCandidate{"vkbot", true, m.dialVKBot})
+	}
+	if m.config.TGBotToken != "" && m.config.TGGroupChatID != 0 {
+		cc = append(cc, dialCandidate{"tgbot", true, m.dialTGBot})
+	}
+	if m.config.CDNWorkerURL != "" {
+		cc = append(cc, dialCandidate{"cdnworker", true, m.dialCDNWorker})
+	}
 
-		tr, err := vkwebrtc.New(vkCfg)
-		if err != nil {
-			log.Warn("Failed to init VK transport: %v", err)
-		} else {
-			if err := tr.Start(); err != nil {
-				log.Warn("Failed to start VK transport: %v", err)
-			} else {
-				conn, err = tr.Dial(ctx, m.config.ServerAddr)
-				if err == nil {
-					m.isTransportSecure = true
-					log.Info("VK WebRTC connection established")
-					return conn, nil
-				}
-				log.Warn("VK dial failed: %v", err)
-				tr.Stop()
-			}
+	// ── Russian-service HTTP tunnel ────────────────────────────────────────
+	if m.config.RussianService != "" && m.russianTunneler != nil {
+		cc = append(cc, dialCandidate{"russian:" + m.config.RussianService, true, m.dialRussian})
+	}
+
+	// ── ASN / Phantom bypass ───────────────────────────────────────────────
+	if m.asnBypassDialer != nil && m.config.EnableASNBypass {
+		cc = append(cc, dialCandidate{"asn_bypass", true, m.dialASNBypass})
+	}
+
+	// ── Direct transports ──────────────────────────────────────────────────
+	cc = append(cc, dialCandidate{"quic", true, m.dialQUIC})
+	if m.config.ServerAddrTCP != "" {
+		cc = append(cc, dialCandidate{"h2c", false, m.dialH2C})
+		cc = append(cc, dialCandidate{"tcp", true, m.dialTCP})
+	}
+
+	return cc
+}
+
+// parallelDial races all candidates concurrently.
+// Returns the first successful connection; cancels the rest.
+// Any late-arriving successful connections are closed to avoid leaks.
+func (m *Manager) parallelDial(ctx context.Context, candidates []dialCandidate) (net.Conn, error) {
+	if len(candidates) == 1 {
+		conn, err := candidates[0].fn(ctx)
+		if err == nil {
+			m.isTransportSecure = candidates[0].secure
+		}
+		return conn, err
+	}
+
+	type result struct {
+		conn   net.Conn
+		secure bool
+		name   string
+		err    error
+	}
+
+	ch := make(chan result, len(candidates))
+	ctx2, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	names := make([]string, len(candidates))
+	for i, c := range candidates {
+		names[i] = c.name
+		c := c
+		go func() {
+			conn, err := c.fn(ctx2)
+			ch <- result{conn, c.secure, c.name, err}
+		}()
+	}
+	log.Info("[dial] racing %d transports: %s", len(candidates), strings.Join(names, ", "))
+
+	var winner result
+	var errs []string
+
+	for range candidates {
+		res := <-ch
+		switch {
+		case res.err == nil && winner.conn == nil:
+			// First success — claim it, signal others to stop.
+			winner = res
+			cancel()
+			log.Info("[dial] %s won the race", res.name)
+		case res.err == nil && res.conn != nil:
+			// Late success after a winner was already picked — close it.
+			res.conn.Close()
+		case res.err != nil && res.err != context.Canceled && res.err.Error() != "context canceled":
+			errs = append(errs, res.name+": "+res.err.Error())
 		}
 	}
 
-	return nil, fmt.Errorf("all dial attempts failed")
+	if winner.conn != nil {
+		m.isTransportSecure = winner.secure
+		return winner.conn, nil
+	}
+	return nil, fmt.Errorf("all transports failed: %s", strings.Join(errs, "; "))
+}
+
+// ── Individual dial methods ────────────────────────────────────────────────
+
+func (m *Manager) dialVKWebRTC(ctx context.Context) (net.Conn, error) {
+	vkCfg := &vkwebrtc.Config{
+		VKToken:       m.config.VKToken,
+		VKGroupID:     m.config.VKGroupID,
+		ServerMode:    false,
+		SignalingMode: "vk",
+		ICEPolicy:     "relay",
+	}
+	tr, err := vkwebrtc.New(vkCfg)
+	if err != nil {
+		return nil, err
+	}
+	if err := tr.Start(); err != nil {
+		return nil, err
+	}
+	conn, err := tr.Dial(ctx, m.config.ServerAddr)
+	if err != nil {
+		tr.Stop()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (m *Manager) dialVKBot(ctx context.Context) (net.Conn, error) {
+	tr, err := vkbot.New(&vkbot.Config{
+		GroupID:    m.config.VKGroupID,
+		UserToken:  m.config.VKBotUserToken,
+		ServerMode: false,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tr.Start(); err != nil {
+		return nil, err
+	}
+	conn, err := tr.Dial(ctx, m.config.ServerAddr)
+	if err != nil {
+		tr.Stop()
+		return nil, err
+	}
+	return conn, nil
+}
+
+func (m *Manager) dialTGBot(ctx context.Context) (net.Conn, error) {
+	tr, err := tgbot.New(&tgbot.Config{
+		MyBotToken:  m.config.TGBotToken,
+		GroupChatID: m.config.TGGroupChatID,
+		SessionID:   m.config.TGSessionID,
+		ServerMode:  false,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := tr.Start(); err != nil {
+		return nil, err
+	}
+	conn, err := tr.Dial(ctx, m.config.ServerAddr)
+	if err != nil {
+		tr.Stop()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// dialCDNWorker connects via WebSocket to a Cloudflare Worker / Vercel Edge relay.
+// The worker URL must point to a WebSocket endpoint that proxies to the VPN server.
+// All traffic routes through major CDN IPs (Cloudflare/Vercel) — uncensorable.
+func (m *Manager) dialCDNWorker(ctx context.Context) (net.Conn, error) {
+	wsConn, _, err := websocket.Dial(ctx, m.config.CDNWorkerURL, &websocket.DialOptions{
+		Subprotocols: []string{"whispera"},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cdnworker: %w", err)
+	}
+	return websocket.NetConn(ctx, wsConn, websocket.MessageBinary), nil
+}
+
+func (m *Manager) dialRussian(ctx context.Context) (net.Conn, error) {
+	st, err := m.russianTunneler.CreateTunnel(ctx, m.config.ServerAddr)
+	if err != nil {
+		return nil, err
+	}
+	return NewRussianConnAdapter(st), nil
+}
+
+func (m *Manager) dialASNBypass(ctx context.Context) (net.Conn, error) {
+	conn, err := m.asnBypassDialer.DialContext(ctx, "tcp4", m.config.ServerAddr)
+	if err != nil {
+		return nil, err
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+	}
+	return conn, nil
+}
+
+func (m *Manager) dialQUIC(ctx context.Context) (net.Conn, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp4", m.config.ServerAddr)
+	if err != nil {
+		return nil, fmt.Errorf("quic resolve: %w", err)
+	}
+	qTrans, err := quic_transport.New(&quic_transport.Config{
+		ListenAddr:     ":0",
+		MaxConns:       1,
+		MaxIdleTimeout: m.config.KeepaliveInterval * 3,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return qTrans.Dial(ctx, udpAddr.String())
+}
+
+func (m *Manager) dialH2C(ctx context.Context) (net.Conn, error) {
+	h2cTrans, err := h2c_transport.New(&h2c_transport.Config{
+		ListenAddr: ":0",
+		Path:       "/",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return h2cTrans.Dial(ctx, m.config.ServerAddrTCP)
+}
+
+func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
+	conn, err := net.DialTimeout("tcp4", m.config.ServerAddrTCP, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+	}
+	return conn, nil
 }
 
 func (m *Manager) getCurrentSNI() string {
@@ -1463,6 +1616,11 @@ func (m *Manager) Send(data []byte) error {
 		if obfuscated != nil {
 			data = obfuscated
 		}
+		// Apply obfuscation delay only to non-data frames.
+		// Messenger behavioral profiles model human-scale inter-message timing
+		// (100ms-30s), which would destroy VPN throughput if applied per packet.
+		// Data frames get no artificial delay; control frames get the full delay
+		// to mimic session-level messenger behaviour.
 		if delay > 0 && frameType != FrameTypeData {
 			time.Sleep(delay)
 		}

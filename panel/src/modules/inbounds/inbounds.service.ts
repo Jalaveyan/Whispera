@@ -8,10 +8,17 @@ export interface Inbound {
     protocol: string;
     listen: string;
     port: number;
+    ports?: number[];   // multiport
     transport: string;
     security: string;
     private_key?: string;
     public_key?: string;
+}
+
+export interface TransportCredentials {
+    transport: string;
+    credentials: Record<string, unknown>;
+    client_config: Record<string, unknown>;
 }
 
 @Injectable()
@@ -37,7 +44,7 @@ export class InboundsService {
     async addInbound(token: string, inbound: Partial<Inbound>): Promise<Inbound> {
         const response = await firstValueFrom(
             this.httpService.post(
-                `${this.backendUrl}/api/inbounds`,
+                `${this.backendUrl}/api/inbounds/add`,
                 inbound,
                 { headers: { Authorization: `Bearer ${token}` } },
             ),
@@ -47,18 +54,45 @@ export class InboundsService {
 
     async deleteInbound(token: string, tag: string): Promise<void> {
         await firstValueFrom(
-            this.httpService.delete(`${this.backendUrl}/api/inbounds/${tag}`, {
-                headers: { Authorization: `Bearer ${token}` },
-            }),
+            this.httpService.post(
+                `${this.backendUrl}/api/inbounds/delete`,
+                { tag },
+                { headers: { Authorization: `Bearer ${token}` } },
+            ),
         );
     }
 
     async getPublicKey(token: string, port: number): Promise<string> {
         const response = await firstValueFrom(
-            this.httpService.get(`${this.backendUrl}/api/publickey/${port}`, {
+            this.httpService.get(`${this.backendUrl}/api/inbounds/pubkey?port=${port}`, {
                 headers: { Authorization: `Bearer ${token}` },
             }),
         );
         return response.data.public_key || response.data;
+    }
+
+    async generateTransportCredentials(token: string, transport: string): Promise<TransportCredentials> {
+        const response = await firstValueFrom(
+            this.httpService.post(
+                `${this.backendUrl}/api/keys/transport`,
+                { transport },
+                { headers: { Authorization: `Bearer ${token}` } },
+            ),
+        );
+        return response.data.result;
+    }
+
+    async generateMultiTransportCredentials(
+        token: string,
+        transports: string[],
+    ): Promise<Record<string, TransportCredentials>> {
+        const response = await firstValueFrom(
+            this.httpService.post(
+                `${this.backendUrl}/api/keys/multi-transport`,
+                { transports },
+                { headers: { Authorization: `Bearer ${token}` } },
+            ),
+        );
+        return response.data.results;
     }
 }

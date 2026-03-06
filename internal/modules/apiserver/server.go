@@ -162,6 +162,14 @@ func (s *Server) registerDefaultRoutes() {
 
 	s.Handle("POST /api/keys/generate", s.handleGenerateKeys)
 	s.Handle("POST /api/keys/connection", s.handleGenerateConnectionKey)
+	s.Handle("POST /api/keys/transport", s.handleGenerateTransportKeys)
+	s.Handle("POST /api/keys/multi-transport", s.handleGenerateMultiTransportKeys)
+
+	s.Handle("GET /api/subscriptions", s.handleGetSubscriptions)
+	s.Handle("POST /api/subscriptions/add", s.handleAddSubscription)
+	s.Handle("POST /api/subscriptions/update", s.handleUpdateSubscription)
+	s.Handle("POST /api/subscriptions/delete", s.handleDeleteSubscription)
+	s.Handle("GET /sub/{token}", s.handleServeSubscription)
 
 	s.Handle("GET /api/sessions", s.handleGetSessionsAPI)
 	s.Handle("GET /api/stats", s.handleGetStatsAPI)

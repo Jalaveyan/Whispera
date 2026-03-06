@@ -102,8 +102,19 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 
 	var behavioralDelay time.Duration
 	if behaviorEngine != nil {
-		behavioralDelay = behaviorEngine.NextPacketDelay()
+		d := behaviorEngine.NextPacketDelay()
 		behaviorEngine.TransitionState()
+		// Cap the behavioral delay so VPN data throughput is not destroyed.
+		// Messenger profiles model human-scale inter-message timing (up to 30s
+		// in idle state), which is correct at the session level but kills
+		// throughput if applied to every individual VPN packet.  5 ms gives
+		// enough jitter to defeat per-packet timing fingerprinting without a
+		// significant throughput hit.
+		const maxPacketDelay = 5 * time.Millisecond
+		if d > maxPacketDelay {
+			d = maxPacketDelay
+		}
+		behavioralDelay = d
 	}
 
 	if isLocalDiscovery(data) {
@@ -125,7 +136,8 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 	canObfuscate := true
 
 	suggested := m.Profiler.SuggestProfile(data)
-	if suggested != "" && suggested != m.Active {
+	if suggested != "" && suggested != m.Active && !m.lockedProfile {
+		_ = m.SetActiveProfile(suggested)
 	}
 
 	m.StateMachine.Transition("DATA_PACKET")
@@ -485,36 +497,64 @@ func (m *Marionette) SetBehavioralProfile(profileName string) error {
 	var profile *behavioral.MessengerProfile
 	var isIOS bool
 
+	// obfuscationProfile is the traffic-shaping profile name used by the rule engine.
+	// utlsFP is the uTLS ClientHello preset used for JA3/JA4 fingerprint evasion.
+	var obfuscationProfile, utlsFP string
+
 	switch profileName {
 	case "telegram":
 		profile = behavioral.TelegramProfile()
+		obfuscationProfile = "websocket" // closest to Telegram's MTProto-over-WebSocket look
+		utlsFP = "android"
 	case "vk", "vk_messenger":
 		profile = behavioral.VKMessengerProfile()
+		obfuscationProfile = "vk"
+		utlsFP = "vk"
 	case "vkvideo", "vk_video":
 		profile = behavioral.VKVideoProfile()
+		obfuscationProfile = "vk"
+		utlsFP = "vk"
 	case "instagram":
 		profile = behavioral.InstagramProfile()
+		obfuscationProfile = "http2"
+		utlsFP = "android"
 	case "max", "max_messenger":
 		profile = behavioral.MaxMessengerProfile()
+		obfuscationProfile = "mailru" // MAX is Mail.ru's product
+		utlsFP = "max"
 	case "wechat":
 		profile = behavioral.WeChatProfile()
+		obfuscationProfile = "http2"
+		utlsFP = "android"
 	case "facebook", "messenger", "fb_messenger":
 		profile = behavioral.FacebookMessengerProfile()
+		obfuscationProfile = "http2"
+		utlsFP = "android"
 
 	case "telegram_ios":
 		profile = behavioral.TelegramIOSProfile()
+		obfuscationProfile = "websocket"
+		utlsFP = "ios"
 		isIOS = true
 	case "vk_ios", "vk_messenger_ios":
 		profile = behavioral.VKMessengerIOSProfile()
+		obfuscationProfile = "vk"
+		utlsFP = "ios"
 		isIOS = true
 	case "instagram_ios":
 		profile = behavioral.InstagramIOSProfile()
+		obfuscationProfile = "http2"
+		utlsFP = "ios"
 		isIOS = true
 	case "facebook_ios", "messenger_ios", "fb_messenger_ios":
 		profile = behavioral.FacebookMessengerIOSProfile()
+		obfuscationProfile = "http2"
+		utlsFP = "ios"
 		isIOS = true
 	case "wechat_ios":
 		profile = behavioral.WeChatIOSProfile()
+		obfuscationProfile = "http2"
+		utlsFP = "ios"
 		isIOS = true
 
 	default:
@@ -523,12 +563,20 @@ func (m *Marionette) SetBehavioralProfile(profileName string) error {
 
 	m.ActiveBehavioralProfile = profile
 	m.BehaviorEngine = behavioral.NewBehaviorEngine(profile)
+	m.lockedProfile = true
+	m.UTLSFingerprint = utlsFP
 
-	if isIOS {
-		m.UTLSFingerprint = "ios"
-	} else {
-		m.UTLSFingerprint = "android"
+	// Update active obfuscation profile directly (avoids re-locking the same mutex).
+	if obfuscationProfile != "" {
+		if _, exists := m.Profiles[obfuscationProfile]; exists {
+			m.Active = obfuscationProfile
+			if m.State != nil {
+				m.State.Protocol = obfuscationProfile
+			}
+		}
 	}
+
+	_ = isIOS // used above for utlsFP selection
 
 	return nil
 }

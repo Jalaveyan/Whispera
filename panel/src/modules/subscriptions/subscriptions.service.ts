@@ -6,11 +6,18 @@ import { firstValueFrom } from 'rxjs';
 export interface Subscription {
     id: string;
     name: string;
-    url: string;
-    interval: string;
-    lastUpdate: string;
-    serverCount: number;
-    enabled: boolean;
+    token: string;
+    sub_url: string;
+    user_ids: number[];
+    transports: string[];
+    created_at: string;
+    updated_at: string;
+}
+
+export interface CreateSubscriptionDto {
+    name: string;
+    user_ids?: number[];
+    transports?: string[];
 }
 
 @Injectable()
@@ -33,32 +40,31 @@ export class SubscriptionsService {
             );
             return response.data.subscriptions || response.data || [];
         } catch (e) {
-            // Graceful fallback if endpoint doesn't exist yet
             if (e.response?.status === 404) return [];
             throw e;
         }
     }
 
-    async addSubscription(token: string, subscription: Partial<Subscription>): Promise<Subscription> {
+    async addSubscription(token: string, dto: CreateSubscriptionDto): Promise<Subscription> {
         const response = await firstValueFrom(
             this.httpService.post(
                 `${this.backendUrl}/api/subscriptions/add`,
-                subscription,
+                dto,
                 { headers: { Authorization: `Bearer ${token}` } },
             ),
         );
-        return response.data;
+        return response.data.subscription;
     }
 
-    async updateSubscription(token: string, id: string, subscription: Partial<Subscription>): Promise<Subscription> {
+    async updateSubscription(token: string, id: string, dto: Partial<CreateSubscriptionDto>): Promise<Subscription> {
         const response = await firstValueFrom(
             this.httpService.post(
                 `${this.backendUrl}/api/subscriptions/update`,
-                { id, ...subscription },
+                { id, ...dto },
                 { headers: { Authorization: `Bearer ${token}` } },
             ),
         );
-        return response.data;
+        return response.data.subscription;
     }
 
     async deleteSubscription(token: string, id: string): Promise<void> {
@@ -71,13 +77,13 @@ export class SubscriptionsService {
         );
     }
 
-    async updateAll(token: string): Promise<void> {
-        await firstValueFrom(
-            this.httpService.post(
-                `${this.backendUrl}/api/subscriptions/update-all`,
-                {},
-                { headers: { Authorization: `Bearer ${token}` } },
-            ),
+    // Returns the raw subscription content (base64) — for proxying to clients
+    async getSubscriptionContent(token: string): Promise<string> {
+        const response = await firstValueFrom(
+            this.httpService.get(`${this.backendUrl}/sub/${token}`, {
+                responseType: 'text',
+            }),
         );
+        return response.data;
     }
 }

@@ -23,6 +23,15 @@ log_success() { echo -e "${GREEN}[OK]${PLAIN} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERR]${PLAIN} $1"; }
 
+# Call after any edit to config.yaml so the integrity check passes on restart
+refresh_config() {
+    local cfg="${1:-$CONF_PATH/config.yaml}"
+    if [[ ! -f "$cfg" ]]; then return; fi
+    if command -v whispera &>/dev/null; then
+        whispera update-checksum "$cfg" 2>/dev/null && log_info "Config checksum updated"
+    fi
+}
+
 get_public_ip() {
     local IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null)
     if [[ -z "$IP" ]]; then
@@ -160,15 +169,9 @@ EOF
 
 setup_warp() {
     log_info "Setting up Cloudflare WARP..."
-    
-    if command -v warp-cli &>/dev/null; then
-        log_info "WARP already installed"
-        
-        if warp-cli status 2>/dev/null | grep -q "Connected"; then
-            log_success "WARP is connected"
-            return
-        fi
-    else
+
+    # Install warp-cli if not present
+    if ! command -v warp-cli &>/dev/null; then
         case $RELEASE in
             ubuntu|debian)
                 curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg 2>/dev/null
@@ -181,49 +184,58 @@ setup_warp() {
                 yum install -y cloudflare-warp >/dev/null 2>&1
                 ;;
             *)
-                log_warn "WARP installation not supported on $RELEASE, skipping"
+                log_warn "WARP not supported on $RELEASE"
                 return
                 ;;
         esac
+        if ! command -v warp-cli &>/dev/null; then
+            log_warn "WARP installation failed"
+            return
+        fi
     fi
-    
-    if ! command -v warp-cli &>/dev/null; then
-        log_warn "WARP installation failed, skipping"
-        return
-    fi
-    
-    log_info "Registering WARP..."
-    
-    warp-cli --accept-tos register 2>/dev/null || true
-    
-    warp-cli set-mode proxy 2>/dev/null || true
-    
-    warp-cli connect 2>/dev/null || true
-    
+
+    systemctl enable warp-svc --now 2>/dev/null || true
     sleep 2
-    
+
+    # Connect if not already connected
+    if ! warp-cli status 2>/dev/null | grep -q "Connected"; then
+        # Support both old and new warp-cli syntax
+        if warp-cli registration new &>/dev/null; then
+            warp-cli mode proxy 2>/dev/null || true
+        else
+            warp-cli --accept-tos register 2>/dev/null || true
+            warp-cli set-mode proxy 2>/dev/null || true
+        fi
+        warp-cli connect 2>/dev/null || true
+        # Wait up to 15s for connection
+        for i in $(seq 1 5); do
+            sleep 3
+            warp-cli status 2>/dev/null | grep -q "Connected" && break
+            log_info "Waiting for WARP... ($((i*3))s)"
+        done
+    fi
+
     if warp-cli status 2>/dev/null | grep -q "Connected"; then
         log_success "WARP connected (SOCKS5 proxy on 127.0.0.1:40000)"
-        
+
         if [[ -f "$CONF_PATH/config.yaml" ]]; then
             log_info "Auto-configuring Whispera to use WARP..."
-            
+
             if grep -q "^relay:" "$CONF_PATH/config.yaml"; then
                 if grep -q "upstream_proxy:" "$CONF_PATH/config.yaml"; then
-                   sed -i 's|upstream_proxy:.*|upstream_proxy: "socks5://127.0.0.1:40000"|' "$CONF_PATH/config.yaml"
+                    sed -i 's|upstream_proxy:.*|upstream_proxy: "socks5://127.0.0.1:40000"|' "$CONF_PATH/config.yaml"
                 else
-                   sed -i '/^relay:/a \ \ upstream_proxy: "socks5://127.0.0.1:40000"' "$CONF_PATH/config.yaml"
+                    sed -i '/^relay:/a \ \ upstream_proxy: "socks5://127.0.0.1:40000"' "$CONF_PATH/config.yaml"
                 fi
             else
-                echo "" >> "$CONF_PATH/config.yaml"
-                echo "relay:" >> "$CONF_PATH/config.yaml"
-                echo "  upstream_proxy: \"socks5://127.0.0.1:40000\"" >> "$CONF_PATH/config.yaml"
+                printf '\nrelay:\n  upstream_proxy: "socks5://127.0.0.1:40000"\n' >> "$CONF_PATH/config.yaml"
             fi
-            
-            log_success "Configuration updated. Restarting Whispera service..."
+
+            log_success "Configuration updated."
+            refresh_config
             systemctl restart whispera 2>/dev/null || true
         else
-             log_warn "Config file not found at $CONF_PATH/config.yaml - please configure manually"
+            log_warn "Config file not found at $CONF_PATH/config.yaml - please configure manually"
         fi
     else
         log_warn "WARP connection failed. Run 'warp-cli connect' manually."
@@ -232,13 +244,13 @@ setup_warp() {
 
 setup_fail2ban() {
     log_info "Setting up Fail2ban..."
-    
+
     if [[ -f /etc/fail2ban/jail.local ]] && systemctl is-active --quiet fail2ban 2>/dev/null; then
         log_success "Fail2ban already installed and configured"
         log_info "Config: /etc/fail2ban/jail.local"
         return
     fi
-    
+
     case $RELEASE in
         ubuntu|debian)
             apt-get install -y fail2ban >/dev/null 2>&1
@@ -251,31 +263,32 @@ setup_fail2ban() {
             return
             ;;
     esac
-    
-    local AUTH_LOG="/var/log/auth.log"
-    [[ -f /var/log/secure ]] && AUTH_LOG="/var/log/secure"
-    
-    cat > /etc/fail2ban/jail.local <<EOF
+
+    if ! command -v fail2ban-server &>/dev/null; then
+        log_warn "Fail2ban installation failed"
+        return
+    fi
+
+    mkdir -p /etc/fail2ban
+
+    cat > /etc/fail2ban/jail.local <<'EOF'
 [DEFAULT]
-bantime = 3600
-findtime = 600
-maxretry = 5
-backend = auto
+bantime  = 24h
+findtime = 2m
+maxretry = 3
+backend  = systemd
 
 [sshd]
 enabled = true
-port = ssh
-filter = sshd
-logpath = $AUTH_LOG
-maxretry = 3
 EOF
-    
+
     systemctl enable fail2ban >/dev/null 2>&1
     systemctl restart fail2ban >/dev/null 2>&1
-    
+    sleep 2
+
     if systemctl is-active --quiet fail2ban 2>/dev/null; then
         log_success "Fail2ban installed and running"
-        log_info "Config: /etc/fail2ban/jail.local (logpath: $AUTH_LOG)"
+        log_info "Config: /etc/fail2ban/jail.local"
     else
         log_warn "Fail2ban installed but not running. Check: journalctl -u fail2ban"
     fi
@@ -547,23 +560,32 @@ setup_telegram() {
     echo "1. Start bot @WhisperaStatusBot (or your configured bot)."
     echo "2. Use /start to get your ID."
     echo ""
-    read -p "Enter your Telegram User ID (leave empty to cancel): " TG_ID
-    
+    read -p "Enter your Telegram User ID (numbers only, leave empty to cancel): " TG_ID
+
     if [[ -z "$TG_ID" ]]; then
         log_warn "Cancelled."
         return
     fi
-    
+
+    # Validate: must be a numeric ID (Telegram user/chat IDs are integers)
+    if ! [[ "$TG_ID" =~ ^-?[0-9]+$ ]]; then
+        log_err "Invalid Telegram ID: must be a number (e.g. 123456789). Got: $TG_ID"
+        log_info "Open @userinfobot in Telegram and send /start to get your numeric ID."
+        return
+    fi
+
     if [[ ! -f "$CONF_PATH/config.yaml" ]]; then
         log_err "Config file not found!"
         return
     fi
-    
+
     log_info "Updating config..."
-    sed -i "s/admin_id: .*/admin_id: $TG_ID/" "$CONF_PATH/config.yaml"
-    sed -i "s/chat_id: .*/chat_id: \"$TG_ID\"/" "$CONF_PATH/config.yaml"
-    
+    # Use | as sed delimiter to avoid issues with special characters
+    sed -i "s|admin_id: .*|admin_id: $TG_ID|" "$CONF_PATH/config.yaml"
+    sed -i "s|chat_id: .*|chat_id: \"$TG_ID\"|" "$CONF_PATH/config.yaml"
+
     log_info "Restarting Whispera..."
+    refresh_config
     systemctl restart whispera
     log_success "Telegram notifications enabled for ID $TG_ID"
 }
@@ -641,13 +663,85 @@ EOF
 }
 
 show_extras_menu() {
-    if [[ -f "$WORK_DIR/update.sh" ]]; then
-        bash "$WORK_DIR/update.sh" extras
-    elif [[ -f "$(dirname "$0")/update.sh" ]]; then
-        bash "$(dirname "$0")/update.sh" extras
-    else
-        log_warn "update.sh not found — menu unavailable"
-    fi
+    local SEP
+    SEP=$(printf '═%.0s' {1..62})
+    _row() { echo -e "${BLUE}║${PLAIN} $(printf '%-60s' "$1") ${BLUE}║${PLAIN}"; }
+
+    while true; do
+        clear
+
+        local PUB_KEY=$(cat "$CONF_PATH/server.pub" 2>/dev/null)
+        local SRV_IP=$(get_public_ip)
+        if [[ -n "$PUB_KEY" ]]; then
+            echo ""
+            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
+            echo -e "${GREEN} CONNECTION KEY${PLAIN}"
+            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
+            echo -e "${BLUE}whispera://${SRV_IP}:8443?pub=${PUB_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome${PLAIN}"
+            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
+        fi
+
+        echo ""
+        echo -e "${BLUE}╔${SEP}╗${PLAIN}"
+        _row "          WHISPERA MANAGEMENT MENU"
+        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
+        _row "  OPTIONAL EXTRAS"
+        _row "  1.  BBR           - Faster TCP (recommended)"
+        _row "  2.  WARP          - Hide server IP via Cloudflare"
+        _row "  3.  Fail2ban      - Protect SSH from brute-force"
+        _row "  4.  Swap          - Add 2GB swap (for low-RAM servers)"
+        _row "  5.  Optimize      - Tune sysctl for high performance"
+        _row "  6.  Auto-update   - Daily auto-update from GitHub"
+        _row "  7.  SSH Hardening - Disable password auth (keys only)"
+        _row "  8.  Redis         - Session cache for persistence"
+        _row "  9.  PostgreSQL    - User accounts, traffic, billing"
+        _row " 10.  Telegram      - Configure notifications"
+        _row " 11.  Backups       - Daily database backups"
+        _row "  a.  ALL (1,5,8,9,11) - Install recommended stack"
+        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
+        _row "  SERVICE MANAGEMENT"
+        _row " 12.  Start         - Start Whispera service"
+        _row " 13.  Stop          - Stop Whispera service"
+        _row " 14.  Restart       - Restart Whispera service"
+        _row " 15.  Status        - Check service status"
+        _row " 16.  View Logs     - Watch live logs"
+        _row " 17.  Edit Config   - Modify config.yaml"
+        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
+        _row " 18.  Reinstall     - Fresh install from GitHub"
+        _row "  0.  Exit"
+        echo -e "${BLUE}╚${SEP}╝${PLAIN}"
+        echo ""
+
+        read -rp "  Select option: " choice
+        case $choice in
+            1) setup_bbr ;;
+            2) setup_warp ;;
+            3) setup_fail2ban ;;
+            4) setup_swap ;;
+            5) setup_sysctl ;;
+            6) setup_autoupdate ;;
+            7) setup_ssh_hardening ;;
+            8) setup_redis ;;
+            9) setup_postgres ;;
+            10) setup_telegram ;;
+            11) setup_backups ;;
+            a|A) setup_bbr; setup_sysctl; setup_redis; setup_postgres; setup_backups ;;
+            12) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
+            13) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
+            14) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
+            15) systemctl status whispera ;;
+            16) journalctl -u whispera -f ;;
+            17) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
+            18) bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh) ;;
+            0|"") log_info "Exiting menu."; break ;;
+            *) log_warn "Invalid option: $choice" ;;
+        esac
+
+        if [[ "$choice" != "0" ]] && [[ -n "$choice" ]]; then
+            echo ""
+            read -rp "  Press Enter to return to menu..."
+        fi
+    done
 }
 
 clone_or_update_repo() {
@@ -860,8 +954,8 @@ ENVEOF
                 log_info "Generated .env"
             fi
 
-            if [[ ! -f "$PANEL_DEST/dist/main.js" ]]; then
-                log_warn "dist/main.js not found in release — panel may not start"
+            if [[ ! -f "$PANEL_DEST/bundle/index.js" ]]; then
+                log_warn "bundle/index.js not found in release — panel may not start"
             fi
 
             log_success "Panel installed from release"
@@ -1160,7 +1254,7 @@ After=network.target whispera.service
 [Service]
 User=root
 WorkingDirectory=$DAT_PATH/panel
-ExecStart=$NODE_BIN dist/main.js
+ExecStart=$NODE_BIN bundle/index.js
 Restart=always
 RestartSec=3
 Environment=PORT=3000

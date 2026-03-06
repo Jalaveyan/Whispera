@@ -181,43 +181,44 @@ setup_warp() {
 
 setup_fail2ban() {
     log_info "Setting up Fail2ban..."
-    
+
     if [[ -f /etc/fail2ban/jail.local ]] && systemctl is-active --quiet fail2ban 2>/dev/null; then
         log_success "Fail2ban already installed and configured"
         log_info "Config: /etc/fail2ban/jail.local"
         return
     fi
-    
+
     case $RELEASE in
         ubuntu|debian) apt-get install -y fail2ban >/dev/null 2>&1 ;;
         centos|fedora|almalinux|rocky) yum install -y fail2ban >/dev/null 2>&1 ;;
         *) log_warn "Fail2ban not supported"; return ;;
     esac
-    
-    local AUTH_LOG="/var/log/auth.log"
-    [[ -f /var/log/secure ]] && AUTH_LOG="/var/log/secure"
-    
-    cat > /etc/fail2ban/jail.local <<EOF
+
+    if ! command -v fail2ban-server &>/dev/null; then
+        log_warn "Fail2ban installation failed"
+        return
+    fi
+
+    mkdir -p /etc/fail2ban
+
+    cat > /etc/fail2ban/jail.local <<'EOF'
 [DEFAULT]
-bantime = 3600
-findtime = 600
-maxretry = 5
-backend = auto
+bantime  = 24h
+findtime = 2m
+maxretry = 3
+backend  = systemd
 
 [sshd]
 enabled = true
-port = ssh
-filter = sshd
-logpath = $AUTH_LOG
-maxretry = 3
 EOF
-    
+
     systemctl enable fail2ban >/dev/null 2>&1
     systemctl restart fail2ban >/dev/null 2>&1
-    
+    sleep 2
+
     if systemctl is-active --quiet fail2ban 2>/dev/null; then
         log_success "Fail2ban installed and running"
-        log_info "Config: /etc/fail2ban/jail.local (logpath: $AUTH_LOG)"
+        log_info "Config: /etc/fail2ban/jail.local"
     else
         log_warn "Fail2ban installed but not running. Check: journalctl -u fail2ban"
     fi
@@ -673,7 +674,7 @@ do_update() {
                 ENV_BAK=$(cat "$PANEL_DEST/.env")
             fi
             
-            rm -rf "$PANEL_DEST/dist" "$PANEL_DEST/public" "$PANEL_DEST/node_modules"
+            rm -rf "$PANEL_DEST/dist" "$PANEL_DEST/bundle" "$PANEL_DEST/public" "$PANEL_DEST/node_modules"
             cp -r /tmp/panel-update/* "$PANEL_DEST/"
             rm -rf /tmp/panel-update
 
@@ -688,11 +689,13 @@ ENVEOF
             fi
 
 
-            if grep -q "bundle/index.js" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
+
+            # migrate service from old dist/main.js to bundle/index.js
+            if grep -q "dist/main.js" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
                 local NODE_BIN=$(command -v node || echo "/usr/bin/node")
-                sed -i "s|ExecStart=.* bundle/index.js|ExecStart=$NODE_BIN dist/main.js|" /etc/systemd/system/whispera-panel.service
+                sed -i "s|ExecStart=.* dist/main.js|ExecStart=$NODE_BIN bundle/index.js|" /etc/systemd/system/whispera-panel.service
                 systemctl daemon-reload
-                log_info "Updated panel service to use dist/main.js"
+                log_info "Migrated panel service to bundle/index.js"
             fi
 
             systemctl restart whispera-panel 2>/dev/null || log_warn "Panel service not configured"
