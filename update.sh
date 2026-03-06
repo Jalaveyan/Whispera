@@ -698,6 +698,31 @@ ENVEOF
                 log_info "Migrated panel service to bundle/index.js"
             fi
 
+            # Generate self-signed TLS cert for panel if not already present
+            local PANEL_CERT="$CONF_PATH/panel.crt"
+            local PANEL_KEY="$CONF_PATH/panel.key"
+            if [[ ! -f "$PANEL_CERT" || ! -f "$PANEL_KEY" ]]; then
+                if command -v openssl &>/dev/null; then
+                    openssl req -x509 -newkey rsa:2048 -nodes \
+                        -keyout "$PANEL_KEY" -out "$PANEL_CERT" \
+                        -days 3650 -subj "/CN=whispera-panel" \
+                        -addext "subjectAltName=IP:127.0.0.1" \
+                        2>/dev/null
+                    chmod 600 "$PANEL_KEY"
+                    log_success "Panel TLS cert generated"
+                fi
+            fi
+
+            # Inject TLS env vars into panel service if cert exists and not yet configured
+            if [[ -f "$PANEL_CERT" && -f "$PANEL_KEY" ]]; then
+                if ! grep -q "TLS_CERT" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
+                    sed -i "/^Environment=CORS_ORIGIN/a Environment=TLS_CERT=$PANEL_CERT\nEnvironment=TLS_KEY=$PANEL_KEY\nEnvironment=HTTP_PORT=80" \
+                        /etc/systemd/system/whispera-panel.service
+                    systemctl daemon-reload
+                    log_info "HTTPS enabled for panel service"
+                fi
+            fi
+
             systemctl restart whispera-panel 2>/dev/null || log_warn "Panel service not configured"
             log_success "Panel updated from release"
         else

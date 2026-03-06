@@ -110,7 +110,8 @@
       "Bash(grep -rn \"handleAddInbound\\\\|handleGetInbounds\\\\|handleDeleteInbound\" internal/modules/apiserver/*.go)",
       "Bash(xargs grep -l \"login\\\\|token\\\\|jwt\\\\|auth\")",
       "Bash(xargs grep -l \"keys/connection\\\\|generateKey\\\\|connectionKey\")",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(bash -n c:/Whispera-test/update.sh)"
     ]
   }
 }
