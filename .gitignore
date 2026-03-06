@@ -68,6 +68,10 @@ coverage.html
 .env.*
 !.env.example
 
+# Node.js
+node_modules/
+panel/dist/
+
 # Go
 vendor/
 

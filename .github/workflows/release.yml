@@ -68,6 +68,7 @@ jobs:
         env:
           npm_config_registry: https://registry.npmjs.org
         run: |
+          rm -rf node_modules
           npm install --legacy-peer-deps --include=dev
           chmod -R +x node_modules/.bin/
           npm run build
