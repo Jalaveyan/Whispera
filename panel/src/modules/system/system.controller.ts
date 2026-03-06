@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Headers, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, Headers, Res, HttpStatus } from '@nestjs/common';
 import type { Response } from 'express';
 import { SystemService } from './system.service';
 
@@ -46,6 +46,42 @@ export class SystemController {
             return res.json(health);
         } catch {
             return res.status(HttpStatus.SERVICE_UNAVAILABLE).json({ status: 'unavailable' });
+        }
+    }
+
+    @Get('api/v1/config')
+    async getConfig(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.getConfig(token);
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
+                .json({ error: err?.response?.data?.error || err?.message || 'Failed' });
+        }
+    }
+
+    @Post('api/v1/config/update')
+    async updateConfig(@Headers('authorization') auth: string, @Body() body: any, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.updateConfig(token, body);
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
+                .json({ error: err?.response?.data?.error || err?.message || 'Failed' });
+        }
+    }
+
+    @Post('api/v1/config/renew-cert')
+    async renewCert(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.renewCert(token);
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
+                .json({ error: err?.response?.data?.error || err?.message || 'Failed' });
         }
     }
 }

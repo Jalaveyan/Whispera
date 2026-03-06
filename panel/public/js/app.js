@@ -595,8 +595,6 @@ class WhisperaApp {
     constructor() {
         this.threeCity = new ThreeCity('city-canvas');
 
-        this.bindEvents();
-
 
 
 
@@ -1506,12 +1504,23 @@ class WhisperaApp {
         });
 
         document.getElementById('logout-btn')?.addEventListener('click', () => {
-            api.logout();
-            this.showLogin();
+            this.handleLogout();
         });
 
-        document.getElementById('add-user-btn')?.addEventListener('click', () => {
+        document.getElementById('add-user-btn')?.addEventListener('click', async () => {
             this.showModal('add-user-modal');
+            // Reset port field for auto-detection from inbounds
+            const portField = document.getElementById('new-user-port');
+            if (portField) {
+                portField.value = '';
+                portField.dataset.autoSet = '1';
+                portField.addEventListener('input', () => { delete portField.dataset.autoSet; }, { once: true });
+            }
+            try {
+                const data = await api.getInbounds();
+                this._cachedInbounds = (data.inbounds || data) || [];
+                this._updateUserPort();
+            } catch { this._cachedInbounds = []; }
         });
 
         document.getElementById('add-user-form')?.addEventListener('submit', (e) => {
@@ -1543,6 +1552,7 @@ class WhisperaApp {
         document.getElementById('transport-checkboxes')?.addEventListener('change', () => {
             const selected = Array.from(document.querySelectorAll('input[name="transport-cb"]:checked')).map(i => i.value);
             this.onKeyTransportChange(selected.length === 1 ? selected[0] : selected);
+            this._updateUserPort();
         });
 
         document.getElementById('add-outbound-btn')?.addEventListener('click', () => this.showModal('add-outbound-modal'));
@@ -1713,19 +1723,6 @@ class WhisperaApp {
         }
     }
 
-    async handleLogin() {
-        const username = document.getElementById('username').value;
-        const password = document.getElementById('password').value;
-
-        try {
-            await api.login(username, password);
-            this.showMainApp();
-            this.loadDashboard();
-        } catch (error) {
-            this.showNotification('Неверный логин или пароль', 'error');
-        }
-    }
-
     async handleAddUser() {
         const email = document.getElementById('new-user-email').value;
         const password = document.getElementById('new-user-password').value;
@@ -1746,6 +1743,9 @@ class WhisperaApp {
                 russianService
             });
             this.closeModals();
+            // Reset form fields for next use
+            document.getElementById('add-user-form')?.reset();
+            document.querySelectorAll('input[name="transport-cb"]').forEach(cb => { cb.checked = cb.value === 'tcp'; });
             this.loadUsers();
 
             const privKey = res.privateKey || res.user?.privateKey;
@@ -1762,6 +1762,11 @@ class WhisperaApp {
                     const tc = this.collectTransportConfig();
                     if (tc) keyOpts.transportConfig = tc;
                     const keyRes = await api.generateConnectionKey(keyOpts);
+                    // Сохраняем URI обратно в пользователя
+                    const userId = res.user?.id;
+                    if (userId && keyRes.key) {
+                        api.updateUser(userId, { connectionURI: keyRes.key }).catch(() => {});
+                    }
                     this.showKeyModal(res.user?.username || email, privKey, keyRes.key);
                 } catch {
                     this.showKeyModal(res.user?.username || email, privKey);
@@ -1820,6 +1825,27 @@ class WhisperaApp {
             paramsLabel.textContent = info.label;
             paramsHint.textContent = info.hint;
             if (paramsTA) paramsTA.placeholder = info.placeholder;
+        }
+    }
+
+    // Auto-populate the port field from cached inbounds based on selected transports.
+    // Only updates if the field still has the auto-set flag (not manually edited).
+    _updateUserPort() {
+        const portField = document.getElementById('new-user-port');
+        if (!portField || !portField.dataset.autoSet) return;
+        const inbounds = this._cachedInbounds || [];
+        if (!inbounds.length) return;
+        const selected = new Set(
+            Array.from(document.querySelectorAll('input[name="transport-cb"]:checked')).map(i => i.value)
+        );
+        // Find first inbound whose network matches a selected transport
+        const match = inbounds.find(ib => {
+            const net = (ib.stream_settings?.network || ib.StreamSettings?.Network || 'tcp').toLowerCase();
+            return selected.has(net);
+        });
+        if (match) {
+            const port = match.port || match.Port;
+            if (port) portField.value = port;
         }
     }
 
@@ -2109,6 +2135,12 @@ class WhisperaApp {
             }
         }
         event.target.value = '';
+    }
+
+    handleLogout() {
+        api.logout();
+        document.getElementById('login-form')?.reset();
+        this.showLogin();
     }
 
     showLogin() {
@@ -2438,9 +2470,12 @@ class WhisperaApp {
         try {
             const data = await api.getUsers();
             const users = data.users || [];
+            // Cache users by ID for key regeneration
+            this._usersById = {};
+            users.forEach(u => { this._usersById[u.id] = u; });
 
             if (users.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="text-center">Нет пользователей</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center">Нет пользователей</td></tr>';
                 return;
             }
 
@@ -2453,20 +2488,49 @@ class WhisperaApp {
           <td>
             <div style="display: flex; align-items: center; gap: 5px;">
                 <input type="text" value="${user.publicKey || '-'}" readonly style="width: 120px; font-size: 0.85em; border: 1px solid var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-highest); color: var(--md-sys-color-on-surface); padding: 4px 8px; border-radius: 4px;">
-                <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${user.publicKey || ''}').then(() => app.showNotification('Key copied', 'success'))" style="padding: 4px 8px;">
+                <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${user.publicKey || ''}').then(() => app.showNotification('Key copied', 'success'))" style="padding: 4px 8px;" title="Копировать публичный ключ">
                     <i class="fas fa-copy"></i>
                 </button>
             </div>
           </td>
           <td>
-            <button class="btn btn-danger btn-sm" onclick="app.deleteUser('${user.id}')">
-              <i class="fas fa-trash"></i>
-            </button>
+            <div style="display: flex; gap: 4px;">
+                ${user.privateKey ? `<button class="btn btn-secondary btn-sm" onclick="app.generateKeyForUser(${user.id})" style="padding: 4px 8px;" title="Получить ключ подключения">
+                    <i class="fas fa-key"></i>
+                </button>` : ''}
+                <button class="btn btn-danger btn-sm" onclick="app.deleteUser('${user.id}')" title="Удалить">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
           </td>
         </tr>
     `).join('');
         } catch (error) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center">Ошибка загрузки</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center">Ошибка загрузки</td></tr>';
+        }
+    }
+
+    async generateKeyForUser(userId) {
+        const user = this._usersById?.[userId];
+        if (!user?.privateKey) {
+            this.showNotification('Ключ недоступен', 'error');
+            return;
+        }
+        // Показываем сохранённый URI если есть
+        if (user.connectionURI) {
+            this.showKeyModal(user.username, user.privateKey, user.connectionURI);
+            return;
+        }
+        // Иначе — генерируем и сохраняем
+        try {
+            const keyRes = await api.generateConnectionKey({ psk: user.privateKey, name: user.username });
+            if (keyRes.key) {
+                api.updateUser(userId, { connectionURI: keyRes.key }).catch(() => {});
+                user.connectionURI = keyRes.key;
+            }
+            this.showKeyModal(user.username, user.privateKey, keyRes.key);
+        } catch {
+            this.showKeyModal(user.username, user.privateKey);
         }
     }
 
@@ -2497,9 +2561,6 @@ class WhisperaApp {
         } catch (error) {
             tbody.innerHTML = '<tr><td colspan="5" class="text-center">Ошибка загрузки</td></tr>';
         }
-    }
-
-    async loadSettings() {
     }
 
     async loadLogs() {

@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -29,12 +31,60 @@ type Subscription struct {
 	SubURL string `json:"sub_url,omitempty"`
 }
 
+const subDataFile = "subscriptions.json"
+
 var (
-	subStoreMu   sync.RWMutex
-	subStore     = make(map[string]*Subscription) // keyed by ID
-	subByToken   = make(map[string]*Subscription) // keyed by Token
-	subNextID    int
+	subStoreMu sync.RWMutex
+	subStore   = make(map[string]*Subscription) // keyed by ID
+	subByToken = make(map[string]*Subscription) // keyed by Token
+	subNextID  int
 )
+
+type subPersist struct {
+	Subscriptions []*Subscription `json:"subscriptions"`
+	NextID        int             `json:"next_id"`
+}
+
+func saveSubscriptions() {
+	subStoreMu.RLock()
+	list := make([]*Subscription, 0, len(subStore))
+	for _, s := range subStore {
+		list = append(list, s)
+	}
+	nid := subNextID
+	subStoreMu.RUnlock()
+
+	data, err := json.Marshal(subPersist{Subscriptions: list, NextID: nid})
+	if err != nil {
+		log.Printf("[API] Failed to marshal subscriptions: %v", err)
+		return
+	}
+	if err := os.WriteFile(subDataFile, data, 0600); err != nil {
+		log.Printf("[API] Failed to save subscriptions: %v", err)
+	}
+}
+
+func loadSubscriptions() {
+	data, err := os.ReadFile(subDataFile)
+	if err != nil {
+		return
+	}
+	var p subPersist
+	if err := json.Unmarshal(data, &p); err != nil {
+		log.Printf("[API] Failed to load subscriptions: %v", err)
+		return
+	}
+	subStoreMu.Lock()
+	for _, s := range p.Subscriptions {
+		subStore[s.ID] = s
+		subByToken[s.Token] = s
+	}
+	if p.NextID > subNextID {
+		subNextID = p.NextID
+	}
+	subStoreMu.Unlock()
+	log.Printf("[API] Loaded %d subscriptions from %s", len(p.Subscriptions), subDataFile)
+}
 
 // ── handlers ──────────────────────────────────────────────────────────────────
 
@@ -98,6 +148,7 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 	subStore[sub.ID] = sub
 	subByToken[token] = sub
 	subStoreMu.Unlock()
+	go saveSubscriptions()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
@@ -144,6 +195,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		sub.Transports = req.Transports
 	}
 	sub.UpdatedAt = time.Now()
+	go saveSubscriptions()
 
 	s.jsonOK(w, map[string]interface{}{"success": true, "subscription": sub})
 }
@@ -166,6 +218,7 @@ func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 		delete(subStore, req.ID)
 	}
 	subStoreMu.Unlock()
+	go saveSubscriptions()
 
 	s.jsonOK(w, map[string]interface{}{"success": true})
 }

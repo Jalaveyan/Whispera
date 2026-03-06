@@ -98,6 +98,36 @@ export class SystemService {
         }
     }
 
+    async getConfig(token: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.get(`${this.backendUrl}/api/v1/config`, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: this.requestTimeout,
+            }),
+        );
+        return response.data;
+    }
+
+    async updateConfig(token: string, config: any): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.post(`${this.backendUrl}/api/v1/config/update`, config, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: this.requestTimeout,
+            }),
+        );
+        return response.data;
+    }
+
+    async renewCert(token: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.post(`${this.backendUrl}/api/v1/config/renew-cert`, {}, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: this.requestTimeout,
+            }),
+        );
+        return response.data;
+    }
+
     async getHealth(): Promise<any> {
         try {
             const response = await firstValueFrom(

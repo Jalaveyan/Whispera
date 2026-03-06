@@ -1850,6 +1850,7 @@ button {
     width: 100%;
     min-width: 280px;
     max-width: 560px;
+    max-height: 92vh;
     box-shadow: var(--md-sys-elevation-3);
     overflow: hidden;
     display: flex;
@@ -1906,7 +1907,8 @@ button {
 .modal-form {
     padding: 0 24px 24px;
     overflow-y: auto;
-    max-height: 70vh;
+    flex: 1;
+    min-height: 0;
 }
 
 .modal-footer {

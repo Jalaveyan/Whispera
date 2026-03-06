@@ -122,7 +122,11 @@
       "Bash(sed -i '1220,1224s/.*//' internal/modules/apiserver/server.go)",
       "Bash(sed -i '1220i\\\\\\\\t\\\\t\\\\t\\\\t\\\\t// Fallback: global phantom key, then server key\\\\n\\\\t\\\\t\\\\t\\\\t\\\\tif serverPubKey == \"\"\"\" \\\\&\\\\& cfg.Phantom.PrivateKey != \"\"\"\" {\\\\n\\\\t\\\\t\\\\t\\\\t\\\\t\\\\tserverPubKey = derivePublicKeyB64\\(cfg.Phantom.PrivateKey\\)\\\\n\\\\t\\\\t\\\\t\\\\t\\\\t}\\\\n\\\\t\\\\t\\\\t\\\\t\\\\tif serverPubKey == \"\"\"\" \\\\&\\\\& cfg.Server.PrivateKey != \"\"\"\" {\\\\n\\\\t\\\\t\\\\t\\\\t\\\\t\\\\tserverPubKey = derivePublicKeyB64\\(cfg.Server.PrivateKey\\)\\\\n\\\\t\\\\t\\\\t\\\\t\\\\t}' internal/modules/apiserver/server.go)",
       "Bash(sed -i '1220s/^t//' internal/modules/apiserver/server.go)",
-      "Bash(sed -i '/^$/{ /^[[:space:]]*$/{ 4,8{ /^[[:space:]]*$/{N;/^\\\\n$/d} } } }' internal/modules/apiserver/server.go)"
+      "Bash(sed -i '/^$/{ /^[[:space:]]*$/{ 4,8{ /^[[:space:]]*$/{N;/^\\\\n$/d} } } }' internal/modules/apiserver/server.go)",
+      "Bash(xargs grep -l \"backup\\\\|renew\\\\|cert\\\\|v1/config\\\\|updateServer\\\\|saveSettings\")",
+      "Bash(xargs grep -n \"backup\\\\|renew\\\\|cert\\\\|v1/config/update\\\\|updateServer\\\\|saveSettings\")",
+      "Bash(xargs grep -ln \"keys\")",
+      "Bash(grep -n \"os.WriteFile\\\\|json.Marshal\\\\|yaml.Marshal\\\\|persist\\\\|userStore\\\\|SaveUser\\\\|LoadUser\" /c/Whispera-test/internal/modules/apiserver/*.go)"
     ]
   }
 }

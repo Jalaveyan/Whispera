@@ -101,6 +101,10 @@ func New(cfg *Config) (*Server, error) {
 
 	bridgeReg := bridgepool.NewRegistry("bridges.json")
 
+	// Load persisted data
+	loadUsers()
+	loadSubscriptions()
+
 	s := &Server{
 		Module:        base.NewModule(ModuleName, ModuleVersion, nil),
 		config:        cfg,
@@ -937,27 +941,75 @@ func (s *Server) handleDHCPRelease(w http.ResponseWriter, r *http.Request) {
 }
 
 type User struct {
-	ID           int       `json:"id"`
-	Username     string    `json:"username"`
-	PrivateKey   string    `json:"privateKey,omitempty"`
-	PublicKey    string    `json:"publicKey,omitempty"`
-	Upload       int64     `json:"upload"`
-	Download     int64     `json:"download"`
-	TrafficLimit int64     `json:"trafficLimit"`
-	ExpiryDate   string    `json:"expiryDate,omitempty"`
-	Status       string    `json:"status"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID            int       `json:"id"`
+	Username      string    `json:"username"`
+	PrivateKey    string    `json:"privateKey,omitempty"`
+	PublicKey     string    `json:"publicKey,omitempty"`
+	ConnectionURI string    `json:"connectionURI,omitempty"`
+	Upload        int64     `json:"upload"`
+	Download      int64     `json:"download"`
+	TrafficLimit  int64     `json:"trafficLimit"`
+	ExpiryDate    string    `json:"expiryDate,omitempty"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"createdAt"`
 
 	ObfsProfile       string `json:"obfsProfile,omitempty"`
 	MarionetteProfile string `json:"marionetteProfile,omitempty"`
 	RussianService    string `json:"russianService,omitempty"`
 }
 
+const userDataFile = "users.json"
+
 var (
 	userStore   = make(map[int]*User)
 	userStoreMu sync.RWMutex
 	nextUserID  = 1
 )
+
+type userPersist struct {
+	Users      []*User `json:"users"`
+	NextUserID int     `json:"next_user_id"`
+}
+
+func saveUsers() {
+	userStoreMu.RLock()
+	list := make([]*User, 0, len(userStore))
+	for _, u := range userStore {
+		list = append(list, u)
+	}
+	nid := nextUserID
+	userStoreMu.RUnlock()
+
+	data, err := json.Marshal(userPersist{Users: list, NextUserID: nid})
+	if err != nil {
+		log.Printf("[API] Failed to marshal users: %v", err)
+		return
+	}
+	if err := os.WriteFile(userDataFile, data, 0600); err != nil {
+		log.Printf("[API] Failed to save users: %v", err)
+	}
+}
+
+func loadUsers() {
+	data, err := os.ReadFile(userDataFile)
+	if err != nil {
+		return // file doesn't exist yet
+	}
+	var p userPersist
+	if err := json.Unmarshal(data, &p); err != nil {
+		log.Printf("[API] Failed to load users: %v", err)
+		return
+	}
+	userStoreMu.Lock()
+	for _, u := range p.Users {
+		userStore[u.ID] = u
+	}
+	if p.NextUserID > nextUserID {
+		nextUserID = p.NextUserID
+	}
+	userStoreMu.Unlock()
+	log.Printf("[API] Loaded %d users from %s", len(p.Users), userDataFile)
+}
 
 func (s *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
 	userStoreMu.RLock()
@@ -1020,6 +1072,7 @@ func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
 	userStore[nextUserID] = user
 	nextUserID++
 	userStoreMu.Unlock()
+	go saveUsers()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1061,7 +1114,11 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if status, ok := req["status"].(string); ok {
 		user.Status = status
 	}
+	if uri, ok := req["connectionURI"].(string); ok {
+		user.ConnectionURI = uri
+	}
 
+	go saveUsers()
 	s.jsonOK(w, map[string]interface{}{"success": true, "user": user})
 }
 
@@ -1078,6 +1135,7 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	userStoreMu.Lock()
 	delete(userStore, req.ID)
 	userStoreMu.Unlock()
+	go saveUsers()
 
 	s.jsonOK(w, map[string]interface{}{"success": true, "message": "User deleted"})
 }
