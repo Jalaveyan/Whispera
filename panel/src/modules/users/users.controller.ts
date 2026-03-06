@@ -91,6 +91,23 @@ export class UsersController {
         }
     }
 
+    @Post('api/keys/connection')
+    async generateConnectionKey(
+        @Headers('authorization') auth: string,
+        @Body() body: any,
+        @Res() res: Response,
+    ) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const result = await this.usersService.generateConnectionKey(token, body);
+            return res.json(result);
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to generate key';
+            return res.status(status).json({ success: false, error: msg });
+        }
+    }
+
     @Get('api/users/:id/stats')
     async getUserStats(
         @Headers('authorization') auth: string,

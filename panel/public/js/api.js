@@ -100,6 +100,13 @@ class WhisperaAPI {
         return this.request(`/api/users/${id}`, { method: 'DELETE' });
     }
 
+    async generateConnectionKey(opts = {}) {
+        return this.request('/api/keys/connection', {
+            method: 'POST',
+            body: JSON.stringify(opts),
+        });
+    }
+
     async getSessions() {
         return this.request('/api/sessions');
     }

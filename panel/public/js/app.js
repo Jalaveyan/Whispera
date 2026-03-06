@@ -1731,6 +1731,8 @@ class WhisperaApp {
         const obfsProfile = document.getElementById('new-user-obfs').value;
         const marionetteProfile = document.getElementById('new-user-marionette').value;
         const russianService = document.getElementById('new-user-russian').value;
+        const transport = document.getElementById('new-user-transport')?.value || 'tcp';
+        const sni = document.getElementById('new-user-sni')?.value || '';
 
         try {
             const res = await api.createUser(email, password, trafficLimit, expiryDate, {
@@ -1743,7 +1745,18 @@ class WhisperaApp {
 
             const privKey = res.privateKey || res.user?.privateKey;
             if (privKey) {
-                this.showKeyModal(res.user?.username || email, privKey);
+                try {
+                    const keyRes = await api.generateConnectionKey({
+                        psk: privKey,
+                        name: email,
+                        transport,
+                        sni: sni || undefined,
+                        russianService,
+                    });
+                    this.showKeyModal(res.user?.username || email, privKey, keyRes.key);
+                } catch {
+                    this.showKeyModal(res.user?.username || email, privKey);
+                }
             } else {
                 this.showNotification('Пользователь создан', 'success');
             }
@@ -2515,43 +2528,48 @@ class WhisperaApp {
         container.appendChild(toast);
     }
 
-    showKeyModal(email, key) {
+    showKeyModal(email, privKey, connectionURI) {
         const modal = document.createElement('div');
         modal.className = 'modal active';
         modal.style.zIndex = '10000';
 
-        const lang = localStorage.getItem('whispera_lang') || 'ru';
-        const title = lang === 'ru' ? 'Пользователь создан' : 'User Created';
-        const label = lang === 'ru' ? 'Приватный ключ (Сохраните его!):' : 'Private Key (Save this!):';
-        const note = lang === 'ru' ? 'Этот ключ требуется для настройки клиента.' : 'This key is required to configure the client.';
-        const done = lang === 'ru' ? 'Готово' : 'Done';
+        const uri = connectionURI || privKey;
+        const uriEsc = uri.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        const pkEsc = privKey.replace(/'/g, "\\'").replace(/"/g, '&quot;');
 
         modal.innerHTML = `
-    <div class="modal-content" style="max-width: 500px;">
-                <div class="modal-header">
-                    <h3>${title}</h3>
-                    <button class="modal-close modal-close-icon" onclick="this.closest('.modal').remove()"><i class="fas fa-times"></i></button>
+    <div class="modal-content" style="max-width: 560px;">
+        <div class="modal-header">
+            <h3>Пользователь создан</h3>
+            <button class="modal-close modal-close-icon" onclick="this.closest('.modal').remove()"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="modal-body">
+            <p style="margin-bottom:12px;">Пользователь: <strong>${email}</strong></p>
+            ${connectionURI ? `
+            <div class="form-group">
+                <label>Ключ подключения (импортируйте в клиент):</label>
+                <div class="input-group">
+                    <input type="text" value="${uriEsc}" readonly class="form-control" style="font-family:monospace;font-size:0.85em;">
+                    <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${uriEsc}').then(()=>app.showNotification('Скопировано','success'))">
+                        <i class="fas fa-copy"></i>
+                    </button>
                 </div>
-                <div class="modal-body">
-                    <p style="margin-bottom: 10px;">User: <strong>${email}</strong></p>
-                    <div class="form-group">
-                        <label>${label}</label>
-                        <div class="input-group">
-                            <input type="text" value="${key}" readonly class="form-control" style="font-family: monospace; font-size: 1.1em;">
-                            <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${key}').then(() => app.showNotification('Key copied', 'success'))">
-                                <i class="fas fa-copy"></i>
-                            </button>
-                        </div>
-                    </div>
-                    <div style="margin-top: 15px; font-size: 0.9em; opacity: 0.8;">
-                        <p><i class="fas fa-info-circle"></i> ${note}</p>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button class="btn btn-primary" onclick="this.closest('.modal').remove()">${done}</button>
+            </div>` : ''}
+            <div class="form-group" style="margin-top:12px;">
+                <label>Приватный ключ (PSK):</label>
+                <div class="input-group">
+                    <input type="text" value="${pkEsc}" readonly class="form-control" style="font-family:monospace;font-size:0.85em;">
+                    <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('${pkEsc}').then(()=>app.showNotification('Скопировано','success'))">
+                        <i class="fas fa-copy"></i>
+                    </button>
                 </div>
             </div>
-    `;
+            <p style="margin-top:12px;font-size:0.85em;opacity:0.75;"><i class="fas fa-info-circle"></i> Сохраните ключ — он больше не будет показан.</p>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary" onclick="this.closest('.modal').remove()">Готово</button>
+        </div>
+    </div>`;
         document.body.appendChild(modal);
     }
 

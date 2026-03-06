@@ -1123,6 +1123,11 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		Transport      string `json:"transport"`
 		Obfs           string `json:"obfs"`
 		RussianService string `json:"russianService"`
+		PSK            string `json:"psk"`        // optional: reuse existing user private key
+		SNI            string `json:"sni"`         // optional: phantom SNI override
+		PhantomEnabled bool   `json:"phantom"`     // optional: force phantom on
+		ASNBypass      bool   `json:"asn"`         // optional: ASN bypass
+		TLSFingerprint string `json:"tls"`         // optional: TLS fingerprint
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1134,7 +1139,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		req.Name = "Whispera VPN"
 	}
 	if req.Transport == "" {
-		req.Transport = "auto"
+		req.Transport = "tcp"
 	}
 	if req.Obfs == "" {
 		req.Obfs = "stealth"
@@ -1147,13 +1152,26 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		serverIP = "0.0.0.0"
 	}
 
-	keys, err := generateX25519Keys()
-	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to generate keys")
-		return
+	// Use provided PSK or generate a new key pair
+	userPrivKey := req.PSK
+	userPubKey := ""
+	if userPrivKey == "" {
+		keys, err := generateX25519Keys()
+		if err != nil {
+			s.jsonError(w, http.StatusInternalServerError, "Failed to generate keys")
+			return
+		}
+		userPrivKey = keys.PrivateKey
+		userPubKey = keys.PublicKey
+	} else {
+		userPubKey = derivePublicKeyB64(userPrivKey)
 	}
-	udpPort := "443"
-	tcpPort := "443"
+
+	// Find server address and phantom settings from the matching inbound
+	serverAddr := fmt.Sprintf("%s:443", serverIP)
+	serverPubKey := ""
+	phantomEnabled := req.PhantomEnabled
+	sni := req.SNI
 
 	if s.registry != nil {
 		if configMod, ok := s.registry.Get("config.provider"); ok {
@@ -1163,20 +1181,37 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 			if provider, ok := configMod.(ConfigProvider); ok {
 				cfg := provider.GetConfig()
 				if cfg != nil {
-					if cfg.Transport.UDP.Enabled {
-						_, port, err := net.SplitHostPort(cfg.Transport.UDP.ListenAddr)
-						if err == nil {
-							udpPort = port
-						} else if strings.HasPrefix(cfg.Transport.UDP.ListenAddr, ":") {
-							udpPort = cfg.Transport.UDP.ListenAddr[1:]
+					// Find first inbound matching the requested transport
+					for _, inbound := range cfg.Inbounds {
+						network := inbound.StreamSettings.Network
+						if network == "" {
+							network = "tcp"
+						}
+						if network == req.Transport {
+							port := fmt.Sprintf("%d", inbound.Port)
+							serverAddr = fmt.Sprintf("%s:%s", serverIP, port)
+							if pk := inbound.StreamSettings.Phantom.PrivateKey; pk != "" {
+								serverPubKey = derivePublicKeyB64(pk)
+								phantomEnabled = true
+							}
+							if len(inbound.StreamSettings.Phantom.ServerNames) > 0 && sni == "" {
+								sni = inbound.StreamSettings.Phantom.ServerNames[0]
+							}
+							break
 						}
 					}
-					if cfg.Transport.TCP.Enabled {
-						_, port, err := net.SplitHostPort(cfg.Transport.TCP.ListenAddr)
-						if err == nil {
-							tcpPort = port
-						} else if strings.HasPrefix(cfg.Transport.TCP.ListenAddr, ":") {
-							tcpPort = cfg.Transport.TCP.ListenAddr[1:]
+					// Fall back to global TCP/UDP ports
+					if serverAddr == fmt.Sprintf("%s:443", serverIP) {
+						if req.Transport == "udp" && cfg.Transport.UDP.Enabled {
+							_, port, _ := net.SplitHostPort(cfg.Transport.UDP.ListenAddr)
+							if port != "" {
+								serverAddr = fmt.Sprintf("%s:%s", serverIP, port)
+							}
+						} else if cfg.Transport.TCP.Enabled {
+							_, port, _ := net.SplitHostPort(cfg.Transport.TCP.ListenAddr)
+							if port != "" {
+								serverAddr = fmt.Sprintf("%s:%s", serverIP, port)
+							}
 						}
 					}
 				}
@@ -1184,35 +1219,42 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	keyData := map[string]interface{}{
-		"v":               1,
-		"name":            req.Name,
-		"server":          fmt.Sprintf("%s:%s", serverIP, udpPort),
-		"server_tcp":      fmt.Sprintf("%s:%s", serverIP, tcpPort),
-		"psk":             keys.PrivateKey,
-		"pub":             keys.PublicKey,
-		"obfs":            req.Obfs,
-		"transport":       req.Transport,
-		"enable_ml":       true,
-		"enable_fte":      true,
-		"russian_service": req.RussianService,
+	// Build query-string URI: whispera://IP:PORT?key=PSK&pub=SERVER_PUB&transport=...
+	params := make([]string, 0, 8)
+	params = append(params, "key="+userPrivKey)
+	if serverPubKey != "" {
+		params = append(params, "pub="+serverPubKey)
+	}
+	if req.Transport != "" && req.Transport != "auto" {
+		params = append(params, "transport="+req.Transport)
+	}
+	if phantomEnabled {
+		params = append(params, "phantom=1")
+		if sni != "" {
+			params = append(params, "sni="+sni)
+		}
+	}
+	if req.ASNBypass {
+		params = append(params, "asn=1")
+		if req.TLSFingerprint != "" {
+			params = append(params, "tls="+req.TLSFingerprint)
+		}
+	}
+	if req.RussianService != "" {
+		params = append(params, "russian="+req.RussianService)
 	}
 
-	jsonData, err := json.Marshal(keyData)
-	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to encode key")
-		return
-	}
-
-	connectionKey := "whispera://" + base64.StdEncoding.EncodeToString(jsonData)
+	connectionKey := fmt.Sprintf("whispera://%s?%s", serverAddr, strings.Join(params, "&"))
 
 	s.jsonOK(w, map[string]interface{}{
 		"success":        true,
 		"key":            connectionKey,
-		"name":           req.Name,
-		"server":         serverIP,
+		"psk":            userPrivKey,
+		"pub":            userPubKey,
+		"server":         serverAddr,
 		"transport":      req.Transport,
-		"obfs":           req.Obfs,
+		"phantom":        phantomEnabled,
+		"sni":            sni,
 		"russianService": req.RussianService,
 	})
 }

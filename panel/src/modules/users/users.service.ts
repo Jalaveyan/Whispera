@@ -80,6 +80,21 @@ export class UsersService {
         );
     }
 
+    async generateConnectionKey(token: string, opts: {
+        psk?: string; name?: string; transport?: string;
+        sni?: string; phantom?: boolean; asn?: boolean;
+        tls?: string; russianService?: string;
+    }): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.post(
+                `${this.backendUrl}/api/keys/connection`,
+                opts,
+                { headers: { Authorization: `Bearer ${token}` } },
+            ),
+        );
+        return response.data;
+    }
+
     async getUserStats(token: string, id: string): Promise<any> {
         const response = await firstValueFrom(
             this.httpService.get(`${this.backendUrl}/api/v1/stats/users`, {
