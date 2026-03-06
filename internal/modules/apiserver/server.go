@@ -1193,13 +1193,21 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 			if provider, ok := configMod.(ConfigProvider); ok {
 				cfg := provider.GetConfig()
 				if cfg != nil {
+					// For combo transport ("tcp,ws"), build a set of all requested transports.
+					matchTransports := map[string]bool{req.Transport: true}
+					if strings.Contains(req.Transport, ",") {
+						matchTransports = map[string]bool{}
+						for _, p := range strings.Split(req.Transport, ",") {
+							matchTransports[strings.TrimSpace(p)] = true
+						}
+					}
 					// Find first inbound matching the requested transport
 					for _, inbound := range cfg.Inbounds {
 						network := inbound.StreamSettings.Network
 						if network == "" {
 							network = "tcp"
 						}
-						if network == req.Transport {
+						if matchTransports[network] {
 							port := fmt.Sprintf("%d", inbound.Port)
 							serverAddr = fmt.Sprintf("%s:%s", serverIP, port)
 							if pk := inbound.StreamSettings.Phantom.PrivateKey; pk != "" {
@@ -1266,23 +1274,19 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	if req.Transport != "" && req.Transport != "auto" {
 		params = append(params, "transport="+req.Transport)
 	}
-	if phantomEnabled {
-		params = append(params, "phantom=1")
-		if sni == "" {
-			sni = randomRussianSNI()
-		}
-		params = append(params, "sni="+sni)
+	// Phantom always enabled — provides TLS fingerprint masking for all transports
+	phantomEnabled = true
+	if sni == "" {
+		sni = randomRussianSNI()
 	}
-	// ASN bypass and TLS fingerprint are enabled by default for phantom-capable transports
-	phantomTransports := map[string]bool{"tcp": true, "udp": true, "ws": true, "httpupgrade": true, "grpc": true, "h2c": true}
-	if phantomTransports[req.Transport] || req.Transport == "" {
-		params = append(params, "asn=1")
-		tlsFP := req.TLSFingerprint
-		if tlsFP == "" {
-			tlsFP = "chrome"
-		}
-		params = append(params, "tls="+tlsFP)
+	params = append(params, "phantom=1")
+	params = append(params, "sni="+sni)
+	params = append(params, "asn=1")
+	tlsFP := req.TLSFingerprint
+	if tlsFP == "" {
+		tlsFP = "chrome"
 	}
+	params = append(params, "tls="+tlsFP)
 	// russian= only when explicitly set
 	if req.RussianService != "" {
 		params = append(params, "russian="+req.RussianService)
