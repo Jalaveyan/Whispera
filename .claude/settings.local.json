@@ -103,7 +103,9 @@
       "Bash(npm run build)",
       "Bash(npm install --legacy-peer-deps)",
       "Bash(npx tsc --noEmit)",
-      "Bash(npm ci --legacy-peer-deps)"
+      "Bash(npm ci --legacy-peer-deps)",
+      "Bash(node -e \"const l = require\\(''./package-lock.json''\\); console.log\\(''lockfileVersion:'', l.lockfileVersion\\); console.log\\(''webpack:'', l.packages?.[''node_modules/webpack'']?.version || ''missing''\\)\")",
+      "Bash(node -e \"const l = require\\(''./package-lock.json''\\); console.log\\(''@vercel/ncc:'', l.packages?.[''node_modules/@vercel/ncc'']?.version\\); console.log\\(''enhanced-resolve nestjs/cli:'', l.packages?.[''node_modules/@nestjs/cli/node_modules/enhanced-resolve'']?.version || l.packages?.[''node_modules/enhanced-resolve'']?.version\\)\")"
     ]
   }
 }
