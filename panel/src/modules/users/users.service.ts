@@ -83,7 +83,7 @@ export class UsersService {
     async generateConnectionKey(token: string, opts: {
         psk?: string; name?: string; transport?: string;
         sni?: string; phantom?: boolean; asn?: boolean;
-        tls?: string; russianService?: string;
+        tls?: string; russianService?: string; port?: number;
     }): Promise<any> {
         const response = await firstValueFrom(
             this.httpService.post(

@@ -697,8 +697,22 @@
                 <div class="form-group">
                     <label for="new-user-marionette" data-i18n="modal.user.marionette">Профиль Marionette</label>
                     <select id="new-user-marionette" class="form-control">
-                        <option value="browser" data-i18n="option.marionette.browser">Browser (Default)</option>
-                        <option value="crawler" data-i18n="option.marionette.crawler">Crawler</option>
+                        <optgroup label="Мессенджеры (Android)">
+                            <option value="telegram">Telegram</option>
+                            <option value="vk">VK Мессенджер</option>
+                            <option value="vkvideo">VK Видео</option>
+                            <option value="instagram">Instagram</option>
+                            <option value="max">MAX (Mail.ru)</option>
+                            <option value="wechat">WeChat</option>
+                            <option value="facebook">Facebook Messenger</option>
+                        </optgroup>
+                        <optgroup label="Мессенджеры (iOS)">
+                            <option value="telegram_ios">Telegram iOS</option>
+                            <option value="vk_ios">VK iOS</option>
+                            <option value="instagram_ios">Instagram iOS</option>
+                            <option value="wechat_ios">WeChat iOS</option>
+                            <option value="facebook_ios">Facebook iOS</option>
+                        </optgroup>
                     </select>
                 </div>
                 <div class="form-group">
@@ -713,20 +727,42 @@
                     <label for="new-user-transport">Транспорт для ключа</label>
                     <select id="new-user-transport" class="form-control">
                         <optgroup label="Базовые">
-                            <option value="tcp">TCP</option>
+                            <option value="tcp">TCP (Phantom)</option>
                             <option value="udp">UDP</option>
                             <option value="ws">WebSocket</option>
+                            <option value="splithttp">SplitHTTP</option>
+                            <option value="httpupgrade">HTTP Upgrade</option>
+                            <option value="grpc">gRPC</option>
+                            <option value="h2c">H2C (HTTP/2)</option>
                         </optgroup>
                         <optgroup label="Обфускация">
                             <option value="shadowtls">ShadowTLS</option>
                             <option value="shadowsocks">Shadowsocks</option>
                             <option value="obfs4">obfs4</option>
+                            <option value="meek">Meek</option>
+                            <option value="domainfront">Domain Fronting</option>
+                            <option value="tuic">TUIC (QUIC)</option>
+                            <option value="snowflake">Snowflake</option>
+                            <option value="torsocks">Tor SOCKS</option>
                         </optgroup>
-                        <optgroup label="VK/OK">
+                        <optgroup label="Яндекс">
+                            <option value="yacloud">Яндекс Cloud</option>
+                            <option value="yadisk">Яндекс Диск</option>
+                            <option value="yatelemost">Яндекс Телемост</option>
+                        </optgroup>
+                        <optgroup label="VK / OK / Боты">
                             <option value="vkwebrtc">VK WebRTC</option>
                             <option value="okwebrtc">OK WebRTC</option>
+                            <option value="vkbot">VK Bot</option>
+                            <option value="tgbot">Telegram Bot</option>
                         </optgroup>
                     </select>
+                </div>
+                <div class="form-group">
+                    <label for="new-user-port">Порт (опционально)</label>
+                    <input type="number" id="new-user-port" class="form-control"
+                        placeholder="Авто (из inbound)" min="1" max="65535">
+                    <small style="color:#888;font-size:11px;">Если указать — будет открыт в firewall автоматически</small>
                 </div>
                 <div class="form-group" id="new-user-sni-group">
                     <label for="new-user-sni">SNI (для Phantom/TLS)</label>

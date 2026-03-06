@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"sync"
@@ -1128,6 +1129,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		PhantomEnabled bool   `json:"phantom"`     // optional: force phantom on
 		ASNBypass      bool   `json:"asn"`         // optional: ASN bypass
 		TLSFingerprint string `json:"tls"`         // optional: TLS fingerprint
+		Port           int    `json:"port"`        // optional: override port, also opens firewall
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1219,9 +1221,27 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// Build query-string URI: whispera://IP:PORT?key=PSK&pub=SERVER_PUB&transport=...
+	// If caller specified a port override, apply it and open it in the firewall.
+	if req.Port > 0 && req.Port < 65536 {
+		serverAddr = fmt.Sprintf("%s:%d", serverIP, req.Port)
+		// Open port in firewall (best-effort, non-blocking)
+		proto := "tcp"
+		if req.Transport == "udp" || req.Transport == "tuic" {
+			proto = "udp"
+		}
+		go func() {
+			portProto := fmt.Sprintf("%d/%s", req.Port, proto)
+			if err := exec.Command("ufw", "allow", portProto).Run(); err != nil {
+				// Try iptables as fallback
+				exec.Command("iptables", "-I", "INPUT", "-p", proto,
+					"--dport", fmt.Sprintf("%d", req.Port), "-j", "ACCEPT").Run()
+			}
+		}()
+	}
+
+	// Build query-string URI: whispera://IP:PORT?pub=SERVER_PUB&transport=...
+	// User private key (PSK) is stored server-side only — NOT embedded in the URI.
 	params := make([]string, 0, 8)
-	params = append(params, "key="+userPrivKey)
 	if serverPubKey != "" {
 		params = append(params, "pub="+serverPubKey)
 	}
@@ -1234,12 +1254,13 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 			params = append(params, "sni="+sni)
 		}
 	}
-	if req.ASNBypass {
-		params = append(params, "asn=1")
-		if req.TLSFingerprint != "" {
-			params = append(params, "tls="+req.TLSFingerprint)
-		}
+	// ASN bypass and TLS fingerprint are enabled by default
+	params = append(params, "asn=1")
+	tlsFP := req.TLSFingerprint
+	if tlsFP == "" {
+		tlsFP = "chrome"
 	}
+	params = append(params, "tls="+tlsFP)
 	if req.RussianService != "" {
 		params = append(params, "russian="+req.RussianService)
 	}

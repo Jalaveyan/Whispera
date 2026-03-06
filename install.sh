@@ -1221,9 +1221,33 @@ EOF
     log_success "Config saved to $CONF_PATH/config.yaml"
 }
 
+generate_panel_cert() {
+    local CERT="$CONF_PATH/panel.crt"
+    local KEY="$CONF_PATH/panel.key"
+
+    if [[ -f "$CERT" && -f "$KEY" ]]; then
+        log_info "Panel TLS cert already exists, skipping generation"
+        return
+    fi
+
+    log_info "Generating self-signed TLS certificate for panel..."
+    if command -v openssl &>/dev/null; then
+        openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$KEY" -out "$CERT" \
+            -days 3650 -subj "/CN=whispera-panel" \
+            -extensions v3_req \
+            -addext "subjectAltName=IP:127.0.0.1" \
+            2>/dev/null
+        chmod 600 "$KEY"
+        log_success "Panel TLS cert generated: $CERT"
+    else
+        log_warn "openssl not found — panel will run without HTTPS"
+    fi
+}
+
 setup_systemd() {
     log_info "Setting up SystemD services..."
-    
+
     cat > /etc/systemd/system/whispera.service <<EOF
 [Unit]
 Description=Whispera Server (Backend)
@@ -1246,6 +1270,13 @@ EOF
 
     local NODE_BIN=$(command -v node || echo "/usr/bin/node")
 
+    local PANEL_HTTPS_VARS=""
+    if [[ -f "$CONF_PATH/panel.crt" && -f "$CONF_PATH/panel.key" ]]; then
+        PANEL_HTTPS_VARS="Environment=TLS_CERT=$CONF_PATH/panel.crt
+Environment=TLS_KEY=$CONF_PATH/panel.key
+Environment=HTTP_PORT=80"
+    fi
+
     cat > /etc/systemd/system/whispera-panel.service <<EOF
 [Unit]
 Description=Whispera Panel (Frontend)
@@ -1260,6 +1291,7 @@ RestartSec=3
 Environment=PORT=3000
 Environment=BACKEND_URL=http://127.0.0.1:8080
 Environment=CORS_ORIGIN=*
+$PANEL_HTTPS_VARS
 
 [Install]
 WantedBy=multi-user.target
@@ -1314,6 +1346,8 @@ setup_firewall() {
         ufw allow 8443/tcp >/dev/null 2>&1 || true
         ufw allow 8443/udp >/dev/null 2>&1 || true
         ufw allow 8080/tcp >/dev/null 2>&1 || true
+        ufw allow 80/tcp >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
         ufw allow 3000/tcp >/dev/null 2>&1 || true
         ufw --force enable >/dev/null 2>&1 || true
         log_success "UFW configured"
@@ -1321,6 +1355,8 @@ setup_firewall() {
         firewall-cmd --permanent --add-port=8443/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=8443/udp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=3000/tcp >/dev/null 2>&1 || true
         firewall-cmd --reload >/dev/null 2>&1 || true
         log_success "Firewalld configured"
@@ -1408,6 +1444,7 @@ main() {
     install_cli_wrapper
     setup_network
     setup_firewall
+    generate_panel_cert
     setup_systemd
     
     local PG_PASS=""
@@ -1425,7 +1462,10 @@ main() {
     echo ""
     echo -e "  Manage:         ${GREEN}whispera-mgmt${PLAIN}"
     echo -e "  Config:         ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
-    echo -e "  Web Panel:      ${GREEN}http://$(get_public_ip):3000${PLAIN}"
+    local PANEL_PROTO="http"
+    [[ -f "$CONF_PATH/panel.crt" ]] && PANEL_PROTO="https"
+    echo -e "  Web Panel:      ${GREEN}${PANEL_PROTO}://$(get_public_ip):3000${PLAIN}"
+    [[ "$PANEL_PROTO" == "https" ]] && echo -e "  ${YELLOW}(самоподписанный сертификат — в браузере нажмите «Продолжить»)${PLAIN}"
     echo ""
     echo -e "  ${YELLOW}Admin User:${PLAIN}     admin"
     echo -e "  ${YELLOW}Admin Password:${PLAIN} ${GREEN}$ADMIN_PASS${PLAIN}"

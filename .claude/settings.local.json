@@ -105,7 +105,12 @@
       "Bash(npx tsc --noEmit)",
       "Bash(npm ci --legacy-peer-deps)",
       "Bash(node -e \"const l = require\\(''./package-lock.json''\\); console.log\\(''lockfileVersion:'', l.lockfileVersion\\); console.log\\(''webpack:'', l.packages?.[''node_modules/webpack'']?.version || ''missing''\\)\")",
-      "Bash(node -e \"const l = require\\(''./package-lock.json''\\); console.log\\(''@vercel/ncc:'', l.packages?.[''node_modules/@vercel/ncc'']?.version\\); console.log\\(''enhanced-resolve nestjs/cli:'', l.packages?.[''node_modules/@nestjs/cli/node_modules/enhanced-resolve'']?.version || l.packages?.[''node_modules/enhanced-resolve'']?.version\\)\")"
+      "Bash(node -e \"const l = require\\(''./package-lock.json''\\); console.log\\(''@vercel/ncc:'', l.packages?.[''node_modules/@vercel/ncc'']?.version\\); console.log\\(''enhanced-resolve nestjs/cli:'', l.packages?.[''node_modules/@nestjs/cli/node_modules/enhanced-resolve'']?.version || l.packages?.[''node_modules/enhanced-resolve'']?.version\\)\")",
+      "Bash(grep -n \"handleLogin\\\\|admin_password\\\\|default.*pass\\\\|PANEL_PASSWORD\\\\|password.*default\" internal/modules/apiserver/*.go)",
+      "Bash(grep -rn \"handleAddInbound\\\\|handleGetInbounds\\\\|handleDeleteInbound\" internal/modules/apiserver/*.go)",
+      "Bash(xargs grep -l \"login\\\\|token\\\\|jwt\\\\|auth\")",
+      "Bash(xargs grep -l \"keys/connection\\\\|generateKey\\\\|connectionKey\")",
+      "Bash(echo \"EXIT:$?\")"
     ]
   }
 }
