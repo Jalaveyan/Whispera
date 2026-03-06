@@ -226,10 +226,16 @@ func main() {
 		}
 	}
 
+	// Use transport from key if present, else fall back to -transport flag
+	activeTransport := cfg.Transport
+	if activeTransport == "" {
+		activeTransport = *transport
+	}
+
 	tunnelMod, _ := tunnel.New(&tunnel.Config{
 		ServerAddr:          serverAddress,
 		ServerAddrTCP:       fallbackTCP,
-		Transport:           *transport,
+		Transport:           activeTransport,
 		KeepaliveInterval:   30 * time.Second,
 		EnableASNBypass:     asnBypassEnabled,
 		TLSFingerprint:      asnBypassFingerprint,
@@ -242,6 +248,7 @@ func main() {
 		VKToken:             *vkToken,
 		ServerList:          srvList,
 		RekeyInterval:       *rekeyInterval,
+		TransportConfig:     cfg.TransportConfig,
 	})
 
 	if asnBypassEnabled {

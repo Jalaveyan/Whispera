@@ -24,6 +24,7 @@ import (
 	"whispera/internal/core/registry"
 	"whispera/internal/db"
 	"whispera/internal/modules/apiserver/handlers"
+	asn_bypass "whispera/internal/modules/transport/asn_bypass"
 	"whispera/internal/modules/bridgepool"
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/dhcp"
@@ -1117,19 +1118,28 @@ func (s *Server) handleGenerateKeys(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func randomRussianSNI() string {
+	sni, _ := asn_bypass.PickRandomSNI()
+	if sni == "" {
+		return "vk.com"
+	}
+	return sni
+}
+
 func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Username       string `json:"username"`
-		Name           string `json:"name"`
-		Transport      string `json:"transport"`
-		Obfs           string `json:"obfs"`
-		RussianService string `json:"russianService"`
-		PSK            string `json:"psk"`        // optional: reuse existing user private key
-		SNI            string `json:"sni"`         // optional: phantom SNI override
-		PhantomEnabled bool   `json:"phantom"`     // optional: force phantom on
-		ASNBypass      bool   `json:"asn"`         // optional: ASN bypass
-		TLSFingerprint string `json:"tls"`         // optional: TLS fingerprint
-		Port           int    `json:"port"`        // optional: override port, also opens firewall
+		Username        string                 `json:"username"`
+		Name            string                 `json:"name"`
+		Transport       string                 `json:"transport"`
+		Obfs            string                 `json:"obfs"`
+		RussianService  string                 `json:"russianService"`
+		PSK             string                 `json:"psk"`
+		SNI             string                 `json:"sni"`
+		PhantomEnabled  bool                   `json:"phantom"`
+		ASNBypass       bool                   `json:"asn"`
+		TLSFingerprint  string                 `json:"tls"`
+		Port            int                    `json:"port"`
+		TransportConfig map[string]interface{} `json:"transportConfig"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1250,19 +1260,30 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	}
 	if phantomEnabled {
 		params = append(params, "phantom=1")
-		if sni != "" {
-			params = append(params, "sni="+sni)
+		if sni == "" {
+			sni = randomRussianSNI()
 		}
+		params = append(params, "sni="+sni)
 	}
-	// ASN bypass and TLS fingerprint are enabled by default
-	params = append(params, "asn=1")
-	tlsFP := req.TLSFingerprint
-	if tlsFP == "" {
-		tlsFP = "chrome"
+	// ASN bypass and TLS fingerprint are enabled by default for phantom-capable transports
+	phantomTransports := map[string]bool{"tcp": true, "udp": true, "ws": true, "httpupgrade": true, "grpc": true, "h2c": true}
+	if phantomTransports[req.Transport] || req.Transport == "" {
+		params = append(params, "asn=1")
+		tlsFP := req.TLSFingerprint
+		if tlsFP == "" {
+			tlsFP = "chrome"
+		}
+		params = append(params, "tls="+tlsFP)
 	}
-	params = append(params, "tls="+tlsFP)
+	// russian= only when explicitly set
 	if req.RussianService != "" {
 		params = append(params, "russian="+req.RussianService)
+	}
+	if len(req.TransportConfig) > 0 {
+		cfgJSON, err := json.Marshal(req.TransportConfig)
+		if err == nil {
+			params = append(params, "cfg="+base64.RawURLEncoding.EncodeToString(cfgJSON))
+		}
 	}
 
 	connectionKey := fmt.Sprintf("whispera://%s?%s", serverAddr, strings.Join(params, "&"))

@@ -97,7 +97,16 @@ type ClientConfig struct {
 
 	Phantom *ClientPhantomConfig `yaml:"phantom,omitempty" json:"phantom,omitempty"`
 
+	// Transport specifies which transport to use (tcp, udp, ws, shadowtls, tuic, splithttp, …).
+	// Set from the connection key's transport= parameter.
+	Transport string `yaml:"transport,omitempty" json:"transport,omitempty"`
+
 	RussianService string `yaml:"russian_service,omitempty" json:"russian_service,omitempty"`
+
+	// TransportConfig holds transport-specific credentials decoded from the
+	// connection key (cfg= param). Used by external transports: vkwebrtc,
+	// yadisk, yacloud, yatelemost, tgbot, vkbot, okwebrtc.
+	TransportConfig map[string]interface{} `yaml:"transport_config,omitempty" json:"transport_config,omitempty"`
 }
 
 type ClientRoutingConfig struct {

@@ -68,6 +68,11 @@ var SNICategories = []SNICategory{
 	},
 }
 
+// PickRandomSNI returns a random Russian SNI domain with realistic rotation duration.
+func PickRandomSNI() (string, time.Duration) {
+	return pickRandomSNI()
+}
+
 func pickRandomSNI() (string, time.Duration) {
 	r := rand.Float64()
 	var cat SNICategory

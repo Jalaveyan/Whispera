@@ -84,6 +84,7 @@ export class UsersService {
         psk?: string; name?: string; transport?: string;
         sni?: string; phantom?: boolean; asn?: boolean;
         tls?: string; russianService?: string; port?: number;
+        transportConfig?: Record<string, unknown>;
     }): Promise<any> {
         const response = await firstValueFrom(
             this.httpService.post(

@@ -1540,6 +1540,10 @@ class WhisperaApp {
         document.querySelector('[name="transport"]')?.addEventListener('change', (e) => {
             this.onInboundTransportChange(e.target.value);
         });
+        document.getElementById('new-user-transport')?.addEventListener('change', (e) => {
+            const selected = Array.from(e.target.selectedOptions).map(o => o.value);
+            this.onKeyTransportChange(selected.length === 1 ? selected[0] : selected);
+        });
 
         document.getElementById('add-outbound-btn')?.addEventListener('click', () => this.showModal('add-outbound-modal'));
         document.getElementById('add-outbound-form')?.addEventListener('submit', (e) => {
@@ -1731,7 +1735,7 @@ class WhisperaApp {
         const obfsProfile = document.getElementById('new-user-obfs').value;
         const marionetteProfile = document.getElementById('new-user-marionette').value;
         const russianService = document.getElementById('new-user-russian').value;
-        const transport = document.getElementById('new-user-transport')?.value || 'tcp';
+        const transport = Array.from(document.getElementById('new-user-transport')?.selectedOptions || []).map(o => o.value).join(',') || 'tcp';
         const sni = document.getElementById('new-user-sni')?.value || '';
         const portVal = parseInt(document.getElementById('new-user-port')?.value) || 0;
 
@@ -1755,6 +1759,8 @@ class WhisperaApp {
                         russianService,
                     };
                     if (portVal > 0) keyOpts.port = portVal;
+                    const tc = this.collectTransportConfig();
+                    if (tc) keyOpts.transportConfig = tc;
                     const keyRes = await api.generateConnectionKey(keyOpts);
                     this.showKeyModal(res.user?.username || email, privKey, keyRes.key);
                 } catch {
@@ -1769,6 +1775,18 @@ class WhisperaApp {
     }
 
     onInboundTransportChange(transport) {
+        const clientOnlyTransports = new Set([]);
+        let warnEl = document.getElementById('inbound-transport-warn');
+        if (!warnEl) {
+            warnEl = document.createElement('div');
+            warnEl.id = 'inbound-transport-warn';
+            warnEl.style.cssText = 'color:#f59e0b;font-size:0.82em;margin-top:4px;display:none;';
+            warnEl.innerHTML = '⚠ Серверный режим этого транспорта не реализован — inbound создастся, но подключения принимать не будет.';
+            const sel = document.querySelector('[name="transport"]')?.closest('.form-group');
+            if (sel) sel.appendChild(warnEl);
+        }
+        warnEl.style.display = clientOnlyTransports.has(transport) ? '' : 'none';
+
         const phantomTransports = new Set(['tcp', 'udp', 'ws', 'splithttp', 'httpupgrade', 'grpc', 'h2c']);
         const paramsTransports = {
             shadowtls:   { label: 'ShadowTLS параметры', hint: 'password, sni, version', placeholder: '{"password":"secret","sni":"www.apple.com","version":3}' },
@@ -1803,6 +1821,105 @@ class WhisperaApp {
             paramsHint.textContent = info.hint;
             if (paramsTA) paramsTA.placeholder = info.placeholder;
         }
+    }
+
+    // Transport-specific fields for key generation form
+    onKeyTransportChange(transport) {
+        const TRANSPORT_FIELDS = {
+            vkwebrtc: {
+                title: 'VK WebRTC — параметры',
+                hint: 'Требуется токен VK-группы и TURN-сервер',
+                fields: [
+                    { key: 'vk_token',    label: 'Токен VK-группы',  placeholder: 'vk1.a.xxxx...', help: 'Токен сообщества с правом "Сообщения". Настройки → API → Ключи доступа.' },
+                    { key: 'vk_group_id', label: 'ID группы VK',     placeholder: '123456789',       help: 'Числовой ID сообщества (без минуса).' },
+                    { key: 'vk_peer_id',  label: 'Peer ID (опц.)',   placeholder: '',                 help: 'ID собеседника/peer. Оставьте пустым для нового вызова.' },
+                ]
+            },
+            okwebrtc: {
+                title: 'OK WebRTC — параметры',
+                hint: 'Требуется OAuth-токен OK.ru',
+                fields: [
+                    { key: 'ok_token',      label: 'OK OAuth Token',       placeholder: 'tokXXX...',  help: 'Получить: developers.ok.ru → Мои приложения → Токены.' },
+                    { key: 'ok_app_id',     label: 'App ID',                placeholder: '12345678',   help: 'ID вашего приложения на OK.ru.' },
+                    { key: 'ok_app_secret', label: 'App Secret Key',        placeholder: 'XXXXXXXXXX', help: 'Секретный ключ приложения из настроек на OK.ru.' },
+                ]
+            },
+            yadisk: {
+                title: 'Яндекс Диск — параметры',
+                hint: 'Требуется OAuth-токен с доступом к Диску',
+                fields: [
+                    { key: 'ya_token',     label: 'Яндекс OAuth Token', placeholder: 'y0_AgAAAA...', help: 'Получить: oauth.yandex.ru → Создать токен для приложения с правом cloud_api:disk.read+write.' },
+                    { key: 'session_id',   label: 'Session ID',          placeholder: 'my-vpn-01',    help: 'Произвольный ID сессии — одинаковый у сервера и клиента. Например UUID или "my-vpn-01".' },
+                ]
+            },
+            yacloud: {
+                title: 'Яндекс Cloud API Gateway — параметры',
+                hint: 'WebSocket через Яндекс API Gateway (WSS)',
+                fields: [
+                    { key: 'gateway_url', label: 'WSS Gateway URL', placeholder: 'wss://xxxxx.apigw.yandexcloud.net/ws', help: 'URL WebSocket-интеграции в Яндекс API Gateway. Создать: console.cloud.yandex.ru → API Gateway → Добавить интеграцию WebSocket.' },
+                ]
+            },
+            yatelemost: {
+                title: 'Яндекс Телемост — параметры',
+                hint: 'Туннель через WebRTC-конференцию Телемоста',
+                fields: [
+                    { key: 'ya_session_id', label: 'Яндекс Session_id cookie', placeholder: '3:xxx...', help: 'Зайти на yandex.ru → DevTools (F12) → Application → Cookies → Session_id.' },
+                    { key: 'conference_url', label: 'URL конференции (опц.)',   placeholder: 'https://telemost.yandex.ru/j/xxx', help: 'Для клиента — вставьте URL конференции который выдал сервер. Для сервера — оставьте пустым (создастся автоматически).' },
+                ]
+            },
+            tgbot: {
+                title: 'Telegram Bot — параметры',
+                hint: 'Туннель через Telegram supergroup',
+                fields: [
+                    { key: 'tg_bot_token',  label: 'Bot Token',       placeholder: '123456789:ABCdef...', help: 'Получить у @BotFather → /newbot. Оба конца (сервер и клиент) должны использовать разные боты в одной супергруппе.' },
+                    { key: 'tg_chat_id',    label: 'Group Chat ID',    placeholder: '-1001234567890',      help: 'ID супергруппы. Добавить @userinfobot в группу → он напишет ID.' },
+                    { key: 'tg_session_id', label: 'Session ID (опц.)', placeholder: 'vpn-session-01',    help: 'Позволяет запускать несколько туннелей в одной группе.' },
+                ]
+            },
+            vkbot: {
+                title: 'VK Bot — параметры',
+                hint: 'Туннель через VK Сообщества (Long Poll)',
+                fields: [
+                    { key: 'vk_group_token', label: 'Токен сообщества',  placeholder: 'vk1.a.xxx...',  help: 'Токен с правом "Сообщения". Нужен для серверной стороны.' },
+                    { key: 'vk_user_token',  label: 'Токен пользователя', placeholder: 'vk1.a.yyy...', help: 'Пользовательский токен. Нужен для клиентской стороны.' },
+                    { key: 'vk_group_id',    label: 'ID сообщества',      placeholder: '123456789',     help: 'Числовой ID VK-сообщества.' },
+                ]
+            },
+        };
+
+        const cfgDiv = document.getElementById('new-user-transport-config');
+        const fieldsDiv = document.getElementById('new-user-tcfg-fields');
+        const titleEl = document.getElementById('new-user-tcfg-title');
+        const hintEl = document.getElementById('new-user-tcfg-hint');
+
+        // support both single string and array (multi-select)
+        const transports = Array.isArray(transport) ? transport : [transport];
+        const spec = transports.map(t => TRANSPORT_FIELDS[t]).find(Boolean);
+        if (!spec) {
+            cfgDiv.style.display = 'none';
+            return;
+        }
+
+        cfgDiv.style.display = '';
+        titleEl.textContent = spec.title;
+        hintEl.textContent = spec.hint;
+
+        fieldsDiv.innerHTML = spec.fields.map(f => `
+            <div class="form-group" style="margin-bottom:8px;">
+                <label style="font-size:0.82em;">${f.label}</label>
+                <input type="text" class="form-control tcfg-field" data-key="${f.key}"
+                    placeholder="${f.placeholder}" style="font-size:0.85em;">
+                <small style="color:#888;font-size:0.75em;margin-top:2px;display:block;">${f.help}</small>
+            </div>`).join('');
+    }
+
+    collectTransportConfig() {
+        const result = {};
+        document.querySelectorAll('.tcfg-field').forEach(el => {
+            const v = el.value.trim();
+            if (v) result[el.dataset.key] = isNaN(v) ? v : (v.includes('.') ? parseFloat(v) : parseInt(v));
+        });
+        return Object.keys(result).length > 0 ? result : null;
     }
 
     async handleAddInbound() {

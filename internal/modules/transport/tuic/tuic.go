@@ -2,9 +2,16 @@ package tuic
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"sync/atomic"
 	"time"
@@ -31,11 +38,16 @@ const (
 )
 
 type Config struct {
-	UUID       string
-	Password   string
-	ServerAddr string
-	SNI        string
+	UUID              string
+	Password          string
+	ServerAddr        string
+	SNI               string
 	CongestionControl string
+
+	// Server-mode fields
+	ServerMode bool
+	TLSCert    string
+	TLSKey     string
 }
 
 func DefaultConfig() *Config {
@@ -46,11 +58,13 @@ func DefaultConfig() *Config {
 }
 
 func (c *Config) Validate() error {
-	if c.ServerAddr == "" {
-		return fmt.Errorf("tuic: server address required")
-	}
-	if c.UUID == "" {
-		return fmt.Errorf("tuic: UUID required")
+	if !c.ServerMode {
+		if c.ServerAddr == "" {
+			return fmt.Errorf("tuic: server address required")
+		}
+		if c.UUID == "" {
+			return fmt.Errorf("tuic: UUID required")
+		}
 	}
 	return nil
 }
@@ -59,7 +73,13 @@ type Transport struct {
 	*base.Module
 	config *Config
 
-	conn        *quic.Conn
+	// client mode
+	conn *quic.Conn
+
+	// server mode
+	listener *quic.Listener
+	acceptCh chan net.Conn
+
 	activeConns int64
 	totalConns  uint64
 	bytesIn     uint64
@@ -81,14 +101,145 @@ func New(cfg *Config) (*Transport, error) {
 
 func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportTUIC }
 
-func (t *Transport) Listen(_ string) error     { return fmt.Errorf("tuic: server mode not implemented") }
-func (t *Transport) Accept() (net.Conn, error) { return nil, fmt.Errorf("tuic: server mode not implemented") }
-func (t *Transport) Close() error {
-	if t.conn != nil {
-		return t.conn.CloseWithError(0, "close")
+// ── Server mode ──────────────────────────────────────────────────────────────
+
+func (t *Transport) Listen(addr string) error {
+	tlsCfg, err := t.buildServerTLSConfig()
+	if err != nil {
+		return fmt.Errorf("tuic: TLS config: %w", err)
 	}
+
+	ln, err := quic.ListenAddr(addr, tlsCfg, &quic.Config{
+		MaxIdleTimeout:     30 * time.Second,
+		KeepAlivePeriod:    10 * time.Second,
+		MaxIncomingStreams: 512,
+	})
+	if err != nil {
+		return fmt.Errorf("tuic: listen %s: %w", addr, err)
+	}
+
+	t.listener = ln
+	t.acceptCh = make(chan net.Conn, 64)
+	go t.acceptLoop()
+	log.Info("tuic: server listening on %s", addr)
 	return nil
 }
+
+func (t *Transport) acceptLoop() {
+	ctx := context.Background()
+	for {
+		conn, err := t.listener.Accept(ctx)
+		if err != nil {
+			close(t.acceptCh)
+			return
+		}
+		go t.handleQUICConn(ctx, conn)
+	}
+}
+
+func (t *Transport) handleQUICConn(ctx context.Context, conn *quic.Conn) {
+	for {
+		stream, err := conn.AcceptStream(ctx)
+		if err != nil {
+			return
+		}
+		go t.handleQUICStream(stream)
+	}
+}
+
+func (t *Transport) handleQUICStream(stream *quic.Stream) {
+	// Consume TUIC CONNECT header: [UUID(16)] [addr_len(1)] [addr] [port(2)]
+	hdr := make([]byte, 17) // 16 UUID + 1 addr_len
+	if _, err := io.ReadFull(stream, hdr); err != nil {
+		stream.Close()
+		return
+	}
+	addrLen := int(hdr[16])
+	tail := make([]byte, addrLen+2) // addr bytes + 2 port bytes
+	if _, err := io.ReadFull(stream, tail); err != nil {
+		stream.Close()
+		return
+	}
+
+	atomic.AddUint64(&t.totalConns, 1)
+	atomic.AddInt64(&t.activeConns, 1)
+
+	t.acceptCh <- &tuicConn{stream: stream, t: t}
+}
+
+func (t *Transport) Accept() (net.Conn, error) {
+	conn, ok := <-t.acceptCh
+	if !ok {
+		return nil, io.EOF
+	}
+	return conn, nil
+}
+
+func (t *Transport) buildServerTLSConfig() (*tls.Config, error) {
+	var cert tls.Certificate
+	var err error
+
+	if t.config.TLSCert != "" && t.config.TLSKey != "" {
+		cert, err = tls.LoadX509KeyPair(t.config.TLSCert, t.config.TLSKey)
+		if err != nil {
+			return nil, fmt.Errorf("load cert: %w", err)
+		}
+	} else {
+		sni := t.config.SNI
+		if sni == "" {
+			sni = "www.apple.com"
+		}
+		cert, err = generateSelfSignedCert(sni)
+		if err != nil {
+			return nil, fmt.Errorf("generate self-signed cert: %w", err)
+		}
+		log.Info("tuic: using auto-generated self-signed cert for %s", sni)
+	}
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		NextProtos:   []string{tuicALPN},
+		MinVersion:   tls.VersionTLS13,
+	}, nil
+}
+
+func generateSelfSignedCert(hostname string) (tls.Certificate, error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: hostname},
+		DNSNames:     []string{hostname},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	privDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privDER})
+
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+// ── Client mode ──────────────────────────────────────────────────────────────
 
 func (t *Transport) getConn(ctx context.Context) (*quic.Conn, error) {
 	if t.conn != nil {
@@ -162,12 +313,25 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return &tuicConn{stream: stream, t: t}, nil
 }
 
+func (t *Transport) Close() error {
+	if t.conn != nil {
+		t.conn.CloseWithError(0, "close")
+	}
+	if t.listener != nil {
+		t.listener.Close()
+	}
+	return nil
+}
+
 func (t *Transport) HealthCheck() interfaces.HealthStatus {
 	s := t.Module.HealthCheck()
 	s.Details["active_conns"] = atomic.LoadInt64(&t.activeConns)
 	s.Details["congestion"] = t.config.CongestionControl
+	s.Details["server_mode"] = t.config.ServerMode
 	return s
 }
+
+// ── Connection wrapper ───────────────────────────────────────────────────────
 
 type tuicConn struct {
 	stream *quic.Stream
@@ -196,8 +360,8 @@ func (c *tuicConn) Close() error {
 }
 
 func (c *tuicConn) LocalAddr() net.Addr               { return &net.UDPAddr{} }
-func (c *tuicConn) RemoteAddr() net.Addr              { return &net.UDPAddr{} }
-func (c *tuicConn) SetDeadline(t time.Time) error     { return c.stream.SetDeadline(t) }
+func (c *tuicConn) RemoteAddr() net.Addr               { return &net.UDPAddr{} }
+func (c *tuicConn) SetDeadline(t time.Time) error      { return c.stream.SetDeadline(t) }
 func (c *tuicConn) SetReadDeadline(t time.Time) error  { return c.stream.SetReadDeadline(t) }
 func (c *tuicConn) SetWriteDeadline(t time.Time) error { return c.stream.SetWriteDeadline(t) }
 
@@ -210,5 +374,9 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 	} else {
 		config = DefaultConfig()
 	}
-	return New(config)
+	t := &Transport{
+		Module: base.NewModule(ModuleName, ModuleVersion, nil),
+		config: config,
+	}
+	return t, nil
 }

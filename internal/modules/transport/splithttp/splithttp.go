@@ -38,6 +38,11 @@ type Config struct {
 	BaseURL string
 	Host    string
 	Path    string
+
+	// Server-mode fields
+	ServerMode bool
+	TLSCert    string
+	TLSKey     string
 }
 
 func DefaultConfig() *Config {
@@ -47,7 +52,7 @@ func DefaultConfig() *Config {
 }
 
 func (c *Config) Validate() error {
-	if c.BaseURL == "" {
+	if !c.ServerMode && c.BaseURL == "" {
 		return fmt.Errorf("splithttp: base URL required")
 	}
 	return nil
@@ -57,6 +62,11 @@ type Transport struct {
 	*base.Module
 	config *Config
 	client *http.Client
+
+	// server mode
+	sessions   sync.Map // sessionID → *serverSession
+	acceptCh   chan net.Conn
+	httpServer *http.Server
 
 	activeConns int64
 	totalConns  uint64
@@ -86,9 +96,189 @@ func New(cfg *Config) (*Transport, error) {
 
 func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportSplitHTTP }
 
-func (t *Transport) Listen(_ string) error     { return fmt.Errorf("splithttp: server mode not implemented") }
-func (t *Transport) Accept() (net.Conn, error) { return nil, fmt.Errorf("splithttp: server mode not implemented") }
-func (t *Transport) Close() error              { return nil }
+// ── Server mode ──────────────────────────────────────────────────────────────
+
+func (t *Transport) Listen(addr string) error {
+	t.acceptCh = make(chan net.Conn, 64)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", t.handleHTTP)
+
+	t.httpServer = &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("splithttp: listen %s: %w", addr, err)
+	}
+
+	if t.config.TLSCert != "" && t.config.TLSKey != "" {
+		log.Info("splithttp: server listening on %s (TLS)", addr)
+		go t.httpServer.ServeTLS(ln, t.config.TLSCert, t.config.TLSKey)
+	} else {
+		log.Info("splithttp: server listening on %s (plain HTTP)", addr)
+		go t.httpServer.Serve(ln)
+	}
+
+	return nil
+}
+
+// serverSession holds the pipes for one virtual connection.
+type serverSession struct {
+	conn *serverSplitConn
+	once sync.Once
+}
+
+// serverSplitConn implements net.Conn for an accepted XHTTP session.
+// Client→Server data arrives via POSTs (written to recvPw).
+// Server→Client data goes out via the streaming GET response (read from sendPr).
+type serverSplitConn struct {
+	t         *Transport
+	sessionID string
+
+	recvPr *io.PipeReader
+	recvPw *io.PipeWriter
+
+	sendPr *io.PipeReader
+	sendPw *io.PipeWriter
+
+	done chan struct{}
+	once sync.Once
+}
+
+func newServerSplitConn(t *Transport, sessionID string) *serverSplitConn {
+	recvPr, recvPw := io.Pipe()
+	sendPr, sendPw := io.Pipe()
+	return &serverSplitConn{
+		t:         t,
+		sessionID: sessionID,
+		recvPr:    recvPr,
+		recvPw:    recvPw,
+		sendPr:    sendPr,
+		sendPw:    sendPw,
+		done:      make(chan struct{}),
+	}
+}
+
+func (t *Transport) getOrCreateSession(sessionID string) *serverSession {
+	val, loaded := t.sessions.LoadOrStore(sessionID, &serverSession{})
+	sess := val.(*serverSession)
+	if !loaded {
+		// First time seeing this session — create the conn and emit to acceptCh
+		conn := newServerSplitConn(t, sessionID)
+		sess.conn = conn
+		atomic.AddUint64(&t.totalConns, 1)
+		atomic.AddInt64(&t.activeConns, 1)
+		t.acceptCh <- conn
+	}
+	return sess
+}
+
+func (t *Transport) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session")
+	if sessionID == "" {
+		http.Error(w, "missing session", http.StatusBadRequest)
+		return
+	}
+
+	sess := t.getOrCreateSession(sessionID)
+	conn := sess.conn
+
+	switch r.Method {
+	case http.MethodGet:
+		// Streaming response: server→client data flows here
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, hasFlusher := w.(http.Flusher)
+		buf := make([]byte, 32*1024)
+		for {
+			select {
+			case <-conn.done:
+				return
+			default:
+			}
+			n, err := conn.sendPr.Read(buf)
+			if n > 0 {
+				if _, werr := w.Write(buf[:n]); werr != nil {
+					return
+				}
+				if hasFlusher {
+					flusher.Flush()
+				}
+				atomic.AddUint64(&t.bytesOut, uint64(n))
+			}
+			if err != nil {
+				return
+			}
+		}
+
+	case http.MethodPost:
+		// Client→server data arrives in POST body
+		n, err := io.Copy(conn.recvPw, r.Body)
+		if n > 0 {
+			atomic.AddUint64(&t.bytesIn, uint64(n))
+		}
+		if err != nil && err != io.ErrClosedPipe {
+			http.Error(w, "write error", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (c *serverSplitConn) Read(b []byte) (int, error) {
+	return c.recvPr.Read(b)
+}
+
+func (c *serverSplitConn) Write(b []byte) (int, error) {
+	return c.sendPw.Write(b)
+}
+
+func (c *serverSplitConn) closeOnce() {
+	c.once.Do(func() {
+		close(c.done)
+		c.recvPw.Close()
+		c.sendPw.Close()
+		atomic.AddInt64(&c.t.activeConns, -1)
+		c.t.sessions.Delete(c.sessionID)
+	})
+}
+
+func (c *serverSplitConn) Close() error {
+	c.closeOnce()
+	return nil
+}
+
+func (c *serverSplitConn) LocalAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *serverSplitConn) RemoteAddr() net.Addr              { return &net.TCPAddr{} }
+func (c *serverSplitConn) SetDeadline(_ time.Time) error     { return nil }
+func (c *serverSplitConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *serverSplitConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+func (t *Transport) Accept() (net.Conn, error) {
+	conn, ok := <-t.acceptCh
+	if !ok {
+		return nil, io.EOF
+	}
+	return conn, nil
+}
+
+func (t *Transport) Close() error {
+	if t.httpServer != nil {
+		return t.httpServer.Close()
+	}
+	return nil
+}
+
+// ── Client mode ──────────────────────────────────────────────────────────────
 
 func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	b := make([]byte, 16)
@@ -119,6 +309,7 @@ func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 func (t *Transport) HealthCheck() interfaces.HealthStatus {
 	s := t.Module.HealthCheck()
 	s.Details["active_conns"] = atomic.LoadInt64(&t.activeConns)
+	s.Details["server_mode"] = t.config.ServerMode
 	return s
 }
 
@@ -254,5 +445,15 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 	} else {
 		config = DefaultConfig()
 	}
-	return New(config)
+	t := &Transport{
+		Module: base.NewModule(ModuleName, ModuleVersion, nil),
+		config: config,
+		client: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:    10,
+				IdleConnTimeout: 90 * time.Second,
+			},
+		},
+	}
+	return t, nil
 }

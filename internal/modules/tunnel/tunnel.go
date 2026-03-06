@@ -22,11 +22,24 @@ import (
 	"whispera/internal/modules/killswitch"
 	"whispera/internal/modules/phantom"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
+	"whispera/internal/modules/transport/domainfront"
 	h2c_transport "whispera/internal/modules/transport/h2c"
+	"whispera/internal/modules/transport/httpupgrade"
+	"whispera/internal/modules/transport/meek"
+	"whispera/internal/modules/transport/okwebrtc"
 	quic_transport "whispera/internal/modules/transport/quic"
+	"whispera/internal/modules/transport/shadowsocks"
+	shadowtls_transport "whispera/internal/modules/transport/shadowtls"
+	splithttp_transport "whispera/internal/modules/transport/splithttp"
 	"whispera/internal/modules/transport/tgbot"
+	"whispera/internal/modules/transport/torsocks"
+	tuic_transport "whispera/internal/modules/transport/tuic"
 	"whispera/internal/modules/transport/vkbot"
 	"whispera/internal/modules/transport/vkwebrtc"
+	ws_transport "whispera/internal/modules/transport/websocket"
+	"whispera/internal/modules/transport/yacloud"
+	"whispera/internal/modules/transport/yadisk"
+	"whispera/internal/modules/transport/yatelemost"
 	"whispera/internal/mux"
 	"whispera/internal/obfuscation/russian"
 	"nhooyr.io/websocket"
@@ -148,6 +161,10 @@ type Config struct {
 	ServerList []string
 
 	RekeyInterval time.Duration
+
+	// TransportConfig holds transport-specific credentials from the connection key.
+	// Keys: "password", "sni", "method", "token", "gateway_url", "session_id", etc.
+	TransportConfig map[string]interface{}
 }
 
 func DefaultConfig() *Config {
@@ -713,28 +730,109 @@ func (m *Manager) preparePhantomASN() {
 	}
 }
 
+// tcfg is a shorthand to extract a string from TransportConfig.
+func (m *Manager) tcfg(key string) string {
+	if m.config.TransportConfig == nil {
+		return ""
+	}
+	if v, ok := m.config.TransportConfig[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 // buildCandidates returns the list of transport candidates based on config.
-// Order is used only as a tiebreaker when two succeed simultaneously.
+//
+// Transport field supports:
+//   - ""  / "auto"            — race ALL available transports
+//   - "shadowtls"             — only one specific transport
+//   - "shadowtls,ws,tcp"      — race only the listed transports (comma-separated)
 func (m *Manager) buildCandidates() []dialCandidate {
 	var cc []dialCandidate
+	t := m.config.Transport
+	tc := m.config.TransportConfig
+	auto := t == "auto" || t == ""
 
-	// ── High-stealth relay transports ──────────────────────────────────────
-	if m.config.VKToken != "" && (m.config.Transport == "vk" || m.config.Transport == "auto") {
+	// Build set of explicitly requested transports (for comma-separated list).
+	var explicit map[string]bool
+	if !auto && strings.Contains(t, ",") {
+		explicit = make(map[string]bool)
+		for _, part := range strings.Split(t, ",") {
+			explicit[strings.TrimSpace(part)] = true
+		}
+	}
+
+	// helper: include when transport matches the request or we're in auto mode.
+	only := func(name string) bool {
+		if auto {
+			return true
+		}
+		if explicit != nil {
+			return explicit[name]
+		}
+		return t == name
+	}
+
+	// ── External relay transports (high-stealth) ───────────────────────────
+	if only("vkwebrtc") && m.config.VKToken != "" {
 		cc = append(cc, dialCandidate{"vkwebrtc", true, m.dialVKWebRTC})
 	}
-	if m.config.VKBotUserToken != "" && m.config.VKGroupID != 0 {
+	if only("okwebrtc") && m.tcfg("ok_token") != "" {
+		cc = append(cc, dialCandidate{"okwebrtc", true, m.dialOKWebRTC})
+	}
+	if only("yatelemost") && m.tcfg("session_id") != "" && m.tcfg("conference_url") != "" {
+		cc = append(cc, dialCandidate{"yatelemost", true, m.dialYaTelemost})
+	}
+	if only("yadisk") && m.tcfg("token") != "" {
+		cc = append(cc, dialCandidate{"yadisk", true, m.dialYaDisk})
+	}
+	if only("yacloud") && m.tcfg("gateway_url") != "" {
+		cc = append(cc, dialCandidate{"yacloud", true, m.dialYaCloud})
+	}
+	if only("vkbot") && m.config.VKBotUserToken != "" && m.config.VKGroupID != 0 {
 		cc = append(cc, dialCandidate{"vkbot", true, m.dialVKBot})
 	}
-	if m.config.TGBotToken != "" && m.config.TGGroupChatID != 0 {
+	if only("tgbot") && m.config.TGBotToken != "" && m.config.TGGroupChatID != 0 {
 		cc = append(cc, dialCandidate{"tgbot", true, m.dialTGBot})
 	}
-	if m.config.CDNWorkerURL != "" {
+	if only("cdnworker") && m.config.CDNWorkerURL != "" {
 		cc = append(cc, dialCandidate{"cdnworker", true, m.dialCDNWorker})
+	}
+	_ = tc // used via m.tcfg()
+
+	// ── Censorship-circumvention transports ────────────────────────────────
+	if t == "meek" && m.tcfg("url") != "" {
+		cc = append(cc, dialCandidate{"meek", true, m.dialMeek})
+	}
+	if t == "torsocks" {
+		cc = append(cc, dialCandidate{"torsocks", true, m.dialTorSOCKS})
+	}
+	if t == "domainfront" && m.tcfg("front_domain") != "" {
+		cc = append(cc, dialCandidate{"domainfront", true, m.dialDomainFront})
 	}
 
 	// ── Russian-service HTTP tunnel ────────────────────────────────────────
-	if m.config.RussianService != "" && m.russianTunneler != nil {
-		cc = append(cc, dialCandidate{"russian:" + m.config.RussianService, true, m.dialRussian})
+	// Circumvention-only transports (meek, torsocks, domainfront) have their own
+	// routing; no point layering a Russian service on top of them.
+	// Don't layer Russian service over transports that already have their own CDN/Tor bypass.
+	// Only skip if a *single* circumvention-only transport is explicitly selected.
+	circumvention := !auto && explicit == nil && (t == "meek" || t == "torsocks" || t == "domainfront")
+	if m.russianTunneler != nil && !circumvention {
+		svc := m.config.RussianService
+		if svc == "" && auto {
+			// Auto mode: pick a random available Russian service
+			services := m.russianTunneler.GetAvailableServices()
+			if len(services) > 0 {
+				n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(services))))
+				svc = services[n.Int64()]
+				m.russianTunneler.SetActiveService(svc) //nolint:errcheck
+			}
+		}
+		if svc != "" {
+			cc = append(cc, dialCandidate{"russian:" + svc, true, m.dialRussian})
+		}
 	}
 
 	// ── ASN / Phantom bypass ───────────────────────────────────────────────
@@ -742,11 +840,37 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		cc = append(cc, dialCandidate{"asn_bypass", true, m.dialASNBypass})
 	}
 
+	// ── Transport-layer obfuscation (require explicit selection) ───────────
+	if t == "shadowtls" && m.tcfg("password") != "" && m.config.ServerAddrTCP != "" {
+		cc = append(cc, dialCandidate{"shadowtls", true, m.dialShadowTLS})
+	}
+	if t == "shadowsocks" && m.tcfg("password") != "" && m.config.ServerAddrTCP != "" {
+		cc = append(cc, dialCandidate{"shadowsocks", true, m.dialShadowsocks})
+	}
+
 	// ── Direct transports ──────────────────────────────────────────────────
-	cc = append(cc, dialCandidate{"quic", true, m.dialQUIC})
+	if only("tuic") {
+		cc = append(cc, dialCandidate{"tuic", true, m.dialTUIC})
+	}
+	if only("quic") || (auto && t != "tuic") {
+		cc = append(cc, dialCandidate{"quic", true, m.dialQUIC})
+	}
 	if m.config.ServerAddrTCP != "" {
-		cc = append(cc, dialCandidate{"h2c", false, m.dialH2C})
-		cc = append(cc, dialCandidate{"tcp", true, m.dialTCP})
+		if only("ws") || only("websocket") {
+			cc = append(cc, dialCandidate{"websocket", false, m.dialWebSocket})
+		}
+		if only("httpupgrade") {
+			cc = append(cc, dialCandidate{"httpupgrade", false, m.dialHTTPUpgrade})
+		}
+		if only("splithttp") {
+			cc = append(cc, dialCandidate{"splithttp", false, m.dialSplitHTTP})
+		}
+		if only("h2c") || auto {
+			cc = append(cc, dialCandidate{"h2c", false, m.dialH2C})
+		}
+		if only("tcp") || auto {
+			cc = append(cc, dialCandidate{"tcp", true, m.dialTCP})
+		}
 	}
 
 	return cc
@@ -946,6 +1070,159 @@ func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
 		tcpConn.SetNoDelay(true)
 	}
 	return conn, nil
+}
+
+func (m *Manager) dialSplitHTTP(ctx context.Context) (net.Conn, error) {
+	baseURL := "http://" + m.config.ServerAddrTCP
+	tr, err := splithttp_transport.New(&splithttp_transport.Config{
+		BaseURL: baseURL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddrTCP)
+}
+
+func (m *Manager) dialTUIC(ctx context.Context) (net.Conn, error) {
+	tr, err := tuic_transport.New(&tuic_transport.Config{
+		ServerAddr: m.config.ServerAddr,
+		SNI:        m.config.PhantomSNI,
+		// UUID is a fixed placeholder — server discards it, real auth via Phantom/PSK
+		UUID:              "00000000000000000000000000000000",
+		CongestionControl: "bbr",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialWebSocket(ctx context.Context) (net.Conn, error) {
+	tr, err := ws_transport.New(&ws_transport.Config{
+		ListenAddr: ":0",
+		Path:       "/ws",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddrTCP)
+}
+
+func (m *Manager) dialHTTPUpgrade(ctx context.Context) (net.Conn, error) {
+	tr, err := httpupgrade.New(&httpupgrade.Config{
+		Path: "/",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddrTCP)
+}
+
+func (m *Manager) dialShadowTLS(ctx context.Context) (net.Conn, error) {
+	tr, err := shadowtls_transport.New(&shadowtls_transport.Config{
+		Password:     m.tcfg("password"),
+		ShadowServer: m.config.ServerAddrTCP,
+		SNI:          m.tcfg("sni"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddrTCP)
+}
+
+func (m *Manager) dialShadowsocks(ctx context.Context) (net.Conn, error) {
+	method := m.tcfg("method")
+	if method == "" {
+		method = "aes-256-gcm"
+	}
+	tr, err := shadowsocks.New(&shadowsocks.Config{
+		Password: m.tcfg("password"),
+		Method:   shadowsocks.Method(method),
+		Server:   m.config.ServerAddrTCP,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddrTCP)
+}
+
+func (m *Manager) dialMeek(ctx context.Context) (net.Conn, error) {
+	tr, err := meek.New(&meek.Config{
+		URL:         m.tcfg("url"),
+		FrontDomain: m.tcfg("front"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialTorSOCKS(ctx context.Context) (net.Conn, error) {
+	torAddr := m.tcfg("tor_addr")
+	if torAddr == "" {
+		torAddr = "127.0.0.1:9050"
+	}
+	tr, err := torsocks.New(&torsocks.Config{TorAddr: torAddr})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialDomainFront(ctx context.Context) (net.Conn, error) {
+	tr, err := domainfront.New(&domainfront.Config{
+		FrontDomain:  m.tcfg("front_domain"),
+		TargetDomain: m.tcfg("target_domain"),
+		Path:         "/",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialYaCloud(ctx context.Context) (net.Conn, error) {
+	tr, err := yacloud.New(&yacloud.Config{
+		GatewayURL: m.tcfg("gateway_url"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialYaDisk(ctx context.Context) (net.Conn, error) {
+	tr, err := yadisk.New(&yadisk.Config{
+		OAuthToken: m.tcfg("token"),
+		SessionID:  m.tcfg("session_id"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialYaTelemost(ctx context.Context) (net.Conn, error) {
+	tr, err := yatelemost.New(&yatelemost.Config{
+		SessionID:     m.tcfg("session_id"),
+		ConferenceURL: m.tcfg("conference_url"),
+		ICEPolicy:     "relay",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialOKWebRTC(ctx context.Context) (net.Conn, error) {
+	tr, err := okwebrtc.New(&okwebrtc.Config{
+		OKToken: m.tcfg("ok_token"),
+		OKAppID: m.tcfg("ok_app_id"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
 }
 
 func (m *Manager) getCurrentSNI() string {

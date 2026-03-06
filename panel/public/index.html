@@ -718,43 +718,40 @@
                 <div class="form-group">
                     <label for="new-user-russian" data-i18n="modal.user.russian">Российский сервис</label>
                     <select id="new-user-russian" class="form-control">
-                        <option value="vk" data-i18n="option.russian.vk">VK (Default)</option>
-                        <option value="yandex" data-i18n="option.russian.yandex">Yandex</option>
-                        <option value="mailru" data-i18n="option.russian.mailru">Mail.ru</option>
+                        <option value="">Авто (не указывать)</option>
+                        <option value="vk">VK</option>
+                        <option value="yandex">Yandex</option>
+                        <option value="mailru">Mail.ru</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="new-user-transport">Транспорт для ключа</label>
-                    <select id="new-user-transport" class="form-control">
-                        <optgroup label="Базовые">
-                            <option value="tcp">TCP (Phantom)</option>
+                    <label for="new-user-transport">Транспорт для ключа <small style="opacity:0.55;font-weight:normal;">(Ctrl+клик — несколько)</small></label>
+                    <select id="new-user-transport" class="form-control" multiple size="7">
+                        <optgroup label="Серверные (работают)">
+                            <option value="tcp">TCP + Phantom</option>
                             <option value="udp">UDP</option>
                             <option value="ws">WebSocket</option>
-                            <option value="splithttp">SplitHTTP</option>
                             <option value="httpupgrade">HTTP Upgrade</option>
                             <option value="grpc">gRPC</option>
                             <option value="h2c">H2C (HTTP/2)</option>
-                        </optgroup>
-                        <optgroup label="Обфускация">
-                            <option value="shadowtls">ShadowTLS</option>
                             <option value="shadowsocks">Shadowsocks</option>
                             <option value="obfs4">obfs4</option>
-                            <option value="meek">Meek</option>
-                            <option value="domainfront">Domain Fronting</option>
-                            <option value="tuic">TUIC (QUIC)</option>
-                            <option value="snowflake">Snowflake</option>
-                            <option value="torsocks">Tor SOCKS</option>
+                            <option value="shadowtls">ShadowTLS</option>
                         </optgroup>
-                        <optgroup label="Яндекс">
+                        <optgroup label="Внешний сервис / токен">
+                            <option value="vkwebrtc">VK WebRTC</option>
+                            <option value="okwebrtc">OK WebRTC</option>
                             <option value="yacloud">Яндекс Cloud</option>
                             <option value="yadisk">Яндекс Диск</option>
                             <option value="yatelemost">Яндекс Телемост</option>
-                        </optgroup>
-                        <optgroup label="VK / OK / Боты">
-                            <option value="vkwebrtc">VK WebRTC</option>
-                            <option value="okwebrtc">OK WebRTC</option>
-                            <option value="vkbot">VK Bot</option>
                             <option value="tgbot">Telegram Bot</option>
+                            <option value="vkbot">VK Bot</option>
+                        </optgroup>
+                        <optgroup label="Публичная инфраструктура">
+                            <option value="meek">Meek</option>
+                            <option value="snowflake">Snowflake</option>
+                            <option value="torsocks">Tor SOCKS</option>
+                            <option value="domainfront">Domain Fronting</option>
                         </optgroup>
                     </select>
                 </div>
@@ -768,6 +765,16 @@
                     <label for="new-user-sni">SNI (для Phantom/TLS)</label>
                     <input type="text" id="new-user-sni" class="form-control" placeholder="Авто (из настроек inbound)">
                 </div>
+
+                <!-- Transport-specific credential fields (shown/hidden by JS) -->
+                <div id="new-user-transport-config" style="display:none;">
+                    <div style="border-top:1px solid var(--border,#333);margin:10px 0 8px;padding-top:8px;">
+                        <span style="font-size:0.8em;text-transform:uppercase;opacity:0.6;letter-spacing:0.05em;" id="new-user-tcfg-title">Параметры транспорта</span>
+                        <span id="new-user-tcfg-hint" style="font-size:0.78em;opacity:0.5;margin-left:8px;"></span>
+                    </div>
+                    <div id="new-user-tcfg-fields"></div>
+                </div>
+
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary modal-close"
                         data-i18n="common.cancel">Отмена</button>
@@ -799,38 +806,38 @@
                 </div>
                 <div class="form-group">
                     <label>Транспорт</label>
-                    <select name="transport">
-                        <optgroup label="Базовые">
-                            <option value="tcp">TCP (Phantom)</option>
+                    <select name="transport" onchange="app.onInboundTransportChange(this.value)">
+                        <optgroup label="Серверные (работают)">
+                            <option value="tcp">TCP + Phantom</option>
                             <option value="udp">UDP</option>
                             <option value="ws">WebSocket</option>
-                            <option value="splithttp">SplitHTTP</option>
                             <option value="httpupgrade">HTTP Upgrade</option>
                             <option value="grpc">gRPC</option>
-                            <option value="h2c">H2C (HTTP/2 Clear)</option>
-                        </optgroup>
-                        <optgroup label="Обфускация">
-                            <option value="shadowtls">ShadowTLS</option>
+                            <option value="h2c">H2C (HTTP/2)</option>
                             <option value="shadowsocks">Shadowsocks</option>
                             <option value="obfs4">obfs4</option>
+                            <option value="shadowtls">ShadowTLS</option>
+                        </optgroup>
+                        <optgroup label="HTTP/QUIC транспорты">
+                            <option value="splithttp">SplitHTTP (XHTTP)</option>
+                            <option value="tuic">TUIC (QUIC)</option>
+                        </optgroup>
+                        <optgroup label="Публичная инфраструктура">
                             <option value="meek">Meek</option>
                             <option value="domainfront">Domain Fronting</option>
                         </optgroup>
-                        <optgroup label="Туннели / Relay">
-                            <option value="tuic">TUIC (QUIC)</option>
+                        <optgroup label="Публичные туннели">
                             <option value="snowflake">Snowflake</option>
                             <option value="torsocks">Tor (SOCKS5)</option>
                         </optgroup>
-                        <optgroup label="VK / OK / Боты">
+                        <optgroup label="VK / OK / Яндекс / Боты">
                             <option value="vkwebrtc">VK WebRTC</option>
                             <option value="okwebrtc">OK WebRTC</option>
+                            <option value="yacloud">Яндекс Cloud</option>
+                            <option value="yadisk">Яндекс Диск</option>
+                            <option value="yatelemost">Яндекс Телемост</option>
                             <option value="vkbot">VK Bot</option>
                             <option value="tgbot">Telegram Bot</option>
-                        </optgroup>
-                        <optgroup label="Яндекс / Облако">
-                            <option value="yacloud">Yandex Cloud</option>
-                            <option value="yadisk">Yandex Disk</option>
-                            <option value="yatelemost">Yandex Telemost</option>
                         </optgroup>
                     </select>
                 </div>

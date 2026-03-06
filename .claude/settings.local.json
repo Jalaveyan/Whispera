@@ -111,7 +111,13 @@
       "Bash(xargs grep -l \"login\\\\|token\\\\|jwt\\\\|auth\")",
       "Bash(xargs grep -l \"keys/connection\\\\|generateKey\\\\|connectionKey\")",
       "Bash(echo \"EXIT:$?\")",
-      "Bash(bash -n c:/Whispera-test/update.sh)"
+      "Bash(bash -n c:/Whispera-test/update.sh)",
+      "Bash(xargs grep -l \"shadowtls\\\\|ShadowTLS\")",
+      "Bash(xargs grep -l \"Dial\\\\b\")",
+      "Bash(done)",
+      "Bash(grep -n \"ClientConfig\\\\|type Client\" c:/Whispera-test/internal/modules/config/*.go)",
+      "Bash(go build ./internal/modules/transport/shadowtls/...)",
+      "Bash(grep -n \"func.*Listen\\\\|func.*Accept\\\\|not implemented\\\\|server mode\" c:/Whispera-test/internal/modules/transport/splithttp/*.go c:/Whispera-test/internal/modules/transport/tuic/*.go)"
     ]
   }
 }

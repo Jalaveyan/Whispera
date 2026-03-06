@@ -11,28 +11,33 @@ import (
 type ConnectionKey struct {
 	Version    int    `json:"v"`
 	Name       string `json:"name,omitempty"`
-	Server     string `json:"server"`               
-	ServerTCP  string `json:"server_tcp,omitempty"` 
-	ServerWS   string `json:"server_ws,omitempty"`  
-	PSK        string `json:"psk"`                  
-	ServerPub  string `json:"pub"`                  
-	ObfsPreset string `json:"obfs"`                 
-	Transport  string `json:"transport"`            
+	Server     string `json:"server"`
+	ServerTCP  string `json:"server_tcp,omitempty"`
+	ServerWS   string `json:"server_ws,omitempty"`
+	PSK        string `json:"psk"`
+	ServerPub  string `json:"pub"`
+	ObfsPreset string `json:"obfs"`
+	Transport  string `json:"transport"`
 
 	ObfsProfile string `json:"obfs_profile,omitempty"`
 
-	EnableML  bool `json:"enable_ml"`  
-	EnableFTE bool `json:"enable_fte"` 
+	EnableML  bool `json:"enable_ml"`
+	EnableFTE bool `json:"enable_fte"`
 
-	EnableASNBypass    bool   `json:"asn_bypass"`                
-	TLSFingerprint     string `json:"tls_fingerprint,omitempty"` 
-	DomainFrontHost    string `json:"front_host,omitempty"`      
-	ResidentialProxies string `json:"res_proxies,omitempty"`     
+	EnableASNBypass    bool   `json:"asn_bypass"`
+	TLSFingerprint     string `json:"tls_fingerprint,omitempty"`
+	DomainFrontHost    string `json:"front_host,omitempty"`
+	ResidentialProxies string `json:"res_proxies,omitempty"`
 
-	PhantomEnabled bool   `json:"phantom,omitempty"`     
-	PhantomSNI     string `json:"phantom_sni,omitempty"` 
-	PhantomShortID string `json:"phantom_sid,omitempty"` 
+	PhantomEnabled bool   `json:"phantom,omitempty"`
+	PhantomSNI     string `json:"phantom_sni,omitempty"`
+	PhantomShortID string `json:"phantom_sid,omitempty"`
 	RussianService string `json:"russian_service,omitempty"`
+
+	// TransportConfig carries transport-specific credentials for external
+	// transports (VK WebRTC, Yandex Disk, Telegram Bot, etc.).
+	// Encoded as cfg=BASE64_JSON in the URL format.
+	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
 }
 
 func ParseConnectionKey(key string) (*ConnectionKey, error) {
@@ -101,6 +106,17 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 			ck.RussianService = val
 		}
 
+		// Transport-specific config (e.g. VK token, Yandex OAuth, Telegram bot token)
+		if val := q.Get("cfg"); val != "" {
+			decoded, err := base64.RawURLEncoding.DecodeString(val)
+			if err == nil {
+				var tc map[string]interface{}
+				if json.Unmarshal(decoded, &tc) == nil {
+					ck.TransportConfig = tc
+				}
+			}
+		}
+
 		return ck, nil
 	}
 
@@ -142,14 +158,16 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 
 func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 	cfg := &ClientConfig{
-		Server:         ck.Server,
-		ServerTCP:      ck.ServerTCP,
-		ServerWS:       ck.ServerWS,
-		PSK:            ck.PSK,
-		ServerPub:      ck.ServerPub,
-		ObfsPreset:     ck.ObfsPreset,
-		AppProfile:     ck.ObfsProfile,    
-		RussianService: ck.RussianService, 
+		Server:          ck.Server,
+		ServerTCP:       ck.ServerTCP,
+		ServerWS:        ck.ServerWS,
+		PSK:             ck.PSK,
+		ServerPub:       ck.ServerPub,
+		ObfsPreset:      ck.ObfsPreset,
+		AppProfile:      ck.ObfsProfile,
+		RussianService:  ck.RussianService,
+		TransportConfig: ck.TransportConfig,
+		Transport:       ck.Transport,
 	}
 
 	switch ck.Transport {
@@ -284,6 +302,13 @@ func GenerateConnectionKeyURL(cfg *ClientConfig, opts *KeyGenOptions) string {
 		params.Set("russian", cfg.RussianService)
 	}
 
+	if len(opts.TransportConfig) > 0 {
+		cfgData, err := json.Marshal(opts.TransportConfig)
+		if err == nil {
+			params.Set("cfg", base64.RawURLEncoding.EncodeToString(cfgData))
+		}
+	}
+
 	return fmt.Sprintf("whispera://%s?%s", cfg.Server, params.Encode())
 }
 
@@ -300,6 +325,7 @@ type KeyGenOptions struct {
 	DefaultMarionette string
 	DomainFront       string
 	RussianService    string
+	TransportConfig   map[string]interface{}
 }
 
 func DefaultKeyGenOptions() *KeyGenOptions {
