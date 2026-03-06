@@ -117,7 +117,8 @@
       "Bash(done)",
       "Bash(grep -n \"ClientConfig\\\\|type Client\" c:/Whispera-test/internal/modules/config/*.go)",
       "Bash(go build ./internal/modules/transport/shadowtls/...)",
-      "Bash(grep -n \"func.*Listen\\\\|func.*Accept\\\\|not implemented\\\\|server mode\" c:/Whispera-test/internal/modules/transport/splithttp/*.go c:/Whispera-test/internal/modules/transport/tuic/*.go)"
+      "Bash(grep -n \"func.*Listen\\\\|func.*Accept\\\\|not implemented\\\\|server mode\" c:/Whispera-test/internal/modules/transport/splithttp/*.go c:/Whispera-test/internal/modules/transport/tuic/*.go)",
+      "Bash(grep -rn \"\"\"x25519\"\"\\\\|x25519\" /c/Whispera-test/cmd/)"
     ]
   }
 }
