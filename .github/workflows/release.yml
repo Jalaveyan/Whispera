@@ -69,6 +69,7 @@ jobs:
           npm_config_registry: https://registry.npmjs.org
         run: |
           npm install --legacy-peer-deps
+          chmod -R +x node_modules/.bin/
           npm run build
           npm run bundle
           echo "bundle size: $(du -sh bundle | cut -f1)"
