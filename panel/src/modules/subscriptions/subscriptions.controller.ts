@@ -13,8 +13,9 @@ export class SubscriptionsController {
             const token = auth?.replace('Bearer ', '');
             const subscriptions = await this.subscriptionsService.getSubscriptions(token);
             return res.json({ success: true, subscriptions });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch subscriptions' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch subscriptions';
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
 
@@ -28,8 +29,9 @@ export class SubscriptionsController {
             const token = auth?.replace('Bearer ', '');
             const result = await this.subscriptionsService.addSubscription(token, dto);
             return res.json({ success: true, subscription: result });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add subscription' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to add subscription';
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 
@@ -44,8 +46,9 @@ export class SubscriptionsController {
             const { id, ...dto } = body;
             const result = await this.subscriptionsService.updateSubscription(token, id, dto);
             return res.json({ success: true, subscription: result });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update subscription' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to update subscription';
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 
@@ -59,8 +62,9 @@ export class SubscriptionsController {
             const token = auth?.replace('Bearer ', '');
             await this.subscriptionsService.deleteSubscription(token, id);
             return res.json({ success: true });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete subscription' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to delete subscription';
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 

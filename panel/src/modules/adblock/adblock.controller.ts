@@ -12,8 +12,9 @@ export class AdblockController {
             const token = auth?.replace('Bearer ', '');
             const stats = await this.adblockService.getStats(token);
             return res.json(stats);
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch adblock stats' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch adblock stats';
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
 
@@ -23,8 +24,9 @@ export class AdblockController {
             const token = auth?.replace('Bearer ', '');
             const rules = await this.adblockService.getRules(token);
             return res.json({ success: true, rules });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch adblock rules' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch adblock rules';
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
 
@@ -38,8 +40,9 @@ export class AdblockController {
             const token = auth?.replace('Bearer ', '');
             const result = await this.adblockService.addRule(token, rule);
             return res.json({ success: true, rule: result });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add rule' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to add rule';
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 
@@ -53,8 +56,9 @@ export class AdblockController {
             const token = auth?.replace('Bearer ', '');
             await this.adblockService.deleteRule(token, id);
             return res.json({ success: true });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete rule' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to delete rule';
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 
@@ -68,8 +72,9 @@ export class AdblockController {
             const token = auth?.replace('Bearer ', '');
             await this.adblockService.updateSettings(token, settings);
             return res.json({ success: true });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update settings' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to update settings';
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 }

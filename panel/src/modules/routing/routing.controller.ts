@@ -12,8 +12,9 @@ export class RoutingController {
             const token = auth?.replace('Bearer ', '');
             const rules = await this.routingService.getRules(token);
             return res.json({ success: true, rules });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch routing rules' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch routing rules';
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
 
@@ -27,8 +28,9 @@ export class RoutingController {
             const token = auth?.replace('Bearer ', '');
             const result = await this.routingService.addRule(token, rule);
             return res.json({ success: true, rule: result });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add routing rule' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to add routing rule';
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 
@@ -42,8 +44,9 @@ export class RoutingController {
             const token = auth?.replace('Bearer ', '');
             await this.routingService.deleteRule(token, id);
             return res.json({ success: true });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete routing rule' });
+        } catch (err: any) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to delete routing rule';
+            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 }
