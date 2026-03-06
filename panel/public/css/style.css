@@ -2188,3 +2188,23 @@ button {
     color: #ff5252;
 }
 
+
+.transport-cb-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.85em;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: background 0.15s;
+}
+.transport-cb-label:hover {
+    background: rgba(255,255,255,0.05);
+}
+.transport-cb-label input[type="checkbox"] {
+    accent-color: var(--accent, #0ff);
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+}

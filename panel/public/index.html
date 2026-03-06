@@ -725,35 +725,36 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label for="new-user-transport">Транспорт для ключа <small style="opacity:0.55;font-weight:normal;">(Ctrl+клик — несколько)</small></label>
-                    <select id="new-user-transport" class="form-control" multiple size="7">
-                        <optgroup label="Серверные (работают)">
-                            <option value="tcp">TCP + Phantom</option>
-                            <option value="udp">UDP</option>
-                            <option value="ws">WebSocket</option>
-                            <option value="httpupgrade">HTTP Upgrade</option>
-                            <option value="grpc">gRPC</option>
-                            <option value="h2c">H2C (HTTP/2)</option>
-                            <option value="shadowsocks">Shadowsocks</option>
-                            <option value="obfs4">obfs4</option>
-                            <option value="shadowtls">ShadowTLS</option>
-                        </optgroup>
-                        <optgroup label="Внешний сервис / токен">
-                            <option value="vkwebrtc">VK WebRTC</option>
-                            <option value="okwebrtc">OK WebRTC</option>
-                            <option value="yacloud">Яндекс Cloud</option>
-                            <option value="yadisk">Яндекс Диск</option>
-                            <option value="yatelemost">Яндекс Телемост</option>
-                            <option value="tgbot">Telegram Bot</option>
-                            <option value="vkbot">VK Bot</option>
-                        </optgroup>
-                        <optgroup label="Публичная инфраструктура">
-                            <option value="meek">Meek</option>
-                            <option value="snowflake">Snowflake</option>
-                            <option value="torsocks">Tor SOCKS</option>
-                            <option value="domainfront">Domain Fronting</option>
-                        </optgroup>
-                    </select>
+                    <label>Транспорт для ключа <small style="opacity:0.55;font-weight:normal;">(несколько — гонка)</small></label>
+                    <div id="transport-checkboxes" style="background:var(--bg-secondary,#1a1a2e);border:1px solid var(--border,#333);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;">
+                        <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;">Серверные</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="tcp" checked> TCP + Phantom</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="udp"> UDP</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="ws"> WebSocket</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="httpupgrade"> HTTP Upgrade</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="h2c"> H2C (HTTP/2)</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="shadowtls"> ShadowTLS</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="shadowsocks"> Shadowsocks</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="grpc"> gRPC</label>
+                        </div>
+                        <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin:4px 0 2px;">Внешний сервис</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="vkwebrtc"> VK WebRTC</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="okwebrtc"> OK WebRTC</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="yacloud"> Яндекс Cloud</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="yadisk"> Яндекс Диск</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="yatelemost"> Яндекс Телемост</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="tgbot"> Telegram Bot</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="vkbot"> VK Bot</label>
+                        </div>
+                        <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin:4px 0 2px;">Обходы</div>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="meek"> Meek</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="torsocks"> Tor SOCKS</label>
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="domainfront"> Domain Fronting</label>
+                        </div>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label for="new-user-port">Порт (опционально)</label>

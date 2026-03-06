@@ -1540,8 +1540,8 @@ class WhisperaApp {
         document.querySelector('[name="transport"]')?.addEventListener('change', (e) => {
             this.onInboundTransportChange(e.target.value);
         });
-        document.getElementById('new-user-transport')?.addEventListener('change', (e) => {
-            const selected = Array.from(e.target.selectedOptions).map(o => o.value);
+        document.getElementById('transport-checkboxes')?.addEventListener('change', () => {
+            const selected = Array.from(document.querySelectorAll('input[name="transport-cb"]:checked')).map(i => i.value);
             this.onKeyTransportChange(selected.length === 1 ? selected[0] : selected);
         });
 
@@ -1735,7 +1735,7 @@ class WhisperaApp {
         const obfsProfile = document.getElementById('new-user-obfs').value;
         const marionetteProfile = document.getElementById('new-user-marionette').value;
         const russianService = document.getElementById('new-user-russian').value;
-        const transport = Array.from(document.getElementById('new-user-transport')?.selectedOptions || []).map(o => o.value).join(',') || 'tcp';
+        const transport = Array.from(document.querySelectorAll('input[name="transport-cb"]:checked')).map(i => i.value).join(',') || 'tcp';
         const sni = document.getElementById('new-user-sni')?.value || '';
         const portVal = parseInt(document.getElementById('new-user-port')?.value) || 0;
 
