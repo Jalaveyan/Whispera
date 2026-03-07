@@ -931,8 +931,7 @@ class WhisperaApp {
     init() {
         if (api.token) {
             this.showMainApp();
-            const savedPage = localStorage.getItem('whispera_page') || 'dashboard';
-            this.navigateTo(savedPage);
+            this.loadDashboard();
         } else {
             this.showLogin();
         }
@@ -948,6 +947,13 @@ class WhisperaApp {
 
         const savedTheme = localStorage.getItem('whispera_theme') || 'dark';
         this.handleThemeChange(savedTheme);
+
+        if (api.token) {
+            const savedPage = localStorage.getItem('whispera_page') || 'dashboard';
+            if (savedPage !== 'dashboard') {
+                this.navigateTo(savedPage);
+            }
+        }
     }
 
     initBackgroundEffects() {
