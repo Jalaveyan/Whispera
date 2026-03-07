@@ -134,6 +134,7 @@ func (p *Provider) Stop() error {
 }
 
 func (p *Provider) keyPoolGenerator() {
+	ctx := p.Context()
 	for p.IsRunning() {
 		key := make([]byte, KeySize)
 		if _, err := rand.Read(key); err != nil {
@@ -145,7 +146,8 @@ func (p *Provider) keyPoolGenerator() {
 			p.mu.Lock()
 			p.keysGenerated++
 			p.mu.Unlock()
-		default:
+		case <-ctx.Done():
+			return
 		}
 	}
 }
