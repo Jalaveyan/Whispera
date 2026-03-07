@@ -123,7 +123,6 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 	stdlog.Printf("[SOCKS5] Tunnel set")
 }
 
-// ── TCP handler ───────────────────────────────────────────────────────────────
 
 func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, targetPort uint16) error {
 	defer func() {
@@ -177,15 +176,10 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	return nil
 }
 
-// ── UDP relay handler ─────────────────────────────────────────────────────────
 
-// handleUDPRelay handles a full SOCKS5 UDP ASSOCIATE session.
-// udpConn is the UDP socket mihomo sends datagrams to.
-// tcpConn is the control connection; closing it ends the relay.
 func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	defer udpConn.Close()
 
-	// Per-destination tunnel streams: "host:port" → net.Conn
 	streams := make(map[string]net.Conn)
 	var streamsMu sync.Mutex
 
@@ -197,7 +191,6 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 		streamsMu.Unlock()
 	}()
 
-	// When the TCP control connection closes, stop the UDP relay.
 	go func() {
 		buf := make([]byte, 1)
 		tcpConn.Read(buf)
@@ -216,7 +209,7 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 			clientAddr = addr
 		}
 
-		if n < 4 || buf[2] != 0 { // ignore fragmented packets (FRAG != 0)
+		if n < 4 || buf[2] != 0 {
 			continue
 		}
 
@@ -228,7 +221,6 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 
 		dstKey := fmt.Sprintf("%s:%d", dstHost, dstPort)
 
-		// Get or create tunnel stream for this destination.
 		streamsMu.Lock()
 		stream, exists := streams[dstKey]
 		if !exists {
@@ -251,7 +243,6 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 			}
 			streams[dstKey] = stream
 
-			// Goroutine: read responses from tunnel → send back to client.
 			go func(stream net.Conn, dstKey, dstHost string, dstPort uint16) {
 				defer func() {
 					streamsMu.Lock()
@@ -260,8 +251,6 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 					stream.Close()
 				}()
 
-				// Read length-framed UDP datagrams from the tunnel stream.
-				// Each datagram is prefixed with a 2-byte big-endian length.
 				hdr := make([]byte, 2)
 				respBuf := make([]byte, 65535)
 				for {
@@ -284,8 +273,6 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 		}
 		streamsMu.Unlock()
 
-		// Forward payload to tunnel with 2-byte length prefix to preserve
-		// UDP datagram boundaries over the TCP-based yamux stream.
 		frame := make([]byte, 2+len(payload))
 		binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
 		copy(frame[2:], payload)
@@ -298,14 +285,7 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	}
 }
 
-// ── SOCKS5 UDP header helpers ─────────────────────────────────────────────────
 
-// parseUDPHeader parses the SOCKS5 UDP request header:
-//
-//	+----+------+------+----------+----------+----------+
-//	|RSV | FRAG | ATYP | DST.ADDR | DST.PORT |   DATA   |
-//	+----+------+------+----------+----------+----------+
-//	| 2  |  1   |  1   | variable |    2     | variable |
 func parseUDPHeader(data []byte) (host string, port uint16, payload []byte, err error) {
 	if len(data) < 4 {
 		return "", 0, nil, fmt.Errorf("packet too short (%d bytes)", len(data))
@@ -313,21 +293,21 @@ func parseUDPHeader(data []byte) (host string, port uint16, payload []byte, err 
 	atyp := data[3]
 	var offset int
 	switch atyp {
-	case 0x01: // IPv4
+	case 0x01:
 		if len(data) < 10 {
 			return "", 0, nil, fmt.Errorf("IPv4 packet too short")
 		}
 		host = net.IP(data[4:8]).String()
 		port = binary.BigEndian.Uint16(data[8:10])
 		offset = 10
-	case 0x04: // IPv6
+	case 0x04:
 		if len(data) < 22 {
 			return "", 0, nil, fmt.Errorf("IPv6 packet too short")
 		}
 		host = net.IP(data[4:20]).String()
 		port = binary.BigEndian.Uint16(data[20:22])
 		offset = 22
-	case 0x03: // Domain
+	case 0x03:
 		if len(data) < 5 {
 			return "", 0, nil, fmt.Errorf("domain packet too short")
 		}
@@ -344,29 +324,27 @@ func parseUDPHeader(data []byte) (host string, port uint16, payload []byte, err 
 	return host, port, data[offset:], nil
 }
 
-// parseUDPDataHeader parses the SealUDPData header prepended by the relay server
-// to UDP responses. Format: [addrType(1), IP(4|16), port(2), payload...]
 func parseUDPDataHeader(data []byte) (host string, port uint16, payload []byte, err error) {
 	if len(data) < 4 {
 		return "", 0, nil, fmt.Errorf("udp data header too short")
 	}
 	atyp := data[0]
 	switch atyp {
-	case 0x01: // IPv4
+	case 0x01:
 		if len(data) < 7 {
 			return "", 0, nil, fmt.Errorf("udp IPv4 header too short")
 		}
 		host = net.IP(data[1:5]).String()
 		port = binary.BigEndian.Uint16(data[5:7])
 		payload = data[7:]
-	case 0x04: // IPv6
+	case 0x04:
 		if len(data) < 19 {
 			return "", 0, nil, fmt.Errorf("udp IPv6 header too short")
 		}
 		host = net.IP(data[1:17]).String()
 		port = binary.BigEndian.Uint16(data[17:19])
 		payload = data[19:]
-	case 0x03: // Domain
+	case 0x03:
 		if len(data) < 2 {
 			return "", 0, nil, fmt.Errorf("udp domain header too short")
 		}
@@ -383,8 +361,6 @@ func parseUDPDataHeader(data []byte) (host string, port uint16, payload []byte, 
 	return host, port, payload, nil
 }
 
-// buildUDPReply wraps payload in a SOCKS5 UDP reply header addressed from
-// (host, port) so mihomo can route it back to the game.
 func buildUDPReply(host string, port uint16, payload []byte) []byte {
 	var hdr []byte
 	ip := net.ParseIP(host)
@@ -399,7 +375,6 @@ func buildUDPReply(host string, port uint16, payload []byte) []byte {
 		copy(hdr[4:20], ip6)
 		binary.BigEndian.PutUint16(hdr[20:22], port)
 	} else {
-		// Domain
 		hdr = make([]byte, 5+len(host)+2)
 		hdr[3] = 0x03
 		hdr[4] = byte(len(host))

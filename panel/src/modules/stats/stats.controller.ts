@@ -16,8 +16,9 @@ export class StatsController {
             const token = auth?.replace('Bearer ', '');
             const stats = await this.statsService.getTrafficStats(token, period || '24h');
             return res.json({ success: true, ...stats });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch traffic stats' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch traffic stats' });
         }
     }
 
@@ -27,8 +28,9 @@ export class StatsController {
             const token = auth?.replace('Bearer ', '');
             const users = await this.statsService.getUserTraffic(token);
             return res.json({ success: true, users });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch user traffic' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch user traffic' });
         }
     }
 
@@ -42,8 +44,9 @@ export class StatsController {
             const token = auth?.replace('Bearer ', '');
             const data = await this.statsService.getChartData(token, period || '24h');
             return res.json({ success: true, ...data });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch chart data' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch chart data' });
         }
     }
 }

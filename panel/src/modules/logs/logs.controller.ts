@@ -16,8 +16,9 @@ export class LogsController {
             const token = auth?.replace('Bearer ', '');
             const logs = await this.logsService.getLogs(token, limit);
             return res.json({ success: true, logs });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch logs' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch logs' });
         }
     }
 }

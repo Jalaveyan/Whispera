@@ -12,8 +12,9 @@ export class OutboundsController {
             const token = auth?.replace('Bearer ', '');
             const outbounds = await this.outboundsService.getOutbounds(token);
             return res.json({ success: true, outbounds });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch outbounds' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch outbounds' });
         }
     }
 
@@ -27,8 +28,9 @@ export class OutboundsController {
             const token = auth?.replace('Bearer ', '');
             const result = await this.outboundsService.addOutbound(token, outbound);
             return res.json({ success: true, outbound: result });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add outbound' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to add outbound' });
         }
     }
 
@@ -42,8 +44,9 @@ export class OutboundsController {
             const token = auth?.replace('Bearer ', '');
             await this.outboundsService.deleteOutbound(token, tag);
             return res.json({ success: true });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete outbound' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to delete outbound' });
         }
     }
 }

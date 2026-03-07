@@ -181,8 +181,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		if pPrivKey == "" {
 			pPrivKey = serverConfig.Server.PrivateKey
 		}
-		// Merge per-inbound settings with global phantom section.
-		// Per-inbound values take priority; fall back to global when zero/empty.
 		inboundServerNames := inbound.StreamSettings.Phantom.ServerNames
 		if len(inboundServerNames) == 0 {
 			inboundServerNames = serverConfig.Phantom.ServerNames
@@ -205,8 +203,28 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			ShortIds:    inboundShortIds,
 			MaxTimeDiff: inboundMaxTimeDiff,
 			Fingerprint: serverConfig.Phantom.Fingerprint,
+			GetUsers: func() []phantom.UserEntry {
+				registered := apiserver.GetRegisteredUsers()
+				entries := make([]phantom.UserEntry, 0, len(registered))
+				for _, u := range registered {
+					privBytes, err := base64.StdEncoding.DecodeString(u.PrivateKey)
+					if err != nil || len(privBytes) != 32 {
+						continue
+					}
+					pub, err := curve25519.X25519(privBytes, curve25519.Basepoint)
+					if err != nil || len(pub) != 32 {
+						continue
+					}
+					var pubKey [32]byte
+					copy(pubKey[:], pub)
+					entries = append(entries, phantom.UserEntry{UserID: u.UserID, PublicKey: pubKey})
+				}
+				return entries
+			},
 			OnAuthenticated: func(conn net.Conn, clientID string) {
 				log.Printf("[Dynamic-Phantom] Authenticated: %s on inbound %s", clientID, inbound.Tag)
+				stats.RegisterConn(clientID, conn)
+				defer stats.DeregisterConn(clientID, conn)
 				if globalRelay != nil {
 					var session interfaces.Session
 					if globalSessionMgr != nil {
@@ -267,7 +285,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		}
 	}
 
-	// Helper: extract a string from the inbound's Params map.
 	paramStr := func(key, fallback string) string {
 		if v, ok := inbound.StreamSettings.Params[key]; ok {
 			if s, ok := v.(string); ok && s != "" {
@@ -277,7 +294,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		return fallback
 	}
 
-	// ── WebSocket ──────────────────────────────────────────────────────────────
 	if network == "ws" {
 		path := inbound.StreamSettings.WS.Path
 		if path == "" {
@@ -318,7 +334,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		return nil
 	}
 
-	// ── Shadowsocks ────────────────────────────────────────────────────────────
 	if network == "shadowsocks" {
 		password := paramStr("password", "")
 		if password == "" {
@@ -362,7 +377,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		return nil
 	}
 
-	// ── obfs4 ──────────────────────────────────────────────────────────────────
 	if network == "obfs4" {
 		obfsCfg := &obfs4_transport.Config{
 			ListenAddr: listenAddr,
@@ -575,7 +589,6 @@ func main() {
 			fmt.Printf("User %s is now an admin\n", *email)
 			os.Exit(0)
 		case "update-checksum":
-			// Recompute and save config checksum — call this after editing config.yaml
 			cfgPath := "/etc/whispera/config.yaml"
 			if len(os.Args) >= 3 {
 				cfgPath = os.Args[2]
@@ -676,7 +689,6 @@ func createModules(manager *lifecycle.Manager) error {
 	}
 	globalServerConfig = serverConfig
 
-	// Persist auth_token to config.yaml so it survives server restarts
 	if serverConfig.API.AuthToken == "" && *configFile != "" {
 		tokenBytes := make([]byte, 32)
 		if _, err := rand.Read(tokenBytes); err == nil {
@@ -1143,9 +1155,6 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 		log.Printf("[TCP] New connection from %v", addr)
 	}
 
-	// Peek the first byte to detect whether client is sending a handshake
-	// (starts with 0x01 = HandshakeTypeInit) or going straight to smux (starts with 0x00).
-	// This lets client and server configs be mismatched without breaking.
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	var firstByte [1]byte
 	if _, err := io.ReadFull(conn, firstByte[:]); err != nil {
@@ -1157,7 +1166,6 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 	conn.SetReadDeadline(time.Time{})
 
 	if hsHandler != nil && firstByte[0] == byte(handshake.HandshakeTypeInit) {
-		// Client is sending a handshake — read remaining 63 bytes
 		rest := make([]byte, 63)
 		if _, err := io.ReadFull(conn, rest); err != nil {
 			if *debug {
@@ -1186,7 +1194,6 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			globalRelay.ServeTunnel(conn, nil)
 		}
 	} else {
-		// Client is going straight to smux — prepend the peeked byte back
 		if *debug {
 			log.Printf("[TCP] No handshake from %v (first byte=0x%02x), routing directly to smux", addr, firstByte[0])
 		}

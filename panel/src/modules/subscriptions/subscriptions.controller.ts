@@ -70,7 +70,6 @@ export class SubscriptionsController {
 
     @Post('api/subscriptions/update-all')
     async updateAll(@Headers('authorization') auth: string, @Res() res: Response) {
-        // No-op: subscriptions are served live, no polling needed
         void auth;
         return res.json({ success: true });
     }

@@ -81,9 +81,6 @@ func NewResolver(cfg *Config) *Resolver {
 		cfg = DefaultConfig()
 	}
 
-	// Force IPv4 for DoH transport. Without this, the system resolver may pick
-	// IPv6 for cloudflare-dns.com / dns.google, causing DNS traffic to flow over
-	// the IPv6 interface instead of through the VPN tunnel.
 	ipv4Dialer := &net.Dialer{}
 	r := &Resolver{
 		config: cfg,

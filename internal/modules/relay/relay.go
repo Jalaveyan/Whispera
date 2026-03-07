@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/adblock"
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
@@ -149,8 +150,6 @@ func (s *Server) SetRawPacketHandler(handler func(data []byte) error) {
 	s.rawPacketHandler = handler
 }
 
-// SetRouter injects the routing engine so the relay can decide per-connection
-// whether to dial directly or via the upstream proxy (e.g. WARP).
 func (s *Server) SetRouter(r interfaces.Router) {
 	s.routerMu.Lock()
 	s.router = r
@@ -230,6 +229,11 @@ func (s *Server) handleConnect(frame *Frame, writer ResponseWriter) error {
 	}
 	if payload.Protocol == ProtoTCP && !s.config.EnableTCP {
 		s.sendFrameToWriter(NewConnectFailFrame(frame.StreamID, "TCP relay disabled"), writer)
+		return nil
+	}
+
+	if adblock.Global.IsBlocked(payload.Addr) {
+		s.sendFrameToWriter(NewConnectFailFrame(frame.StreamID, "blocked"), writer)
 		return nil
 	}
 
@@ -339,7 +343,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     256 * 1024 * 1024,
-		MaxStreamBuffer:      4 * 1024 * 1024, // 4MB: match client to prevent inter-stream starvation
+		MaxStreamBuffer:      4 * 1024 * 1024,
 		KeepAliveInterval:    10 * time.Second,
 		KeepAliveTimeout:     90 * time.Second,
 		MaxConcurrentStreams: 1024,
@@ -395,9 +399,6 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		network = "udp"
 	}
 
-	// Determine the dialer: consult the routing engine if available,
-	// otherwise fall back to the configured upstream proxy.
-	// UDP always bypasses the upstream proxy (WARP SOCKS5 does not support UDP).
 	dialer := s.proxyDialer
 	if network == "udp" {
 		dialer = proxy.Direct
@@ -417,7 +418,6 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 					s.log.Info("Blocked connection to %s:%d by routing rule", addr, port)
 					return
 				}
-				// DestinationProxy → keep s.proxyDialer (WARP)
 			}
 		}
 	}
@@ -441,10 +441,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	errCh := make(chan error, 2)
 
 	if network == "udp" {
-		// UDP: use length-framed relay to preserve datagram boundaries over
-		// the TCP-based yamux stream. Each datagram is [uint16 len][payload].
 		go func() {
-			// stream → target: read length-framed datagrams, write raw UDP
 			hdr := make([]byte, 2)
 			buf := make([]byte, 65535)
 			for {
@@ -468,7 +465,6 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 			}
 		}()
 		go func() {
-			// target → stream: read raw UDP datagrams, write length-framed
 			buf := make([]byte, 65535)
 			for {
 				n, err := target.Read(buf)
@@ -486,7 +482,6 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 			}
 		}()
 	} else {
-		// TCP: plain byte stream, no framing needed.
 		go func() {
 			buf := make([]byte, 256*1024)
 			_, err := io.CopyBuffer(target, stream, buf)

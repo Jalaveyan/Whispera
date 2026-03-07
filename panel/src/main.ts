@@ -47,7 +47,6 @@ async function bootstrap() {
   const proto = httpsOptions ? 'https' : 'http';
   console.log(`Whispera Panel running on ${proto}://localhost:${port}`);
 
-  // If running HTTPS, start an HTTP redirect server on HTTP_PORT (default 80)
   if (httpsOptions) {
     const httpPort = parseInt(process.env.HTTP_PORT || '80', 10);
     const httpsPort = String(port);

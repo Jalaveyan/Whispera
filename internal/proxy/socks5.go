@@ -82,9 +82,6 @@ type SOCKS5Server struct {
 
 type PacketHandler func(data []byte, from net.Addr) error
 
-// UDPRelayHandler receives full control of the UDP relay socket and the
-// TCP control connection. It is responsible for reading UDP packets,
-// forwarding them through the tunnel, and sending responses back.
 type UDPRelayHandler func(udpConn *net.UDPConn, tcpConn net.Conn)
 
 func NewSOCKS5Server(addr string, handler func(net.Conn, string, uint16) error) *SOCKS5Server {

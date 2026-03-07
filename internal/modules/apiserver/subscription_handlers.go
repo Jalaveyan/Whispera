@@ -16,27 +16,24 @@ import (
 	"whispera/internal/network"
 )
 
-// ── data model ────────────────────────────────────────────────────────────────
 
-// Subscription represents a shareable subscription link for one or more users.
 type Subscription struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
-	Token       string    `json:"token"`        // secret token — part of the URL
-	UserIDs     []int     `json:"user_ids"`     // v1 user IDs that belong to this sub
-	Transports  []string  `json:"transports"`   // preferred transports to include
+	Token       string    `json:"token"`
+	UserIDs     []int     `json:"user_ids"`
+	Transports  []string  `json:"transports"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
-	// SubURL is the full URL clients import (populated by GET /api/subscriptions)
 	SubURL string `json:"sub_url,omitempty"`
 }
 
-const subDataFile = "subscriptions.json"
+const subDataFile = "/etc/whispera/subscriptions.json"
 
 var (
 	subStoreMu sync.RWMutex
-	subStore   = make(map[string]*Subscription) // keyed by ID
-	subByToken = make(map[string]*Subscription) // keyed by Token
+	subStore   = make(map[string]*Subscription)
+	subByToken = make(map[string]*Subscription)
 	subNextID  int
 )
 
@@ -86,9 +83,7 @@ func loadSubscriptions() {
 	log.Printf("[API] Loaded %d subscriptions from %s", len(p.Subscriptions), subDataFile)
 }
 
-// ── handlers ──────────────────────────────────────────────────────────────────
 
-// GET /api/subscriptions
 func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
@@ -110,8 +105,6 @@ func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// POST /api/subscriptions/add
-// Body: {"name":"My Sub","user_ids":[1,2],"transports":["tcp","vkwebrtc"]}
 func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name       string   `json:"name"`
@@ -131,7 +124,6 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, http.StatusInternalServerError, "failed to generate token")
 		return
 	}
-	// Use URL-safe base64 without padding
 	token = base64.RawURLEncoding.EncodeToString([]byte(token))[:32]
 
 	subStoreMu.Lock()
@@ -163,8 +155,6 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /api/subscriptions/update
-// Body: {"id":"1","name":"New Name","user_ids":[1,2,3],"transports":["tcp"]}
 func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID         string   `json:"id"`
@@ -200,8 +190,6 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	s.jsonOK(w, map[string]interface{}{"success": true, "subscription": sub})
 }
 
-// POST /api/subscriptions/delete
-// Body: {"id":"1"}
 func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`
@@ -223,8 +211,6 @@ func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 	s.jsonOK(w, map[string]interface{}{"success": true})
 }
 
-// GET /sub/{token}
-// Returns base64-encoded JSON config for Whispera clients (importable subscription).
 func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
 	if token == "" {
@@ -245,7 +231,6 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 	serverIP, _ := network.DetectServerIP(ctx)
 
-	// Build server list from config
 	var servers []map[string]interface{}
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {
@@ -272,14 +257,12 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Return as base64 so it's compatible with common subscription importers
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="whispera-sub.txt"`)
 	w.Header().Set("Profile-Update-Interval", "24")
 	fmt.Fprint(w, base64.StdEncoding.EncodeToString(raw))
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 func buildSubURL(r *http.Request, serverIP, token string) string {
 	scheme := "http"
@@ -327,14 +310,11 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 			"security":  inbound.StreamSettings.Security,
 		}
 
-		// Include additional ports if set
 		if len(inbound.Ports) > 0 {
 			entry["ports"] = inbound.AllPorts()
 		}
 
-		// Include phantom/reality public key
 		if pk := inbound.StreamSettings.Phantom.PrivateKey; pk != "" {
-			// Derive public key
 			entry["public_key"] = derivePublicKeyB64(pk)
 		}
 		if len(inbound.StreamSettings.Phantom.ServerNames) > 0 {
@@ -344,7 +324,6 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 			entry["ws_path"] = inbound.StreamSettings.WS.Path
 		}
 
-		// Include transport-specific params (password, sni, method, node_id, uuid, etc.)
 		for k, v := range inbound.StreamSettings.Params {
 			if _, exists := entry[k]; !exists {
 				entry[k] = v
@@ -354,7 +333,6 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 		servers = append(servers, entry)
 	}
 
-	// Also add transports from global config (UDP/TCP if enabled)
 	if cfg.Transport.UDP.Enabled && (len(transportSet) == 0 || transportSet["udp"]) {
 		_, port, _ := splitHostPort(cfg.Transport.UDP.ListenAddr)
 		servers = append(servers, map[string]interface{}{

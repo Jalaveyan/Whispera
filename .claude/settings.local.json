@@ -126,7 +126,11 @@
       "Bash(xargs grep -l \"backup\\\\|renew\\\\|cert\\\\|v1/config\\\\|updateServer\\\\|saveSettings\")",
       "Bash(xargs grep -n \"backup\\\\|renew\\\\|cert\\\\|v1/config/update\\\\|updateServer\\\\|saveSettings\")",
       "Bash(xargs grep -ln \"keys\")",
-      "Bash(grep -n \"os.WriteFile\\\\|json.Marshal\\\\|yaml.Marshal\\\\|persist\\\\|userStore\\\\|SaveUser\\\\|LoadUser\" /c/Whispera-test/internal/modules/apiserver/*.go)"
+      "Bash(grep -n \"os.WriteFile\\\\|json.Marshal\\\\|yaml.Marshal\\\\|persist\\\\|userStore\\\\|SaveUser\\\\|LoadUser\" /c/Whispera-test/internal/modules/apiserver/*.go)",
+      "Bash(grep -n \"AdminUsername\\\\|AdminPassword\\\\|admin_username\\\\|admin_password\" c:/Whispera-test/internal/modules/config/*.go)",
+      "Bash(go build ./internal/stats/ ./internal/modules/apiserver/ ./cmd/server/)",
+      "Bash(grep -n \"AdminUsername\\\\|AdminPassword\\\\|type ServerConfig\\\\b\" c:/Whispera-test/internal/modules/config/*.go)",
+      "Bash(go build ./internal/modules/phantom/ ./internal/modules/tunnel/ ./internal/modules/apiserver/ ./cmd/server/)"
     ]
   }
 }

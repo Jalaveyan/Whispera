@@ -1834,6 +1834,7 @@ button {
     display: none;
     align-items: center;
     justify-content: center;
+    padding: 16px;
     z-index: 1000;
     transition: opacity 0.2s cubic-bezier(0.2, 0.0, 0, 1.0);
 }
@@ -1904,7 +1905,8 @@ button {
     color: var(--md-sys-color-on-surface);
 }
 
-.modal-form {
+.modal-form,
+.modal-body {
     padding: 0 24px 24px;
     overflow-y: auto;
     flex: 1;
@@ -1980,27 +1982,99 @@ button {
     }
 }
 
+.menu-toggle {
+    display: none;
+}
+
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 49;
+}
+
+.sidebar-overlay.active {
+    display: block;
+}
+
 @media (max-width: 768px) {
     .sidebar {
         transform: translateX(-100%);
-        transition: transform 0.3s;
+        transition: transform 0.3s ease;
+        z-index: 50;
     }
 
     .sidebar.open {
         transform: translateX(0);
     }
 
-    .main-wrapper {
+    .content {
         margin-left: 0;
     }
 
-    .top-action-menu {
-        display: block;
+    .menu-toggle {
+        display: flex;
     }
 
+    .top-bar {
+        padding: 0 16px;
+        gap: 8px;
+    }
+
+    .breadcrumbs .bg-crumb,
+    .breadcrumbs .fa-chevron-right {
+        display: none;
+    }
+
+    .page {
+        padding: 16px;
+    }
+
+    .page-header {
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .page-header h2 {
+        font-size: 18px;
+    }
+
+    .table-container {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .table-header {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 12px 16px;
+    }
+
+    .data-table th,
+    .data-table td {
+        padding: 12px 16px;
+        font-size: 14px;
+        white-space: nowrap;
+    }
+
+    .stats-grid {
+        grid-template-columns: 1fr;
+        gap: 16px;
+    }
+
+    .grid-cols-4,
+    .grid-cols-3,
+    .grid-cols-2 {
+        grid-template-columns: 1fr;
+    }
 
     .dashboard-grid {
         gap: 16px;
+    }
+
+    .modal-header h3 {
+        font-size: 18px;
     }
 }
 

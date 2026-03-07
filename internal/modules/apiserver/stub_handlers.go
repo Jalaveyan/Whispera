@@ -2,31 +2,13 @@ package apiserver
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
-	"sync"
-)
 
-// ── Adblock stubs ─────────────────────────────────────────────────────────────
-
-type adblockRule struct {
-	ID      string `json:"id"`
-	Domain  string `json:"domain"`
-	Type    string `json:"type"`
-	Enabled bool   `json:"enabled"`
-}
-
-var (
-	adblockMu      sync.RWMutex
-	adblockRules   = make(map[string]*adblockRule)
-	adblockNextID  = 1
-	adblockBlocked int64
+	"whispera/internal/adblock"
 )
 
 func (s *Server) handleAdblockStats(w http.ResponseWriter, r *http.Request) {
-	adblockMu.RLock()
-	total := adblockBlocked
-	adblockMu.RUnlock()
+	total := adblock.Global.BlockedCount()
 	s.jsonOK(w, map[string]interface{}{
 		"total_blocked": total,
 		"dns_blocked":   total,
@@ -36,12 +18,7 @@ func (s *Server) handleAdblockStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdblockRules(w http.ResponseWriter, r *http.Request) {
-	adblockMu.RLock()
-	rules := make([]*adblockRule, 0, len(adblockRules))
-	for _, r := range adblockRules {
-		rules = append(rules, r)
-	}
-	adblockMu.RUnlock()
+	rules := adblock.Global.List()
 	s.jsonOK(w, map[string]interface{}{"success": true, "rules": rules})
 }
 
@@ -54,15 +31,7 @@ func (s *Server) handleAdblockAddRule(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, http.StatusBadRequest, "domain required")
 		return
 	}
-	if req.Type == "" {
-		req.Type = "domain"
-	}
-	adblockMu.Lock()
-	id := fmt.Sprintf("%d", adblockNextID)
-	adblockNextID++
-	rule := &adblockRule{ID: id, Domain: req.Domain, Type: req.Type, Enabled: true}
-	adblockRules[id] = rule
-	adblockMu.Unlock()
+	rule := adblock.Global.Add(req.Domain, req.Type)
 	s.jsonOK(w, map[string]interface{}{"success": true, "rule": rule})
 }
 
@@ -74,17 +43,13 @@ func (s *Server) handleAdblockDeleteRule(w http.ResponseWriter, r *http.Request)
 		s.jsonError(w, http.StatusBadRequest, "id required")
 		return
 	}
-	adblockMu.Lock()
-	delete(adblockRules, req.ID)
-	adblockMu.Unlock()
+	adblock.Global.Remove(req.ID)
 	s.jsonOK(w, map[string]interface{}{"success": true})
 }
 
 func (s *Server) handleAdblockSettings(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, map[string]interface{}{"success": true})
 }
-
-// ── Renew cert stub ───────────────────────────────────────────────────────────
 
 func (s *Server) handleRenewCert(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, map[string]interface{}{"success": true, "message": "Certificate renewal initiated"})

@@ -84,6 +84,13 @@ type Config struct {
 	EnableCoverTraffic bool `yaml:"enable_cover_traffic"`
 
 	OnAuthenticated func(conn net.Conn, clientID string) `yaml:"-"`
+
+	GetUsers func() []UserEntry `yaml:"-"`
+}
+
+type UserEntry struct {
+	UserID    string
+	PublicKey [32]byte
 }
 
 func DefaultConfig() *Config {
@@ -93,7 +100,7 @@ func DefaultConfig() *Config {
 		Dest:        "cloudflare.com:443",
 		ServerNames: []string{"cloudflare.com"},
 		ShortIds:    []string{""},
-		MaxTimeDiff: 300000, // 5 minutes in ms
+		MaxTimeDiff: 300000,
 		Fingerprint: "chrome",
 	}
 }
@@ -165,10 +172,8 @@ func New(cfg *Config) (*Handler, error) {
 		var keyBytes []byte
 		var err error
 
-		// Try Base64 first
 		keyBytes, err = base64.StdEncoding.DecodeString(cfg.PrivateKey)
 		if err != nil {
-			// Try Hex if Base64 fails
 			keyBytes, err = hex.DecodeString(cfg.PrivateKey)
 		}
 
@@ -524,51 +529,64 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return "", false
 	}
 
-	sharedSecret, err := curve25519.X25519(h.privateKey, clientRandom)
-	if err != nil {
-		return "", false
-	}
-
-	// Derive auth key: HKDF(sharedSecret, "whispera-auth-key")
-	hkdfR := hkdf.New(sha256.New, sharedSecret, nil, []byte("whispera-auth-key"))
-	authKey := make([]byte, 32)
-	if _, err := io.ReadFull(hkdfR, authKey); err != nil {
-		return "", false
-	}
-
-	// sessionID format: [timestamp_ms:8][HMAC(authKey,"whispera-session-id"+timestamp)[:24]:24]
 	timestamp := binary.BigEndian.Uint64(sessionID[0:8])
-	clientTime := time.UnixMilli(int64(timestamp))
 	now := time.Now()
-
-	diff := now.Sub(clientTime)
+	diff := now.Sub(time.UnixMilli(int64(timestamp)))
 	if diff < 0 {
 		diff = -diff
-		if diff < 0 {
-			// -diff overflowed (diff was math.MinInt64) — timestamp wildly out of range
-			log.Printf("[Phantom] Auth rejected: timestamp overflow (invalid format?)")
-			return "", false
-		}
 	}
 	if diff > h.maxTimeDiff {
 		log.Printf("[Phantom] Auth rejected: timestamp too far off (diff=%v)", diff)
 		return "", false
 	}
 
-	mac := hmac.New(sha256.New, authKey)
-	mac.Write([]byte("whispera-session-id"))
-	timestampBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(timestampBytes, timestamp)
-	mac.Write(timestampBytes)
-	expected := mac.Sum(nil)
+	// verifyHMAC checks sessionID HMAC using the ECDH shared secret.
+	verifyHMAC := func(sharedSecret []byte) bool {
+		hkdfR := hkdf.New(sha256.New, sharedSecret, nil, []byte("whispera-auth-key"))
+		authKey := make([]byte, 32)
+		if _, err := io.ReadFull(hkdfR, authKey); err != nil {
+			return false
+		}
+		mac := hmac.New(sha256.New, authKey)
+		mac.Write([]byte("whispera-session-id"))
+		ts := make([]byte, 8)
+		binary.BigEndian.PutUint64(ts, timestamp)
+		mac.Write(ts)
+		return hmac.Equal(sessionID[8:32], mac.Sum(nil)[:24])
+	}
 
-	if !hmac.Equal(sessionID[8:32], expected[:24]) {
-		log.Printf("[Phantom] Auth FAILED: SessionID mismatch (clock diff=%v, verify server public key on client)", diff)
+	// Per-user auth: client sends clientRandom = X25519(userPSK, Basepoint) = userPublicKey.
+	// We match clientRandom against each registered user's expected public key.
+	if h.config.GetUsers != nil {
+		for _, u := range h.config.GetUsers() {
+			if !hmac.Equal(clientRandom, u.PublicKey[:]) {
+				continue
+			}
+			sharedSecret, err := curve25519.X25519(h.privateKey, clientRandom)
+			if err != nil {
+				continue
+			}
+			if verifyHMAC(sharedSecret) {
+				h.markAsSeen(clientRandomHex)
+				log.Printf("[Phantom] Auth SUCCESS: user=%s", u.UserID)
+				return u.UserID, true
+			}
+		}
+		log.Printf("[Phantom] Auth FAILED: no matching user for clientRandom")
 		return "", false
 	}
 
+	// Fallback: no user list configured — accept any valid ECDH client as "default".
+	sharedSecret, err := curve25519.X25519(h.privateKey, clientRandom)
+	if err != nil {
+		return "", false
+	}
+	if !verifyHMAC(sharedSecret) {
+		log.Printf("[Phantom] Auth FAILED: SessionID mismatch")
+		return "", false
+	}
 	h.markAsSeen(clientRandomHex)
-	log.Printf("[Phantom] Auth SUCCESS from client")
+	log.Printf("[Phantom] Auth SUCCESS (fallback, no user list)")
 	return "default", true
 }
 

@@ -12,8 +12,9 @@ export class SystemController {
             const token = auth?.replace('Bearer ', '');
             const info = await this.systemService.getSystemInfo(token);
             return res.json(info);
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch system info' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch system info' });
         }
     }
 
@@ -23,8 +24,9 @@ export class SystemController {
             const token = auth?.replace('Bearer ', '');
             const stats = await this.systemService.getStats(token);
             return res.json(stats);
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch stats' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch stats' });
         }
     }
 
@@ -34,8 +36,9 @@ export class SystemController {
             const token = auth?.replace('Bearer ', '');
             await this.systemService.reloadConfig(token);
             return res.json({ success: true, message: 'Config reloaded' });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to reload config' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to reload config' });
         }
     }
 

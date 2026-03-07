@@ -235,8 +235,6 @@ type InboundConfig struct {
 	Protocol string `yaml:"protocol" json:"protocol"`
 	Listen   string `yaml:"listen" json:"listen"`
 	Port     int    `yaml:"port" json:"port"`
-	// Ports lists additional ports to listen on (multiport).
-	// When set, the server starts one listener per port sharing the same config.
 	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
 
 	Settings map[string]interface{} `yaml:"settings" json:"settings"`
@@ -246,7 +244,6 @@ type InboundConfig struct {
 	Sniffing SniffingConfig `yaml:"sniffing" json:"sniffing"`
 }
 
-// AllPorts returns the deduplicated union of Port and Ports.
 func (c *InboundConfig) AllPorts() []int {
 	seen := make(map[int]struct{})
 	var out []int
@@ -269,8 +266,6 @@ type StreamConfig struct {
 	Reality  PhantomStreamConfig `yaml:"reality,omitempty" json:"reality,omitempty"`
 	WS       WebSocketConfig     `yaml:"ws" json:"ws"`
 	H2C      H2CStreamConfig     `yaml:"h2c" json:"h2c"`
-	// Params holds transport-specific credentials (password, sni, method, node_id, uuid, etc.)
-	// Used for shadowtls, shadowsocks, obfs4, tuic, and other transports that need custom fields.
 	Params map[string]interface{} `yaml:"params,omitempty" json:"params,omitempty"`
 }
 
@@ -284,7 +279,7 @@ type PhantomStreamConfig struct {
 	ServerNames []string `yaml:"server_names" json:"server_names"`
 	PrivateKey  string   `yaml:"private_key" json:"private_key"`
 	ShortIds    []string `yaml:"short_ids" json:"short_ids"`
-	MaxTimeDiff int      `yaml:"max_time_diff" json:"max_time_diff"` // ms; 0 = use global phantom.max_time_diff
+	MaxTimeDiff int      `yaml:"max_time_diff" json:"max_time_diff"`
 }
 
 type WebSocketConfig struct {
@@ -519,7 +514,7 @@ func DefaultServerConfig() *ServerConfig {
 			ServerNames: []string{},
 			PrivateKey:  "",
 			ShortIds:    []string{""},
-			MaxTimeDiff: 300000, // 5 minutes in ms
+			MaxTimeDiff: 300000,
 			Fingerprint: "chrome",
 		},
 		Bot: BotConfig{

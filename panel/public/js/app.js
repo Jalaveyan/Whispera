@@ -1470,7 +1470,7 @@ class WhisperaApp {
 
             if (response.token) {
                 api.setToken(response.token);
-                document.getElementById('login-screen').classList.remove('active');
+                this.showMainApp();
                 this.loadDashboard();
                 this.showNotification('Welcome back, Commander.', 'success');
             } else {
@@ -1500,8 +1500,12 @@ class WhisperaApp {
             item.addEventListener('click', () => {
                 const page = item.dataset.page;
                 this.navigateTo(page);
+                if (window.innerWidth <= 768) this.closeSidebar();
             });
         });
+
+        document.getElementById('menu-toggle')?.addEventListener('click', () => this.toggleSidebar());
+        document.getElementById('sidebar-overlay')?.addEventListener('click', () => this.closeSidebar());
 
         document.getElementById('logout-btn')?.addEventListener('click', () => {
             this.handleLogout();
@@ -1509,7 +1513,6 @@ class WhisperaApp {
 
         document.getElementById('add-user-btn')?.addEventListener('click', async () => {
             this.showModal('add-user-modal');
-            // Reset port field for auto-detection from inbounds
             const portField = document.getElementById('new-user-port');
             if (portField) {
                 portField.value = '';
@@ -1697,12 +1700,6 @@ class WhisperaApp {
     }
 
     async handleUpdateAdminProfile() {
-        const id = localStorage.getItem('whispera_user_id');
-        if (!id) {
-            this.showNotification('Ошибка: ID пользователя не найден. Попробуйте перезайти.', 'error');
-            return;
-        }
-
         const email = document.getElementById('admin-profile-email').value;
         const password = document.getElementById('admin-profile-password').value;
 
@@ -1712,11 +1709,9 @@ class WhisperaApp {
         }
 
         try {
-            await api.updateUser(id, { email, password });
+            await api.updateAdminProfile(email, password);
             this.showNotification('Профиль администратора обновлен', 'success');
-
             localStorage.setItem('whispera_email', email);
-
             document.getElementById('admin-profile-password').value = '';
         } catch (error) {
             this.showNotification('Ошибка обновления профиля: ' + error.message, 'error');
@@ -1743,10 +1738,42 @@ class WhisperaApp {
                 russianService
             });
             this.closeModals();
-            // Reset form fields for next use
             document.getElementById('add-user-form')?.reset();
             document.querySelectorAll('input[name="transport-cb"]').forEach(cb => { cb.checked = cb.value === 'tcp'; });
             this.loadUsers();
+
+            if (portVal > 0) {
+                const existingInbounds = this._cachedInbounds || [];
+                const portExists = existingInbounds.some(ib => {
+                    const p = ib.port || ib.Port;
+                    return parseInt(p) === portVal;
+                });
+                if (!portExists) {
+                    const firstTransport = transport.split(',')[0] || 'tcp';
+                    const transportSecurity = {
+                        tcp: 'phantom', udp: 'phantom', ws: 'phantom',
+                        httpupgrade: 'phantom', h2c: 'phantom', grpc: 'phantom',
+                        shadowtls: 'shadowtls', shadowsocks: 'shadowsocks',
+                    };
+                    const security = transportSecurity[firstTransport] || 'none';
+                    const usesPhantom = security === 'phantom';
+                    try {
+                        await api.addInbound({
+                            tag: `inbound-${portVal}`,
+                            protocol: 'whispera',
+                            port: portVal,
+                            stream_settings: {
+                                network: firstTransport,
+                                security,
+                                phantom: usesPhantom ? { server_names: sni ? [sni] : [] } : undefined,
+                            }
+                        });
+                        this._cachedInbounds = null;
+                    } catch (e) {
+                        console.warn('Auto-create inbound failed:', e.message);
+                    }
+                }
+            }
 
             const privKey = res.privateKey || res.user?.privateKey;
             if (privKey) {
@@ -1762,7 +1789,6 @@ class WhisperaApp {
                     const tc = this.collectTransportConfig();
                     if (tc) keyOpts.transportConfig = tc;
                     const keyRes = await api.generateConnectionKey(keyOpts);
-                    // Сохраняем URI обратно в пользователя
                     const userId = res.user?.id;
                     if (userId && keyRes.key) {
                         api.updateUser(userId, { connectionURI: keyRes.key }).catch(() => {});
@@ -1792,7 +1818,7 @@ class WhisperaApp {
         }
         warnEl.style.display = clientOnlyTransports.has(transport) ? '' : 'none';
 
-        const phantomTransports = new Set(['tcp', 'udp', 'ws', 'splithttp', 'httpupgrade', 'grpc', 'h2c']);
+        const phantomTransports = new Set(['tcp', 'udp', 'ws', 'httpupgrade', 'grpc', 'h2c']);
         const paramsTransports = {
             shadowtls:   { label: 'ShadowTLS параметры', hint: 'password, sni, version', placeholder: '{"password":"secret","sni":"www.apple.com","version":3}' },
             shadowsocks: { label: 'Shadowsocks параметры', hint: 'password, method (aes-256-gcm / chacha20-poly1305)', placeholder: '{"password":"secret","method":"aes-256-gcm"}' },
@@ -1828,8 +1854,6 @@ class WhisperaApp {
         }
     }
 
-    // Auto-populate the port field from cached inbounds based on selected transports.
-    // Only updates if the field still has the auto-set flag (not manually edited).
     _updateUserPort() {
         const portField = document.getElementById('new-user-port');
         if (!portField || !portField.dataset.autoSet) return;
@@ -1838,7 +1862,6 @@ class WhisperaApp {
         const selected = new Set(
             Array.from(document.querySelectorAll('input[name="transport-cb"]:checked')).map(i => i.value)
         );
-        // Find first inbound whose network matches a selected transport
         const match = inbounds.find(ib => {
             const net = (ib.stream_settings?.network || ib.StreamSettings?.Network || 'tcp').toLowerCase();
             return selected.has(net);
@@ -1849,7 +1872,6 @@ class WhisperaApp {
         }
     }
 
-    // Transport-specific fields for key generation form
     onKeyTransportChange(transport) {
         const TRANSPORT_FIELDS = {
             vkwebrtc: {
@@ -1918,7 +1940,6 @@ class WhisperaApp {
         const titleEl = document.getElementById('new-user-tcfg-title');
         const hintEl = document.getElementById('new-user-tcfg-hint');
 
-        // support both single string and array (multi-select)
         const transports = Array.isArray(transport) ? transport : [transport];
         const spec = transports.map(t => TRANSPORT_FIELDS[t]).find(Boolean);
         if (!spec) {
@@ -1952,7 +1973,7 @@ class WhisperaApp {
         const form = document.getElementById('add-inbound-form');
         const raw = Object.fromEntries(new FormData(form));
         const transport = raw.transport || 'tcp';
-        const phantomTransports = new Set(['tcp', 'udp', 'ws', 'splithttp', 'httpupgrade', 'grpc', 'h2c']);
+        const phantomTransports = new Set(['tcp', 'udp', 'ws', 'httpupgrade', 'grpc', 'h2c']);
         const usesPhantom = phantomTransports.has(transport);
         const serverNames = raw.server_names
             ? raw.server_names.split(',').map(s => s.trim()).filter(Boolean)
@@ -2210,8 +2231,8 @@ class WhisperaApp {
             document.getElementById('stat-upload').textContent = this.formatBytes(stats.total_upload || 0);
             document.getElementById('stat-download').textContent = this.formatBytes(stats.total_download || 0);
 
-            document.getElementById('stat-memory').textContent = info.memory_usage || '0 MiB';
-            document.getElementById('stat-cpu').textContent = (info.cpu_load || 0) + '%';
+            document.getElementById('stat-memory').textContent = info.memory_usage || '-';
+            document.getElementById('stat-cpu').textContent = info.cpu_load != null ? info.cpu_load.toFixed(1) + '%' : '-';
 
             document.getElementById('server-version').textContent = info.version || '-';
             document.getElementById('server-ip').textContent = info.server_ip || '-';
@@ -2242,8 +2263,16 @@ class WhisperaApp {
 
         try {
             const info = await api.getSystemInfo();
-            if (info.port && document.getElementById('server-port')) {
-                document.getElementById('server-port').value = info.port;
+            if (info.server_port && document.getElementById('server-port')) {
+                document.getElementById('server-port').value = info.server_port;
+            }
+            if (info.ssl_expiry) {
+                const sslExpiry = document.getElementById('ssl-expiry');
+                if (sslExpiry) sslExpiry.textContent = info.ssl_expiry;
+            }
+            if (info.ssl_status) {
+                const sslStatus = document.getElementById('ssl-status');
+                if (sslStatus) sslStatus.textContent = info.ssl_status === 'active' ? 'Активен' : 'Нет сертификата';
             }
         } catch (e) {
             console.log('Failed to load system info for settings');
@@ -2470,7 +2499,6 @@ class WhisperaApp {
         try {
             const data = await api.getUsers();
             const users = data.users || [];
-            // Cache users by ID for key regeneration
             this._usersById = {};
             users.forEach(u => { this._usersById[u.id] = u; });
 
@@ -2516,12 +2544,10 @@ class WhisperaApp {
             this.showNotification('Ключ недоступен', 'error');
             return;
         }
-        // Показываем сохранённый URI если есть
         if (user.connectionURI) {
             this.showKeyModal(user.username, user.privateKey, user.connectionURI);
             return;
         }
-        // Иначе — генерируем и сохраняем
         try {
             const keyRes = await api.generateConnectionKey({ psk: user.privateKey, name: user.username });
             if (keyRes.key) {
@@ -2567,12 +2593,13 @@ class WhisperaApp {
         const container = document.getElementById('logs-container');
         container.textContent = 'Загрузка логов...';
         try {
-            const data = await api.getLogs();
+            const data = await api.getLogs(200);
             const logs = data.logs || data || [];
             if (logs.length === 0) {
                 container.textContent = 'Нет доступных логов.';
             } else {
                 container.textContent = logs.join('\n');
+                container.scrollTop = container.scrollHeight;
             }
         } catch (error) {
             container.textContent = 'Ошибка загрузки логов: ' + error.message;
@@ -2742,10 +2769,13 @@ class WhisperaApp {
         </div>
         <div class="modal-body" style="display:flex;flex-direction:column;gap:4px;">
             <p style="margin:0 0 8px;">Пользователь: <strong>${email}</strong></p>
-            ${connectionURI ? copyBtn(uriEsc, 'Ключ подключения (импортируйте в клиент)') : ''}
-            ${copyBtn(pkEsc, 'Приватный ключ (PSK) — только для сервера')}
-            <p style="margin-top:8px;font-size:0.82em;opacity:0.6;">
-                <i class="fas fa-info-circle"></i> Сохраните ключ — он больше не будет показан.
+            ${connectionURI ? copyBtn(uriEsc, 'Ключ подключения (импортируйте в клиент)') : copyBtn(pkEsc, 'Приватный ключ')}
+            ${connectionURI ? `<div style="display:flex;flex-direction:column;align-items:center;gap:6px;margin:8px 0;">
+                <canvas id="key-modal-qr" style="border-radius:8px;background:#fff;padding:8px;"></canvas>
+                <span style="font-size:0.78em;opacity:0.5;">Сканируйте QR-кодом в клиенте</span>
+            </div>` : ''}
+            <p style="margin-top:4px;font-size:0.82em;opacity:0.6;">
+                <i class="fas fa-info-circle"></i> Ключ содержит все параметры подключения. Сохраните — он больше не будет показан.
             </p>
         </div>
         <div class="modal-footer">
@@ -2753,6 +2783,13 @@ class WhisperaApp {
         </div>
     </div>`;
         document.body.appendChild(modal);
+
+        if (connectionURI) {
+            const canvas = modal.querySelector('#key-modal-qr');
+            if (canvas && typeof QRCode !== 'undefined') {
+                QRCode.toCanvas(canvas, connectionURI, { width: 180, margin: 1 }, () => {});
+            }
+        }
     }
 
     showConfirm(message) {
@@ -2805,6 +2842,20 @@ class WhisperaApp {
                 }
             };
         });
+    }
+
+    toggleSidebar() {
+        const sidebar = document.querySelector('.sidebar');
+        const overlay = document.getElementById('sidebar-overlay');
+        sidebar.classList.toggle('open');
+        overlay.classList.toggle('active');
+    }
+
+    closeSidebar() {
+        const sidebar = document.querySelector('.sidebar');
+        const overlay = document.getElementById('sidebar-overlay');
+        sidebar.classList.remove('open');
+        overlay.classList.remove('active');
     }
 
     formatBytes(bytes) {

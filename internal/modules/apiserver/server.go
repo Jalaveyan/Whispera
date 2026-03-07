@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"log"
 	"net"
@@ -89,6 +91,12 @@ type Server struct {
 
 	loginAttempts   map[string][]time.Time
 	loginAttemptsMu sync.Mutex
+
+	sessionToken string
+
+	cpuLoad    float64
+	cpuMu      sync.Mutex
+	cpuPrev    [2]uint64 // [idle, total]
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -99,11 +107,17 @@ func New(cfg *Config) (*Server, error) {
 		return nil, err
 	}
 
-	bridgeReg := bridgepool.NewRegistry("bridges.json")
+	bridgeReg := bridgepool.NewRegistry("/etc/whispera/bridges.json")
 
-	// Load persisted data
 	loadUsers()
 	loadSubscriptions()
+
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("failed to generate session token: %w", err)
+	}
+	sessionToken := base64.StdEncoding.EncodeToString(tokenBytes)
+	log.Println("[API] Generated new session token on startup")
 
 	s := &Server{
 		Module:        base.NewModule(ModuleName, ModuleVersion, nil),
@@ -114,9 +128,11 @@ func New(cfg *Config) (*Server, error) {
 		bridgePool:    bridgeReg,
 		bridgeHandler: bridgepool.NewAPIHandler(bridgeReg),
 		loginAttempts: make(map[string][]time.Time),
+		sessionToken:  sessionToken,
 	}
 
 	s.registerDefaultRoutes()
+	go s.cpuSampler()
 
 	s.registerUserV2Routes()
 
@@ -185,11 +201,14 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/v1/config/renew-cert", s.handleRenewCert)
 
 	s.Handle("GET /api/sessions", s.handleGetSessionsAPI)
+	s.Handle("POST /api/sessions/{id}/kill", s.handleKillSessionAPI)
 	s.Handle("GET /api/stats", s.handleGetStatsAPI)
 	s.Handle("GET /api/stats/traffic", s.handleTrafficStatsAPI)
 	s.Handle("GET /api/stats/user/{id}", s.handleGetUserTrafficAPI)
 
 	s.Handle("GET /api/system/info", s.handleSystemInfoAPI)
+	s.Handle("POST /api/admin/update", s.handleAdminUpdate)
+	s.Handle("GET /api/logs", s.handleGetLogsAPI)
 
 	s.Handle("GET /api/bridge-list", s.bridgeHandler.HandleGetBridges)
 	s.Handle("GET /api/bridge-admin", s.bridgeHandler.HandleGetBridgesAdmin)
@@ -434,7 +453,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		token := auth[len(prefix):]
-		if token != s.config.AuthToken {
+		if token != s.sessionToken {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -525,24 +544,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if database := db.Global(); database != nil {
 		user, err := database.AuthenticateUser(r.Context(), req.Username, req.Password)
 		if err == nil && user.IsAdmin {
-			token := s.config.AuthToken
-			if token == "" {
-				tokenBytes := make([]byte, 32)
-				if _, err := rand.Read(tokenBytes); err != nil {
-					log.Printf("[API] Failed to generate token: %v", err)
-					s.jsonError(w, http.StatusInternalServerError, "Token generation failed")
-					return
-				}
-				token = base64.StdEncoding.EncodeToString(tokenBytes)
-				s.config.AuthToken = token
-			}
 			s.clearLoginAttempts(clientIP)
 			log.Printf("[API] Successful DB login from IP: %s (user: %s)", clientIP, req.Username)
 
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": true,
-				"token":   token,
+				"token":   s.sessionToken,
 				"user": map[string]string{
 					"username": req.Username,
 					"role":     "admin",
@@ -566,26 +574,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		passwordMatch := subtle.ConstantTimeCompare([]byte(req.Password), []byte(expectedPassword)) == 1
 
 		if usernameMatch && passwordMatch {
-			token := s.config.AuthToken
-			if token == "" {
-				tokenBytes := make([]byte, 32)
-				if _, err := rand.Read(tokenBytes); err != nil {
-					log.Printf("[API] Failed to generate token: %v", err)
-					s.jsonError(w, http.StatusInternalServerError, "Token generation failed")
-					return
-				}
-				token = base64.StdEncoding.EncodeToString(tokenBytes)
-				s.config.AuthToken = token
-				log.Println("[API] Generated new session token")
-			}
-
 			s.clearLoginAttempts(clientIP)
 
 			log.Printf("[API] Successful login from IP: %s", clientIP)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": true,
-				"token":   token,
+				"token":   s.sessionToken,
 				"user": map[string]string{
 					"username": req.Username,
 					"role":     "admin",
@@ -958,7 +953,7 @@ type User struct {
 	RussianService    string `json:"russianService,omitempty"`
 }
 
-const userDataFile = "users.json"
+const userDataFile = "/etc/whispera/users.json"
 
 var (
 	userStore   = make(map[int]*User)
@@ -969,6 +964,26 @@ var (
 type userPersist struct {
 	Users      []*User `json:"users"`
 	NextUserID int     `json:"next_user_id"`
+}
+
+// RegisteredUser holds minimal user data for external auth providers (e.g. phantom).
+type RegisteredUser struct {
+	UserID     string
+	PrivateKey string // base64-encoded Curve25519 private key (PSK)
+}
+
+// GetRegisteredUsers returns all active users with their PSKs.
+// Used by phantom handler to perform per-user identification.
+func GetRegisteredUsers() []RegisteredUser {
+	userStoreMu.RLock()
+	defer userStoreMu.RUnlock()
+	result := make([]RegisteredUser, 0, len(userStore))
+	for _, u := range userStore {
+		if u.PrivateKey != "" && u.Status != "disabled" {
+			result = append(result, RegisteredUser{UserID: u.Username, PrivateKey: u.PrivateKey})
+		}
+	}
+	return result
 }
 
 func saveUsers() {
@@ -993,7 +1008,7 @@ func saveUsers() {
 func loadUsers() {
 	data, err := os.ReadFile(userDataFile)
 	if err != nil {
-		return // file doesn't exist yet
+		return
 	}
 	var p userPersist
 	if err := json.Unmarshal(data, &p); err != nil {
@@ -1056,6 +1071,13 @@ func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userStoreMu.Lock()
+	for _, u := range userStore {
+		if u.Username == req.Username {
+			userStoreMu.Unlock()
+			s.jsonError(w, http.StatusConflict, "User already exists")
+			return
+		}
+	}
 	user := &User{
 		ID:                nextUserID,
 		Username:          req.Username,
@@ -1222,7 +1244,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		serverIP = "0.0.0.0"
 	}
 
-	// Use provided PSK or generate a new key pair
 	userPrivKey := req.PSK
 	userPubKey := ""
 	if userPrivKey == "" {
@@ -1237,7 +1258,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		userPubKey = derivePublicKeyB64(userPrivKey)
 	}
 
-	// Find server address and phantom settings from the matching inbound
 	serverAddr := fmt.Sprintf("%s:443", serverIP)
 	serverPubKey := ""
 	phantomEnabled := req.PhantomEnabled
@@ -1251,7 +1271,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 			if provider, ok := configMod.(ConfigProvider); ok {
 				cfg := provider.GetConfig()
 				if cfg != nil {
-					// For combo transport ("tcp,ws"), build a set of all requested transports.
 					matchTransports := map[string]bool{req.Transport: true}
 					if strings.Contains(req.Transport, ",") {
 						matchTransports = map[string]bool{}
@@ -1259,7 +1278,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 							matchTransports[strings.TrimSpace(p)] = true
 						}
 					}
-					// Find first inbound matching the requested transport
 					for _, inbound := range cfg.Inbounds {
 						network := inbound.StreamSettings.Network
 						if network == "" {
@@ -1275,7 +1293,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 							break
 						}
 					}
-				// Fallback: global phantom key, then server key
 					if serverPubKey == "" && cfg.Phantom.PrivateKey != "" {
 						serverPubKey = derivePublicKeyB64(cfg.Phantom.PrivateKey)
 					}
@@ -1287,7 +1304,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 
 
 
-					// Fall back to global TCP/UDP ports
 					if serverAddr == fmt.Sprintf("%s:443", serverIP) {
 						if req.Transport == "udp" && cfg.Transport.UDP.Enabled {
 							_, port, _ := net.SplitHostPort(cfg.Transport.UDP.ListenAddr)
@@ -1306,10 +1322,8 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	// If caller specified a port override, apply it and open it in the firewall.
 	if req.Port > 0 && req.Port < 65536 {
 		serverAddr = fmt.Sprintf("%s:%d", serverIP, req.Port)
-		// Open port in firewall (best-effort, non-blocking)
 		proto := "tcp"
 		if req.Transport == "udp" || req.Transport == "tuic" {
 			proto = "udp"
@@ -1317,23 +1331,22 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		go func() {
 			portProto := fmt.Sprintf("%d/%s", req.Port, proto)
 			if err := exec.Command("ufw", "allow", portProto).Run(); err != nil {
-				// Try iptables as fallback
 				exec.Command("iptables", "-I", "INPUT", "-p", proto,
 					"--dport", fmt.Sprintf("%d", req.Port), "-j", "ACCEPT").Run()
 			}
 		}()
 	}
 
-	// Build query-string URI: whispera://IP:PORT?pub=SERVER_PUB&transport=...
-	// User private key (PSK) is stored server-side only — NOT embedded in the URI.
-	params := make([]string, 0, 8)
+	params := make([]string, 0, 9)
 	if serverPubKey != "" {
 		params = append(params, "pub="+serverPubKey)
+	}
+	if userPrivKey != "" {
+		params = append(params, "psk="+userPrivKey)
 	}
 	if req.Transport != "" && req.Transport != "auto" {
 		params = append(params, "transport="+req.Transport)
 	}
-	// Phantom always enabled — provides TLS fingerprint masking for all transports
 	phantomEnabled = true
 	if sni == "" {
 		sni = randomRussianSNI()
@@ -1346,7 +1359,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		tlsFP = "chrome"
 	}
 	params = append(params, "tls="+tlsFP)
-	// russian= only when explicitly set
 	if req.RussianService != "" {
 		params = append(params, "russian="+req.RussianService)
 	}
@@ -1373,38 +1385,55 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleGetSessionsAPI(w http.ResponseWriter, r *http.Request) {
-	if s.registry == nil {
-		s.jsonOK(w, []interface{}{})
-		return
-	}
+	allUserStats := stats.GetAllUserStats()
+	cutoff := time.Now().Add(-5 * time.Minute)
 
-	module, ok := s.registry.Get("session.manager")
-	if !ok {
-		s.jsonOK(w, []interface{}{})
-		return
-	}
-
-	sessionMgr, ok := module.(interfaces.SessionManager)
-	if !ok {
-		s.jsonOK(w, []interface{}{})
-		return
-	}
-
-	sessions := sessionMgr.GetAllSessions()
-	sessionList := make([]map[string]interface{}, 0, len(sessions))
-
-	for _, sess := range sessions {
+	sessionList := make([]map[string]interface{}, 0)
+	for _, us := range allUserStats {
+		activeConns := stats.ActiveConnCount(us.UserID)
+		if activeConns == 0 && us.SessionCount <= 0 && !us.LastActivity.After(cutoff) {
+			continue
+		}
 		sessionList = append(sessionList, map[string]interface{}{
-			"id":           fmt.Sprintf("sess_%d", sess.ID()),
-			"user":         "user_" + sess.ClientAddr().String(),
-			"ip":           sess.ClientAddr().String(),
-			"connected_at": sess.LastActivity().Format(time.RFC3339),
-			"status":       "active",
-			"traffic":      0,
+			"id":              us.UserID,
+			"user_id":         us.UserID,
+			"client_ip":       us.AssignedIP,
+			"connected_at":    us.LastActivity.Format(time.RFC3339),
+			"bytes_in":        us.BytesRx,
+			"bytes_out":       us.BytesTx,
+			"active_conns":    activeConns,
 		})
 	}
 
-	s.jsonOK(w, sessionList)
+	s.jsonOK(w, map[string]interface{}{
+		"sessions": sessionList,
+		"count":    len(sessionList),
+	})
+}
+
+func (s *Server) handleKillSessionAPI(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("id")
+	if userID == "" {
+		s.jsonError(w, http.StatusBadRequest, "session id required")
+		return
+	}
+
+	closed := stats.KillUserConns(userID)
+
+	// Also remove from session manager if available.
+	if s.registry != nil {
+		if mod, ok := s.registry.Get("session.manager"); ok {
+			if sessionMgr, ok := mod.(interfaces.SessionManager); ok {
+				for _, sess := range sessionMgr.GetAllSessions() {
+					if uid, _ := sess.GetMetadata("user_id").(string); uid == userID {
+						sessionMgr.RemoveSession(sess.ID())
+					}
+				}
+			}
+		}
+	}
+
+	s.jsonOK(w, map[string]interface{}{"success": true, "connections_closed": closed})
 }
 
 func (s *Server) handleGetStatsAPI(w http.ResponseWriter, r *http.Request) {
@@ -1589,7 +1618,6 @@ func (s *Server) handleAddRoutingRule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Map destination
 	switch req.Outbound {
 	case "direct":
 		rule.Destination = interfaces.Destination{Type: interfaces.DestinationDirect}
@@ -1824,6 +1852,12 @@ func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	globalStats := stats.GetGlobalStats()
+
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	memMiB := memStats.Sys / 1024 / 1024
+
 	info := map[string]interface{}{
 		"server_ip":       externalIP,
 		"serverIP":        externalIP,
@@ -1839,6 +1873,11 @@ func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
 		"num_cpu":         runtime.NumCPU(),
 		"num_goroutine":   runtime.NumGoroutine(),
 		"version":         ModuleVersion,
+		"uptime":          globalStats.UptimeSeconds,
+		"uptime_str":      globalStats.Uptime,
+		"memory_usage":    fmt.Sprintf("%d MiB", memMiB),
+		"memory_bytes":    memStats.Sys,
+		"cpu_load":        func() float64 { s.cpuMu.Lock(); v := s.cpuLoad; s.cpuMu.Unlock(); return v }(),
 	}
 
 	if s.registry != nil {
@@ -1846,7 +1885,151 @@ func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
 		info["module_count"] = len(modules)
 	}
 
+	// Read TLS cert expiry if configured
+	if s.config.TLSCert != "" {
+		if certPEM, err := os.ReadFile(s.config.TLSCert); err == nil {
+			if block, _ := pem.Decode(certPEM); block != nil {
+				if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
+					info["ssl_expiry"] = cert.NotAfter.Format("2006-01-02")
+					info["ssl_status"] = "active"
+				}
+			}
+		}
+	}
+
 	s.jsonOK(w, info)
+}
+
+func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Username == "" {
+		s.jsonError(w, http.StatusBadRequest, "username required")
+		return
+	}
+
+	module, ok := s.registry.Get("config.provider")
+	if !ok {
+		s.jsonError(w, http.StatusInternalServerError, "config provider not found")
+		return
+	}
+	cfgProvider, ok := module.(*config.Provider)
+	if !ok {
+		s.jsonError(w, http.StatusInternalServerError, "invalid config provider")
+		return
+	}
+
+	if err := cfgProvider.Update(func(cfg *config.ServerConfig) {
+		cfg.API.AdminUsername = req.Username
+		if req.Password != "" {
+			cfg.API.AdminPassword = req.Password
+		}
+	}); err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "failed to save: "+err.Error())
+		return
+	}
+
+	s.config.AdminUsername = req.Username
+	if req.Password != "" {
+		s.config.AdminPassword = req.Password
+	}
+
+	s.jsonOK(w, map[string]interface{}{"success": true})
+}
+
+func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	limit := 200
+	if limitStr != "" {
+		if n, err := fmt.Sscanf(limitStr, "%d", &limit); n != 1 || err != nil || limit <= 0 || limit > 2000 {
+			limit = 200
+		}
+	}
+
+	// Try journalctl first
+	out, err := exec.Command("journalctl", "-u", "whispera", "-n", fmt.Sprintf("%d", limit), "--no-pager", "--output=short-iso").Output()
+	if err == nil && len(out) > 0 {
+		lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+		s.jsonOK(w, map[string]interface{}{"success": true, "logs": lines, "source": "journalctl"})
+		return
+	}
+
+	// Fallback: read log file
+	logPaths := []string{"/var/log/whispera/whispera.log", "/var/log/whispera.log", "/tmp/whispera.log"}
+	for _, path := range logPaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		all := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		if len(all) > limit {
+			all = all[len(all)-limit:]
+		}
+		s.jsonOK(w, map[string]interface{}{"success": true, "logs": all, "source": path})
+		return
+	}
+
+	s.jsonOK(w, map[string]interface{}{"success": true, "logs": []string{}, "source": "none"})
+}
+
+func readProcStatCPU() (idle, total uint64, err error) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, line := range strings.SplitN(string(data), "\n", 2) {
+		if !strings.HasPrefix(line, "cpu ") {
+			continue
+		}
+		// cpu user nice system idle iowait irq softirq steal guest guest_nice
+		var name string
+		var fields [10]uint64
+		fmt.Sscanf(line, "%s %d %d %d %d %d %d %d %d %d %d",
+			&name,
+			&fields[0], &fields[1], &fields[2], &fields[3],
+			&fields[4], &fields[5], &fields[6], &fields[7],
+			&fields[8], &fields[9],
+		)
+		idle = fields[3] + fields[4] // idle + iowait
+		for _, v := range fields {
+			total += v
+		}
+		return idle, total, nil
+	}
+	return 0, 0, fmt.Errorf("cpu line not found")
+}
+
+func (s *Server) cpuSampler() {
+	idle0, total0, err := readProcStatCPU()
+	if err != nil {
+		return
+	}
+	s.cpuMu.Lock()
+	s.cpuPrev = [2]uint64{idle0, total0}
+	s.cpuMu.Unlock()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		idle1, total1, err := readProcStatCPU()
+		if err != nil {
+			continue
+		}
+		s.cpuMu.Lock()
+		idleDelta := idle1 - s.cpuPrev[0]
+		totalDelta := total1 - s.cpuPrev[1]
+		if totalDelta > 0 {
+			s.cpuLoad = (1.0 - float64(idleDelta)/float64(totalDelta)) * 100.0
+		}
+		s.cpuPrev = [2]uint64{idle1, total1}
+		s.cpuMu.Unlock()
+	}
 }
 
 func (s *Server) HealthCheck() interfaces.HealthStatus {

@@ -131,39 +131,27 @@ type Config struct {
 	PhantomSNI          string
 	PhantomShortId      string
 	PhantomServerPubKey string
+	PhantomPSK          []byte // user's Curve25519 private key (PSK) for per-user auth
 
 	RussianService    string
-	BehavioralProfile string // "vk", "max", "mailru", "yandex" — auto-selects Russian service for CIDR bypass
+	BehavioralProfile string
 
 	VKToken   string
 	VKGroupID int64
 
-	// VKBot relay transport (optional).
-	// When set, the tunnel can route through VK community messages (api.vk.com).
-	VKBotUserToken  string // VK user token (client side)
-	VKBotGroupToken string // VK community token with "messages" permission (server side)
+	VKBotUserToken  string
+	VKBotGroupToken string
 
-	// TGBot relay transport (optional).
-	// Tunnels through Telegram Bot API messages (api.telegram.org).
-	// Both sides need their own bot token + a shared supergroup chat ID.
-	// See tgbot package docs for setup instructions.
-	TGBotToken    string // this side's Telegram bot token
-	TGGroupChatID int64  // shared Telegram group chat ID
-	TGSessionID   string // tunnel session ID (random if empty)
+	TGBotToken    string
+	TGGroupChatID int64
+	TGSessionID   string
 
-	// CDNWorkerURL activates the CDN Worker relay (optional).
-	// Value is a WebSocket URL pointing to a Cloudflare Worker / Vercel Edge relay,
-	// e.g. "wss://my-relay.workers.dev/tunnel".
-	// The worker proxies WebSocket frames to the actual VPN server.
-	// All traffic goes to major CDN IPs — uncensorable without breaking the internet.
 	CDNWorkerURL string
 
 	ServerList []string
 
 	RekeyInterval time.Duration
 
-	// TransportConfig holds transport-specific credentials from the connection key.
-	// Keys: "password", "sni", "method", "token", "gateway_url", "session_id", etc.
 	TransportConfig map[string]interface{}
 }
 
@@ -275,8 +263,8 @@ func (m *Manager) getMuxConfig() *mux.Config {
 	return &mux.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     512 * 1024 * 1024,
-		MaxStreamBuffer:      4 * 1024 * 1024, // 4MB: limits per-stream buffering to prevent bulk transfer starvation
-		KeepAliveInterval:    10 * time.Second, // was 2s — caused periodic 2s data stalls
+		MaxStreamBuffer:      4 * 1024 * 1024,
+		KeepAliveInterval:    10 * time.Second,
 		KeepAliveTimeout:     60 * time.Second,
 		MaxConcurrentStreams: 256,
 	}
@@ -365,6 +353,7 @@ func New(cfg *Config) (*Manager, error) {
 		m.phantomAuth = phantom.NewClientAuth(&phantom.ClientConfig{
 			ServerPublicKey: cfg.PhantomServerPubKey,
 			ShortId:         shortId,
+			PrivateKey:      cfg.PhantomPSK,
 		})
 
 		if m.asnBypassDialer != nil {
@@ -481,7 +470,6 @@ func (m *Manager) Connect(ctx context.Context) error {
 
 	m.Disconnect()
 
-	// Latency-based routing: probe all servers and pick the fastest before connecting.
 	if len(m.config.ServerList) > 0 {
 		if best := m.pickFastestServer(ctx); best != "" {
 			m.config.ServerAddrTCP = best
@@ -527,7 +515,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 			return
 		}
 
-		// Perform handshake on raw TCP connection BEFORE setting up smux
 		if m.handshake != nil && !m.config.EnablePhantom {
 			session, err := m.handshake.InitiateHandshake(ctx, conn, conn.RemoteAddr())
 			if err != nil {
@@ -692,17 +679,12 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	return nil
 }
 
-// dialCandidate is a named transport attempt used by parallelDial.
 type dialCandidate struct {
 	name   string
-	secure bool // transport provides its own encryption layer
+	secure bool
 	fn     func(context.Context) (net.Conn, error)
 }
 
-// dial is the entry point for establishing a tunnel connection.
-// It prepares shared state (Phantom/ASN), then races ALL configured
-// transport candidates in parallel.  The first to succeed wins;
-// all others are cancelled and any late connections are closed.
 func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	m.preparePhantomASN()
 	candidates := m.buildCandidates()
@@ -712,7 +694,6 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	return m.parallelDial(ctx, candidates)
 }
 
-// preparePhantomASN configures Phantom/ASN bypass state before dialing.
 func (m *Manager) preparePhantomASN() {
 	targetSNI := m.getRotationSNI()
 	if m.config.EnablePhantom && m.phantomAuth != nil {
@@ -730,7 +711,6 @@ func (m *Manager) preparePhantomASN() {
 	}
 }
 
-// tcfg is a shorthand to extract a string from TransportConfig.
 func (m *Manager) tcfg(key string) string {
 	if m.config.TransportConfig == nil {
 		return ""
@@ -743,19 +723,12 @@ func (m *Manager) tcfg(key string) string {
 	return ""
 }
 
-// buildCandidates returns the list of transport candidates based on config.
-//
-// Transport field supports:
-//   - ""  / "auto"            — race ALL available transports
-//   - "shadowtls"             — only one specific transport
-//   - "shadowtls,ws,tcp"      — race only the listed transports (comma-separated)
 func (m *Manager) buildCandidates() []dialCandidate {
 	var cc []dialCandidate
 	t := m.config.Transport
 	tc := m.config.TransportConfig
 	auto := t == "auto" || t == ""
 
-	// Build set of explicitly requested transports (for comma-separated list).
 	var explicit map[string]bool
 	if !auto && strings.Contains(t, ",") {
 		explicit = make(map[string]bool)
@@ -764,7 +737,6 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		}
 	}
 
-	// helper: include when transport matches the request or we're in auto mode.
 	only := func(name string) bool {
 		if auto {
 			return true
@@ -775,7 +747,6 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		return t == name
 	}
 
-	// ── External relay transports (high-stealth) ───────────────────────────
 	if only("vkwebrtc") && m.config.VKToken != "" {
 		cc = append(cc, dialCandidate{"vkwebrtc", true, m.dialVKWebRTC})
 	}
@@ -800,9 +771,8 @@ func (m *Manager) buildCandidates() []dialCandidate {
 	if only("cdnworker") && m.config.CDNWorkerURL != "" {
 		cc = append(cc, dialCandidate{"cdnworker", true, m.dialCDNWorker})
 	}
-	_ = tc // used via m.tcfg()
+	_ = tc
 
-	// ── Censorship-circumvention transports ────────────────────────────────
 	if t == "meek" && m.tcfg("url") != "" {
 		cc = append(cc, dialCandidate{"meek", true, m.dialMeek})
 	}
@@ -813,21 +783,15 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		cc = append(cc, dialCandidate{"domainfront", true, m.dialDomainFront})
 	}
 
-	// ── Russian-service HTTP tunnel ────────────────────────────────────────
-	// Circumvention-only transports (meek, torsocks, domainfront) have their own
-	// routing; no point layering a Russian service on top of them.
-	// Don't layer Russian service over transports that already have their own CDN/Tor bypass.
-	// Only skip if a *single* circumvention-only transport is explicitly selected.
 	circumvention := !auto && explicit == nil && (t == "meek" || t == "torsocks" || t == "domainfront")
 	if m.russianTunneler != nil && !circumvention {
 		svc := m.config.RussianService
 		if svc == "" && auto {
-			// Auto mode: pick a random available Russian service
 			services := m.russianTunneler.GetAvailableServices()
 			if len(services) > 0 {
 				n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(services))))
 				svc = services[n.Int64()]
-				m.russianTunneler.SetActiveService(svc) //nolint:errcheck
+				m.russianTunneler.SetActiveService(svc)
 			}
 		}
 		if svc != "" {
@@ -835,12 +799,10 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		}
 	}
 
-	// ── ASN / Phantom bypass ───────────────────────────────────────────────
 	if m.asnBypassDialer != nil && m.config.EnableASNBypass {
 		cc = append(cc, dialCandidate{"asn_bypass", true, m.dialASNBypass})
 	}
 
-	// ── Transport-layer obfuscation (require explicit selection) ───────────
 	if t == "shadowtls" && m.tcfg("password") != "" && m.config.ServerAddrTCP != "" {
 		cc = append(cc, dialCandidate{"shadowtls", true, m.dialShadowTLS})
 	}
@@ -848,7 +810,6 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		cc = append(cc, dialCandidate{"shadowsocks", true, m.dialShadowsocks})
 	}
 
-	// ── Direct transports ──────────────────────────────────────────────────
 	if only("tuic") {
 		cc = append(cc, dialCandidate{"tuic", true, m.dialTUIC})
 	}
@@ -876,9 +837,6 @@ func (m *Manager) buildCandidates() []dialCandidate {
 	return cc
 }
 
-// parallelDial races all candidates concurrently.
-// Returns the first successful connection; cancels the rest.
-// Any late-arriving successful connections are closed to avoid leaks.
 func (m *Manager) parallelDial(ctx context.Context, candidates []dialCandidate) (net.Conn, error) {
 	if len(candidates) == 1 {
 		conn, err := candidates[0].fn(ctx)
@@ -917,12 +875,10 @@ func (m *Manager) parallelDial(ctx context.Context, candidates []dialCandidate) 
 		res := <-ch
 		switch {
 		case res.err == nil && winner.conn == nil:
-			// First success — claim it, signal others to stop.
 			winner = res
 			cancel()
 			log.Info("[dial] %s won the race", res.name)
 		case res.err == nil && res.conn != nil:
-			// Late success after a winner was already picked — close it.
 			res.conn.Close()
 		case res.err != nil && res.err != context.Canceled && res.err.Error() != "context canceled":
 			errs = append(errs, res.name+": "+res.err.Error())
@@ -936,7 +892,6 @@ func (m *Manager) parallelDial(ctx context.Context, candidates []dialCandidate) 
 	return nil, fmt.Errorf("all transports failed: %s", strings.Join(errs, "; "))
 }
 
-// ── Individual dial methods ────────────────────────────────────────────────
 
 func (m *Manager) dialVKWebRTC(ctx context.Context) (net.Conn, error) {
 	vkCfg := &vkwebrtc.Config{
@@ -1002,9 +957,6 @@ func (m *Manager) dialTGBot(ctx context.Context) (net.Conn, error) {
 	return conn, nil
 }
 
-// dialCDNWorker connects via WebSocket to a Cloudflare Worker / Vercel Edge relay.
-// The worker URL must point to a WebSocket endpoint that proxies to the VPN server.
-// All traffic routes through major CDN IPs (Cloudflare/Vercel) — uncensorable.
 func (m *Manager) dialCDNWorker(ctx context.Context) (net.Conn, error) {
 	wsConn, _, err := websocket.Dial(ctx, m.config.CDNWorkerURL, &websocket.DialOptions{
 		Subprotocols: []string{"whispera"},
@@ -1087,7 +1039,6 @@ func (m *Manager) dialTUIC(ctx context.Context) (net.Conn, error) {
 	tr, err := tuic_transport.New(&tuic_transport.Config{
 		ServerAddr: m.config.ServerAddr,
 		SNI:        m.config.PhantomSNI,
-		// UUID is a fixed placeholder — server discards it, real auth via Phantom/PSK
 		UUID:              "00000000000000000000000000000000",
 		CongestionControl: "bbr",
 	})
@@ -1893,11 +1844,6 @@ func (m *Manager) Send(data []byte) error {
 		if obfuscated != nil {
 			data = obfuscated
 		}
-		// Apply obfuscation delay only to non-data frames.
-		// Messenger behavioral profiles model human-scale inter-message timing
-		// (100ms-30s), which would destroy VPN throughput if applied per packet.
-		// Data frames get no artificial delay; control frames get the full delay
-		// to mimic session-level messenger behaviour.
 		if delay > 0 && frameType != FrameTypeData {
 			time.Sleep(delay)
 		}
@@ -2428,7 +2374,6 @@ func (m *Manager) pickFastestServer(ctx context.Context) string {
 	return best.addr
 }
 
-// ── Rekeying ──────────────────────────────────────────────────────────────────
 
 const FrameTypeRekey = 0x08
 
@@ -2467,9 +2412,6 @@ func (m *Manager) stopRekey() {
 	}
 }
 
-// performRekey sends a rekey control frame carrying 32 bytes of fresh key material.
-// The server is expected to respond in kind; both sides mix the material into their
-// session state. Wire format: [streamID:2][type:1=0x08][flags:1][len:4][seed:32]
 func (m *Manager) performRekey() {
 	if m.GetState() != StateConnected {
 		return
@@ -2482,7 +2424,7 @@ func (m *Manager) performRekey() {
 	}
 
 	frame := make([]byte, FrameHeaderSize+32)
-	binary.BigEndian.PutUint16(frame[0:2], 0) // stream 0 = control
+	binary.BigEndian.PutUint16(frame[0:2], 0)
 	frame[2] = FrameTypeRekey
 	frame[3] = 0x00
 	binary.BigEndian.PutUint32(frame[4:8], 32)

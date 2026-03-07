@@ -12,8 +12,9 @@ export class InboundsController {
             const token = auth?.replace('Bearer ', '');
             const inbounds = await this.inboundsService.getInbounds(token);
             return res.json({ success: true, inbounds });
-        } catch {
-            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch inbounds' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch inbounds' });
         }
     }
 
@@ -27,8 +28,9 @@ export class InboundsController {
             const token = auth?.replace('Bearer ', '');
             const result = await this.inboundsService.addInbound(token, inbound);
             return res.json({ success: true, inbound: result });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add inbound' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to add inbound' });
         }
     }
 
@@ -42,8 +44,9 @@ export class InboundsController {
             const token = auth?.replace('Bearer ', '');
             await this.inboundsService.deleteInbound(token, tag);
             return res.json({ success: true });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete inbound' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to delete inbound' });
         }
     }
 
@@ -57,8 +60,9 @@ export class InboundsController {
             const token = auth?.replace('Bearer ', '');
             const publicKey = await this.inboundsService.getPublicKey(token, parseInt(port));
             return res.json({ success: true, public_key: publicKey });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to get public key' });
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to get public key' });
         }
     }
 }

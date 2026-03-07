@@ -256,6 +256,14 @@ class WhisperaAPI {
         });
     }
 
+    async getSessions() {
+        return this.request('/api/sessions');
+    }
+
+    async killSession(id) {
+        return this.request(`/api/sessions/${id}/kill`, { method: 'POST' });
+    }
+
     async getStats() {
         return this.request('/api/stats');
     }
@@ -277,7 +285,7 @@ class WhisperaAPI {
     }
 
     async reloadConfig() {
-        return this.request('/api/v1/config/reload', { method: 'POST' });
+        return this.request('/api/system/reload', { method: 'POST' });
     }
 
     async getHealth() {
@@ -302,6 +310,17 @@ class WhisperaAPI {
 
     async renewCertificate() {
         return this.request('/api/v1/config/renew-cert', { method: 'POST' });
+    }
+
+    async updateAdminProfile(username, password) {
+        return this.request('/api/admin/update', {
+            method: 'POST',
+            body: JSON.stringify({ username, password }),
+        });
+    }
+
+    async getLogs(limit = 200) {
+        return this.request(`/api/logs?limit=${limit}`);
     }
 
     async getBackup() {
