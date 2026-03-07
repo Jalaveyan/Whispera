@@ -149,7 +149,7 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		TargetAddr:      addr,
 		TargetPort:      port,
 		writer:          writer,
-		sendWindow:      4 * 1024 * 1024, // 4MB: large window to avoid stalls on high-latency links
+		sendWindow:      4 * 1024 * 1024,
 		incoming:        make(chan []byte, 65536),
 		outgoing:        make(chan []byte, 65536),
 		closeChan:       make(chan struct{}),
@@ -548,7 +548,6 @@ func (s *Stream) readFromTarget() {
 				s.seqNum++
 			}
 
-			// No application-level window throttle - TCP backpressure handles flow control
 
 			if s.fecEnabled || s.packetLossRate > 2.0 {
 				encodedBuf := s.fecEncoder.EncodeFEC(buf[HeaderSize:HeaderSize+n], s.seqNum, HeaderSize)
@@ -953,8 +952,6 @@ func (s *Stream) flushEarlyData() {
 		return
 	}
 
-	// Do NOT acquire s.mu here — flushEarlyData is always called from Connect()
-	// which already holds s.mu.Lock(). Re-acquiring would deadlock.
 	conn := s.conn
 	if conn == nil {
 		return
@@ -1419,7 +1416,6 @@ func (s *Stream) sendWithFEC(data []byte) error {
 
 		parity := s.fecEncoder.GetParityPackets(s.seqNum, 0)
 		if err != nil {
-			// data write failed — no point sending parity, just free the buffers
 			for _, p := range parity {
 				packetPool.Put(p)
 				s.seqNum++
@@ -1427,7 +1423,7 @@ func (s *Stream) sendWithFEC(data []byte) error {
 			return err
 		}
 		for _, p := range parity {
-			s.writeWithRetry(p) // parity failure non-fatal
+			s.writeWithRetry(p)
 			packetPool.Put(p)
 			s.seqNum++
 		}

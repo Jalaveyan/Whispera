@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"flag"
 	stdlog "log"
 	"net"
@@ -184,6 +185,7 @@ func main() {
 	phantomSNI := "cloudflare.com"
 	phantomShortId := ""
 	phantomServerPubKey := "jDwJpsAOm/dizeRNOMyUkoiHzslRkEmSQ/SKvigNtQw="
+	var phantomPSK []byte
 
 	if cfg.Phantom != nil && cfg.Phantom.Enabled {
 		phantomEnabled = true
@@ -193,6 +195,11 @@ func main() {
 		phantomShortId = cfg.Phantom.ShortId
 		if cfg.Phantom.ServerPublicKey != "" {
 			phantomServerPubKey = cfg.Phantom.ServerPublicKey
+		}
+		if cfg.Phantom.PSK != "" {
+			if pskBytes, err := base64.StdEncoding.DecodeString(cfg.Phantom.PSK); err == nil && len(pskBytes) == 32 {
+				phantomPSK = pskBytes
+			}
 		}
 	} else if asnBypassEnabled {
 		phantomEnabled = true
@@ -244,6 +251,7 @@ func main() {
 		PhantomSNI:          phantomSNI,
 		PhantomShortId:      phantomShortId,
 		PhantomServerPubKey: phantomServerPubKey,
+		PhantomPSK:          phantomPSK,
 		RussianService:      cfg.RussianService,
 		VKToken:             *vkToken,
 		ServerList:          srvList,

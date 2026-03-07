@@ -111,6 +111,43 @@ var (
 	listenersMutex  sync.RWMutex
 )
 
+var udpIPRate struct {
+	mu        sync.Mutex
+	seen      map[string]time.Time
+	lastClean time.Time
+}
+
+func init() {
+	udpIPRate.seen = make(map[string]time.Time)
+	udpIPRate.lastClean = time.Now()
+}
+
+func udpIPRateAllow(addr net.Addr) bool {
+	ip := addr.String()
+	if h, _, err := net.SplitHostPort(ip); err == nil {
+		ip = h
+	}
+
+	udpIPRate.mu.Lock()
+	defer udpIPRate.mu.Unlock()
+
+	now := time.Now()
+	if now.Sub(udpIPRate.lastClean) > time.Minute {
+		for k, v := range udpIPRate.seen {
+			if now.Sub(v) > 5*time.Second {
+				delete(udpIPRate.seen, k)
+			}
+		}
+		udpIPRate.lastClean = now
+	}
+
+	if last, ok := udpIPRate.seen[ip]; ok && now.Sub(last) < 200*time.Millisecond {
+		return false
+	}
+	udpIPRate.seen[ip] = now
+	return true
+}
+
 func createHandshakeHandler(privateKeyStr string, serverConfig *modconfig.ServerConfig) *handshake.Handler {
 	if privateKeyStr == "" {
 		return nil
@@ -620,13 +657,12 @@ func main() {
 		*configFile = "config.yaml"
 	}
 
-	if *debug {
-		go func() {
-			if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
-				log.Printf("Failed to start pprof server: %v", err)
-			}
-		}()
-	}
+	go func() {
+		log.Printf("pprof listening on http://%s/debug/pprof/", *pprofAddr)
+		if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+			log.Printf("Failed to start pprof server: %v", err)
+		}
+	}()
 
 	if *debug {
 		logger.SetLevel(logger.LevelDebug)
@@ -1059,10 +1095,15 @@ func createModules(manager *lifecycle.Manager) error {
 }
 
 func handlePacket(data []byte, addr net.Addr) {
-	fmt.Printf("[Packet] Received %d bytes from %v\n", len(data), addr)
+	if *debug {
+		log.Printf("[Packet] Received %d bytes from %v", len(data), addr)
+	}
 	ctx := context.Background()
 
 	if len(data) >= 32 && len(data) <= 96 && globalHandshake != nil {
+		if !udpIPRateAllow(addr) {
+			return
+		}
 		sess, err := globalHandshake.HandleHandshake(ctx, data, addr)
 		if err == nil && sess != nil {
 			if *debug {

@@ -34,9 +34,6 @@ type ConnectionKey struct {
 	PhantomShortID string `json:"phantom_sid,omitempty"`
 	RussianService string `json:"russian_service,omitempty"`
 
-	// TransportConfig carries transport-specific credentials for external
-	// transports (VK WebRTC, Yandex Disk, Telegram Bot, etc.).
-	// Encoded as cfg=BASE64_JSON in the URL format.
 	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
 }
 
@@ -59,7 +56,10 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 		}
 
 		q := u.Query()
-		ck.PSK = q.Get("key")
+		ck.PSK = q.Get("psk")
+		if ck.PSK == "" {
+			ck.PSK = q.Get("key") // legacy param name
+		}
 		ck.ServerPub = q.Get("pub")
 
 		if val := q.Get("obfs"); val != "" {
@@ -106,7 +106,6 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 			ck.RussianService = val
 		}
 
-		// Transport-specific config (e.g. VK token, Yandex OAuth, Telegram bot token)
 		if val := q.Get("cfg"); val != "" {
 			decoded, err := base64.RawURLEncoding.DecodeString(val)
 			if err == nil {
@@ -183,6 +182,7 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 			SNI:             ck.PhantomSNI,
 			ShortId:         ck.PhantomShortID,
 			ServerPublicKey: ck.ServerPub,
+			PSK:             ck.PSK,
 		}
 	}
 

@@ -348,7 +348,6 @@ func WrapConn(conn net.Conn, userID string) net.Conn {
 	}
 }
 
-// connRegistry maps userID → set of active net.Conn for kill support.
 var connRegistry struct {
 	mu    sync.Mutex
 	conns map[string]map[net.Conn]struct{}
@@ -358,7 +357,6 @@ func init() {
 	connRegistry.conns = make(map[string]map[net.Conn]struct{})
 }
 
-// RegisterConn registers an active connection for a user.
 func RegisterConn(userID string, conn net.Conn) {
 	connRegistry.mu.Lock()
 	defer connRegistry.mu.Unlock()
@@ -368,7 +366,6 @@ func RegisterConn(userID string, conn net.Conn) {
 	connRegistry.conns[userID][conn] = struct{}{}
 }
 
-// DeregisterConn removes a connection from the registry (call on close).
 func DeregisterConn(userID string, conn net.Conn) {
 	connRegistry.mu.Lock()
 	defer connRegistry.mu.Unlock()
@@ -380,7 +377,6 @@ func DeregisterConn(userID string, conn net.Conn) {
 	}
 }
 
-// KillUserConns closes all active connections for a user. Returns count closed.
 func KillUserConns(userID string) int {
 	connRegistry.mu.Lock()
 	conns := connRegistry.conns[userID]
@@ -393,7 +389,6 @@ func KillUserConns(userID string) int {
 	return len(conns)
 }
 
-// ActiveConnCount returns the number of active connections for a user.
 func ActiveConnCount(userID string) int {
 	connRegistry.mu.Lock()
 	defer connRegistry.mu.Unlock()

@@ -97,15 +97,10 @@ type ClientConfig struct {
 
 	Phantom *ClientPhantomConfig `yaml:"phantom,omitempty" json:"phantom,omitempty"`
 
-	// Transport specifies which transport to use (tcp, udp, ws, shadowtls, tuic, splithttp, …).
-	// Set from the connection key's transport= parameter.
 	Transport string `yaml:"transport,omitempty" json:"transport,omitempty"`
 
 	RussianService string `yaml:"russian_service,omitempty" json:"russian_service,omitempty"`
 
-	// TransportConfig holds transport-specific credentials decoded from the
-	// connection key (cfg= param). Used by external transports: vkwebrtc,
-	// yadisk, yacloud, yatelemost, tgbot, vkbot, okwebrtc.
 	TransportConfig map[string]interface{} `yaml:"transport_config,omitempty" json:"transport_config,omitempty"`
 }
 
@@ -179,10 +174,11 @@ type ClientASNBypassConfig struct {
 }
 
 type ClientPhantomConfig struct {
-	Enabled         bool   `yaml:"enabled" json:"enabled"`                     
-	SNI             string `yaml:"sni" json:"sni"`                             
-	ShortId         string `yaml:"short_id" json:"short_id"`                   
-	ServerPublicKey string `yaml:"server_public_key" json:"server_public_key"` 
+	Enabled         bool   `yaml:"enabled" json:"enabled"`
+	SNI             string `yaml:"sni" json:"sni"`
+	ShortId         string `yaml:"short_id" json:"short_id"`
+	ServerPublicKey string `yaml:"server_public_key" json:"server_public_key"`
+	PSK             string `yaml:"psk" json:"psk"` // user's base64 Curve25519 private key
 }
 
 func LoadClient(path string) (*ClientConfig, error) {

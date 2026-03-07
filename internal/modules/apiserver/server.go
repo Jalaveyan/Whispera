@@ -96,7 +96,7 @@ type Server struct {
 
 	cpuLoad    float64
 	cpuMu      sync.Mutex
-	cpuPrev    [2]uint64 // [idle, total]
+	cpuPrev    [2]uint64
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -105,6 +105,10 @@ func New(cfg *Config) (*Server, error) {
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
+	}
+
+	if err := os.MkdirAll("/etc/whispera", 0755); err != nil {
+		log.Printf("[API] Warning: failed to create /etc/whispera: %v", err)
 	}
 
 	bridgeReg := bridgepool.NewRegistry("/etc/whispera/bridges.json")
@@ -966,14 +970,11 @@ type userPersist struct {
 	NextUserID int     `json:"next_user_id"`
 }
 
-// RegisteredUser holds minimal user data for external auth providers (e.g. phantom).
 type RegisteredUser struct {
 	UserID     string
-	PrivateKey string // base64-encoded Curve25519 private key (PSK)
+	PrivateKey string
 }
 
-// GetRegisteredUsers returns all active users with their PSKs.
-// Used by phantom handler to perform per-user identification.
 func GetRegisteredUsers() []RegisteredUser {
 	userStoreMu.RLock()
 	defer userStoreMu.RUnlock()
@@ -1420,7 +1421,6 @@ func (s *Server) handleKillSessionAPI(w http.ResponseWriter, r *http.Request) {
 
 	closed := stats.KillUserConns(userID)
 
-	// Also remove from session manager if available.
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("session.manager"); ok {
 			if sessionMgr, ok := mod.(interfaces.SessionManager); ok {
@@ -1885,7 +1885,6 @@ func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
 		info["module_count"] = len(modules)
 	}
 
-	// Read TLS cert expiry if configured
 	if s.config.TLSCert != "" {
 		if certPEM, err := os.ReadFile(s.config.TLSCert); err == nil {
 			if block, _ := pem.Decode(certPEM); block != nil {
@@ -1952,7 +1951,6 @@ func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Try journalctl first
 	out, err := exec.Command("journalctl", "-u", "whispera", "-n", fmt.Sprintf("%d", limit), "--no-pager", "--output=short-iso").Output()
 	if err == nil && len(out) > 0 {
 		lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
@@ -1960,7 +1958,6 @@ func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fallback: read log file
 	logPaths := []string{"/var/log/whispera/whispera.log", "/var/log/whispera.log", "/tmp/whispera.log"}
 	for _, path := range logPaths {
 		data, err := os.ReadFile(path)
@@ -1987,7 +1984,6 @@ func readProcStatCPU() (idle, total uint64, err error) {
 		if !strings.HasPrefix(line, "cpu ") {
 			continue
 		}
-		// cpu user nice system idle iowait irq softirq steal guest guest_nice
 		var name string
 		var fields [10]uint64
 		fmt.Sscanf(line, "%s %d %d %d %d %d %d %d %d %d %d",
@@ -1996,7 +1992,7 @@ func readProcStatCPU() (idle, total uint64, err error) {
 			&fields[4], &fields[5], &fields[6], &fields[7],
 			&fields[8], &fields[9],
 		)
-		idle = fields[3] + fields[4] // idle + iowait
+		idle = fields[3] + fields[4]
 		for _, v := range fields {
 			total += v
 		}
