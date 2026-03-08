@@ -236,7 +236,6 @@ class WhisperaAPI {
         return this.request('/api/bridges');
     }
 
-    // Прямой запрос к Go backend — возвращает полные BridgeInfo (is_alive, latency_ms, trust_level и т.д.)
     async getBridgesAdmin() {
         return this.request('/api/bridge-admin');
     }
@@ -360,6 +359,18 @@ class WhisperaAPI {
     async getStealthMode() {
         const cfg = await this.request('/api/v1/config');
         return cfg.stealth_mode || '';
+    }
+
+    async updatePublicURL(url) {
+        return this.request('/api/v1/config/update', {
+            method: 'POST',
+            body: JSON.stringify({ server: { public_url: url } })
+        });
+    }
+
+    async getPublicURL() {
+        const cfg = await this.request('/api/v1/config');
+        return cfg.public_url || '';
     }
 
     async renewCertificate() {

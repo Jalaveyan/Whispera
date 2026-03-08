@@ -664,6 +664,8 @@ class WhisperaApp {
                 "settings.config.port": "Порт подключения пользователей",
                 "settings.config.domain": "Основной домен (SNI)",
                 "settings.config.email": "Email администратора",
+                "settings.config.public_url": "Public URL подписки",
+                "settings.config.public_url_hint": "Если задан — IP сервера скрыт в ссылках подписки",
                 "settings.config.reload": "Перезагрузить ядро",
 
                 "settings.security.title": "Безопасность и SSL",
@@ -892,6 +894,8 @@ class WhisperaApp {
                 "settings.config.port": "User Connection Port",
                 "settings.config.domain": "Main Domain (SNI)",
                 "settings.config.email": "Admin Email",
+                "settings.config.public_url": "Subscription Public URL",
+                "settings.config.public_url_hint": "If set — server IP is hidden in subscription links",
                 "settings.config.reload": "Reload Core",
 
                 "settings.security.title": "Security & SSL",
@@ -2466,12 +2470,18 @@ class WhisperaApp {
         const port = document.getElementById('server-port').value;
         const domain = document.getElementById('server-domain').value;
         const email = document.getElementById('admin-contact').value;
+        const publicURL = (document.getElementById('public-url')?.value || '').trim();
 
         localStorage.setItem('whispera_domain', domain);
         localStorage.setItem('whispera_admin_email', email);
 
         try {
-            await api.updateServerSettings({ port, domain, email });
+            await api.request('/api/v1/config/update', {
+                method: 'POST',
+                body: JSON.stringify({
+                    server: { port: parseInt(port) || 0, public_url: publicURL }
+                })
+            });
             this.showNotification('Настройки успешно сохранены', 'success');
         } catch (error) {
             this.showNotification('Ошибка сохранения: ' + error.message, 'error');
@@ -2652,6 +2662,8 @@ class WhisperaApp {
         if (document.getElementById('panel-theme')) document.getElementById('panel-theme').value = theme;
         if (document.getElementById('panel-language')) document.getElementById('panel-language').value = lang;
 
+        this.initCustomSelects();
+
         const loginEmail = localStorage.getItem('whispera_email') || '';
         if (document.getElementById('admin-profile-email')) document.getElementById('admin-profile-email').value = loginEmail;
 
@@ -2673,14 +2685,16 @@ class WhisperaApp {
         }
 
         try {
-            const stealthMode = await api.getStealthMode();
+            const cfg = await api.request('/api/v1/config');
             const sel = document.getElementById('stealth-mode-select');
             if (sel) {
-                sel.value = stealthMode || '';
+                sel.value = cfg.stealth_mode || '';
                 this._updateStealthHint(sel.value);
             }
+            const puInput = document.getElementById('public-url');
+            if (puInput) puInput.value = cfg.public_url || '';
         } catch (e) {
-            console.log('Failed to load stealth mode');
+            console.log('Failed to load stealth mode / config');
         }
 
         this._loadProbeStats();
@@ -3331,59 +3345,68 @@ class WhisperaApp {
                 <h3><i class="fas fa-fire-alt" style="margin-right:8px;color:#f59e0b;"></i>Управление Firewall (UFW)</h3>
                 <button class="modal-close modal-close-icon" onclick="this.closest('.modal').remove()"><i class="fas fa-times"></i></button>
             </div>
-            <div class="modal-body" style="display:flex;flex-direction:column;gap:16px;">
-                <div id="fw-status-bar" style="display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:8px;background:var(--bg-secondary,#1a1a2e);">
-                    <span id="fw-status-text" style="flex:1;font-size:0.9em;">Загрузка...</span>
-                    <button id="fw-toggle-btn" style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;display:none;"></button>
+            <div class="modal-body" style="display:flex;flex-direction:column;gap:20px;">
+
+                <div id="fw-status-bar" style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:8px;border-left:3px solid var(--border,#333);background:rgba(255,255,255,0.03);border:1px solid var(--border,rgba(255,255,255,0.08));">
+                    <span id="fw-status-text" style="flex:1;font-size:0.9em;opacity:0.7;">Загрузка...</span>
+                    <button id="fw-toggle-btn" class="btn btn-sm" style="display:none;"></button>
                 </div>
+
                 <div>
-                    <div style="font-size:0.8em;text-transform:uppercase;opacity:0.6;letter-spacing:0.05em;margin-bottom:8px;">Правила</div>
-                    <div id="fw-rules-table" style="overflow-x:auto;">
-                        <table style="width:100%;border-collapse:collapse;font-size:0.88em;">
+                    <div style="font-size:0.75em;text-transform:uppercase;letter-spacing:0.08em;opacity:0.45;margin-bottom:10px;font-weight:600;">Правила</div>
+                    <div id="fw-rules-table" style="overflow-x:auto;border-radius:8px;border:1px solid rgba(255,255,255,0.07);">
+                        <table style="width:100%;border-collapse:collapse;font-size:0.87em;">
                             <thead>
-                                <tr style="border-bottom:1px solid var(--border,#333);opacity:0.7;">
-                                    <th style="text-align:left;padding:6px 8px;">#</th>
-                                    <th style="text-align:left;padding:6px 8px;">Назначение</th>
-                                    <th style="text-align:left;padding:6px 8px;">Действие</th>
-                                    <th style="text-align:left;padding:6px 8px;">Откуда</th>
-                                    <th style="padding:6px 8px;"></th>
+                                <tr style="background:rgba(255,255,255,0.03);">
+                                    <th style="text-align:left;padding:9px 12px;font-weight:500;opacity:0.5;font-size:0.85em;text-transform:uppercase;letter-spacing:0.05em;">#</th>
+                                    <th style="text-align:left;padding:9px 12px;font-weight:500;opacity:0.5;font-size:0.85em;text-transform:uppercase;letter-spacing:0.05em;">Назначение</th>
+                                    <th style="text-align:left;padding:9px 12px;font-weight:500;opacity:0.5;font-size:0.85em;text-transform:uppercase;letter-spacing:0.05em;">Действие</th>
+                                    <th style="text-align:left;padding:9px 12px;font-weight:500;opacity:0.5;font-size:0.85em;text-transform:uppercase;letter-spacing:0.05em;">Откуда</th>
+                                    <th style="padding:9px 12px;"></th>
                                 </tr>
                             </thead>
-                            <tbody id="fw-rules-body"><tr><td colspan="5" style="text-align:center;padding:16px;opacity:0.5;">Загрузка...</td></tr></tbody>
+                            <tbody id="fw-rules-body">
+                                <tr><td colspan="5" style="text-align:center;padding:20px;opacity:0.4;font-size:0.9em;">Загрузка...</td></tr>
+                            </tbody>
                         </table>
                     </div>
                 </div>
-                <div style="border-top:1px solid var(--border,#333);padding-top:14px;">
-                    <div style="font-size:0.8em;text-transform:uppercase;opacity:0.6;letter-spacing:0.05em;margin-bottom:10px;">Добавить правило</div>
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
-                        <div style="display:flex;flex-direction:column;gap:4px;">
-                            <label style="font-size:0.78em;opacity:0.7;">Действие</label>
-                            <select id="fw-new-action" style="padding:8px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-secondary,#1a1a2e);color:inherit;font-size:13px;">
+
+                <div style="border-top:1px solid rgba(255,255,255,0.07);padding-top:18px;">
+                    <div style="font-size:0.75em;text-transform:uppercase;letter-spacing:0.08em;opacity:0.45;margin-bottom:12px;font-weight:600;">Добавить правило</div>
+                    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+                        <div class="form-group" style="margin-bottom:0;display:flex;flex-direction:column;gap:5px;">
+                            <label style="font-size:0.78em;opacity:0.6;font-weight:500;">Действие</label>
+                            <select id="fw-new-action" style="width:110px;height:38px;font-size:13px;padding:0 32px 0 12px;">
                                 <option value="allow">ALLOW</option>
                                 <option value="deny">DENY</option>
                             </select>
                         </div>
-                        <div style="display:flex;flex-direction:column;gap:4px;">
-                            <label style="font-size:0.78em;opacity:0.7;">Порт</label>
-                            <input id="fw-new-port" type="text" placeholder="80 или 8080:9090" style="width:140px;padding:8px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-secondary,#1a1a2e);color:inherit;font-size:13px;">
+                        <div class="form-group" style="margin-bottom:0;display:flex;flex-direction:column;gap:5px;">
+                            <label style="font-size:0.78em;opacity:0.6;font-weight:500;">Порт</label>
+                            <input id="fw-new-port" type="text" placeholder="80 или 8080:9090" style="width:155px;height:38px;font-size:13px;padding:0 12px;">
                         </div>
-                        <div style="display:flex;flex-direction:column;gap:4px;">
-                            <label style="font-size:0.78em;opacity:0.7;">Протокол</label>
-                            <select id="fw-new-proto" style="padding:8px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-secondary,#1a1a2e);color:inherit;font-size:13px;">
+                        <div class="form-group" style="margin-bottom:0;display:flex;flex-direction:column;gap:5px;">
+                            <label style="font-size:0.78em;opacity:0.6;font-weight:500;">Протокол</label>
+                            <select id="fw-new-proto" style="width:95px;height:38px;font-size:13px;padding:0 32px 0 12px;">
                                 <option value="any">any</option>
                                 <option value="tcp">tcp</option>
                                 <option value="udp">udp</option>
                             </select>
                         </div>
-                        <div style="display:flex;flex-direction:column;gap:4px;">
-                            <label style="font-size:0.78em;opacity:0.7;">Откуда (опц.)</label>
-                            <input id="fw-new-from" type="text" placeholder="Anywhere" style="width:140px;padding:8px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-secondary,#1a1a2e);color:inherit;font-size:13px;">
+                        <div class="form-group" style="margin-bottom:0;display:flex;flex-direction:column;gap:5px;">
+                            <label style="font-size:0.78em;opacity:0.6;font-weight:500;">Откуда (опц.)</label>
+                            <input id="fw-new-from" type="text" placeholder="Anywhere" style="width:155px;height:38px;font-size:13px;padding:0 12px;">
                         </div>
-                        <button id="fw-add-btn" style="padding:8px 18px;border-radius:6px;border:none;background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-size:13px;white-space:nowrap;">
+                        <button id="fw-add-btn" class="btn btn-primary btn-sm" style="white-space:nowrap;align-self:flex-end;">
                             <i class="fas fa-plus"></i> Добавить
                         </button>
                     </div>
                 </div>
+
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary btn-sm" onclick="this.closest('.modal').remove()">Закрыть</button>
             </div>
         </div>`;
         document.body.appendChild(modal);
@@ -3395,35 +3418,33 @@ class WhisperaApp {
             const tbody = modal.querySelector('#fw-rules-body');
 
             if (status.active) {
-                statusBar.style.borderLeft = '3px solid #22c55e';
-                statusText.innerHTML = '<i class="fas fa-circle" style="color:#22c55e;margin-right:6px;font-size:10px;"></i><strong>UFW активен</strong>';
-                toggleBtn.textContent = 'Отключить';
-                toggleBtn.style.background = '#ef4444';
-                toggleBtn.style.color = '#fff';
+                statusBar.style.cssText = 'display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:8px;background:rgba(74,222,128,0.05);border:1px solid rgba(74,222,128,0.2);';
+                statusText.innerHTML = '<i class="fas fa-circle" style="color:#4ade80;margin-right:8px;font-size:9px;"></i><span style="font-weight:500;">UFW активен</span>';
+                toggleBtn.className = 'btn btn-sm btn-danger';
+                toggleBtn.innerHTML = '<i class="fas fa-power-off" style="margin-right:5px;"></i>Отключить';
             } else {
-                statusBar.style.borderLeft = '3px solid #ef4444';
-                statusText.innerHTML = '<i class="fas fa-circle" style="color:#ef4444;margin-right:6px;font-size:10px;"></i><strong>UFW неактивен</strong>';
-                toggleBtn.textContent = 'Включить';
-                toggleBtn.style.background = '#22c55e';
-                toggleBtn.style.color = '#fff';
+                statusBar.style.cssText = 'display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:8px;background:rgba(248,113,113,0.05);border:1px solid rgba(248,113,113,0.2);';
+                statusText.innerHTML = '<i class="fas fa-circle" style="color:#f87171;margin-right:8px;font-size:9px;"></i><span style="font-weight:500;">UFW неактивен</span>';
+                toggleBtn.className = 'btn btn-sm btn-primary';
+                toggleBtn.innerHTML = '<i class="fas fa-power-off" style="margin-right:5px;"></i>Включить';
             }
             toggleBtn.style.display = '';
 
             if (!status.rules || status.rules.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;opacity:0.5;">Правил нет</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;opacity:0.4;font-size:0.9em;">Правил нет</td></tr>';
             } else {
                 tbody.innerHTML = status.rules.map(r => `
-                    <tr style="border-bottom:1px solid var(--border,#222);">
-                        <td style="padding:7px 8px;opacity:0.6;">${r.number}</td>
-                        <td style="padding:7px 8px;font-family:monospace;">${r.to}${r.ipv6 ? ' <span style="opacity:0.5;font-size:0.8em;">v6</span>' : ''}</td>
-                        <td style="padding:7px 8px;">
-                            <span style="padding:2px 8px;border-radius:4px;font-size:0.82em;background:${r.action.includes('ALLOW') ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'};color:${r.action.includes('ALLOW') ? '#22c55e' : '#ef4444'};">
+                    <tr style="border-top:1px solid rgba(255,255,255,0.05);transition:background 0.15s;" onmouseover="this.style.background='rgba(255,255,255,0.03)'" onmouseout="this.style.background=''">
+                        <td style="padding:10px 12px;opacity:0.4;font-size:0.85em;">${r.number}</td>
+                        <td style="padding:10px 12px;font-family:monospace;font-size:0.88em;">${r.to}${r.ipv6 ? ' <span style="opacity:0.4;font-size:0.8em;margin-left:4px;">v6</span>' : ''}</td>
+                        <td style="padding:10px 12px;">
+                            <span style="padding:3px 10px;border-radius:20px;font-size:0.78em;font-weight:600;letter-spacing:0.04em;${r.action.includes('ALLOW') ? 'background:rgba(34,197,94,0.12);color:#4ade80;border:1px solid rgba(34,197,94,0.2);' : 'background:rgba(239,68,68,0.12);color:#f87171;border:1px solid rgba(239,68,68,0.2);'}">
                                 ${r.action}
                             </span>
                         </td>
-                        <td style="padding:7px 8px;opacity:0.8;">${r.from}</td>
-                        <td style="padding:7px 8px;text-align:right;">
-                            <button onclick="app._firewallDeleteRule(${r.number})" style="padding:4px 10px;border-radius:4px;border:none;background:rgba(239,68,68,0.15);color:#ef4444;cursor:pointer;font-size:12px;">
+                        <td style="padding:10px 12px;opacity:0.7;font-size:0.88em;">${r.from}</td>
+                        <td style="padding:10px 12px;text-align:right;">
+                            <button onclick="app._firewallDeleteRule(${r.number})" class="btn btn-danger btn-sm" style="padding:0 10px;height:30px;font-size:12px;" title="Удалить правило">
                                 <i class="fas fa-trash"></i>
                             </button>
                         </td>
@@ -3442,7 +3463,7 @@ class WhisperaApp {
         }
 
         modal.querySelector('#fw-toggle-btn').addEventListener('click', async () => {
-            const isActive = modal.querySelector('#fw-status-text').textContent.includes('активен');
+            const isActive = !modal.querySelector('#fw-status-text').textContent.includes('неактивен');
             try {
                 const res = await api.request('/api/firewall/toggle', { method: 'POST', body: JSON.stringify({ enable: !isActive }) });
                 renderRules(res.status);
@@ -3519,7 +3540,7 @@ class WhisperaApp {
             <p style="margin:0 0 8px;">Пользователь: <strong>${email}</strong></p>
             ${connectionURI ? copyBtn(uriEsc, 'Ключ подключения (импортируйте в клиент)') : copyBtn(pkEsc, 'Приватный ключ')}
             ${connectionURI ? `<div id="key-modal-qr-wrap" style="display:flex;flex-direction:column;align-items:center;gap:6px;margin:8px 0;">
-                <canvas id="key-modal-qr" style="border-radius:8px;background:#fff;padding:8px;"></canvas>
+                <img id="key-modal-qr" style="border-radius:8px;background:#fff;padding:8px;width:220px;height:220px;" />
                 <span style="font-size:0.78em;opacity:0.5;">Сканируйте QR-кодом в клиенте</span>
             </div>` : ''}
             <p style="margin-top:4px;font-size:0.82em;opacity:0.6;">
@@ -3534,17 +3555,19 @@ class WhisperaApp {
 
         if (connectionURI) {
             setTimeout(() => {
-                const canvas = modal.querySelector('#key-modal-qr');
+                const img = modal.querySelector('#key-modal-qr');
                 const qrWrap = modal.querySelector('#key-modal-qr-wrap');
-                if (canvas && typeof QRCode !== 'undefined') {
-                    QRCode.toCanvas(canvas, connectionURI, {
+                if (img && typeof QRCode !== 'undefined') {
+                    QRCode.toDataURL(connectionURI, {
                         width: 220, margin: 2,
-                        errorCorrectionLevel: 'M',
+                        errorCorrectionLevel: 'L',
                         color: { dark: '#000000', light: '#ffffff' }
-                    }, (err) => {
+                    }, (err, url) => {
                         if (err) {
                             console.error('QR error:', err);
                             if (qrWrap) qrWrap.innerHTML = '<span style="font-size:0.8em;opacity:0.5;text-align:center;">QR недоступен — скопируйте ключ вручную</span>';
+                        } else {
+                            img.src = url;
                         }
                     });
                 } else if (qrWrap) {

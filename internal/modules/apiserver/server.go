@@ -704,6 +704,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			if cfgProvider, ok := module.(*config.Provider); ok {
 				cfg := cfgProvider.GetConfig()
 				resp["stealth_mode"] = cfg.StealthMode
+				resp["public_url"] = cfg.Server.PublicURL
 			}
 		}
 	}
@@ -734,11 +735,12 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Server struct {
-			IP      string `json:"ip"`
-			Port    int    `json:"port"`
-			TCPPort int    `json:"tcpPort"`
-			WSPort  int    `json:"wsPort"`
-			WS2Port int    `json:"ws2Port"`
+			IP        string `json:"ip"`
+			Port      int    `json:"port"`
+			TCPPort   int    `json:"tcpPort"`
+			WSPort    int    `json:"wsPort"`
+			WS2Port   int    `json:"ws2Port"`
+			PublicURL string `json:"public_url"`
 		} `json:"server"`
 		Obfuscation struct {
 			DefaultProfile    string `json:"defaultProfile"`
@@ -784,6 +786,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			cfg.Obfuscation.Profile = req.Obfuscation.DefaultProfile
 		}
 		cfg.StealthMode = req.StealthMode
+		cfg.Server.PublicURL = strings.TrimRight(req.Server.PublicURL, "/")
 	})
 
 	if err != nil {

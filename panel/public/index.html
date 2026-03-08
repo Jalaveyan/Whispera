@@ -660,6 +660,11 @@
                                         администратора</label>
                                     <input type="email" id="admin-contact" placeholder="admin@example.com">
                                 </div>
+                                <div class="form-group">
+                                    <label for="public-url" data-i18n="settings.config.public_url">Public URL подписки</label>
+                                    <input type="text" id="public-url" placeholder="https://my-domain.com">
+                                    <small style="opacity:0.5;font-size:0.78em;margin-top:4px;display:block;" data-i18n="settings.config.public_url_hint">Если задан — IP сервера скрыт в ссылках подписки</small>
+                                </div>
                                 <div style="display: flex; gap: 12px; margin-top: 16px;">
                                     <button type="submit" class="btn btn-primary">
                                         <i class="fas fa-save"></i> <span data-i18n="common.save">Сохранить</span>
@@ -751,16 +756,16 @@
                                     <div style="font-size:0.75em;color:var(--text-secondary,#8899a6);margin-top:4px;">SNI-ownership</div>
                                 </div>
                             </div>
-                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
-                                <div style="display:flex;gap:8px;">
-                                    <input type="text" id="probe-block-ip" placeholder="IP для блокировки" data-i18n="settings.probe.block_placeholder" style="flex:1;min-width:0;">
-                                    <button id="probe-block-btn" class="btn btn-danger btn-sm" style="white-space:nowrap;">
+                            <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;">
+                                <div class="form-group" style="display:flex;gap:8px;margin-bottom:0;">
+                                    <input type="text" id="probe-block-ip" placeholder="IP для блокировки" data-i18n="settings.probe.block_placeholder" style="flex:1;width:0;min-width:0;">
+                                    <button id="probe-block-btn" class="btn btn-danger" style="white-space:nowrap;flex-shrink:0;align-self:center;">
                                         <i class="fas fa-ban"></i> <span data-i18n="settings.probe.block_btn">Блок</span>
                                     </button>
                                 </div>
-                                <div style="display:flex;gap:8px;">
-                                    <input type="text" id="probe-unblock-ip" placeholder="IP для разблокировки" data-i18n="settings.probe.unblock_placeholder" style="flex:1;min-width:0;">
-                                    <button id="probe-unblock-btn" class="btn btn-secondary btn-sm" style="white-space:nowrap;">
+                                <div class="form-group" style="display:flex;gap:8px;margin-bottom:0;">
+                                    <input type="text" id="probe-unblock-ip" placeholder="IP для разблокировки" data-i18n="settings.probe.unblock_placeholder" style="flex:1;width:0;min-width:0;">
+                                    <button id="probe-unblock-btn" class="btn btn-secondary" style="white-space:nowrap;flex-shrink:0;align-self:center;">
                                         <i class="fas fa-unlock"></i> <span data-i18n="settings.probe.unblock_btn">Разблок</span>
                                     </button>
                                 </div>

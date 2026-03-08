@@ -90,12 +90,13 @@ func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	serverIP, _ := network.DetectServerIP(ctx)
+	publicURL := s.getPublicURL()
 
 	subStoreMu.RLock()
 	list := make([]*Subscription, 0, len(subStore))
 	for _, sub := range subStore {
 		cp := *sub
-		cp.SubURL = buildSubURL(r, serverIP, sub.Token)
+		cp.SubURL = buildSubURL(r, serverIP, publicURL, sub.Token)
 		list = append(list, &cp)
 	}
 	subStoreMu.RUnlock()
@@ -149,7 +150,7 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 	serverIP, _ := network.DetectServerIP(ctx)
 
 	cp := *sub
-	cp.SubURL = buildSubURL(r, serverIP, token)
+	cp.SubURL = buildSubURL(r, serverIP, s.getPublicURL(), token)
 
 	s.jsonOK(w, map[string]interface{}{
 		"success":      true,
@@ -286,7 +287,27 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 
 var internalPorts = map[string]bool{"3000": true, "8080": true, "8081": true, "8082": true}
 
-func buildSubURL(r *http.Request, serverIP, token string) string {
+func (s *Server) getPublicURL() string {
+	if s.registry == nil {
+		return ""
+	}
+	mod, ok := s.registry.Get("config.provider")
+	if !ok {
+		return ""
+	}
+	if p, ok := mod.(interface {
+		GetConfig() *config.ServerConfig
+	}); ok {
+		return strings.TrimRight(p.GetConfig().Server.PublicURL, "/")
+	}
+	return ""
+}
+
+func buildSubURL(r *http.Request, serverIP, publicURL, token string) string {
+	if publicURL != "" {
+		return fmt.Sprintf("%s/sub/%s", publicURL, token)
+	}
+
 	scheme := "https"
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
 		scheme = proto

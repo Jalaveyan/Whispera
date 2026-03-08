@@ -33,14 +33,16 @@ func (s *Server) handleGetBackup(w http.ResponseWriter, r *http.Request) {
 		"adblock":       readRawJSON(adblockDataFile),
 	}
 
-	// Include server config if available
+	// Include server config as plain string (it's YAML, not JSON)
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {
 			type cfgProvider interface {
 				GetConfigPath() string
 			}
 			if p, ok := mod.(cfgProvider); ok {
-				backup["config_yaml"] = readRawJSON(p.GetConfigPath())
+				if data, err := os.ReadFile(p.GetConfigPath()); err == nil {
+					backup["config_yaml"] = string(data)
+				}
 			}
 		}
 	}

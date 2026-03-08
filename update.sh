@@ -446,8 +446,8 @@ setup_nginx_proxy() {
 
     cat > /etc/nginx/sites-available/whispera-ui <<NGINX
 server {
-    listen 443 ssl;
-    server_name whispera-ui ${SERVER_IP};
+    listen 443 ssl default_server;
+    server_name _;
 
     ssl_certificate     ${CERT};
     ssl_certificate_key ${KEY};

@@ -325,6 +325,7 @@ type ServerSettings struct {
 	GracefulStop Duration `yaml:"graceful_stop" json:"graceful_stop"`
 	PrivateKey   string   `yaml:"private_key" json:"private_key"`
 	UUID         string   `yaml:"uuid" json:"uuid"`
+	PublicURL    string   `yaml:"public_url" json:"public_url"`
 }
 
 type BridgeConfig struct {
