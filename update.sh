@@ -756,7 +756,7 @@ do_update() {
 
     if [[ -f "scripts/install-bridge.sh" ]]; then
         mkdir -p "/opt/whispera/scripts"
-        cp "scripts/install-bridge.sh" "/opt/whispera/scripts/install-bridge.sh"
+        cp "scripts/install-bridge.sh" "/opt/whispera/scripts/install-bridge.sh" 2>/dev/null || true
         chmod +x "/opt/whispera/scripts/install-bridge.sh"
         log_info "Bridge install script deployed to /opt/whispera/scripts/"
     fi
