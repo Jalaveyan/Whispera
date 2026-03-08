@@ -19,7 +19,6 @@ log_info() { echo -e "${BLUE}[INFO]${PLAIN} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERR]${PLAIN} $1"; }
 
-# Call after any edit to config.yaml so the integrity check passes on restart
 refresh_config() {
     local cfg="${1:-$CONF_PATH/config.yaml}"
     if [[ ! -f "$cfg" ]]; then return; fi
@@ -107,7 +106,6 @@ EOF
 setup_warp() {
     log_info "Setting up Cloudflare WARP..."
     
-    # Install warp-cli if not present
     if ! command -v warp-cli &>/dev/null; then
         case $RELEASE in
             ubuntu|debian)
@@ -134,9 +132,7 @@ setup_warp() {
     systemctl enable warp-svc --now 2>/dev/null || true
     sleep 2
 
-    # Connect if not already connected
     if ! warp-cli status 2>/dev/null | grep -q "Connected"; then
-        # Support both old and new warp-cli syntax
         if warp-cli registration new &>/dev/null; then
             warp-cli mode proxy 2>/dev/null || true
         else
@@ -144,7 +140,6 @@ setup_warp() {
             warp-cli set-mode proxy 2>/dev/null || true
         fi
         warp-cli connect 2>/dev/null || true
-        # Wait up to 15s for connection
         for i in $(seq 1 5); do
             sleep 3
             warp-cli status 2>/dev/null | grep -q "Connected" && break
@@ -370,7 +365,6 @@ setup_autoupdate() {
     log_info "Setting up auto-update..."
     
     cat > /etc/cron.daily/whispera-update <<EOF
-#!/bin/bash
 cd $WORK_DIR
 git pull origin $BRANCH --quiet
 export PATH=\$PATH:/usr/local/go/bin
@@ -398,6 +392,111 @@ setup_ssh_hardening() {
     log_warn "Make sure you have SSH key access!"
 }
 
+generate_panel_cert() {
+    local CERT="$CONF_PATH/panel.crt"
+    local KEY="$CONF_PATH/panel.key"
+    local SERVER_IP
+    SERVER_IP=$(get_public_ip)
+
+    if [[ -f "$CERT" && -f "$KEY" ]]; then
+        if openssl x509 -in "$CERT" -noout -text 2>/dev/null | grep -q "whispera-ui"; then
+            log_info "Panel TLS cert already exists, skipping generation"
+            return
+        fi
+        log_info "Regenerating panel TLS cert (adding DNS:whispera-ui SAN)..."
+        rm -f "$CERT" "$KEY"
+    fi
+
+    log_info "Generating self-signed TLS certificate for panel (CN=whispera-ui)..."
+    if command -v openssl &>/dev/null; then
+        openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$KEY" -out "$CERT" \
+            -days 3650 -subj "/CN=whispera-ui" \
+            -addext "subjectAltName=DNS:whispera-ui,IP:127.0.0.1,IP:${SERVER_IP}" \
+            2>/dev/null
+        chmod 600 "$KEY"
+        log_success "Panel TLS cert generated: $CERT"
+    else
+        log_warn "openssl not found — panel will run without HTTPS"
+    fi
+}
+
+setup_nginx_proxy() {
+    local SERVER_IP
+    SERVER_IP=$(get_public_ip)
+    local CERT="$CONF_PATH/panel.crt"
+    local KEY="$CONF_PATH/panel.key"
+
+    if ! command -v nginx &>/dev/null; then
+        log_info "Installing nginx..."
+        if command -v apt-get &>/dev/null; then
+            apt-get install -y nginx >/dev/null 2>&1
+        elif command -v yum &>/dev/null; then
+            yum install -y nginx >/dev/null 2>&1
+        else
+            log_warn "Cannot install nginx — package manager not found"
+            return
+        fi
+    fi
+
+    if ! grep -q "whispera-ui" /etc/hosts; then
+        echo "127.0.0.1 whispera-ui" >> /etc/hosts
+        log_info "Added whispera-ui to /etc/hosts"
+    fi
+
+    cat > /etc/nginx/sites-available/whispera-ui <<NGINX
+server {
+    listen 80;
+    server_name whispera-ui ${SERVER_IP};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name whispera-ui ${SERVER_IP};
+
+    ssl_certificate     ${CERT};
+    ssl_certificate_key ${KEY};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    location / {
+        proxy_pass         https://127.0.0.1:3000;
+        proxy_ssl_verify   off;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Host \$host;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection "upgrade";
+    }
+}
+NGINX
+
+    mkdir -p /etc/nginx/sites-enabled
+    ln -sf /etc/nginx/sites-available/whispera-ui /etc/nginx/sites-enabled/whispera-ui
+
+    rm -f /etc/nginx/sites-enabled/default
+
+    if command -v ufw &>/dev/null; then
+        ufw allow 80/tcp >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
+    elif command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    fi
+
+    if nginx -t 2>/dev/null; then
+        systemctl enable nginx >/dev/null 2>&1
+        systemctl restart nginx
+        log_success "Nginx reverse proxy configured: https://whispera-ui/"
+    else
+        log_warn "Nginx config test failed — check /etc/nginx/sites-available/whispera-ui"
+    fi
+}
+
 setup_telegram() {
     echo ""
     echo -e "${YELLOW}--- Setup Telegram Notifications ---${PLAIN}"
@@ -412,7 +511,6 @@ setup_telegram() {
         return
     fi
 
-    # Validate: must be a numeric ID (Telegram user/chat IDs are integers)
     if ! [[ "$TG_ID" =~ ^-?[0-9]+$ ]]; then
         log_err "Invalid Telegram ID: must be a number (e.g. 123456789). Got: $TG_ID"
         log_info "Open @userinfobot in Telegram and send /start to get your numeric ID."
@@ -425,7 +523,6 @@ setup_telegram() {
     fi
 
     log_info "Updating config..."
-    # Use | as sed delimiter to avoid issues with special characters
     sed -i "s|admin_id: .*|admin_id: $TG_ID|" "$CONF_PATH/config.yaml"
     sed -i "s|chat_id: .*|chat_id: \"$TG_ID\"|" "$CONF_PATH/config.yaml"
     
@@ -539,7 +636,7 @@ show_extras_menu() {
         _row " 16.  View Logs     - Watch live logs"
         _row " 17.  Edit Config   - Modify config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row " 18.  Reinstall     - Fresh install from GitHub"
+        _row " 18.  Update        - Update Whispera from GitHub"
         _row "  0.  Exit"
         echo -e "${BLUE}╚${SEP}╝${PLAIN}"
         echo ""
@@ -657,6 +754,13 @@ do_update() {
         cp -r web/* "$DAT_PATH/web/"
     fi
 
+    if [[ -f "scripts/install-bridge.sh" ]]; then
+        mkdir -p "/opt/whispera/scripts"
+        cp "scripts/install-bridge.sh" "/opt/whispera/scripts/install-bridge.sh"
+        chmod +x "/opt/whispera/scripts/install-bridge.sh"
+        log_info "Bridge install script deployed to /opt/whispera/scripts/"
+    fi
+
     local PANEL_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "whispera-panel.tar.gz" | head -n 1 | cut -d '"' -f 4)
     
     if [[ -n "$PANEL_URL" ]]; then
@@ -690,7 +794,6 @@ ENVEOF
 
 
 
-            # migrate service from old dist/main.js to bundle/index.js
             if grep -q "dist/main.js" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
                 local NODE_BIN=$(command -v node || echo "/usr/bin/node")
                 sed -i "s|ExecStart=.* dist/main.js|ExecStart=$NODE_BIN bundle/index.js|" /etc/systemd/system/whispera-panel.service
@@ -698,22 +801,11 @@ ENVEOF
                 log_info "Migrated panel service to bundle/index.js"
             fi
 
-            # Generate self-signed TLS cert for panel if not already present
+            generate_panel_cert
+
             local PANEL_CERT="$CONF_PATH/panel.crt"
             local PANEL_KEY="$CONF_PATH/panel.key"
-            if [[ ! -f "$PANEL_CERT" || ! -f "$PANEL_KEY" ]]; then
-                if command -v openssl &>/dev/null; then
-                    openssl req -x509 -newkey rsa:2048 -nodes \
-                        -keyout "$PANEL_KEY" -out "$PANEL_CERT" \
-                        -days 3650 -subj "/CN=whispera-panel" \
-                        -addext "subjectAltName=IP:127.0.0.1" \
-                        2>/dev/null
-                    chmod 600 "$PANEL_KEY"
-                    log_success "Panel TLS cert generated"
-                fi
-            fi
 
-            # Inject TLS env vars into panel service if cert exists and not yet configured
             if [[ -f "$PANEL_CERT" && -f "$PANEL_KEY" ]]; then
                 if ! grep -q "TLS_CERT" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
                     sed -i "/^Environment=CORS_ORIGIN/a Environment=TLS_CERT=$PANEL_CERT\nEnvironment=TLS_KEY=$PANEL_KEY\nEnvironment=HTTP_PORT=80" \
@@ -724,6 +816,8 @@ ENVEOF
             fi
 
             systemctl restart whispera-panel 2>/dev/null || log_warn "Panel service not configured"
+
+            setup_nginx_proxy
             log_success "Panel updated from release"
         else
             log_warn "Panel download failed"
@@ -737,9 +831,7 @@ ENVEOF
         systemctl daemon-reload
     fi
 
-    # Migrate config
     if [[ -f "$CONF_PATH/config.yaml" ]]; then
-        # Fix max_time_diff if it was set too small (< 1000ms means someone used seconds instead of ms)
         local MTD
         MTD=$(grep 'max_time_diff:' "$CONF_PATH/config.yaml" | awk '{print $2}' | tr -d '[:space:]')
         if [[ -n "$MTD" && "$MTD" -lt 1000 ]] 2>/dev/null; then
@@ -748,7 +840,6 @@ ENVEOF
             log_success "max_time_diff updated: $MTD -> 300000"
         fi
 
-        # Fix duplicate relay: blocks (can happen after manual edits or old update scripts)
         local RELAY_COUNT
         RELAY_COUNT=$(grep -c "^relay:" "$CONF_PATH/config.yaml" 2>/dev/null || echo 0)
         if [[ "$RELAY_COUNT" -gt 1 ]]; then
@@ -759,13 +850,10 @@ import sys, re
 path = sys.argv[1]
 content = open(path).read()
 
-# Remove any short duplicate relay: block that only has upstream_proxy before a full relay: block
 content = re.sub(r'\nrelay:\n( {2}[^\n]+\n)+(?=relay:)', '\n', content)
 
-# If still more than one relay: block, keep only the last (most complete) one
 blocks = list(re.finditer(r'^relay:.*?(?=\n\S|\Z)', content, re.MULTILINE | re.DOTALL))
 if len(blocks) > 1:
-    # Remove all but the last relay: block
     for b in blocks[:-1]:
         content = content[:b.start()] + content[b.end():]
 
@@ -775,7 +863,6 @@ PYEOF
             log_success "relay: blocks merged"
         fi
 
-        # Always recompute checksum so server accepts the (possibly migrated) config
         "$BIN_PATH/whispera" update-checksum "$CONF_PATH/config.yaml" && log_info "Config checksum updated"
     fi
 
@@ -794,7 +881,8 @@ PYEOF
     echo ""
     log_success "Whispera updated successfully!"
     echo -e "  Config:         ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
-    echo -e "  Web Interface:  ${GREEN}http://${SERVER_IP}:3000${PLAIN}"
+    echo -e "  Web Panel:      ${GREEN}https://whispera-ui/${PLAIN}"
+    echo -e "  ${GREEN}${SERVER_IP} whispera-ui${PLAIN}  → в файл /etc/hosts (Linux/Mac) или C:\\Windows\\System32\\drivers\\etc\\hosts (Windows)"
     
     if [[ -n "$PUBLIC_KEY" ]]; then
         echo ""
@@ -806,13 +894,6 @@ PYEOF
     fi
     echo ""
     
-    if command -v ufw &>/dev/null; then
-        ufw allow 3000/tcp >/dev/null 2>&1 || true
-    elif command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port=3000/tcp >/dev/null 2>&1 || true
-        firewall-cmd --reload >/dev/null 2>&1 || true
-    fi
-
     show_extras_menu
 }
 

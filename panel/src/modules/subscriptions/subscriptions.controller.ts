@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Headers, Req, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, Headers, Param, Req, Res, HttpStatus } from '@nestjs/common';
 import type { Request } from 'express';
 import type { Response } from 'express';
 import { SubscriptionsService } from './subscriptions.service';
@@ -78,5 +78,18 @@ export class SubscriptionsController {
     async updateAll(@Headers('authorization') auth: string, @Res() res: Response) {
         void auth;
         return res.json({ success: true });
+    }
+
+    @Get('sub/:token')
+    async serveSubscription(@Param('token') token: string, @Res() res: Response) {
+        try {
+            const content = await this.subscriptionsService.getSubscriptionContent(token);
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('Content-Disposition', 'attachment; filename="whispera-sub.txt"');
+            res.setHeader('Profile-Update-Interval', '24');
+            return res.send(content);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.NOT_FOUND).send('Not Found');
+        }
     }
 }

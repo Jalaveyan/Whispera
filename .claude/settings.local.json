@@ -146,7 +146,8 @@
       "Bash(xargs grep -l \"detect\\\\|Detection\")",
       "Bash(go build ./internal/modules/probedetector/...)",
       "Bash(go build ./internal/modules/phantom/...)",
-      "Bash(grep -n \"case ''outbounds''\\\\|case ''routing''\\\\|case ''settings''\\\\|case ''subscriptions''\\\\|loadOutbounds\\\\|loadSettings\\\\|navigateTo\\\\|loadPage\" c:/Whispera-test/panel/public/js/app.js)"
+      "Bash(grep -n \"case ''outbounds''\\\\|case ''routing''\\\\|case ''settings''\\\\|case ''subscriptions''\\\\|loadOutbounds\\\\|loadSettings\\\\|navigateTo\\\\|loadPage\" c:/Whispera-test/panel/public/js/app.js)",
+      "Bash(grep -n \"HandleGetBridgesAdmin\\\\|HandleGetBridges\\\\|Not Found\\\\|404\\\\|bridgesFile\\\\|bridges.json\\\\|loadBridges\\\\|LoadBridges\" c:/Whispera-test/internal/modules/bridgepool/*.go)"
     ]
   }
 }

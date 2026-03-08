@@ -228,6 +228,7 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/bridge-cloudinit", s.bridgeHandler.HandleGetCloudInit)
 	s.Handle("GET /api/bridge-stats", s.handleBridgeStats)
 	s.Handle("POST /api/bridge-check", s.handleBridgeCheck)
+	s.Handle("GET /install-bridge.sh", s.handleServeBridgeScript)
 }
 
 func (s *Server) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
@@ -444,6 +445,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		if r.URL.Path == "/api/login" ||
 			r.URL.Path == "/api/v2/auth/login" ||
+			r.URL.Path == "/api/bridge-register" ||
+			r.URL.Path == "/api/bridge-health" ||
+			r.URL.Path == "/install-bridge.sh" ||
 			strings.HasSuffix(r.URL.Path, "/health") {
 			next.ServeHTTP(w, r)
 			return
@@ -1383,39 +1387,42 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}()
 	}
 
-	params := make([]string, 0, 9)
-	if serverPubKey != "" {
-		params = append(params, "pub="+serverPubKey)
-	}
-	if userPrivKey != "" {
-		params = append(params, "psk="+userPrivKey)
-	}
-	if req.Transport != "" && req.Transport != "auto" {
-		params = append(params, "transport="+req.Transport)
-	}
 	phantomEnabled = true
 	if sni == "" {
 		sni = randomRussianSNI()
 	}
-	params = append(params, "phantom=1")
-	params = append(params, "sni="+sni)
-	params = append(params, "asn=1")
 	tlsFP := req.TLSFingerprint
 	if tlsFP == "" {
 		tlsFP = "chrome"
 	}
-	params = append(params, "tls="+tlsFP)
-	if req.RussianService != "" {
-		params = append(params, "russian="+req.RussianService)
-	}
-	if len(req.TransportConfig) > 0 {
-		cfgJSON, err := json.Marshal(req.TransportConfig)
-		if err == nil {
-			params = append(params, "cfg="+base64.RawURLEncoding.EncodeToString(cfgJSON))
-		}
+	transport := req.Transport
+	if transport == "" {
+		transport = "auto"
 	}
 
-	connectionKey := fmt.Sprintf("whispera://%s?%s", serverAddr, strings.Join(params, "&"))
+	ck := config.ConnectionKey{
+		Version:         1,
+		Server:          serverAddr,
+		PSK:             userPrivKey,
+		ServerPub:       serverPubKey,
+		Transport:       transport,
+		ObfsPreset:      "default",
+		ObfsProfile:     "vk",
+		EnableML:        true,
+		EnableFTE:       true,
+		PhantomEnabled:  true,
+		PhantomSNI:      sni,
+		EnableASNBypass: true,
+		TLSFingerprint:  tlsFP,
+		RussianService:  req.RussianService,
+		TransportConfig: req.TransportConfig,
+	}
+	ckData, err := json.Marshal(ck)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "failed to encode connection key")
+		return
+	}
+	connectionKey := "whispera://" + base64.StdEncoding.EncodeToString(ckData)
 
 	s.jsonOK(w, map[string]interface{}{
 		"success":        true,

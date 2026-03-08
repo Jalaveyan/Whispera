@@ -118,14 +118,22 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 
 	err := cfgProvider.Update(func(cfg *config.ServerConfig) {
 		foundIndex := -1
+		reqNet := req.StreamSettings.Network
+		if reqNet == "" {
+			reqNet = "tcp"
+		}
 		for i, in := range cfg.Inbounds {
 			if in.Tag == req.Tag {
 				log.Printf("[API] Tag %s already exists. Overwriting.", req.Tag)
 				foundIndex = i
 				break
 			}
-			if in.Port == req.Port {
-				log.Printf("[API] Port %d already in use by inbound %s. Overwriting.", req.Port, in.Tag)
+			inNet := in.StreamSettings.Network
+			if inNet == "" {
+				inNet = "tcp"
+			}
+			if in.Port == req.Port && inNet == reqNet {
+				log.Printf("[API] Port %d/%s already in use by inbound %s. Overwriting.", req.Port, reqNet, in.Tag)
 				foundIndex = i
 				break
 			}

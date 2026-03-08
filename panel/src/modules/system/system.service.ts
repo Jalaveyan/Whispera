@@ -148,6 +148,36 @@ export class SystemService {
         return response.data;
     }
 
+    async getProbeStats(token: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.get(`${this.backendUrl}/api/probe/stats`, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: this.requestTimeout,
+            }),
+        );
+        return response.data;
+    }
+
+    async probeBlockIP(token: string, ip: string, reason: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.post(`${this.backendUrl}/api/probe/block`, { ip, reason }, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: this.requestTimeout,
+            }),
+        );
+        return response.data;
+    }
+
+    async probeUnblockIP(token: string, ip: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.post(`${this.backendUrl}/api/probe/unblock`, { ip }, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: this.requestTimeout,
+            }),
+        );
+        return response.data;
+    }
+
     async getHealth(): Promise<any> {
         try {
             const response = await firstValueFrom(

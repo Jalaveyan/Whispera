@@ -111,4 +111,40 @@ export class SystemController {
                 .json({ error: err?.response?.data?.error || err?.message || 'Failed' });
         }
     }
+
+    @Get('api/probe/stats')
+    async getProbeStats(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.getProbeStats(token);
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.SERVICE_UNAVAILABLE)
+                .json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+
+    @Post('api/probe/block')
+    async probeBlock(@Headers('authorization') auth: string, @Body('ip') ip: string, @Body('reason') reason: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.probeBlockIP(token, ip, reason || 'manual');
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
+                .json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+
+    @Post('api/probe/unblock')
+    async probeUnblock(@Headers('authorization') auth: string, @Body('ip') ip: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.probeUnblockIP(token, ip);
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
+                .json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
 }

@@ -15,6 +15,7 @@ MAIN_SERVER=""
 REG_TOKEN=""
 BRIDGE_TYPE="operator"
 PROVIDER="unknown"
+REGION="auto"
 LISTEN_PORT="443"
 RUSSIAN_SERVICE="vk"
 DEST_SITE=""
@@ -57,6 +58,10 @@ while [[ $# -gt 0 ]]; do
         --cover-traffic)
             ENABLE_COVER_TRAFFIC="true"
             shift
+            ;;
+        --region)
+            REGION="$2"
+            shift 2
             ;;
         -*)
             log_error "Unknown option: $1"
@@ -223,26 +228,53 @@ systemctl enable whispera-bridge
 systemctl start whispera-bridge
 
 sleep 3
+
+# Auto-detect public IP
+PUBLIC_IP=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null \
+    || curl -s --connect-timeout 5 https://ifconfig.me 2>/dev/null \
+    || curl -s --connect-timeout 5 https://icanhazip.com 2>/dev/null \
+    || echo "")
+
+# Auto-detect region if not specified
+if [ "$REGION" = "auto" ] || [ -z "$REGION" ]; then
+    REGION=$(curl -s --connect-timeout 5 "https://ipinfo.io/${PUBLIC_IP}/country" 2>/dev/null | tr -d '"' | head -1)
+    [ -z "$REGION" ] && REGION="unknown"
+fi
+
 if systemctl is-active --quiet whispera-bridge; then
     log_info "✓ Whispera Bridge is running!"
-    
-    PUBLIC_IP=$(curl -s ifconfig.me || curl -s icanhazip.com || echo "UNKNOWN")
-    
+
+    BRIDGE_ADDR="${PUBLIC_IP}:${LISTEN_PORT}"
+
+    # Register with main server
+    if [ -n "$PUBLIC_IP" ] && [ -n "$MAIN_SERVER" ] && [ -n "$REG_TOKEN" ]; then
+        log_info "Registering bridge with main server..."
+        REG_RESPONSE=$(curl -s -k --connect-timeout 10 \
+            -X POST "https://${MAIN_SERVER}/api/bridge-register" \
+            -H "Content-Type: application/json" \
+            -d "{\"address\":\"${BRIDGE_ADDR}\",\"token\":\"${REG_TOKEN}\",\"provider\":\"${PROVIDER}\",\"region\":\"${REGION}\",\"type\":\"${BRIDGE_TYPE}\"}" \
+            2>/dev/null)
+        if echo "$REG_RESPONSE" | grep -q '"success":true'; then
+            log_info "✓ Bridge registered with main server"
+        else
+            log_warn "Registration response: ${REG_RESPONSE:-no response}"
+            log_warn "Bridge will retry registration on next start (auto_register: true)"
+        fi
+    fi
+
     echo ""
     echo "========================================"
     echo "  Bridge Installation Complete!"
     echo "========================================"
     echo ""
-    echo "  Bridge Address: ${PUBLIC_IP}:${LISTEN_PORT}"
+    echo "  Bridge Address: ${BRIDGE_ADDR}"
     echo "  Main Server:    ${MAIN_SERVER}"
+    echo "  Region:         ${REGION}"
+    echo "  Provider:       ${PROVIDER}"
     echo "  Bridge Type:    ${BRIDGE_TYPE}"
-    echo "  SNI Service:    ${RUSSIAN_SERVICE}"
-    echo "  Camouflage:     ${DEST_SITE:-auto}"
-    echo "  Obfuscation:    ${ENABLE_OBFUSCATION}"
     echo ""
-    echo "  Config file: ${CONFIG_DIR}/bridge.yaml"
-    echo "  Logs: journalctl -u whispera-bridge -f"
-    echo ""
+    echo "  Config: ${CONFIG_DIR}/bridge.yaml"
+    echo "  Logs:   journalctl -u whispera-bridge -f"
     echo "========================================"
 else
     log_error "Bridge failed to start. Check logs: journalctl -u whispera-bridge"

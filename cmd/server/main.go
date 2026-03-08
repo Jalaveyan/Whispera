@@ -36,6 +36,7 @@ import (
 	"whispera/internal/modules/metricscollector"
 	"whispera/internal/modules/obfuscator"
 	"whispera/internal/modules/phantom"
+	"whispera/internal/modules/probedetector"
 	"whispera/internal/modules/relay"
 	"whispera/internal/modules/router"
 	"whispera/internal/modules/session"
@@ -84,6 +85,8 @@ func (c *prependConn) Read(b []byte) (int, error) {
 	}
 	return c.Conn.Read(b)
 }
+
+var globalProbeDetector *probedetector.Detector
 
 var (
 	configFile     = flag.String("config", "", "Path to configuration file")
@@ -302,6 +305,9 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		if err != nil {
 			listener.Close()
 			return fmt.Errorf("failed to create phantom handler: %w", err)
+		}
+		if globalProbeDetector != nil {
+			phantomHandler.SetProbeDetector(globalProbeDetector)
 		}
 		log.Printf("  ✨ [Dynamic] Enabled Phantom/Reality on inbound %s", inbound.Tag)
 
@@ -1071,6 +1077,11 @@ func createModules(manager *lifecycle.Manager) error {
 		if err := manager.Register(apiServer); err != nil {
 			return err
 		}
+
+		// Create probe detector once; StartInbound will attach it to phantom handlers.
+		globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
+		globalProbeDetector.Start()
+		apiServer.SetProbeDetector(globalProbeDetector)
 	}
 
 	if serverConfig.Bot.Enabled {

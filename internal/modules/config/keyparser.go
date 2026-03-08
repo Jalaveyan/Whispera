@@ -58,7 +58,7 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 		q := u.Query()
 		ck.PSK = q.Get("psk")
 		if ck.PSK == "" {
-			ck.PSK = q.Get("key") // legacy param name
+			ck.PSK = q.Get("key")
 		}
 		ck.ServerPub = q.Get("pub")
 

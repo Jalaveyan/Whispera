@@ -227,7 +227,6 @@ func (h *APIHandler) HandleRegisterBridge(w http.ResponseWriter, r *http.Request
 		Provider:  req.Provider,
 		Region:    req.Region,
 		PublicKey: req.PublicKey,
-		// Self-registration proves reachability — mark alive immediately.
 		IsAlive: true,
 	}
 
@@ -238,8 +237,7 @@ func (h *APIHandler) HandleRegisterBridge(w http.ResponseWriter, r *http.Request
 
 	log.Printf("[BridgePool] Self-registration: %s (%s) from %s", info.ID, info.Address, r.RemoteAddr)
 
-	// Async latency measurement — doesn't block the registration response.
-	go func(id string) { h.registry.CheckBridgeNow(id) }(info.ID) //nolint:errcheck
+	go func(id string) { h.registry.CheckBridgeNow(id) }(info.ID)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -277,29 +275,56 @@ func (h *APIHandler) HandleGetCloudInit(w http.ResponseWriter, r *http.Request) 
 		h.registrationToken = GenerateRegistrationToken()
 	}
 
-	serverAddr := r.Host
+	// Prefer explicit ?server= param, then X-Real-IP / X-Forwarded-For, then Host
+	serverAddr := r.URL.Query().Get("server")
 	if serverAddr == "" {
-		serverAddr = "YOUR_SERVER:443"
+		if ip := r.Header.Get("X-Real-IP"); ip != "" {
+			serverAddr = ip + ":8081"
+		} else if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+			// X-Forwarded-For may be comma-separated; take first
+			if idx := strings.Index(ip, ","); idx != -1 {
+				ip = strings.TrimSpace(ip[:idx])
+			}
+			serverAddr = ip + ":8081"
+		} else {
+			serverAddr = r.Host
+		}
 	}
+	if serverAddr == "" {
+		serverAddr = "YOUR_SERVER_IP:8081"
+	}
+
 	provider := r.URL.Query().Get("provider")
 	if provider == "" {
 		provider = "auto"
 	}
+	region := r.URL.Query().Get("region")
+	if region == "" {
+		region = "auto"
+	}
 
 	cloudInit := `#!/bin/bash
-# Whispera Bridge Auto-Install (Generated)
-# 
-# Paste this as "User Data" when creating VPS
+# Whispera Bridge Auto-Install
+# Generated for server: ` + serverAddr + `
+# Paste as "User Data" when creating a VPS, or run manually as root.
 
 set -e
-apt-get update && apt-get install -y curl
 
-# Download and run installer
-curl -sL "https://` + serverAddr + `/install-bridge.sh" -o /tmp/install.sh || \
-    curl -sL "https://raw.githubusercontent.com/your-repo/whispera/main/scripts/install-bridge.sh" -o /tmp/install.sh
+SERVER="` + serverAddr + `"
+TOKEN="` + h.registrationToken + `"
+PROVIDER="` + provider + `"
+REGION="` + region + `"
 
-chmod +x /tmp/install.sh
-/tmp/install.sh "` + serverAddr + `" "` + h.registrationToken + `" --provider "` + provider + `"
+apt-get update -qq && apt-get install -y curl 2>/dev/null || yum install -y curl 2>/dev/null || true
+
+# Download install script from main server (falls back to GitHub)
+curl -fsSL "https://${SERVER}/install-bridge.sh" -o /tmp/install-bridge.sh \
+    --insecure --connect-timeout 10 2>/dev/null || \
+curl -fsSL "https://raw.githubusercontent.com/Jalaveyan/Whispera/main/scripts/install-bridge.sh" \
+    -o /tmp/install-bridge.sh
+
+chmod +x /tmp/install-bridge.sh
+/tmp/install-bridge.sh "${SERVER}" "${TOKEN}" --provider "${PROVIDER}" --region "${REGION}"
 `
 
 	w.Header().Set("Content-Type", "text/plain")

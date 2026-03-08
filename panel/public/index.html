@@ -125,7 +125,7 @@
                 </li>
                 <li class="nav-item" data-page="bridges">
                     <i class="fas fa-network-wired"></i>
-                    <span>Мосты</span>
+                    <span data-i18n="nav.bridges">Мосты</span>
                 </li>
                 <li class="nav-item" data-page="subscriptions">
                     <i class="fas fa-rss"></i>
@@ -222,7 +222,7 @@
                         <div class="stat-icon"><i class="fas fa-memory"></i></div>
                         <div class="stat-info">
                             <span class="stat-value" id="stat-memory">-</span>
-                            <span class="stat-label">Память</span>
+                            <span class="stat-label" data-i18n="dashboard.stats.memory">Память</span>
                         </div>
                     </div>
                     <div class="stat-card">
@@ -433,42 +433,39 @@
                 </div>
             </section>
 
-            <!-- ===== BRIDGES PAGE ===== -->
             <section id="page-bridges" class="page">
                 <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
-                    <h2><i class="fas fa-network-wired" style="margin-right:8px;"></i>Мосты</h2>
+                    <h2><i class="fas fa-network-wired" style="margin-right:8px;"></i><span data-i18n="nav.bridges">Мосты</span></h2>
                     <div style="display:flex;gap:8px;align-items:center;">
                         <span id="bridges-auto-refresh-badge" style="font-size:0.78em;color:var(--md-sys-color-on-surface-variant);"></span>
                         <button id="bridges-refresh-btn" class="btn btn-secondary btn-sm">
-                            <i class="fas fa-sync-alt"></i> Обновить
+                            <i class="fas fa-sync-alt"></i> <span data-i18n="common.refresh">Обновить</span>
                         </button>
                         <button id="bridges-add-btn" class="btn btn-primary btn-sm">
-                            <i class="fas fa-plus"></i> Добавить мост
+                            <i class="fas fa-plus"></i> <span data-i18n="bridges.btn.add">Добавить мост</span>
                         </button>
                     </div>
                 </div>
 
-                <!-- Stats row -->
                 <div class="stats-grid" style="margin-bottom:20px;">
                     <div class="stat-card">
-                        <div class="stat-label">Всего мостов</div>
+                        <div class="stat-label" data-i18n="bridges.stat.total">Всего мостов</div>
                         <div class="stat-value" id="bstat-total">—</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-label" style="color:#4ade80;">Активных</div>
+                        <div class="stat-label" style="color:#4ade80;" data-i18n="bridges.stat.alive">Активных</div>
                         <div class="stat-value" id="bstat-alive" style="color:#4ade80;">—</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-label" style="color:#f87171;">Недоступных</div>
+                        <div class="stat-label" style="color:#f87171;" data-i18n="bridges.stat.dead">Недоступных</div>
                         <div class="stat-value" id="bstat-dead" style="color:#f87171;">—</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-label">Средняя задержка</div>
+                        <div class="stat-label" data-i18n="bridges.stat.latency">Средняя задержка</div>
                         <div class="stat-value" id="bstat-latency">—</div>
                     </div>
                 </div>
 
-                <!-- Bridge table -->
                 <div class="card">
                     <div class="card-body" style="padding:0;overflow-x:auto;">
                         <table class="data-table" id="bridges-table">
@@ -476,45 +473,42 @@
                                 <tr>
                                     <th style="width:36px;"></th>
                                     <th>ID</th>
-                                    <th>Адрес</th>
-                                    <th>Регион</th>
-                                    <th>Тип</th>
-                                    <th>Задержка</th>
-                                    <th>Доверие</th>
-                                    <th>Последняя проверка</th>
+                                    <th data-i18n="table.header.address">Адрес</th>
+                                    <th data-i18n="bridges.table.region">Регион</th>
+                                    <th data-i18n="table.header.type">Тип</th>
+                                    <th data-i18n="bridges.table.latency">Задержка</th>
+                                    <th data-i18n="bridges.table.trust">Доверие</th>
+                                    <th data-i18n="bridges.table.last_check">Последняя проверка</th>
                                     <th style="width:80px;"></th>
                                 </tr>
                             </thead>
                             <tbody id="bridges-tbody">
-                                <tr><td colspan="9" style="text-align:center;color:#555;padding:32px;">Загрузка...</td></tr>
+                                <tr><td colspan="9" style="text-align:center;color:#555;padding:32px;"><span data-i18n="common.loading">Загрузка...</span></td></tr>
                             </tbody>
                         </table>
                     </div>
                 </div>
 
-                <!-- Registration token card -->
                 <div class="card" style="margin-top:20px;">
                     <div class="card-header">
-                        <div class="card-title"><i class="fas fa-key"></i> Токен регистрации мостов</div>
+                        <div class="card-title"><i class="fas fa-key"></i> <span data-i18n="bridges.token.title">Токен регистрации мостов</span></div>
                     </div>
                     <div class="card-body">
-                        <p style="color:var(--md-sys-color-on-surface-variant);font-size:0.87em;margin-bottom:12px;">
-                            Передайте этот токен при установке нового моста через <code>install-bridge.sh</code>.
-                            Мост автоматически зарегистрируется и появится в таблице выше.
+                        <p style="color:var(--md-sys-color-on-surface-variant);font-size:0.87em;margin-bottom:12px;" data-i18n="bridges.token.desc">
+                            Передайте этот токен при установке нового моста через install-bridge.sh. Мост автоматически зарегистрируется и появится в таблице выше.
                         </p>
                         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                             <code id="bridge-reg-token" style="flex:1;background:rgba(0,0,0,0.2);padding:8px 12px;border-radius:6px;font-size:0.9em;word-break:break-all;">загрузка...</code>
                             <button id="bridge-copy-token-btn" class="btn btn-secondary btn-sm" title="Скопировать">
                                 <i class="fas fa-copy"></i>
                             </button>
-                            <button id="bridge-regen-token-btn" class="btn btn-danger btn-sm" title="Перегенерировать токен">
-                                <i class="fas fa-redo"></i> Новый токен
+                            <button id="bridge-regen-token-btn" class="btn btn-danger btn-sm">
+                                <i class="fas fa-redo"></i> <span data-i18n="bridges.token.new">Новый токен</span>
                             </button>
                         </div>
                     </div>
                 </div>
             </section>
-            <!-- ===== END BRIDGES PAGE ===== -->
 
             <section id="page-subscriptions" class="page">
                 <div class="page-header">
@@ -622,7 +616,7 @@
                 <div class="dashboard-grid">
                     <div class="card" style="grid-column: 1 / -1;">
                         <div class="card-header">
-                            <div class="card-title"><i class="fas fa-shield-virus"></i> Режим обхода блокировок</div>
+                            <div class="card-title"><i class="fas fa-shield-virus"></i> <span data-i18n="settings.stealth.title">Режим обхода блокировок</span></div>
                         </div>
                         <div class="card-body">
                             <p style="color:var(--md-sys-color-on-surface-variant);margin-bottom:16px;font-size:0.9em;">
@@ -630,16 +624,16 @@
                             </p>
                             <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
                                 <div class="form-group" style="margin:0;min-width:260px;">
-                                    <label for="stealth-mode-select">Стратегия транспорта</label>
+                                    <label for="stealth-mode-select" data-i18n="settings.stealth.strategy">Стратегия транспорта</label>
                                     <select id="stealth-mode-select" style="width:100%;">
-                                        <option value="">Авто (оптимальный)</option>
-                                        <option value="russia">Россия — ВК / Яндекс приоритет</option>
+                                        <option value="" data-i18n="settings.stealth.auto">Авто (оптимальный)</option>
+                                        <option value="russia" data-i18n="settings.stealth.russia">Россия — ВК / Яндекс приоритет</option>
                                     </select>
                                 </div>
                                 <div id="stealth-mode-hint" style="padding:10px 14px;border-radius:8px;font-size:0.85em;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);color:var(--md-sys-color-on-surface-variant);max-width:420px;"></div>
                             </div>
                             <button type="button" id="save-stealth-mode-btn" class="btn btn-primary" style="margin-top:16px;">
-                                <i class="fas fa-save"></i> Сохранить режим
+                                <i class="fas fa-save"></i> <span data-i18n="settings.stealth.save">Сохранить режим</span>
                             </button>
                         </div>
                     </div>
@@ -693,7 +687,7 @@
                                 <div class="form-group">
                                     <label data-i18n="settings.admin.password">Новый пароль</label>
                                     <input type="password" id="admin-profile-password"
-                                        placeholder="Оставьте пустым, чтобы не менять">
+                                        placeholder="Оставьте пустым, чтобы не менять" data-i18n="settings.admin.password.placeholder">
                                 </div>
                                 <button type="submit" class="btn btn-primary" style="margin-top: 16px;">
                                     <i class="fas fa-save"></i> <span data-i18n="common.save">Сохранить</span>
@@ -733,33 +727,46 @@
 
                     <div class="card">
                         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
-                            <div class="card-title"><i class="fas fa-user-secret"></i> Защита от активного зондирования</div>
-                            <button id="probe-refresh-btn" class="btn btn-secondary btn-sm" title="Обновить">
+                            <div class="card-title"><i class="fas fa-shield-alt"></i> <span data-i18n="settings.probe.title">Защита от активного зондирования</span></div>
+                            <button id="probe-refresh-btn" class="btn btn-secondary btn-sm">
                                 <i class="fas fa-sync-alt"></i>
                             </button>
                         </div>
                         <div class="card-body">
-                            <div id="probe-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:16px;">
-                                <div class="stat-item"><span class="stat-label">Заблокировано IP</span><span class="stat-value" id="probe-stat-blocked">—</span></div>
-                                <div class="stat-item"><span class="stat-label">Под наблюдением</span><span class="stat-value" id="probe-stat-tracked">—</span></div>
-                                <div class="stat-item"><span class="stat-label">DNS-knock</span><span class="stat-value" id="probe-stat-dns">—</span></div>
-                                <div class="stat-item"><span class="stat-label">SNI-ownership</span><span class="stat-value" id="probe-stat-sni">—</span></div>
+                            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
+                                <div style="background:var(--surface-variant,rgba(255,255,255,.04));border-radius:8px;padding:12px;text-align:center;">
+                                    <div style="font-size:1.6em;font-weight:700;color:var(--accent-color,#00e5ff);" id="probe-stat-blocked">—</div>
+                                    <div style="font-size:0.75em;color:var(--text-secondary,#8899a6);margin-top:4px;" data-i18n="settings.probe.blocked">Заблокировано IP</div>
+                                </div>
+                                <div style="background:var(--surface-variant,rgba(255,255,255,.04));border-radius:8px;padding:12px;text-align:center;">
+                                    <div style="font-size:1.6em;font-weight:700;color:var(--accent-color,#00e5ff);" id="probe-stat-tracked">—</div>
+                                    <div style="font-size:0.75em;color:var(--text-secondary,#8899a6);margin-top:4px;" data-i18n="settings.probe.watching">Под наблюдением</div>
+                                </div>
+                                <div style="background:var(--surface-variant,rgba(255,255,255,.04));border-radius:8px;padding:12px;text-align:center;">
+                                    <div style="font-size:1.1em;font-weight:600;color:var(--accent-color,#00e5ff);" id="probe-stat-dns">—</div>
+                                    <div style="font-size:0.75em;color:var(--text-secondary,#8899a6);margin-top:4px;">DNS-knock</div>
+                                </div>
+                                <div style="background:var(--surface-variant,rgba(255,255,255,.04));border-radius:8px;padding:12px;text-align:center;">
+                                    <div style="font-size:1.1em;font-weight:600;color:var(--accent-color,#00e5ff);" id="probe-stat-sni">—</div>
+                                    <div style="font-size:0.75em;color:var(--text-secondary,#8899a6);margin-top:4px;">SNI-ownership</div>
+                                </div>
                             </div>
-                            <div style="display:flex;gap:8px;margin-bottom:12px;">
-                                <input type="text" id="probe-block-ip" placeholder="IP для блокировки" style="flex:1;">
-                                <button id="probe-block-btn" class="btn btn-danger btn-sm">
-                                    <i class="fas fa-ban"></i> Заблокировать
-                                </button>
+                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+                                <div style="display:flex;gap:8px;">
+                                    <input type="text" id="probe-block-ip" placeholder="IP для блокировки" data-i18n="settings.probe.block_placeholder" style="flex:1;min-width:0;">
+                                    <button id="probe-block-btn" class="btn btn-danger btn-sm" style="white-space:nowrap;">
+                                        <i class="fas fa-ban"></i> <span data-i18n="settings.probe.block_btn">Блок</span>
+                                    </button>
+                                </div>
+                                <div style="display:flex;gap:8px;">
+                                    <input type="text" id="probe-unblock-ip" placeholder="IP для разблокировки" data-i18n="settings.probe.unblock_placeholder" style="flex:1;min-width:0;">
+                                    <button id="probe-unblock-btn" class="btn btn-secondary btn-sm" style="white-space:nowrap;">
+                                        <i class="fas fa-unlock"></i> <span data-i18n="settings.probe.unblock_btn">Разблок</span>
+                                    </button>
+                                </div>
                             </div>
-                            <div style="display:flex;gap:8px;">
-                                <input type="text" id="probe-unblock-ip" placeholder="IP для разблокировки" style="flex:1;">
-                                <button id="probe-unblock-btn" class="btn btn-secondary btn-sm">
-                                    <i class="fas fa-unlock"></i> Разблокировать
-                                </button>
-                            </div>
-                            <p style="color:var(--md-sys-color-on-surface-variant);font-size:0.8em;margin-top:12px;">
-                                После <b>5 неудачных</b> попыток Phantom-аутентификации IP блокируется на 30 мин.
-                                Не-TLS трафик и ошибки чтения ClientHello тоже засчитываются как провал.
+                            <p style="color:var(--text-secondary,#8899a6);font-size:0.78em;margin:0;line-height:1.5;">
+                                После <b>5 неудачных</b> Phantom-аутентификаций IP блокируется на 30 мин. Не-TLS трафик и ошибки ClientHello засчитываются как провал.
                             </p>
                         </div>
                     </div>
@@ -776,6 +783,8 @@
                                 <select id="panel-language">
                                     <option value="ru">Русский</option>
                                     <option value="en">English</option>
+                                    <option value="zh">中文</option>
+                                    <option value="fa">فارسی</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -788,16 +797,16 @@
                             </div>
                             <div class="form-group"
                                 style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
-                                <label style="display: block; margin-bottom: 8px;">Фон панели</label>
+                                <label style="display: block; margin-bottom: 8px;" data-i18n="settings.appearance.bg">Фон панели</label>
                                 <input type="file" id="bg-upload-input" accept="image/*,video/*" style="display: none;">
                                 <div style="display: flex; gap: 10px;">
                                     <button type="button" id="bg-upload-btn" class="btn btn-secondary"
                                         onclick="document.getElementById('bg-upload-input').click()">
-                                        <i class="fas fa-image"></i> Загрузить
+                                        <i class="fas fa-image"></i> <span data-i18n="settings.appearance.upload">Загрузить</span>
                                     </button>
                                     <button type="button" id="bg-reset-btn" class="btn btn-danger"
                                         style="display: none;">
-                                        <i class="fas fa-undo"></i> Сброс
+                                        <i class="fas fa-undo"></i> <span data-i18n="settings.appearance.reset">Сброс</span>
                                     </button>
                                 </div>
                                 <div id="bg-upload-status"
@@ -880,7 +889,7 @@
                 <div class="form-group">
                     <label for="new-user-marionette" data-i18n="modal.user.marionette">Профиль Marionette</label>
                     <select id="new-user-marionette" class="form-control">
-                        <optgroup label="Мессенджеры (Android)">
+                        <optgroup label="Мессенджеры (Android)" data-i18n-label="option.marionette.group.android">
                             <option value="telegram">Telegram</option>
                             <option value="vk">VK Мессенджер</option>
                             <option value="vkvideo">VK Видео</option>
@@ -889,7 +898,7 @@
                             <option value="wechat">WeChat</option>
                             <option value="facebook">Facebook Messenger</option>
                         </optgroup>
-                        <optgroup label="Мессенджеры (iOS)">
+                        <optgroup label="Мессенджеры (iOS)" data-i18n-label="option.marionette.group.ios">
                             <option value="telegram_ios">Telegram iOS</option>
                             <option value="vk_ios">VK iOS</option>
                             <option value="instagram_ios">Instagram iOS</option>
@@ -901,16 +910,16 @@
                 <div class="form-group">
                     <label for="new-user-russian" data-i18n="modal.user.russian">Российский сервис</label>
                     <select id="new-user-russian" class="form-control">
-                        <option value="">Авто (не указывать)</option>
+                        <option value="" data-i18n="option.russian.auto">Авто (не указывать)</option>
                         <option value="vk">VK</option>
                         <option value="yandex">Yandex</option>
                         <option value="mailru">Mail.ru</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Транспорт для ключа <small style="opacity:0.55;font-weight:normal;">(несколько — гонка)</small></label>
+                    <label><span data-i18n="modal.user.transport">Транспорт для ключа</span> <small style="opacity:0.55;font-weight:normal;" data-i18n="modal.user.transport.hint">(несколько — гонка)</small></label>
                     <div id="transport-checkboxes" style="background:var(--bg-secondary,#1a1a2e);border:1px solid var(--border,#333);border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;">
-                        <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;">Серверные</div>
+                        <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:2px;" data-i18n="modal.user.transport.server">Серверные</div>
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="tcp" checked> TCP + Phantom</label>
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="udp"> UDP</label>
@@ -921,7 +930,7 @@
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="shadowsocks"> Shadowsocks</label>
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="grpc"> gRPC</label>
                         </div>
-                        <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin:4px 0 2px;">Внешний сервис</div>
+                        <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin:4px 0 2px;" data-i18n="modal.user.transport.external">Внешний сервис</div>
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="vkwebrtc"> VK WebRTC</label>
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="okwebrtc"> OK WebRTC</label>
@@ -931,7 +940,7 @@
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="tgbot"> Telegram Bot</label>
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="vkbot"> VK Bot</label>
                         </div>
-                        <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin:4px 0 2px;">Обходы</div>
+                        <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin:4px 0 2px;" data-i18n="modal.user.transport.bypass">Обходы</div>
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="meek"> Meek</label>
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="torsocks"> Tor SOCKS</label>
@@ -940,20 +949,19 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label for="new-user-port">Порт (опционально)</label>
+                    <label for="new-user-port" data-i18n="modal.user.port">Порт (опционально)</label>
                     <input type="number" id="new-user-port" class="form-control"
-                        placeholder="Авто (из inbound)" min="1" max="65535">
-                    <small style="color:#888;font-size:11px;">Авто-определяется из inbound по транспорту. Можно изменить — будет открыт в firewall автоматически</small>
+                        placeholder="Авто (из inbound)" data-i18n="modal.user.port.placeholder" min="1" max="65535">
+                    <small style="color:#888;font-size:11px;" data-i18n="modal.user.port.hint">Авто-определяется из inbound по транспорту. Можно изменить — будет открыт в firewall автоматически</small>
                 </div>
                 <div class="form-group" id="new-user-sni-group">
-                    <label for="new-user-sni">SNI (для Phantom/TLS)</label>
-                    <input type="text" id="new-user-sni" class="form-control" placeholder="Авто (из настроек inbound)">
+                    <label for="new-user-sni" data-i18n="modal.user.sni">SNI (для Phantom/TLS)</label>
+                    <input type="text" id="new-user-sni" class="form-control" placeholder="Авто (из настроек inbound)" data-i18n="modal.user.sni.placeholder">
                 </div>
 
-                <!-- Transport-specific credential fields (shown/hidden by JS) -->
                 <div id="new-user-transport-config" style="display:none;">
                     <div style="border-top:1px solid var(--border,#333);margin:10px 0 8px;padding-top:8px;">
-                        <span style="font-size:0.8em;text-transform:uppercase;opacity:0.6;letter-spacing:0.05em;" id="new-user-tcfg-title">Параметры транспорта</span>
+                        <span style="font-size:0.8em;text-transform:uppercase;opacity:0.6;letter-spacing:0.05em;" id="new-user-tcfg-title" data-i18n="modal.user.transport_params">Параметры транспорта</span>
                         <span id="new-user-tcfg-hint" style="font-size:0.78em;opacity:0.5;margin-left:8px;"></span>
                     </div>
                     <div id="new-user-tcfg-fields"></div>
@@ -968,28 +976,27 @@
         </div>
     </div>
 
-    <!-- Add Bridge Modal -->
     <div id="add-bridge-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Добавить мост</h3>
+                <h3 data-i18n="modal.bridge.title">Добавить мост</h3>
                 <button class="modal-close modal-close-icon">&times;</button>
             </div>
             <form id="add-bridge-form" class="modal-form">
                 <div class="form-group">
-                    <label>Адрес <small style="color:#888;">(host:port)</small></label>
+                    <label><span data-i18n="modal.bridge.address">Адрес</span> <small style="color:#888;">(host:port)</small></label>
                     <input type="text" name="address" required placeholder="1.2.3.4:443">
                 </div>
                 <div class="form-group">
-                    <label>Регион</label>
+                    <label data-i18n="modal.bridge.region">Регион</label>
                     <input type="text" name="region" placeholder="EU, RU, US...">
                 </div>
                 <div class="form-group">
-                    <label>Провайдер</label>
+                    <label data-i18n="modal.bridge.provider">Провайдер</label>
                     <input type="text" name="provider" placeholder="hetzner, vk-cloud...">
                 </div>
                 <div class="form-group">
-                    <label>Тип</label>
+                    <label data-i18n="modal.bridge.type">Тип</label>
                     <select name="type">
                         <option value="operator">Operator (trust 100)</option>
                         <option value="user" selected>User (trust 75)</option>
@@ -997,14 +1004,14 @@
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Публичный ключ <small style="color:#888;">(необязательно)</small></label>
+                    <label><span data-i18n="modal.bridge.pubkey">Публичный ключ</span> <small style="color:#888;">(необязательно)</small></label>
                     <input type="text" name="public_key" placeholder="base64...">
                 </div>
                 <div style="display:flex;gap:8px;margin-top:16px;">
                     <button type="submit" class="btn btn-primary">
-                        <i class="fas fa-plus"></i> Добавить
+                        <i class="fas fa-plus"></i> <span data-i18n="common.add">Добавить</span>
                     </button>
-                    <button type="button" class="btn btn-secondary modal-close">Отмена</button>
+                    <button type="button" class="btn btn-secondary modal-close" data-i18n="common.cancel">Отмена</button>
                 </div>
             </form>
         </div>
@@ -1031,9 +1038,9 @@
                     <input type="number" name="port" required placeholder="443">
                 </div>
                 <div class="form-group">
-                    <label>Транспорт</label>
+                    <label data-i18n="modal.inbound.transport">Транспорт</label>
                     <select name="transport" onchange="app.onInboundTransportChange(this.value)">
-                        <optgroup label="Серверные (работают)">
+                        <optgroup label="Серверные (работают)" data-i18n-label="modal.inbound.group.server">
                             <option value="tcp">TCP + Phantom</option>
                             <option value="udp">UDP</option>
                             <option value="ws">WebSocket</option>
@@ -1044,19 +1051,19 @@
                             <option value="obfs4">obfs4</option>
                             <option value="shadowtls">ShadowTLS</option>
                         </optgroup>
-                        <optgroup label="HTTP/QUIC транспорты">
+                        <optgroup label="HTTP/QUIC транспорты" data-i18n-label="modal.inbound.group.http_quic">
                             <option value="splithttp">SplitHTTP (XHTTP)</option>
                             <option value="tuic">TUIC (QUIC)</option>
                         </optgroup>
-                        <optgroup label="Публичная инфраструктура">
+                        <optgroup label="Публичная инфраструктура" data-i18n-label="modal.inbound.group.public_infra">
                             <option value="meek">Meek</option>
                             <option value="domainfront">Domain Fronting</option>
                         </optgroup>
-                        <optgroup label="Публичные туннели">
+                        <optgroup label="Публичные туннели" data-i18n-label="modal.inbound.group.public_tunnel">
                             <option value="snowflake">Snowflake</option>
                             <option value="torsocks">Tor (SOCKS5)</option>
                         </optgroup>
-                        <optgroup label="VK / OK / Яндекс / Боты">
+                        <optgroup label="VK / OK / Яндекс / Боты" data-i18n-label="modal.inbound.group.social">
                             <option value="vkwebrtc">VK WebRTC</option>
                             <option value="okwebrtc">OK WebRTC</option>
                             <option value="yacloud">Яндекс Cloud</option>
@@ -1068,9 +1075,9 @@
                     </select>
                 </div>
                 <div class="form-group" id="inbound-sni-group">
-                    <label>SNI (через запятую, пусто = принимать любой)</label>
+                    <label data-i18n="modal.inbound.sni">SNI (через запятую, пусто = принимать любой)</label>
                     <input type="text" name="server_names" placeholder="cloudflare.com, google.com">
-                    <small style="color:#888;font-size:11px;">Только для TCP/WS/HTTP. Пустое поле = allowlist отключён.</small>
+                    <small style="color:#888;font-size:11px;" data-i18n="modal.inbound.sni.hint">Только для TCP/WS/HTTP. Пустое поле = allowlist отключён.</small>
                 </div>
                 <div class="form-group" id="inbound-params-group" style="display:none;">
                     <label id="inbound-params-label">Параметры транспорта</label>
@@ -1113,13 +1120,13 @@
                     <input type="text" name="address" placeholder="1.2.3.4:8080">
                 </div>
                 <div class="form-group" id="outbound-chain-group">
-                    <label>Multi-hop цепочка</label>
+                    <label data-i18n="modal.outbound.multihop">Multi-hop цепочка</label>
                     <input type="text" name="chain" id="outbound-chain-input"
-                        placeholder="тег или bridge:id, через запятую"
+                        placeholder="тег или bridge:id, через запятую" data-i18n="modal.outbound.chain_placeholder"
                         autocomplete="off" list="outbound-chain-datalist">
                     <datalist id="outbound-chain-datalist"></datalist>
                     <div id="outbound-chain-bridges" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;"></div>
-                    <small style="color:#888;font-size:11px;margin-top:4px;display:block;">
+                    <small style="color:#888;font-size:11px;margin-top:4px;display:block;" data-i18n="modal.outbound.multihop.desc">
                         Трафик пройдёт через указанные узлы. Нажмите на мост чтобы добавить в цепочку.
                     </small>
                 </div>
@@ -1175,7 +1182,7 @@
                     <input type="text" name="name" required placeholder="My Servers">
                 </div>
                 <div class="form-group">
-                    <label>Транспорты (через запятую, пусто = все)</label>
+                    <label data-i18n="modal.subscription.transports">Транспорты (через запятую, пусто = все)</label>
                     <input type="text" name="transports" placeholder="tcp, udp, vkwebrtc">
                 </div>
                 <div class="modal-footer">

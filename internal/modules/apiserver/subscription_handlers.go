@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -245,7 +246,6 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Collect user connection keys from userStore
 	var keys []string
 	userStoreMu.RLock()
 	if len(sub.UserIDs) > 0 {
@@ -255,7 +255,6 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	} else {
-		// No specific users — include all users that have a connection URI
 		for _, u := range userStore {
 			if u.ConnectionURI != "" {
 				keys = append(keys, u.ConnectionURI)
@@ -285,8 +284,10 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 }
 
 
+var internalPorts = map[string]bool{"3000": true, "8080": true, "8081": true, "8082": true}
+
 func buildSubURL(r *http.Request, serverIP, token string) string {
-	scheme := "http"
+	scheme := "https"
 	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
 		scheme = proto
 	} else if r.TLS != nil {
@@ -297,11 +298,17 @@ func buildSubURL(r *http.Request, serverIP, token string) string {
 	if host == "" {
 		host = r.Host
 	}
-	if host == "" || strings.HasPrefix(host, "127.0.0.1") || strings.HasPrefix(host, "localhost") {
+
+	if h, port, err := net.SplitHostPort(host); err == nil && internalPorts[port] {
+		host = h
+	}
+
+	if host == "" || strings.HasPrefix(host, "127.0.0.1") || strings.HasPrefix(host, "localhost") || host == "whispera-ui" {
 		if serverIP != "" && serverIP != "0.0.0.0" {
 			host = serverIP
 		}
 	}
+
 	return fmt.Sprintf("%s://%s/sub/%s", scheme, host, token)
 }
 
