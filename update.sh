@@ -446,12 +446,6 @@ setup_nginx_proxy() {
 
     cat > /etc/nginx/sites-available/whispera-ui <<NGINX
 server {
-    listen 80;
-    server_name whispera-ui ${SERVER_IP};
-    return 301 https://\$host\$request_uri;
-}
-
-server {
     listen 443 ssl;
     server_name whispera-ui ${SERVER_IP};
 
@@ -490,8 +484,11 @@ NGINX
 
     if nginx -t 2>/dev/null; then
         systemctl enable nginx >/dev/null 2>&1
-        systemctl restart nginx
-        log_success "Nginx reverse proxy configured: https://whispera-ui/"
+        if systemctl restart nginx 2>/dev/null; then
+            log_success "Nginx reverse proxy configured: https://whispera-ui/"
+        else
+            log_warn "Nginx failed to restart — port 443 may be in use. Check: journalctl -u nginx"
+        fi
     else
         log_warn "Nginx config test failed — check /etc/nginx/sites-available/whispera-ui"
     fi
