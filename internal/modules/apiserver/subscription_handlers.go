@@ -242,7 +242,12 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 			}
 			if provider, ok := mod.(cfgProvider); ok {
 				cfg := provider.GetConfig()
-				servers = buildServerList(cfg, serverIP, sub.Transports)
+				publicHost := publicHostFromURL(cfg.Server.PublicURL)
+				addr := serverIP
+				if publicHost != "" {
+					addr = publicHost
+				}
+				servers = buildServerList(cfg, addr, sub.Transports)
 			}
 		}
 	}
@@ -406,6 +411,18 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 	}
 
 	return servers
+}
+
+func publicHostFromURL(publicURL string) string {
+	if publicURL == "" {
+		return ""
+	}
+	s := strings.TrimPrefix(strings.TrimPrefix(publicURL, "https://"), "http://")
+	s = strings.TrimRight(s, "/")
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		return h
+	}
+	return s
 }
 
 func splitHostPort(addr string) (host, port string, err error) {

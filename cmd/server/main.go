@@ -1078,7 +1078,6 @@ func createModules(manager *lifecycle.Manager) error {
 			return err
 		}
 
-		// Create probe detector once; StartInbound will attach it to phantom handlers.
 		globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
 		globalProbeDetector.Start()
 		apiServer.SetProbeDetector(globalProbeDetector)

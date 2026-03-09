@@ -76,13 +76,12 @@ func New(cfg *Config) (*Transport, error) {
 	}
 
 	var privKey *ecdh.PrivateKey
-	// Use provided private key if available (for stable server identity)
 	if cfg.PrivateKey != "" {
 		privBytes, err := hex.DecodeString(cfg.PrivateKey)
 		if err == nil {
 			privKey, err = ecdh.X25519().NewPrivateKey(privBytes)
 			if err != nil {
-				privKey = nil // fall through to generate
+				privKey = nil
 			}
 		}
 	}
@@ -241,7 +240,6 @@ func (t *Transport) HealthCheck() interfaces.HealthStatus {
 	return s
 }
 
-// obfs4Conn wraps net.Conn with AES-GCM framing
 type obfs4Conn struct {
 	net.Conn
 	enc    cipher.AEAD

@@ -33,7 +33,6 @@ const (
 	ModuleName    = "transport.shadowsocks"
 	ModuleVersion = "1.0.0"
 
-	// AEAD tag + 2-byte length prefix + nonce
 	payloadSizeMask = 0x3FFF
 	maxPayloadSize  = payloadSizeMask
 )
@@ -187,18 +186,16 @@ func (t *Transport) newClientConn(conn net.Conn, target string) (*ssConn, error)
 		return nil, err
 	}
 
-	// Write salt to connection first
 	if _, err := conn.Write(salt); err != nil {
 		return nil, err
 	}
 
-	// Encode target address: [1 byte type][addr][2 byte port]
 	host, portStr, _ := net.SplitHostPort(target)
 	var port uint16
 	fmt.Sscanf(portStr, "%d", &port)
 
 	addrBuf := make([]byte, 0, 32)
-	addrBuf = append(addrBuf, 0x03) // domain type
+	addrBuf = append(addrBuf, 0x03)
 	addrBuf = append(addrBuf, byte(len(host)))
 	addrBuf = append(addrBuf, []byte(host)...)
 	addrBuf = append(addrBuf, byte(port>>8), byte(port))
@@ -214,7 +211,6 @@ func (t *Transport) newClientConn(conn net.Conn, target string) (*ssConn, error)
 		isClient:  true,
 	}
 
-	// Write address as first encrypted payload
 	if err := c.writeEncrypted(addrBuf); err != nil {
 		return nil, err
 	}
@@ -279,7 +275,6 @@ type ssConn struct {
 	addrBytes []byte
 	isClient  bool
 
-	// read buffer
 	rbuf []byte
 }
 
@@ -303,13 +298,11 @@ func (c *ssConn) writeEncrypted(data []byte) error {
 		}
 		data = data[len(chunk):]
 
-		// Encrypt length
 		lenBuf := make([]byte, 2)
 		binary.BigEndian.PutUint16(lenBuf, uint16(len(chunk)))
 		encLen := c.encAEAD.Seal(nil, c.encNonce, lenBuf, nil)
 		incrementNonce(c.encNonce)
 
-		// Encrypt payload
 		encData := c.encAEAD.Seal(nil, c.encNonce, chunk, nil)
 		incrementNonce(c.encNonce)
 
@@ -334,7 +327,6 @@ func (c *ssConn) readDecrypted() ([]byte, error) {
 
 	overhead := c.decAEAD.Overhead()
 
-	// Read encrypted length (2 + overhead bytes)
 	encLen := make([]byte, 2+overhead)
 	if _, err := io.ReadFull(c.Conn, encLen); err != nil {
 		return nil, err
@@ -347,7 +339,6 @@ func (c *ssConn) readDecrypted() ([]byte, error) {
 
 	payloadLen := int(binary.BigEndian.Uint16(lenBuf)) & payloadSizeMask
 
-	// Read encrypted payload
 	encPayload := make([]byte, payloadLen+overhead)
 	if _, err := io.ReadFull(c.Conn, encPayload); err != nil {
 		return nil, err

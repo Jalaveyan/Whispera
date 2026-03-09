@@ -778,6 +778,7 @@ class WhisperaApp {
                 "bridges.token.title": "Токен регистрации мостов",
                 "bridges.token.desc": "Передайте этот токен при установке нового моста через install-bridge.sh. Мост автоматически зарегистрируется и появится в таблице выше.",
                 "bridges.token.new": "Новый токен",
+                "bridges.token.curl_hint": "Или зарегистрируйте мост вручную через curl:",
                 "settings.stealth.title": "Режим обхода блокировок",
                 "settings.stealth.strategy": "Стратегия транспорта",
                 "settings.stealth.auto": "Авто (оптимальный)",
@@ -1008,6 +1009,7 @@ class WhisperaApp {
                 "bridges.token.title": "Bridge Registration Token",
                 "bridges.token.desc": "Pass this token when installing a new bridge via install-bridge.sh. The bridge will automatically register and appear in the table above.",
                 "bridges.token.new": "New Token",
+                "bridges.token.curl_hint": "Or register the bridge manually via curl:",
                 "settings.stealth.title": "Censorship Bypass Mode",
                 "settings.stealth.strategy": "Transport Strategy",
                 "settings.stealth.auto": "Auto (optimal)",
@@ -1817,6 +1819,7 @@ class WhisperaApp {
                 const data = await api.regenerateBridgeToken();
                 const el = document.getElementById('bridge-reg-token');
                 if (el) el.textContent = data.token || '—';
+                this._updateCurlCmd(data.token);
                 this.showNotification('Токен обновлён', 'success');
             } catch (e) {
                 this.showNotification('Ошибка: ' + e.message, 'error');
@@ -2951,7 +2954,18 @@ class WhisperaApp {
             const data = await api.getBridgeToken();
             const el = document.getElementById('bridge-reg-token');
             if (el) el.textContent = data.token || '—';
+            this._updateCurlCmd(data.token);
         } catch {}
+    }
+
+    _updateCurlCmd(token) {
+        const el = document.getElementById('bridge-curl-cmd');
+        if (!el) return;
+        const base = window.location.origin;
+        el.textContent =
+            `curl -s -X POST ${base}/api/bridge-register \\\n` +
+            `  -H "Content-Type: application/json" \\\n` +
+            `  -d '{"token":"${token || 'TOKEN'}","address":"1.2.3.4:443","region":"ru","type":"community"}'`;
     }
 
     _relativeTime(date) {

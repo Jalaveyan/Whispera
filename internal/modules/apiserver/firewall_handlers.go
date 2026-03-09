@@ -24,15 +24,26 @@ type FirewallStatus struct {
 	Rules  []FirewallRule `json:"rules"`
 }
 
+func ufwPath() string {
+	for _, p := range []string{"/usr/sbin/ufw", "/sbin/ufw", "ufw"} {
+		if path, err := exec.LookPath(p); err == nil {
+			return path
+		}
+	}
+	return "ufw"
+}
+
 func getFirewallStatus() (*FirewallStatus, error) {
-	cmd := exec.Command("ufw", "status", "numbered")
-	out, err := cmd.Output()
-	if err != nil {
-		return &FirewallStatus{Active: false, Rules: []FirewallRule{}}, nil
+	cmd := exec.Command(ufwPath(), "status", "numbered")
+	out, err := cmd.CombinedOutput()
+	outStr := string(out)
+	// On some systems ufw exits with code 1 when inactive — that's not a real error.
+	if err != nil && !strings.Contains(outStr, "Status:") {
+		return &FirewallStatus{Active: false, Rules: []FirewallRule{}}, fmt.Errorf("ufw: %s", strings.TrimSpace(outStr))
 	}
 
 	status := &FirewallStatus{Rules: []FirewallRule{}}
-	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	scanner := bufio.NewScanner(strings.NewReader(outStr))
 
 	ruleRe := regexp.MustCompile(`^\[\s*(\d+)\]\s+(.+?)\s{2,}(ALLOW IN|DENY IN|ALLOW OUT|DENY OUT|ALLOW|DENY|REJECT|LIMIT)\s+(.+)$`)
 
@@ -67,7 +78,7 @@ func getFirewallStatus() (*FirewallStatus, error) {
 func (s *Server) handleFirewallStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := getFirewallStatus()
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to get firewall status")
+		s.jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	s.jsonOK(w, status)
@@ -115,7 +126,7 @@ func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 		args = append(args, rule)
 	}
 
-	out, err := exec.Command("ufw", args...).CombinedOutput()
+	out, err := exec.Command(ufwPath(), args...).CombinedOutput()
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
 		return
@@ -133,7 +144,7 @@ func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request
 		return
 	}
 	// ufw delete requires answering 'y' — use echo to confirm
-	cmd := exec.Command("ufw", "--force", "delete", strconv.Itoa(req.Number))
+	cmd := exec.Command(ufwPath(), "--force", "delete", strconv.Itoa(req.Number))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
@@ -153,9 +164,9 @@ func (s *Server) handleFirewallToggle(w http.ResponseWriter, r *http.Request) {
 	}
 	var cmd *exec.Cmd
 	if req.Enable {
-		cmd = exec.Command("ufw", "--force", "enable")
+		cmd = exec.Command(ufwPath(), "--force", "enable")
 	} else {
-		cmd = exec.Command("ufw", "--force", "disable")
+		cmd = exec.Command(ufwPath(), "--force", "disable")
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -39,30 +39,19 @@ const (
 	hmacLen = 8
 )
 
-// Config holds parameters for both client and server modes.
 type Config struct {
-	// Password used to derive HMAC key (required for both modes).
 	Password string
 
-	// ── Client-mode fields ──────────────────────────────────────────────────
 
-	// ShadowServer is the address of the ShadowTLS server (client mode only).
 	ShadowServer string
 
-	// SNI is the hostname to present during TLS handshake.
-	// Client: used as TLS ServerName. Server: used in the self-signed cert CN.
 	SNI string
 
-	// Version: 2 or 3 (protocol version hint, informational).
 	Version int
 
-	// ── Server-mode fields ──────────────────────────────────────────────────
 
-	// ServerMode enables Listen/Accept (server side).
 	ServerMode bool
 
-	// TLSCert and TLSKey are paths to PEM-encoded certificate and key files.
-	// If empty, a self-signed certificate is generated automatically.
 	TLSCert string
 	TLSKey  string
 }
@@ -84,7 +73,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Transport implements interfaces.Transport for ShadowTLS.
 type Transport struct {
 	*base.Module
 	config   *Config
@@ -111,11 +99,7 @@ func New(cfg *Config) (*Transport, error) {
 
 func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportShadowTLS }
 
-// ── Server mode ─────────────────────────────────────────────────────────────
 
-// Listen starts a TLS server on addr. The outer TLS layer provides camouflage:
-// to DPI it looks like an ordinary HTTPS server. Authentication is handled by
-// the Whispera protocol layer (Phantom/PSK) on top of the TLS stream.
 func (t *Transport) Listen(addr string) error {
 	tlsCfg, err := t.buildServerTLSConfig()
 	if err != nil {
@@ -131,7 +115,6 @@ func (t *Transport) Listen(addr string) error {
 	return nil
 }
 
-// Accept returns the next client connection.
 func (t *Transport) Accept() (net.Conn, error) {
 	if t.listener == nil {
 		return nil, fmt.Errorf("shadowtls: not listening")
@@ -152,7 +135,6 @@ func (t *Transport) Close() error {
 	return nil
 }
 
-// buildServerTLSConfig loads or generates the TLS certificate.
 func (t *Transport) buildServerTLSConfig() (*tls.Config, error) {
 	var cert tls.Certificate
 	var err error
@@ -178,7 +160,6 @@ func (t *Transport) buildServerTLSConfig() (*tls.Config, error) {
 	return &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
-		// Prefer cipher suites that match real HTTPS servers for camouflage.
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
@@ -190,8 +171,6 @@ func (t *Transport) buildServerTLSConfig() (*tls.Config, error) {
 	}, nil
 }
 
-// generateSelfSignedCert creates an ECDSA P-256 self-signed certificate
-// for the given hostname, valid for 10 years.
 func generateSelfSignedCert(hostname string) (tls.Certificate, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -228,7 +207,6 @@ func generateSelfSignedCert(hostname string) (tls.Certificate, error) {
 	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
-// ── Client mode ─────────────────────────────────────────────────────────────
 
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	server := t.config.ShadowServer
@@ -258,7 +236,6 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		return nil, fmt.Errorf("shadowtls tls handshake: %w", err)
 	}
 
-	// Verify server authenticity via HMAC in TLS channel binding.
 	state := tlsConn.ConnectionState()
 	if !t.verifyServerRandom(state.TLSUnique) {
 		log.Warn("shadowtls: server HMAC verification failed, possible MITM")
@@ -291,9 +268,7 @@ func (t *Transport) HealthCheck() interfaces.HealthStatus {
 	return s
 }
 
-// ── Connection wrappers ──────────────────────────────────────────────────────
 
-// shadowTLSConn wraps a utls client connection (client mode).
 type shadowTLSConn struct {
 	*utls.UConn
 	transport *Transport
@@ -326,7 +301,6 @@ func (c *shadowTLSConn) Write(b []byte) (int, error) {
 
 var _ io.ReadWriteCloser = (*shadowTLSConn)(nil)
 
-// serverConn wraps an accepted TLS connection (server mode).
 type serverConn struct {
 	net.Conn
 	transport *Transport
@@ -353,7 +327,6 @@ func (c *serverConn) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// ── Factory ─────────────────────────────────────────────────────────────────
 
 func Factory(cfg interface{}) (interfaces.Module, error) {
 	var config *Config
@@ -362,9 +335,6 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 	} else {
 		config = DefaultConfig()
 	}
-	// Factory is called by the registry; in server mode password may be
-	// configured later via the config provider, so skip validation here
-	// and let Listen() surface the error if needed.
 	t := &Transport{
 		Module: base.NewModule(ModuleName, ModuleVersion, nil),
 		config: config,

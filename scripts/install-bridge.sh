@@ -229,13 +229,11 @@ systemctl start whispera-bridge
 
 sleep 3
 
-# Auto-detect public IP
 PUBLIC_IP=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null \
     || curl -s --connect-timeout 5 https://ifconfig.me 2>/dev/null \
     || curl -s --connect-timeout 5 https://icanhazip.com 2>/dev/null \
     || echo "")
 
-# Auto-detect region if not specified
 if [ "$REGION" = "auto" ] || [ -z "$REGION" ]; then
     REGION=$(curl -s --connect-timeout 5 "https://ipinfo.io/${PUBLIC_IP}/country" 2>/dev/null | tr -d '"' | head -1)
     [ -z "$REGION" ] && REGION="unknown"
@@ -246,7 +244,6 @@ if systemctl is-active --quiet whispera-bridge; then
 
     BRIDGE_ADDR="${PUBLIC_IP}:${LISTEN_PORT}"
 
-    # Register with main server
     if [ -n "$PUBLIC_IP" ] && [ -n "$MAIN_SERVER" ] && [ -n "$REG_TOKEN" ]; then
         log_info "Registering bridge with main server..."
         REG_RESPONSE=$(curl -s -k --connect-timeout 10 \
