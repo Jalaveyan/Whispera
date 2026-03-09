@@ -37,7 +37,6 @@ func getFirewallStatus() (*FirewallStatus, error) {
 	cmd := exec.Command(ufwPath(), "status", "numbered")
 	out, err := cmd.CombinedOutput()
 	outStr := string(out)
-	// On some systems ufw exits with code 1 when inactive — that's not a real error.
 	if err != nil && !strings.Contains(outStr, "Status:") {
 		return &FirewallStatus{Active: false, Rules: []FirewallRule{}}, fmt.Errorf("ufw: %s", strings.TrimSpace(outStr))
 	}
@@ -78,7 +77,12 @@ func getFirewallStatus() (*FirewallStatus, error) {
 func (s *Server) handleFirewallStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := getFirewallStatus()
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, err.Error())
+		// Return HTTP 200 with inactive state so the UI can render; surface error in field.
+		s.jsonOK(w, map[string]interface{}{
+			"active": false,
+			"rules":  []FirewallRule{},
+			"error":  err.Error(),
+		})
 		return
 	}
 	s.jsonOK(w, status)
@@ -86,10 +90,10 @@ func (s *Server) handleFirewallStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Action string `json:"action"` // "allow" or "deny"
-		Port   string `json:"port"`   // e.g. "80" or "8080:8090"
-		Proto  string `json:"proto"`  // "tcp", "udp", "any"
-		From   string `json:"from"`   // "" means Anywhere
+		Action string `json:"action"`
+		Port   string `json:"port"`
+		Proto  string `json:"proto"`
+		From   string `json:"from"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonError(w, http.StatusBadRequest, "Invalid request")
@@ -143,7 +147,6 @@ func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request
 		s.jsonError(w, http.StatusBadRequest, "rule number required")
 		return
 	}
-	// ufw delete requires answering 'y' — use echo to confirm
 	cmd := exec.Command(ufwPath(), "--force", "delete", strconv.Itoa(req.Number))
 	out, err := cmd.CombinedOutput()
 	if err != nil {

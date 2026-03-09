@@ -3472,6 +3472,9 @@ class WhisperaApp {
         try {
             const status = await api.request('/api/firewall/status');
             renderRules(status);
+            if (status.error) {
+                modal.querySelector('#fw-rules-body').innerHTML = `<tr><td colspan="5" style="text-align:center;padding:16px;color:#f59e0b;font-size:0.85em;opacity:0.8;">${status.error}</td></tr>`;
+            }
         } catch (e) {
             modal.querySelector('#fw-rules-body').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;color:#ef4444;">Ошибка загрузки</td></tr>';
         }
