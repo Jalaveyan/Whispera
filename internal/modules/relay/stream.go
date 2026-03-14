@@ -306,10 +306,7 @@ func (s *Stream) Connect(ctx context.Context) error {
 		go s.speculativeConnect(target)
 
 		if tcpConn, ok := s.conn.(*net.TCPConn); ok {
-			bufferSize := 4 * 1024 * 1024
-			if s.Protocol == ProtoUDP {
-				bufferSize = 4 * 1024 * 1024
-			}
+			bufferSize := 8 * 1024 * 1024
 			tcpConn.SetReadBuffer(bufferSize)
 			tcpConn.SetWriteBuffer(bufferSize)
 			tcpConn.SetNoDelay(true)
@@ -767,7 +764,7 @@ func NewStreamManager(dialer proxy.Dialer) *StreamManager {
 		dialer:   dialer,
 		ctx:      ctx,
 		cancel:   cancel,
-		connPool: NewConnectionPool(120*time.Second, 20),
+		connPool: NewConnectionPool(300*time.Second, 64),
 	}
 
 	go sm.cleanupLoop()

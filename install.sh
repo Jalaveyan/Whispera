@@ -1,8 +1,6 @@
 #!/bin/bash
 
 
-set -e
-
 REPO_URL="https://github.com/Jalaveyan/Whispera.git"
 BRANCH="main"
 WORK_DIR="/opt/whispera"
@@ -83,7 +81,7 @@ install_dependencies() {
             apt-get remove -y libnode-dev libnode72 nodejs npm || true
             dpkg --remove --force-all libnode-dev libnode72 || true
             apt-get autoremove -y || true
-            apt-get install -y curl git wget tar unzip openssl
+            apt-get install -y curl git wget tar unzip openssl nano jq bc net-tools
             curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
             apt-get install -y nodejs
             ;;
@@ -556,21 +554,25 @@ EOF
 setup_telegram() {
     echo ""
     echo -e "${YELLOW}--- Setup Telegram Notifications ---${PLAIN}"
-    echo "This will configure the server to send status updates to your Telegram."
-    echo "1. Start bot @WhisperaStatusBot (or your configured bot)."
-    echo "2. Use /start to get your ID."
+    echo "1. Create a bot via @BotFather in Telegram and copy the token."
+    echo "2. Send /start to your bot, then get your user ID via @userinfobot."
     echo ""
-    read -p "Enter your Telegram User ID (numbers only, leave empty to cancel): " TG_ID
+    read -p "Enter Telegram Bot Token (from @BotFather, leave empty to cancel): " TG_TOKEN
+
+    if [[ -z "$TG_TOKEN" ]]; then
+        log_warn "Cancelled."
+        return
+    fi
+
+    read -p "Enter your Telegram User ID (numbers only): " TG_ID
 
     if [[ -z "$TG_ID" ]]; then
         log_warn "Cancelled."
         return
     fi
 
-    # Validate: must be a numeric ID (Telegram user/chat IDs are integers)
     if ! [[ "$TG_ID" =~ ^-?[0-9]+$ ]]; then
         log_err "Invalid Telegram ID: must be a number (e.g. 123456789). Got: $TG_ID"
-        log_info "Open @userinfobot in Telegram and send /start to get your numeric ID."
         return
     fi
 
@@ -580,9 +582,20 @@ setup_telegram() {
     fi
 
     log_info "Updating config..."
-    # Use | as sed delimiter to avoid issues with special characters
     sed -i "s|admin_id: .*|admin_id: $TG_ID|" "$CONF_PATH/config.yaml"
     sed -i "s|chat_id: .*|chat_id: \"$TG_ID\"|" "$CONF_PATH/config.yaml"
+    sed -i "s|token: \"YOUR_TELEGRAM_BOT_TOKEN\"|token: \"$TG_TOKEN\"|g" "$CONF_PATH/config.yaml"
+    sed -i "/^bot:/,/^[^ ]/ s|enabled: false|enabled: true|" "$CONF_PATH/config.yaml"
+    sed -i "/^notifications:/,/^[^ ]/ s|enabled: false|enabled: true|" "$CONF_PATH/config.yaml"
+
+    log_info "Testing bot connection..."
+    local TEST_RESULT=$(curl -s "https://api.telegram.org/bot${TG_TOKEN}/getMe" 2>/dev/null)
+    if echo "$TEST_RESULT" | grep -q '"ok":true'; then
+        local BOT_NAME=$(echo "$TEST_RESULT" | grep -o '"first_name":"[^"]*"' | cut -d'"' -f4)
+        log_success "Bot connected: $BOT_NAME"
+    else
+        log_warn "Could not verify bot token. Check the token and try again."
+    fi
 
     log_info "Restarting Whispera..."
     refresh_config

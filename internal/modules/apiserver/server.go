@@ -265,6 +265,7 @@ func (s *Server) registerDefaultRoutes() {
 
 	s.Handle("GET /api/system/info", s.handleSystemInfoAPI)
 	s.Handle("POST /api/admin/update", s.handleAdminUpdate)
+	s.Handle("GET /api/system/update-check", s.handleUpdateCheck)
 	s.Handle("GET /api/logs", s.handleGetLogsAPI)
 
 	s.Handle("GET /api/bridge-list", s.bridgeHandler.HandleGetBridges)
@@ -875,16 +876,49 @@ func (s *Server) clearLoginAttempts(ip string) {
 	delete(s.loginAttempts, ip)
 }
 
+func isTrustedProxy(ip string) bool {
+	trusted := []string{
+		"127.0.0.0/8",
+		"::1/128",
+		"10.0.0.0/8",
+		"172.16.0.0/12",
+		"192.168.0.0/16",
+		"fc00::/7",
+	}
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	for _, cidr := range trusted {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if network.Contains(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) getClientIP(r *http.Request) string {
+	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !isTrustedProxy(remoteIP) {
+		return remoteIP
+	}
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := strings.TrimSpace(parts[i])
+			if ip != "" && !isTrustedProxy(ip) {
+				return ip
+			}
+		}
 	}
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
-		return xri
+		return strings.TrimSpace(xri)
 	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return ip
+	return remoteIP
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -2655,4 +2689,12 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 		config = DefaultConfig()
 	}
 	return New(config)
+}
+
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	s.jsonOK(w, map[string]interface{}{
+		"current_version": ModuleVersion,
+		"update_enabled":  true,
+		"message":         "use manifest endpoint for update checks",
+	})
 }

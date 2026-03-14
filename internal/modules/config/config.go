@@ -65,6 +65,10 @@ type ServerConfig struct {
 	Database       DatabaseConfig     `yaml:"database" json:"database"`
 	Notifications  NotificationConfig `yaml:"notifications" json:"notifications"`
 	Bot            BotConfig          `yaml:"bot" json:"bot"`
+	NATS           NATSConfig         `yaml:"nats" json:"nats"`
+	Update         UpdateConfig       `yaml:"update" json:"update"`
+	Correlation    CorrelationConfig  `yaml:"correlation" json:"correlation"`
+	SNIBypass      SNIBypassConfig    `yaml:"sni_bypass" json:"sni_bypass"`
 }
 
 func (p *Provider) SaveConfig(path string) error {
@@ -211,6 +215,37 @@ type DatabaseConfig struct {
 	PostgresURL string `yaml:"postgres_url" json:"postgres_url"`
 	MaxConns    int    `yaml:"max_conns" json:"max_conns"`
 	MinConns    int    `yaml:"min_conns" json:"min_conns"`
+}
+
+type NATSConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	URL     string `yaml:"url" json:"url"`
+	Prefix  string `yaml:"prefix" json:"prefix"`
+}
+
+type UpdateConfig struct {
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	ManifestURL  string `yaml:"manifest_url" json:"manifest_url"`
+	PublicKey    string `yaml:"public_key" json:"public_key"`
+	Channel      string `yaml:"channel" json:"channel"`
+	CheckInterval Duration `yaml:"check_interval" json:"check_interval"`
+}
+
+type CorrelationConfig struct {
+	Enabled        bool    `yaml:"enabled" json:"enabled"`
+	PaddingEnabled bool    `yaml:"padding" json:"padding"`
+	JitterEnabled  bool    `yaml:"jitter" json:"jitter"`
+	CoverTraffic   bool    `yaml:"cover_traffic" json:"cover_traffic"`
+	MaxJitterMs    int     `yaml:"max_jitter_ms" json:"max_jitter_ms"`
+	CoverRateMs    int     `yaml:"cover_rate_ms" json:"cover_rate_ms"`
+	RateBytesPerSec int    `yaml:"rate_bytes_per_sec" json:"rate_bytes_per_sec"`
+}
+
+type SNIBypassConfig struct {
+	Enabled       bool   `yaml:"enabled" json:"enabled"`
+	Mode          string `yaml:"mode" json:"mode"`
+	FragmentSize  int    `yaml:"fragment_size" json:"fragment_size"`
+	Fingerprint   string `yaml:"fingerprint" json:"fingerprint"`
 }
 
 type VKRelayConfig struct {

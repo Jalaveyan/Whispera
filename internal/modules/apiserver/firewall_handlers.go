@@ -4,12 +4,31 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
 )
+
+func isValidPort(p string) bool {
+	if strings.Contains(p, ":") {
+		parts := strings.SplitN(p, ":", 2)
+		if len(parts) != 2 {
+			return false
+		}
+		return isValidPortNum(parts[0]) && isValidPortNum(parts[1])
+	}
+	return isValidPortNum(p)
+}
+
+func isValidPortNum(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+var _ = net.ParseIP
 
 type FirewallRule struct {
 	Number    int    `json:"number"`
@@ -102,31 +121,39 @@ func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, http.StatusBadRequest, "port required")
 		return
 	}
+	if !isValidPort(req.Port) {
+		s.jsonError(w, http.StatusBadRequest, "invalid port")
+		return
+	}
+	if req.From != "" && net.ParseIP(req.From) == nil {
+		_, _, err := net.ParseCIDR(req.From)
+		if err != nil {
+			s.jsonError(w, http.StatusBadRequest, "invalid IP address")
+			return
+		}
+	}
+	if req.Proto != "" && req.Proto != "any" && req.Proto != "tcp" && req.Proto != "udp" {
+		s.jsonError(w, http.StatusBadRequest, "invalid protocol, must be tcp/udp/any")
+		return
+	}
+
 	action := "allow"
 	if req.Action == "deny" {
 		action = "deny"
 	}
 
-	var rule string
+	var args []string
 	if req.From != "" {
+		args = []string{action, "from", req.From, "to", "any", "port", req.Port}
 		if req.Proto != "" && req.Proto != "any" {
-			rule = fmt.Sprintf("from %s to any port %s proto %s", req.From, req.Port, req.Proto)
-		} else {
-			rule = fmt.Sprintf("from %s to any port %s", req.From, req.Port)
+			args = append(args, "proto", req.Proto)
 		}
 	} else {
 		if req.Proto != "" && req.Proto != "any" {
-			rule = fmt.Sprintf("%s/%s", req.Port, req.Proto)
+			args = []string{action, req.Port + "/" + req.Proto}
 		} else {
-			rule = req.Port
+			args = []string{action, req.Port}
 		}
-	}
-
-	args := []string{action}
-	if req.From != "" {
-		args = append(args, strings.Fields(rule)...)
-	} else {
-		args = append(args, rule)
 	}
 
 	out, err := exec.Command(ufwPath(), args...).CombinedOutput()

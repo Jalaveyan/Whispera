@@ -16,10 +16,17 @@ import (
 	"time"
 
 	"whispera/internal/core/base"
+	"whispera/internal/core/events"
+	"whispera/internal/core/interfaces"
+	"whispera/internal/core/registry"
 	"whispera/internal/logger"
 )
 
 var log = logger.Module("mtproto")
+
+func init() {
+	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
+}
 
 var handshakeBufferPool = sync.Pool{
 	New: func() interface{} {
@@ -38,15 +45,11 @@ const (
 )
 
 type Config struct {
-	Secret string
-
-	ListenAddr string
-
+	Secret      string
+	ListenAddr  string
 	DCAddresses map[int]string
-
 	EnableFakeTLS bool
-
-	EnableStats bool
+	EnableStats   bool
 }
 
 func DefaultConfig() *Config {
@@ -118,6 +121,7 @@ type Transport struct {
 	mu       sync.RWMutex
 	listener net.Listener
 	secret   *ParsedSecret
+	acceptCh chan net.Conn
 
 	totalConns  uint64
 	activeConns int32
@@ -139,17 +143,31 @@ func New(cfg *Config) (*Transport, error) {
 	}
 
 	t := &Transport{
-		Module: base.NewModule(ModuleName, ModuleVersion, nil),
-		config: cfg,
-		secret: secret,
+		Module:   base.NewModule(ModuleName, ModuleVersion, nil),
+		config:   cfg,
+		secret:   secret,
+		acceptCh: make(chan net.Conn, 256),
 	}
 
 	return t, nil
 }
 
-func (t *Transport) Listen(ctx context.Context) error {
+func (t *Transport) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
+	return t.Module.Init(ctx, cfg)
+}
+
+func (t *Transport) Start() error {
+	if err := t.Module.Start(); err != nil {
+		return err
+	}
+
+	if t.config.ListenAddr == "" {
+		return nil
+	}
+
 	listener, err := net.Listen("tcp", t.config.ListenAddr)
 	if err != nil {
+		t.SetHealthy(false, fmt.Sprintf("listen failed: %v", err))
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 
@@ -157,24 +175,85 @@ func (t *Transport) Listen(ctx context.Context) error {
 	t.listener = listener
 	t.mu.Unlock()
 
+	t.SetHealthy(true, fmt.Sprintf("listening on %s (type: %s)", t.config.ListenAddr, t.secret.Type))
+	t.PublishEvent(events.EventTypeModuleStarted, map[string]interface{}{
+		"listen_addr": t.config.ListenAddr,
+		"secret_type": t.secret.Type,
+	})
+
+	go t.acceptLoop()
+
 	log.Info("MTProto listening on %s (type: %s)", t.config.ListenAddr, t.secret.Type)
-
-	go t.acceptLoop(ctx)
-
 	return nil
 }
 
-func (t *Transport) acceptLoop(ctx context.Context) {
+func (t *Transport) Stop() error {
+	t.mu.Lock()
+	if t.listener != nil {
+		t.listener.Close()
+		t.listener = nil
+	}
+	t.mu.Unlock()
+
+	t.PublishEvent(events.EventTypeModuleStopped, nil)
+	return t.Module.Stop()
+}
+
+func (t *Transport) Type() interfaces.TransportType {
+	return interfaces.TransportMTProto
+}
+
+func (t *Transport) Listen(addr string) error {
+	return nil
+}
+
+func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+
+	session := NewMTProtoSession(t.secret.Secret)
+	if err := session.HandshakeWithServer(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("mtproto handshake failed: %w", err)
+	}
+
+	return &mtprotoConn{
+		Conn:    conn,
+		session: session,
+	}, nil
+}
+
+func (t *Transport) Accept() (net.Conn, error) {
+	conn, ok := <-t.acceptCh
+	if !ok {
+		return nil, fmt.Errorf("transport closed")
+	}
+	return conn, nil
+}
+
+func (t *Transport) Close() error {
+	return t.Stop()
+}
+
+func (t *Transport) HealthCheck() interfaces.HealthStatus {
+	return t.Module.HealthCheck()
+}
+
+func (t *Transport) acceptLoop() {
 	for {
-		select {
-		case <-ctx.Done():
+		t.mu.RLock()
+		listener := t.listener
+		t.mu.RUnlock()
+		if listener == nil {
 			return
-		default:
 		}
 
-		conn, err := t.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if t.listener == nil {
 				return
 			}
 			log.Warn("Accept error: %v", err)
@@ -184,11 +263,11 @@ func (t *Transport) acceptLoop(ctx context.Context) {
 		atomic.AddUint64(&t.totalConns, 1)
 		atomic.AddInt32(&t.activeConns, 1)
 
-		go t.handleConnection(ctx, conn)
+		go t.handleConnection(conn)
 	}
 }
 
-func (t *Transport) handleConnection(ctx context.Context, clientConn net.Conn) {
+func (t *Transport) handleConnection(clientConn net.Conn) {
 	defer func() {
 		clientConn.Close()
 		atomic.AddInt32(&t.activeConns, -1)
@@ -220,36 +299,23 @@ func (t *Transport) handleConnection(ctx context.Context, clientConn net.Conn) {
 
 	clientConn.SetDeadline(time.Time{})
 
-	dcID := session.DCID
-	dcAddr, ok := t.config.DCAddresses[dcID]
-	if !ok {
-		dcAddr = t.config.DCAddresses[2]
+	wrappedConn := &mtprotoConn{
+		Conn:    clientConn,
+		session: session,
 	}
 
-	telegramConn, err := net.DialTimeout("tcp", dcAddr, 10*time.Second)
-	if err != nil {
-		log.Warn("Failed to connect to Telegram DC%d: %v", dcID, err)
-		return
+	select {
+	case t.acceptCh <- wrappedConn:
+	default:
+		log.Warn("Accept channel full, dropping connection")
 	}
-	defer telegramConn.Close()
-
-	if err := session.HandshakeWithServer(telegramConn); err != nil {
-		log.Warn("Failed Telegram handshake: %v", err)
-		return
-	}
-
-	log.Info("Proxying to Telegram DC%d (%s)", dcID, dcAddr)
-
-	t.relay(ctx, session, clientConn, telegramConn)
 }
 
 func (t *Transport) handleObfuscated(_ net.Conn, header []byte) (*MTProtoSession, error) {
 	session := NewMTProtoSession(t.secret.Secret)
-
 	if err := session.DecryptHeader(header); err != nil {
 		return nil, fmt.Errorf("failed to decrypt header: %w", err)
 	}
-
 	return session, nil
 }
 
@@ -293,13 +359,9 @@ func (t *Transport) sendFakeServerHello(conn net.Conn) error {
 	random := make([]byte, 32)
 	rand.Read(random)
 	serverHello = append(serverHello, random...)
-
 	serverHello = append(serverHello, 0x00)
-
 	serverHello = append(serverHello, 0x13, 0x01)
-
 	serverHello = append(serverHello, 0x00)
-
 	serverHello = append(serverHello, 0x00, 0x05)
 	serverHello = append(serverHello, 0x00, 0x17, 0x00, 0x00, 0x00)
 
@@ -307,30 +369,41 @@ func (t *Transport) sendFakeServerHello(conn net.Conn) error {
 	return err
 }
 
-func (t *Transport) relay(ctx context.Context, session *MTProtoSession, client, telegram net.Conn) {
+func (t *Transport) ProxyToTelegram(clientConn net.Conn, session *MTProtoSession) {
+	dcID := session.DCID
+	dcAddr, ok := t.config.DCAddresses[dcID]
+	if !ok {
+		dcAddr = t.config.DCAddresses[2]
+	}
+
+	telegramConn, err := net.DialTimeout("tcp", dcAddr, 10*time.Second)
+	if err != nil {
+		log.Warn("Failed to connect to Telegram DC%d: %v", dcID, err)
+		return
+	}
+	defer telegramConn.Close()
+
+	if err := session.HandshakeWithServer(telegramConn); err != nil {
+		log.Warn("Failed Telegram handshake: %v", err)
+		return
+	}
+
+	log.Info("Proxying to Telegram DC%d (%s)", dcID, dcAddr)
+
 	done := make(chan struct{}, 2)
 
 	go func() {
 		defer func() { done <- struct{}{} }()
 		buf := make([]byte, 32*1024)
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			n, err := client.Read(buf)
+			n, err := clientConn.Read(buf)
 			if err != nil {
 				return
 			}
-
 			data := session.DecryptFromClient(buf[:n])
-
-			if _, err := telegram.Write(data); err != nil {
+			if _, err := telegramConn.Write(data); err != nil {
 				return
 			}
-
 			atomic.AddUint64(&t.bytesIn, uint64(n))
 		}
 	}()
@@ -339,28 +412,65 @@ func (t *Transport) relay(ctx context.Context, session *MTProtoSession, client, 
 		defer func() { done <- struct{}{} }()
 		buf := make([]byte, 32*1024)
 		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			n, err := telegram.Read(buf)
+			n, err := telegramConn.Read(buf)
 			if err != nil {
 				return
 			}
-
 			data := session.EncryptToClient(buf[:n])
-
-			if _, err := client.Write(data); err != nil {
+			if _, err := clientConn.Write(data); err != nil {
 				return
 			}
-
 			atomic.AddUint64(&t.bytesOut, uint64(n))
 		}
 	}()
 
 	<-done
+	<-done
+}
+
+func (t *Transport) Stats() map[string]interface{} {
+	return map[string]interface{}{
+		"total_connections":  atomic.LoadUint64(&t.totalConns),
+		"active_connections": atomic.LoadInt32(&t.activeConns),
+		"bytes_in":           atomic.LoadUint64(&t.bytesIn),
+		"bytes_out":          atomic.LoadUint64(&t.bytesOut),
+		"secret_type":        t.secret.Type,
+	}
+}
+
+func Factory(cfg interface{}) (interfaces.Module, error) {
+	var config *Config
+	if c, ok := cfg.(*Config); ok {
+		config = c
+	} else {
+		config = DefaultConfig()
+		config.Secret = "dd" + hex.EncodeToString(make([]byte, 16))
+	}
+	return New(config)
+}
+
+type mtprotoConn struct {
+	net.Conn
+	session *MTProtoSession
+}
+
+func (c *mtprotoConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if err != nil || n == 0 {
+		return n, err
+	}
+	decrypted := c.session.DecryptFromClient(b[:n])
+	copy(b, decrypted)
+	return len(decrypted), nil
+}
+
+func (c *mtprotoConn) Write(b []byte) (int, error) {
+	encrypted := c.session.EncryptToClient(b)
+	_, err := c.Conn.Write(encrypted)
+	if err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }
 
 type MTProtoSession struct {
@@ -493,36 +603,4 @@ func (s *MTProtoSession) EncryptToClient(data []byte) []byte {
 	encrypted := make([]byte, len(data))
 	s.clientEncrypt.XORKeyStream(encrypted, data)
 	return encrypted
-}
-
-
-func (t *Transport) Init(ctx context.Context) error {
-	return nil
-}
-
-func (t *Transport) Start(ctx context.Context) error {
-	if t.config.ListenAddr != "" {
-		return t.Listen(ctx)
-	}
-	return nil
-}
-
-func (t *Transport) Stop(ctx context.Context) error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if t.listener != nil {
-		return t.listener.Close()
-	}
-	return nil
-}
-
-func (t *Transport) Stats() map[string]interface{} {
-	return map[string]interface{}{
-		"total_connections":  atomic.LoadUint64(&t.totalConns),
-		"active_connections": atomic.LoadInt32(&t.activeConns),
-		"bytes_in":           atomic.LoadUint64(&t.bytesIn),
-		"bytes_out":          atomic.LoadUint64(&t.bytesOut),
-		"secret_type":        t.secret.Type,
-	}
 }

@@ -21,12 +21,16 @@ import (
 
 	"whispera/internal/cache"
 	"whispera/internal/core/base"
+	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/lifecycle"
 	"whispera/internal/db"
 	"whispera/internal/logger"
+	bridgeagent "whispera/internal/modules/bridge"
+	"whispera/internal/obfuscation/core/evasion"
 	"whispera/internal/server/dynamic"
 	"whispera/internal/stats"
+	"whispera/internal/update"
 
 	"whispera/internal/modules/apiserver"
 	"whispera/internal/modules/bot"
@@ -110,6 +114,9 @@ var (
 	globalObfuscator     interfaces.Obfuscator
 	globalCryptoProvider interfaces.CryptoProvider
 	globalServerConfig   *modconfig.ServerConfig
+	globalBridgeAgent    *bridgeagent.Agent
+	globalCorrelation    *evasion.CorrelationDefense
+	globalUpdater        *update.Updater
 
 	activeListeners = make(map[string]net.Listener)
 	listenersMutex  sync.RWMutex
@@ -696,6 +703,21 @@ func main() {
 	if err := createModules(manager); err != nil {
 		log.Fatalf("Failed to create modules: %v", err)
 	}
+
+	if globalServerConfig != nil && globalServerConfig.NATS.Enabled && globalServerConfig.NATS.URL != "" {
+		prefix := globalServerConfig.NATS.Prefix
+		if prefix == "" {
+			prefix = "whispera"
+		}
+		natsBus, err := events.NewNATSEventBus(globalServerConfig.NATS.URL, prefix)
+		if err != nil {
+			log.Printf("⚠ NATS EventBus failed: %v (using in-memory)", err)
+		} else {
+			manager.Registry().SetEventBus(natsBus)
+			log.Printf("✅ NATS EventBus connected: %s (prefix: %s)", globalServerConfig.NATS.URL, prefix)
+		}
+	}
+
 	if globalServerConfig != nil && globalServerConfig.Bridge.AutoRegister && globalServerConfig.UpstreamServer != "" {
 		go func() {
 			time.Sleep(2 * time.Second)
@@ -843,6 +865,20 @@ func createModules(manager *lifecycle.Manager) error {
 		}
 
 		log.Printf("✅ Bridge started on %s -> %s", serverConfig.Server.ListenAddr, serverConfig.UpstreamServer)
+
+		agentCfg := bridgeagent.DefaultAgentConfig()
+		agentCfg.BridgeID = serverConfig.Bridge.Region + "-" + serverConfig.Server.ListenAddr
+		agentCfg.UpstreamServer = serverConfig.UpstreamServer
+		agentCfg.RegistrationToken = serverConfig.Bridge.RegistrationToken
+		globalBridgeAgent = bridgeagent.NewAgent(agentCfg)
+		globalBridgeAgent.OnConfigUpdate(func(cfg map[string]interface{}) {
+			log.Printf("[BridgeAgent] Config update received: %v", cfg)
+		})
+		globalBridgeAgent.OnAlert(func(alertType, message string) {
+			log.Printf("[BridgeAgent] Alert %s: %s", alertType, message)
+		})
+		globalBridgeAgent.Start()
+		log.Printf("✅ Bridge Agent started (id=%s)", agentCfg.BridgeID)
 
 		select {}
 	}
@@ -1105,6 +1141,53 @@ func createModules(manager *lifecycle.Manager) error {
 		}
 	}
 
+	if serverConfig.Correlation.Enabled {
+		corrCfg := &evasion.CorrelationConfig{
+			Enabled:         true,
+			PaddingEnabled:  serverConfig.Correlation.PaddingEnabled,
+			MixEnabled:      serverConfig.Correlation.JitterEnabled,
+			ConstantRatePPS: serverConfig.Correlation.RateBytesPerSec,
+		}
+		if serverConfig.Correlation.MaxJitterMs > 0 {
+			corrCfg.DelayJitter = time.Duration(serverConfig.Correlation.MaxJitterMs) * time.Millisecond
+		} else {
+			corrCfg.DelayJitter = 50 * time.Millisecond
+		}
+		if corrCfg.ConstantRatePPS <= 0 {
+			corrCfg.ConstantRatePPS = 100
+		}
+		globalCorrelation = evasion.NewCorrelationDefense(corrCfg)
+		manager.OnShutdown(func() { globalCorrelation.Stop() })
+		log.Printf("✅ Correlation defense enabled (padding=%v, jitter=%v, cover=%v)",
+			serverConfig.Correlation.PaddingEnabled, serverConfig.Correlation.JitterEnabled, serverConfig.Correlation.CoverTraffic)
+	}
+
+	if serverConfig.Update.Enabled && serverConfig.Update.ManifestURL != "" {
+		updCfg := &update.Config{
+			ManifestURL:    serverConfig.Update.ManifestURL,
+			CurrentVersion: Version,
+			CheckInterval:  serverConfig.Update.CheckInterval.D(),
+		}
+		if updCfg.CheckInterval <= 0 {
+			updCfg.CheckInterval = 1 * time.Hour
+		}
+		binaryPath, _ := os.Executable()
+		updCfg.BinaryPath = binaryPath
+		globalUpdater = update.NewUpdater(updCfg)
+		globalUpdater.OnUpdateAvailable(func(v update.VersionInfo) {
+			log.Printf("🔄 Update available: %s (current: %s)", v.Version, Version)
+		})
+		globalUpdater.OnUpdateApplied(func(oldV, newV string) {
+			log.Printf("✅ Updated: %s → %s", oldV, newV)
+		})
+		globalUpdater.OnUpdateFailed(func(v string, err error) {
+			log.Printf("⚠ Update to %s failed: %v", v, err)
+		})
+		globalUpdater.Start()
+		manager.OnShutdown(func() { globalUpdater.Stop() })
+		log.Printf("✅ Auto-updater enabled (manifest: %s, interval: %v)", serverConfig.Update.ManifestURL, updCfg.CheckInterval)
+	}
+
 	log.Printf("✓ Registered %d modules", len(manager.Registry().GetAll()))
 	return nil
 }
@@ -1157,6 +1240,16 @@ func handlePacket(data []byte, addr net.Addr) {
 		deobfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionInbound)
 		if err == nil && len(deobfuscated) > 0 {
 			payload = deobfuscated
+		}
+	}
+
+	if globalCorrelation != nil {
+		payload = globalCorrelation.ProcessInbound(payload)
+		if len(payload) == 0 {
+			return
+		}
+		if len(payload) >= 1 && payload[0] == 0xFF {
+			return
 		}
 	}
 

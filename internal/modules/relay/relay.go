@@ -483,16 +483,23 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		}()
 	} else {
 		go func() {
-			buf := make([]byte, 256*1024)
+			buf := make([]byte, 512*1024)
 			_, err := io.CopyBuffer(target, stream, buf)
+			if tc, ok := target.(*net.TCPConn); ok {
+				tc.CloseWrite()
+			}
 			errCh <- err
 		}()
 		go func() {
-			buf := make([]byte, 256*1024)
+			buf := make([]byte, 512*1024)
 			_, err := io.CopyBuffer(stream, target, buf)
+			if tc, ok := stream.(*net.TCPConn); ok {
+				tc.CloseWrite()
+			}
 			errCh <- err
 		}()
 	}
+	<-errCh
 	<-errCh
 }
 

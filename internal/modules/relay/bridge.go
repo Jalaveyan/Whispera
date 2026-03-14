@@ -125,17 +125,20 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 
 	go func() {
 		io.Copy(upstreamConn, clientConn)
+		upstreamConn.CloseWrite()
 		done <- struct{}{}
 	}()
 
 	go func() {
 		io.Copy(clientConn, upstreamConn)
+		if tc, ok := clientConn.(interface{ CloseWrite() error }); ok {
+			tc.CloseWrite()
+		}
 		done <- struct{}{}
 	}()
 
 	<-done
-
-	time.Sleep(100 * time.Millisecond)
+	<-done
 }
 
 func (b *Bridge) extractSNI(data []byte) string {

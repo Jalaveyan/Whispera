@@ -81,6 +81,7 @@ const (
 	TransportVKBot        TransportType = "vkbot"
 	TransportTGBot        TransportType = "tgbot"
 	TransportCDNWorker    TransportType = "cdnworker"
+	TransportMTProto     TransportType = "mtproto"
 )
 
 

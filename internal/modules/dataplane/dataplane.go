@@ -40,8 +40,8 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		MTU:                 DefaultMTU,
-		WorkerCount:         32,
-		BufferSize:          262144,
+		WorkerCount:         64,
+		BufferSize:          524288,
 		EnableNAT:           true,
 		EnableFragmentation: true,
 		MaxFragmentSize:     1400,
