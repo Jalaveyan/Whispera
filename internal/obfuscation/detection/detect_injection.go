@@ -473,7 +473,6 @@ func (di *DetectInjection) detectStatistical(
 }
 
 func (di *DetectInjection) analyzeRule(rule *DPIRule, data *InjectionData) float64 {
-
 	switch rule.Type {
 	case "signature":
 		return di.analyzeSignature(rule, data)
@@ -615,7 +614,6 @@ func (di *DetectInjection) matchesSignature(payload []byte, pattern string) bool
 	if len(payload) == 0 || pattern == "" {
 		return false
 	}
-
 
 	switch pattern {
 	case "16 03 01 00 [0-9A-F]{2} 01 00 00 [0-9A-F]{2} 03 03":
@@ -1081,7 +1079,6 @@ func (di *DetectInjection) matchesWebSocketPattern(payload []byte) bool {
 }
 
 func (di *DetectInjection) genericPatternMatch(payload []byte, pattern string) bool {
-
 	patternBytes := []byte(pattern)
 	if len(patternBytes) == 0 {
 		return false

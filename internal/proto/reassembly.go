@@ -6,12 +6,6 @@ import (
 )
 
 var (
-	reassemblyBufferPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 0, 1500)
-		},
-	}
-
 	expiredIDsPool = sync.Pool{
 		New: func() interface{} {
 			return make([]uint32, 0, 16)

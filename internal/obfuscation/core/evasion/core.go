@@ -350,8 +350,7 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 				continue
 			}
 			if m.evaluateConditionFast(rule.Condition) {
-				processed, delay = m.applyAction(rule.Action, processed, rule.Parameters)
-				delay = 0
+				processed, _ = m.applyAction(rule.Action, processed, rule.Parameters)
 			}
 		}
 	} else {

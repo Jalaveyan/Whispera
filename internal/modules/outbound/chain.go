@@ -65,7 +65,7 @@ func (c *Chain) Dial(ctx context.Context, network, address string) (net.Conn, er
 	c.mu.RUnlock()
 
 	if len(chain) == 0 {
-		return net.DialTimeout(network, address, c.config.HopTimeout)
+		return (&net.Dialer{Timeout: c.config.HopTimeout}).DialContext(ctx, network, address)
 	}
 	var conn net.Conn
 	var err error
@@ -98,13 +98,13 @@ func (c *Chain) Dial(ctx context.Context, network, address string) (net.Conn, er
 func (c *Chain) dialOutbound(ctx context.Context, out *Outbound, target string) (net.Conn, error) {
 	switch out.Protocol {
 	case "direct":
-		return net.DialTimeout("tcp", target, c.config.HopTimeout)
+		return (&net.Dialer{Timeout: c.config.HopTimeout}).DialContext(ctx, "tcp", target)
 	case "socks5":
 		return c.dialSOCKS5(out.Address, target)
 	case "http":
 		return c.dialHTTPProxy(out.Address, target)
 	default:
-		return net.DialTimeout("tcp", out.Address, c.config.HopTimeout)
+		return (&net.Dialer{Timeout: c.config.HopTimeout}).DialContext(ctx, "tcp", out.Address)
 	}
 }
 
@@ -120,7 +120,7 @@ func (c *Chain) dialThroughProxy(ctx context.Context, conn net.Conn, out *Outbou
 }
 
 func (c *Chain) dialSOCKS5(proxyAddr, target string) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", proxyAddr, c.config.HopTimeout)
+	conn, err := (&net.Dialer{Timeout: c.config.HopTimeout}).DialContext(context.Background(), "tcp", proxyAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +159,7 @@ func (c *Chain) dialSOCKS5Through(conn net.Conn, target string) (net.Conn, error
 }
 
 func (c *Chain) dialHTTPProxy(proxyAddr, target string) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", proxyAddr, c.config.HopTimeout)
+	conn, err := (&net.Dialer{Timeout: c.config.HopTimeout}).DialContext(context.Background(), "tcp", proxyAddr)
 	if err != nil {
 		return nil, err
 	}

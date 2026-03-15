@@ -8,7 +8,6 @@ import (
 )
 
 func ReadFrame(conn net.Conn) ([]byte, error) {
-
 	lenBuf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lenBuf); err != nil {
 		return nil, err

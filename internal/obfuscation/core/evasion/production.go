@@ -34,12 +34,6 @@ func (m *Marionette) applyProductionVKontakteEvasion(data []byte) ([]byte, time.
 
 func (m *Marionette) applyProductionYandexEvasion(data []byte) ([]byte, time.Duration, error) {
 	start := time.Now()
-	obfuscatedData := make([]byte, len(data))
-	copy(obfuscatedData, data)
-
-	yandexHeaders := []byte{0x59, 0x61, 0x6E, 0x64, 0x65, 0x78}
-	obfuscatedData = append(yandexHeaders, obfuscatedData...)
-
 	targetSize := 300 + secureRandInt(500)
 	request := "GET /search/?text=test HTTP/1.1\r\nHost: yandex.ru\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n\r\n"
 

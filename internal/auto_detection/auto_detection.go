@@ -1,6 +1,4 @@
-
 package auto_detection
-
 
 type AutoProfileConfig struct {
 	FTEProfile        string
@@ -10,12 +8,9 @@ type AutoProfileConfig struct {
 	Confidence        float64
 }
 
-
 type ProfileAnalyzer struct {
-	
 	enabled bool
 }
-
 
 func NewProfileAnalyzer() *ProfileAnalyzer {
 	return &ProfileAnalyzer{
@@ -23,9 +18,7 @@ func NewProfileAnalyzer() *ProfileAnalyzer {
 	}
 }
 
-
 func (pa *ProfileAnalyzer) GetOptimalConfig(ctx interface{}, domain string) (*AutoProfileConfig, error) {
-	
 	return &AutoProfileConfig{
 		FTEProfile:        "default",
 		MarionetteProfile: "default",
@@ -35,23 +28,19 @@ func (pa *ProfileAnalyzer) GetOptimalConfig(ctx interface{}, domain string) (*Au
 	}, nil
 }
 
-
 func (pa *ProfileAnalyzer) AnalyzeTraffic(data []byte) {
-	
-}
 
+}
 
 type NetworkAnalyzer struct {
 	enabled bool
 }
-
 
 func NewNetworkAnalyzer() *NetworkAnalyzer {
 	return &NetworkAnalyzer{
 		enabled: true,
 	}
 }
-
 
 func (na *NetworkAnalyzer) Analyze() map[string]interface{} {
 	return map[string]interface{}{
@@ -61,14 +50,12 @@ func (na *NetworkAnalyzer) Analyze() map[string]interface{} {
 	}
 }
 
-
 func (na *NetworkAnalyzer) IsEnabled() bool {
 	return na.enabled
 }
 func (na *NetworkAnalyzer) UpdateThreatLevel(level int) {
-	
-}
 
+}
 
 func (na *NetworkAnalyzer) GetOptimalConfig(ctx interface{}, domain string) (*AutoProfileConfig, error) {
 	return &AutoProfileConfig{

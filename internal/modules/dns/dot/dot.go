@@ -216,11 +216,11 @@ func (p *connPool) dial(ctx context.Context) (*dotConn, error) {
 		tlsConn = c
 	} else {
 		dialer := &net.Dialer{Timeout: p.config.DialTimeout}
-		c, err := tls.DialWithDialer(dialer, "tcp", p.server, tlsConfig)
+		c, err := (&tls.Dialer{NetDialer: dialer, Config: tlsConfig}).DialContext(context.Background(), "tcp", p.server)
 		if err != nil {
 			return nil, fmt.Errorf("failed to dial %s: %w", p.server, err)
 		}
-		tlsConn = c
+		tlsConn = c.(*tls.Conn)
 	}
 
 	return &dotConn{
@@ -402,7 +402,7 @@ func (t *Transport) queryTCP(server string, msg []byte) ([]byte, error) {
 	}
 	tcpServer := net.JoinHostPort(host, port)
 
-	conn, err := net.DialTimeout("tcp", tcpServer, t.config.DialTimeout)
+	conn, err := (&net.Dialer{Timeout: t.config.DialTimeout}).DialContext(context.Background(), "tcp", tcpServer)
 	if err != nil {
 		return nil, fmt.Errorf("TCP fallback failed: %w", err)
 	}

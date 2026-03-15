@@ -226,12 +226,9 @@ func (m *Marionette) applyMLEvasion(data []byte, params map[string]interface{}) 
 	statisticalEvasion, _ := params["statistical_evasion"].(bool)
 	mlClassificationEvasion, _ := params["ml_classification_evasion"].(bool)
 
-	appliedTechniques := 0
-
 	if behavioralMimicry {
 		behavioralData := m.applyEnhancedBehavioralMimicry(data)
 		data = append(data, behavioralData...)
-		appliedTechniques++
 	}
 
 	if adversarialExamples {
@@ -244,7 +241,6 @@ func (m *Marionette) applyMLEvasion(data []byte, params map[string]interface{}) 
 			noise[i] = byte((i*13 + len(data)*7) % 256)
 		}
 		data = append(data, noise...)
-		appliedTechniques++
 	}
 
 	if ja3Evasion {

@@ -23,11 +23,11 @@ type DiscoveryService struct {
 	nodeID       string
 	announcePort int
 	hsPort       int
-	signPriv ed25519.PrivateKey
-	signPub  ed25519.PublicKey
-	ecdhPub  []byte
-	ipLimits map[string]*ipLimiter
-	lastTS   map[string]int64
+	signPriv     ed25519.PrivateKey
+	signPub      ed25519.PublicKey
+	ecdhPub      []byte
+	ipLimits     map[string]*ipLimiter
+	lastTS       map[string]int64
 }
 
 type ipLimiter struct {
@@ -77,7 +77,6 @@ type DiscoveryMessage struct {
 }
 
 func (d *DiscoveryService) Start(ctx context.Context) {
-
 	d.mu.Lock()
 	d.running = true
 	d.mu.Unlock()
@@ -108,7 +107,6 @@ func (d *DiscoveryService) Start(ctx context.Context) {
 	d.mu.Lock()
 	d.running = false
 	d.mu.Unlock()
-
 }
 
 func (d *DiscoveryService) handleMessages() {
@@ -161,7 +159,6 @@ func (d *DiscoveryService) processMessage(data []byte, addr *net.UDPAddr) {
 }
 
 func (d *DiscoveryService) handleAnnounce(msg *DiscoveryMessage, addr *net.UDPAddr) {
-
 	if len(msg.SignPub) > 0 && len(msg.Sig) > 0 {
 		payload := struct {
 			Type      string
@@ -217,7 +214,6 @@ func (d *DiscoveryService) handleAnnounce(msg *DiscoveryMessage, addr *net.UDPAd
 }
 
 func (d *DiscoveryService) handlePing(msg *DiscoveryMessage, addr *net.UDPAddr) {
-
 	if len(msg.SignPub) == 0 || len(msg.Sig) == 0 {
 		return
 	}
@@ -259,7 +255,6 @@ func (d *DiscoveryService) handlePing(msg *DiscoveryMessage, addr *net.UDPAddr) 
 }
 
 func (d *DiscoveryService) handlePong(msg *DiscoveryMessage, addr *net.UDPAddr) {
-
 	if len(msg.SignPub) == 0 || len(msg.Sig) == 0 {
 		return
 	}
@@ -401,7 +396,6 @@ func (d *DiscoveryService) broadcastAnnounce() {
 		}
 	}
 	d.mu.RUnlock()
-
 }
 
 func (d *DiscoveryService) discoverNodes(ctx context.Context) {

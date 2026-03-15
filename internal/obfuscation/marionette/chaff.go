@@ -142,7 +142,7 @@ func (cg *ChaffGenerator) sendHTTP2Request(conn net.Conn, target string) {
 		Timeout: 10 * time.Second,
 	}
 
-	req, err := http.NewRequest("GET", "https://"+hostname+"/", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+hostname+"/", nil)
 	if err != nil {
 		return
 	}
@@ -160,7 +160,6 @@ func (cg *ChaffGenerator) sendHTTP2Request(conn net.Conn, target string) {
 	defer resp.Body.Close()
 
 	io.Copy(io.Discard, resp.Body)
-
 }
 
 func (cg *ChaffGenerator) sendHTTP11Request(conn net.Conn, target string) {

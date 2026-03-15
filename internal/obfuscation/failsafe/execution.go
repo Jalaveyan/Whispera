@@ -25,7 +25,6 @@ func (fs *FailSafe) executeClose(ctx context.Context, action *FailSafeAction) er
 }
 
 func (fs *FailSafe) executeImmediateClose(_ context.Context, action *FailSafeAction) error {
-
 	fs.performImmediateClose()
 
 	action.Details = map[string]interface{}{
@@ -40,7 +39,6 @@ func (fs *FailSafe) executeImmediateClose(_ context.Context, action *FailSafeAct
 }
 
 func (fs *FailSafe) executeGracefulClose(_ context.Context, action *FailSafeAction) error {
-
 	fs.performGracefulClose()
 
 	action.Details = map[string]interface{}{
@@ -73,7 +71,6 @@ func (fs *FailSafe) executeDisable(ctx context.Context, action *FailSafeAction) 
 }
 
 func (fs *FailSafe) executeFullDisable(_ context.Context, action *FailSafeAction) error {
-
 	fs.performFullDisable()
 
 	action.Details = map[string]interface{}{
@@ -93,7 +90,6 @@ func (fs *FailSafe) executeFullDisable(_ context.Context, action *FailSafeAction
 }
 
 func (fs *FailSafe) executePartialDisable(_ context.Context, action *FailSafeAction) error {
-
 	fs.performPartialDisable()
 
 	action.Details = map[string]interface{}{
@@ -128,7 +124,6 @@ func (fs *FailSafe) executeAlert(ctx context.Context, action *FailSafeAction) er
 }
 
 func (fs *FailSafe) executeNotification(_ context.Context, action *FailSafeAction, _ *FailSafeProfile) error {
-
 	fs.executeRealNotification()
 
 	severity := fs.determineSeverity(action, nil)
@@ -445,7 +440,6 @@ func (fs *FailSafe) executeFunctionDisable(function string) {
 
 	fs.logger.Info("Function disabled by fail-safe", "function", function)
 }
-
 
 func (fs *FailSafe) executeRealFailSafeOperation() {
 	fs.mu.Lock()

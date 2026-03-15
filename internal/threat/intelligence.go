@@ -1,6 +1,7 @@
 package threat
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -105,6 +106,7 @@ func (ie *IntelligenceEngine) AddIndicator(ind Indicator) {
 		ie.blockedASN[ind.Value] = true
 	case ThreatDPISignature, ThreatFingerprint:
 		ie.signatures[ind.Value] = ind
+	default:
 	}
 }
 
@@ -200,7 +202,11 @@ func (ie *IntelligenceEngine) fetchLoop(feed *Feed) {
 }
 
 func (ie *IntelligenceEngine) fetchFeed(feed *Feed) {
-	resp, err := ie.client.Get(feed.URL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, feed.URL, nil)
+	if err != nil {
+		return
+	}
+	resp, err := ie.client.Do(req)
 	if err != nil {
 		return
 	}

@@ -63,14 +63,14 @@ type RussianTunneler struct {
 }
 
 type ServiceTunnel struct {
-	Service     *RussianService
-	Client      *http.Client
-	FTE         *ftepkg.FTE
-	Marionette  *obfuscation.MarionetteAdapter
-	Context     context.Context
-	CDNEndpoint string
-	CDNIP       string
-	DNSResolver *DNSResolver
+	Service       *RussianService
+	Client        *http.Client
+	FTE           *ftepkg.FTE
+	Marionette    *obfuscation.MarionetteAdapter
+	Context       context.Context
+	CDNEndpoint   string
+	CDNIP         string
+	DNSResolver   *DNSResolver
 	extractedData chan []byte
 	mu            sync.Mutex
 
@@ -225,6 +225,7 @@ func (t *RussianTunneler) CreateTunnel(ctx context.Context, cdnEndpoint string) 
 		tunnel.Container = containers.NewLegacyWrapper(containers.FormatAVI)
 	case containers.FormatFLV:
 		tunnel.Container = containers.NewLegacyWrapper(containers.FormatFLV)
+	default:
 	}
 
 	return tunnel, nil
@@ -506,7 +507,6 @@ func (st *ServiceTunnel) readResponseBody(resp *http.Response) ([]byte, error) {
 }
 
 func (st *ServiceTunnel) extractFromBody(body []byte) []byte {
-
 	bodyStr := string(body)
 	markers := []string{"data:", "tunnel:", "whisper:"}
 	for _, marker := range markers {
@@ -711,4 +711,3 @@ func (t *RussianTunneler) initRussianServices() {
 		DefaultContainer: containers.FormatFMP4,
 	}
 }
-

@@ -89,7 +89,7 @@ func New(cfg *Config) (*Transport, error) {
 }
 
 func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportVKBot }
-func (t *Transport) Listen(addr string) error        { return nil }
+func (t *Transport) Listen(addr string) error       { return nil }
 
 func (t *Transport) Start() error {
 	if err := t.Module.Start(); err != nil {
@@ -139,7 +139,6 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return conn, nil
 }
 
-
 func (t *Transport) listenLoop() {
 	conns := make(map[int64]*botConn)
 	server, key, ts := t.fetchGroupLPServer()
@@ -181,7 +180,6 @@ func (t *Transport) listenLoop() {
 	}
 }
 
-
 func (t *Transport) sendMessage(peerID int64, text string) error {
 	token := t.cfg.UserToken
 	if t.cfg.ServerMode {
@@ -189,13 +187,18 @@ func (t *Transport) sendMessage(peerID int64, text string) error {
 	}
 
 	params := url.Values{
-		"peer_id":   {strconv.FormatInt(peerID, 10)},
-		"message":   {text},
-		"random_id": {strconv.Itoa(rand.Int())},
-		"v":         {vkAPIVersion},
+		"peer_id":      {strconv.FormatInt(peerID, 10)},
+		"message":      {text},
+		"random_id":    {strconv.Itoa(rand.Int())},
+		"v":            {vkAPIVersion},
 		"access_token": {token},
 	}
-	resp, err := t.hc.PostForm(vkAPIBase+"/messages.send", params)
+	sendReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, vkAPIBase+"/messages.send", strings.NewReader(params.Encode()))
+	if err != nil {
+		return fmt.Errorf("vkbot send: %w", err)
+	}
+	sendReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := t.hc.Do(sendReq)
 	if err != nil {
 		return fmt.Errorf("vkbot send: %w", err)
 	}
@@ -216,7 +219,6 @@ func (t *Transport) sendMessage(peerID int64, text string) error {
 	return nil
 }
 
-
 type groupLPServer struct {
 	Key    string `json:"key"`
 	Server string `json:"server"`
@@ -227,7 +229,7 @@ func (t *Transport) fetchGroupLPServer() (server, key, ts string) {
 	for {
 		select {
 		case <-t.stopChan:
-			return
+			return server, key, ts
 		default:
 		}
 
@@ -236,7 +238,14 @@ func (t *Transport) fetchGroupLPServer() (server, key, ts string) {
 			"access_token": {t.cfg.GroupToken},
 			"v":            {vkAPIVersion},
 		}
-		resp, err := t.hc.PostForm(vkAPIBase+"/groups.getLongPollServer", params)
+		lpReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, vkAPIBase+"/groups.getLongPollServer", strings.NewReader(params.Encode()))
+		if err != nil {
+			log.Warn("[vkbot] fetchGroupLPServer: %v", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		lpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := t.hc.Do(lpReq)
 		if err != nil {
 			log.Warn("[vkbot] fetchGroupLPServer: %v", err)
 			time.Sleep(5 * time.Second)
@@ -268,7 +277,11 @@ func (t *Transport) pollGroup(server, key, ts string) (events []json.RawMessage,
 	reqURL := fmt.Sprintf("%s?act=a_check&key=%s&ts=%s&wait=25",
 		server, url.QueryEscape(key), url.QueryEscape(ts))
 
-	resp, err := t.hc.Get(reqURL)
+	pollReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, ts, err
+	}
+	resp, err := t.hc.Do(pollReq)
 	if err != nil {
 		return nil, ts, err
 	}
@@ -308,7 +321,6 @@ func parseGroupEvent(raw json.RawMessage) (fromID int64, text string) {
 	return ev.Object.Message.FromID, ev.Object.Message.Text
 }
 
-
 type userLPServer struct {
 	Key    string      `json:"key"`
 	Server string      `json:"server"`
@@ -321,7 +333,12 @@ func (t *Transport) fetchUserLPServer() (server, key, ts string, err error) {
 		"access_token": {t.cfg.UserToken},
 		"v":            {vkAPIVersion},
 	}
-	resp, err := t.hc.PostForm(vkAPIBase+"/messages.getLongPollServer", params)
+	userLPReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, vkAPIBase+"/messages.getLongPollServer", strings.NewReader(params.Encode()))
+	if err != nil {
+		return "", "", "", err
+	}
+	userLPReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := t.hc.Do(userLPReq)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -351,7 +368,11 @@ func (t *Transport) pollUser(server, key, ts string) (msgs []string, newTS strin
 	reqURL := fmt.Sprintf("%s?act=a_check&key=%s&ts=%s&wait=25&mode=2&version=3",
 		server, url.QueryEscape(key), url.QueryEscape(ts))
 
-	resp, err := t.hc.Get(reqURL)
+	userPollReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, ts, err
+	}
+	resp, err := t.hc.Do(userPollReq)
 	if err != nil {
 		return nil, ts, err
 	}
@@ -381,24 +402,23 @@ func (t *Transport) pollUser(server, key, ts string) (msgs []string, newTS strin
 			continue
 		}
 		var eventType int
-		json.Unmarshal(upd[0], &eventType)
+		_ = json.Unmarshal(upd[0], &eventType)
 		if eventType != 4 {
 			continue
 		}
 		var peerID int64
-		json.Unmarshal(upd[3], &peerID)
+		_ = json.Unmarshal(upd[3], &peerID)
 		if peerID != communityPeerID {
 			continue
 		}
 		var text string
-		json.Unmarshal(upd[6], &text)
+		_ = json.Unmarshal(upd[6], &text)
 		if isWRP(text) {
 			msgs = append(msgs, text)
 		}
 	}
 	return msgs, result.TS.String(), nil
 }
-
 
 func encodeMsg(seq uint32, total, chunk int, payload []byte) string {
 	hdr := make([]byte, 6)
@@ -432,7 +452,6 @@ func decodeMsg(text string) (seq uint32, total, chunk int, payload []byte, err e
 func isWRP(text string) bool {
 	return strings.HasPrefix(text, msgPrefix)
 }
-
 
 func Factory(cfg interface{}) (interfaces.Module, error) {
 	if c, ok := cfg.(*Config); ok {

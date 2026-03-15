@@ -109,6 +109,7 @@ func (c *Config) ApplyMode(mode string) {
 		c.Interval = 10 * time.Millisecond
 		c.Resend = 1
 		c.NoCongestion = true
+	default:
 	}
 }
 
@@ -655,6 +656,7 @@ func (c *Connection) processPacketLocked(data []byte, isRecovered bool) {
 
 	case packetTypeClose:
 		c.Close()
+	default:
 	}
 
 	if !isRecovered {

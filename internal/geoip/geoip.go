@@ -1,6 +1,7 @@
 package geoip
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -324,7 +325,8 @@ func splitByCommaOrSpace(s string) []string {
 	return parts
 }
 func DownloadGeoIP(url string, outputPath string) error {
-	resp, err := http.Get(url)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download geoip: %w", err)
 	}

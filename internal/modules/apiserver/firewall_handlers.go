@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -53,7 +54,7 @@ func ufwPath() string {
 }
 
 func getFirewallStatus() (*FirewallStatus, error) {
-	cmd := exec.Command(ufwPath(), "status", "numbered")
+	cmd := exec.CommandContext(context.Background(), ufwPath(), "status", "numbered")
 	out, err := cmd.CombinedOutput()
 	outStr := string(out)
 	if err != nil && !strings.Contains(outStr, "Status:") {
@@ -156,7 +157,7 @@ func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out, err := exec.Command(ufwPath(), args...).CombinedOutput()
+	out, err := exec.CommandContext(context.Background(), ufwPath(), args...).CombinedOutput()
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
 		return
@@ -173,7 +174,7 @@ func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request
 		s.jsonError(w, http.StatusBadRequest, "rule number required")
 		return
 	}
-	cmd := exec.Command(ufwPath(), "--force", "delete", strconv.Itoa(req.Number))
+	cmd := exec.CommandContext(context.Background(), ufwPath(), "--force", "delete", strconv.Itoa(req.Number))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
@@ -193,9 +194,9 @@ func (s *Server) handleFirewallToggle(w http.ResponseWriter, r *http.Request) {
 	}
 	var cmd *exec.Cmd
 	if req.Enable {
-		cmd = exec.Command(ufwPath(), "--force", "enable")
+		cmd = exec.CommandContext(context.Background(), ufwPath(), "--force", "enable")
 	} else {
-		cmd = exec.Command(ufwPath(), "--force", "disable")
+		cmd = exec.CommandContext(context.Background(), ufwPath(), "--force", "disable")
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {

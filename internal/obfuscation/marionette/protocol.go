@@ -198,6 +198,7 @@ func (pe *ProtocolEngine) sendCoverFrame(ft FrameType) {
 			"sync_id":   pe.nextSeq(),
 			"timestamp": time.Now().Unix(),
 		})
+	default:
 	}
 
 	frame := &ChatFrame{

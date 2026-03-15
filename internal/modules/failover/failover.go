@@ -195,7 +195,7 @@ func (m *Manager) pingServer(addr string) (time.Duration, bool) {
 	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		conn, err = net.DialTimeout("udp", addr, m.config.Timeout)
+		conn, err = (&net.Dialer{Timeout: m.config.Timeout}).DialContext(ctx, "udp", addr)
 		if err != nil {
 			return 0, false
 		}

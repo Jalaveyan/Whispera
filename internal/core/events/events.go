@@ -9,19 +9,19 @@ import (
 
 
 type Event struct {
-	
+
 	Type string
 
-	
+
 	Source string
 
-	
+
 	Timestamp time.Time
 
-	
+
 	Data interface{}
 
-	
+
 	Metadata map[string]interface{}
 }
 
@@ -30,25 +30,25 @@ type EventHandler func(event Event)
 
 
 type EventBus interface {
-	
+
 	Publish(event Event) error
 
-	
+
 	PublishAsync(event Event)
 
-	
+
 	Subscribe(eventType string) <-chan Event
 
-	
+
 	SubscribeFunc(eventType string, handler EventHandler) (unsubscribe func())
 
-	
+
 	SubscribeAll() <-chan Event
 
-	
+
 	Unsubscribe(eventType string, ch <-chan Event)
 
-	
+
 	Close()
 }
 
@@ -93,7 +93,7 @@ func (eb *eventBus) Publish(event Event) error {
 		event.Timestamp = time.Now()
 	}
 
-	
+
 	if subs, ok := eb.subscribers[event.Type]; ok {
 		for _, sub := range subs {
 			if sub.handler != nil {
@@ -102,13 +102,11 @@ func (eb *eventBus) Publish(event Event) error {
 				select {
 				case sub.ch <- event:
 				default:
-					
 				}
 			}
 		}
 	}
 
-	
 	for _, sub := range eb.allSubs {
 		if sub.handler != nil {
 			sub.handler(event)
@@ -116,7 +114,6 @@ func (eb *eventBus) Publish(event Event) error {
 			select {
 			case sub.ch <- event:
 			default:
-				
 			}
 		}
 	}
@@ -152,7 +149,7 @@ func (eb *eventBus) SubscribeFunc(eventType string, handler EventHandler) func()
 	sub := subscription{handler: handler}
 	eb.subscribers[eventType] = append(eb.subscribers[eventType], sub)
 
-	
+
 	return func() {
 		eb.mu.Lock()
 		defer eb.mu.Unlock()
@@ -192,7 +189,7 @@ func (eb *eventBus) Unsubscribe(eventType string, ch <-chan Event) {
 		}
 	}
 
-	
+
 	for i, sub := range eb.allSubs {
 		if sub.ch == ch {
 			close(sub.ch)
@@ -212,10 +209,10 @@ func (eb *eventBus) Close() {
 	}
 	eb.closed = true
 
-	
+
 	eb.wg.Wait()
 
-	
+
 	for _, subs := range eb.subscribers {
 		for _, sub := range subs {
 			if sub.ch != nil {
@@ -302,7 +299,7 @@ func (tm *TopicMatcher) Matches(eventType string) bool {
 	if tm.pattern == eventType {
 		return true
 	}
-	
+
 	if len(tm.pattern) > 0 && tm.pattern[len(tm.pattern)-1] == '*' {
 		prefix := tm.pattern[:len(tm.pattern)-1]
 		return len(eventType) >= len(prefix) && eventType[:len(prefix)] == prefix
@@ -333,7 +330,7 @@ func (ea *EventAggregator) Add(event Event) {
 
 	ea.events = append(ea.events, event)
 
-	
+
 	if ea.timer == nil {
 		ea.timer = time.AfterFunc(ea.window, ea.flush)
 	}

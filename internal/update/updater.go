@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -88,7 +89,11 @@ func (u *Updater) Stop() {
 }
 
 func (u *Updater) CheckForUpdate() (*VersionInfo, error) {
-	resp, err := u.client.Get(u.config.ManifestURL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u.config.ManifestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("fetch manifest: %w", err)
+	}
+	resp, err := u.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch manifest: %w", err)
 	}
@@ -171,7 +176,11 @@ func (u *Updater) Apply(info VersionInfo) error {
 }
 
 func (u *Updater) download(url string) (string, error) {
-	resp, err := u.client.Get(url)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := u.client.Do(req)
 	if err != nil {
 		return "", err
 	}

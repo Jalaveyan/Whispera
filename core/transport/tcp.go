@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"net"
 	"time"
 )
@@ -26,7 +27,7 @@ func (t *TCPTransport) Dial(addr string) error {
 		timeout = 30 * time.Second
 	}
 
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	conn, err := (&net.Dialer{Timeout: timeout}).DialContext(context.Background(), "tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -37,7 +38,7 @@ func (t *TCPTransport) Dial(addr string) error {
 
 
 func (t *TCPTransport) Listen() error {
-	listener, err := net.Listen("tcp", t.config.Addr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", t.config.Addr)
 	if err != nil {
 		return err
 	}

@@ -326,7 +326,7 @@ func (h *Handler) forwardQuery(view *View, query []byte) ([]byte, error) {
 }
 
 func (h *Handler) sendQuery(server string, query []byte) ([]byte, error) {
-	conn, err := net.DialTimeout("udp", server, 5*time.Second)
+	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(context.Background(), "udp", server)
 	if err != nil {
 		return nil, err
 	}

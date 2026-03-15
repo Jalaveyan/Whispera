@@ -28,8 +28,6 @@ var log = logger.Module("splithttp")
 const (
 	ModuleName    = "transport.splithttp"
 	ModuleVersion = "1.0.0"
-
-	maxChunkSize = 1 << 17
 )
 
 type Config struct {
@@ -104,7 +102,7 @@ func (t *Transport) Listen(addr string) error {
 		Handler: mux,
 	}
 
-	ln, err := net.Listen("tcp", addr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("splithttp: listen %s: %w", addr, err)
 	}

@@ -29,10 +29,10 @@ import (
 	"whispera/internal/core/registry"
 	"whispera/internal/db"
 	"whispera/internal/modules/apiserver/handlers"
-	asn_bypass "whispera/internal/modules/transport/asn_bypass"
 	"whispera/internal/modules/bridgepool"
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/dhcp"
+	asn_bypass "whispera/internal/modules/transport/asn_bypass"
 	"whispera/internal/network"
 	"whispera/internal/stats"
 
@@ -103,7 +103,11 @@ type Server struct {
 	jwtManager    *auth.JWTManager
 	bridgePool    *bridgepool.Registry
 	bridgeHandler *bridgepool.APIHandler
-	probeDetector interface{ Stats() map[string]interface{}; BlockIP(ip, reason string); UnblockIP(ip string) }
+	probeDetector interface {
+		Stats() map[string]interface{}
+		BlockIP(ip, reason string)
+		UnblockIP(ip string)
+	}
 
 	loginAttempts   map[string][]time.Time
 	loginAttemptsMu sync.Mutex
@@ -117,9 +121,9 @@ type Server struct {
 	revokedKeys   map[string]time.Time
 	revokedKeysMu sync.RWMutex
 
-	cpuLoad    float64
-	cpuMu      sync.Mutex
-	cpuPrev    [2]uint64
+	cpuLoad float64
+	cpuMu   sync.Mutex
+	cpuPrev [2]uint64
 
 	activeConns   map[string]int32
 	activeConnsMu sync.Mutex
@@ -154,19 +158,19 @@ func New(cfg *Config) (*Server, error) {
 	signingSecret := loadOrCreateSigningSecret()
 
 	s := &Server{
-		Module:        base.NewModule(ModuleName, ModuleVersion, nil),
-		config:        cfg,
-		mux:           http.NewServeMux(),
-		handlers:      make(map[string]http.HandlerFunc),
-		mfaManager:    auth.NewMFAManager(),
-		jwtManager:    auth.NewJWTManager(signingSecret),
-		bridgePool:    bridgeReg,
-		bridgeHandler: bridgepool.NewAPIHandler(bridgeReg),
-		loginAttempts: make(map[string][]time.Time),
-		sessionToken:  sessionToken,
-		signingSecret: signingSecret,
-		revokedTokens: make(map[string]time.Time),
-		revokedKeys:   make(map[string]time.Time),
+		Module:         base.NewModule(ModuleName, ModuleVersion, nil),
+		config:         cfg,
+		mux:            http.NewServeMux(),
+		handlers:       make(map[string]http.HandlerFunc),
+		mfaManager:     auth.NewMFAManager(),
+		jwtManager:     auth.NewJWTManager(signingSecret),
+		bridgePool:     bridgeReg,
+		bridgeHandler:  bridgepool.NewAPIHandler(bridgeReg),
+		loginAttempts:  make(map[string][]time.Time),
+		sessionToken:   sessionToken,
+		signingSecret:  signingSecret,
+		revokedTokens:  make(map[string]time.Time),
+		revokedKeys:    make(map[string]time.Time),
 		activeConns:    make(map[string]int32),
 		maxConnsPerIP:  50,
 		apiRateBuckets: make(map[string]*apiRateBucket),
@@ -326,7 +330,7 @@ func (s *Server) Start() error {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	ln, err := net.Listen("tcp", s.config.ListenAddr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", s.config.ListenAddr)
 	if err != nil {
 		errMsg := fmt.Sprintf("Failed to bind API server to %s: %v", s.config.ListenAddr, err)
 		fmt.Printf("[ERROR] %s\n", errMsg)
@@ -395,29 +399,8 @@ func (s *Server) Handle(pattern string, handler http.HandlerFunc) {
 	s.handlers[pattern] = handler
 }
 
-type responseCapture struct {
-	http.ResponseWriter
-	status int
-	wrote  bool
-}
-
-func (r *responseCapture) WriteHeader(code int) {
-	r.status = code
-	if !r.wrote {
-		r.ResponseWriter.WriteHeader(code)
-		r.wrote = true
-	}
-}
-
-func (r *responseCapture) Write(b []byte) (int, error) {
-	if !r.wrote {
-		r.wrote = true
-	}
-	return r.ResponseWriter.Write(b)
-}
-
 func (s *Server) buildHandler() http.Handler {
-	var rootHandler http.Handler = s.mux
+	var rootHandler http.Handler
 	if s.config.WebRoot != "" {
 		fs := http.FileServer(http.Dir(s.config.WebRoot))
 		rootHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -438,8 +421,13 @@ func (s *Server) buildHandler() http.Handler {
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"name":   "Whispera API",
 					"status": "running",
-					"panel":  "http://" + func() string { if i := strings.LastIndex(r.Host, ":"); i >= 0 { return r.Host[:i] }; return r.Host }() + ":3000",
-					"api":    "/api/v1/health",
+					"panel": "http://" + func() string {
+						if i := strings.LastIndex(r.Host, ":"); i >= 0 {
+							return r.Host[:i]
+						}
+						return r.Host
+					}() + ":3000",
+					"api": "/api/v1/health",
 				})
 				return
 			}
@@ -471,16 +459,6 @@ func (s *Server) buildHandler() http.Handler {
 	handler = s.recoveryMiddleware(handler)
 
 	return handler
-}
-
-func (s *Server) methodFilter(method string, handler http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != method {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		handler(w, r)
-	}
 }
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {
@@ -1814,7 +1792,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 
 	serverAddr := fmt.Sprintf("%s:443", serverIP)
 	serverPubKey := ""
-	phantomEnabled := req.PhantomEnabled
+	phantomEnabled := false
 	sni := req.SNI
 
 	if s.registry != nil {
@@ -1842,7 +1820,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 							serverAddr = fmt.Sprintf("%s:%s", serverIP, port)
 							if pk := inbound.StreamSettings.Phantom.PrivateKey; pk != "" {
 								serverPubKey = derivePublicKeyB64(pk)
-								phantomEnabled = true
 							}
 							break
 						}
@@ -1853,10 +1830,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 					if serverPubKey == "" && cfg.Server.PrivateKey != "" {
 						serverPubKey = derivePublicKeyB64(cfg.Server.PrivateKey)
 					}
-
-
-
-
 
 					if serverAddr == fmt.Sprintf("%s:443", serverIP) {
 						if req.Transport == "udp" && cfg.Transport.UDP.Enabled {
@@ -1884,8 +1857,8 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}
 		go func() {
 			portProto := fmt.Sprintf("%d/%s", req.Port, proto)
-			if err := exec.Command("ufw", "allow", portProto).Run(); err != nil {
-				exec.Command("iptables", "-I", "INPUT", "-p", proto,
+			if err := exec.CommandContext(context.Background(), "ufw", "allow", portProto).Run(); err != nil {
+				_ = exec.CommandContext(context.Background(), "iptables", "-I", "INPUT", "-p", proto,
 					"--dport", fmt.Sprintf("%d", req.Port), "-j", "ACCEPT").Run()
 			}
 		}()
@@ -2022,7 +1995,7 @@ func (s *Server) loadRevokedKeys() {
 		return
 	}
 	s.revokedKeysMu.Lock()
-	json.Unmarshal(data, &s.revokedKeys)
+	_ = json.Unmarshal(data, &s.revokedKeys)
 	s.revokedKeysMu.Unlock()
 }
 
@@ -2037,13 +2010,13 @@ func (s *Server) handleGetSessionsAPI(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		sessionList = append(sessionList, map[string]interface{}{
-			"id":              us.UserID,
-			"user_id":         us.UserID,
-			"client_ip":       us.AssignedIP,
-			"connected_at":    us.LastActivity.Format(time.RFC3339),
-			"bytes_in":        us.BytesRx,
-			"bytes_out":       us.BytesTx,
-			"active_conns":    activeConns,
+			"id":           us.UserID,
+			"user_id":      us.UserID,
+			"client_ip":    us.AssignedIP,
+			"connected_at": us.LastActivity.Format(time.RFC3339),
+			"bytes_in":     us.BytesRx,
+			"bytes_out":    us.BytesTx,
+			"active_conns": activeConns,
 		})
 	}
 
@@ -2592,7 +2565,7 @@ func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out, err := exec.Command("journalctl", "-u", "whispera", "-n", fmt.Sprintf("%d", limit), "--no-pager", "--output=short-iso").Output()
+	out, err := exec.CommandContext(context.Background(), "journalctl", "-u", "whispera", "-n", fmt.Sprintf("%d", limit), "--no-pager", "--output=short-iso").Output()
 	if err == nil && len(out) > 0 {
 		lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
 		s.jsonOK(w, map[string]interface{}{"success": true, "logs": lines, "source": "journalctl"})

@@ -109,7 +109,6 @@ var (
 	globalDataPlane      *dataplane.Processor
 	globalSessionMgr     *session.Manager
 	globalUDPTransport   *udp.Transport
-	globalTCPTransport   *tcp.Transport
 	globalRelay          *relay.Server
 	globalObfuscator     interfaces.Obfuscator
 	globalCryptoProvider interfaces.CryptoProvider
@@ -207,7 +206,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 
 	log.Printf("🚀 [Dynamic] Starting inbound %s (%s) on %s", inbound.Tag, network, listenAddr)
 
-	listener, err := net.Listen("tcp", listenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
 	}
@@ -222,6 +221,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		if path == "" {
 			path = "/ws"
 		}
+		_ = path
 	}
 
 	if isPhantom {
@@ -318,7 +318,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			phantomHandler.SetProbeDetector(globalProbeDetector)
 		}
 		log.Printf("  ✨ [Dynamic] Enabled Phantom/Reality on inbound %s", inbound.Tag)
-
 	} else {
 		privKey := ""
 		if inbound.StreamSettings.Phantom.PrivateKey != "" {
@@ -1066,7 +1065,6 @@ func createModules(manager *lifecycle.Manager) error {
 			if err != nil {
 				return err
 			}
-			globalTCPTransport = tcpTransport
 			if err := manager.Register(tcpTransport); err != nil {
 				return err
 			}
@@ -1500,10 +1498,14 @@ func registerBridgeWithMainServer() {
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	url := fmt.Sprintf("https://%s/api/bridge-register", cfg.UpstreamServer)
-	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
+	req1, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+	req1.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req1)
 	if err != nil {
 		url = fmt.Sprintf("http://%s/api/bridge-register", cfg.UpstreamServer)
-		resp, err = client.Post(url, "application/json", bytes.NewReader(data))
+		req2, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+		req2.Header.Set("Content-Type", "application/json")
+		resp, err = client.Do(req2)
 	}
 
 	if err != nil {
@@ -1529,7 +1531,8 @@ func getPublicIP() string {
 	}
 
 	for _, svc := range services {
-		resp, err := client.Get(svc)
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, svc, nil)
+		resp, err := client.Do(req)
 		if err != nil {
 			continue
 		}

@@ -115,9 +115,9 @@ func (h *HealthMonitor) checkBridge(b *BridgeInfo) {
 	latency := 0
 
 	dialer := &net.Dialer{Timeout: h.timeout}
-	conn, err := tls.DialWithDialer(dialer, "tcp", b.Address, &tls.Config{
+	conn, err := (&tls.Dialer{NetDialer: dialer, Config: &tls.Config{
 		InsecureSkipVerify: true,
-	})
+	}}).DialContext(ctx, "tcp", b.Address)
 
 	if err != nil {
 		var d net.Dialer

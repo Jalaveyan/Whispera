@@ -132,13 +132,13 @@ func DefaultConfig() *Config {
 		TLSFingerprint:         "chrome",
 		TLSMinVersion:          tls.VersionTLS13,
 		TLSMaxVersion:          tls.VersionTLS13,
-		EnableJA3Randomization:  true,
+		EnableJA3Randomization: true,
 		EnableTLSFragmentation: true,
 		TLSFragmentSize:        40,
-		ConnectionBurstLimit:    5,
-		ConnectionCooldown:      2 * time.Second,
-		FallbackStrategies:      []Strategy{StrategyDomainFronting, StrategyWebSocket},
-		FailoverTimeout:         30 * time.Second,
+		ConnectionBurstLimit:   5,
+		ConnectionCooldown:     2 * time.Second,
+		FallbackStrategies:     []Strategy{StrategyDomainFronting, StrategyWebSocket},
+		FailoverTimeout:        30 * time.Second,
 	}
 }
 
@@ -359,7 +359,6 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 			phantomSessionID = sid
 
 			if err := uconn.BuildHandshakeState(); err == nil {
-
 				uconn.HandshakeState.Hello.SessionId = make([]byte, 32)
 
 				if len(phantomSessionID) == 32 {
@@ -390,7 +389,6 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 	}
 
 	if phantomClientRandom != nil && phantomSessionID != nil {
-
 		if len(clientHello) >= 44+32 {
 			copy(clientHello[11:43], phantomClientRandom)
 
@@ -400,7 +398,6 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 				fmt.Printf("[ASN-BYPASS] Patched ClientHello with Phantom Auth (Random+SessionID)\n")
 			} else {
 				fmt.Printf("[ASN-BYPASS] WARN: Could not patch SessionID - length mismatch (got %d, wanted 32)\n", sidLen)
-
 			}
 		}
 	}
@@ -487,7 +484,6 @@ func (d *Dialer) dialResidentialProxy(ctx context.Context, _, addr string) (net.
 }
 
 func (d *Dialer) dialCloudflareBypass(ctx context.Context, addr string) (net.Conn, error) {
-
 	tcpConn, err := d.dialDirect(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err

@@ -8,7 +8,7 @@ import (
 type State int
 
 const (
-	StateIdle       State = iota
+	StateIdle State = iota
 	StateConnecting
 	StateConnected
 	StateHalfClosed
@@ -133,7 +133,6 @@ func (f *FSM) initTransitions() {
 		s.cleanupResources()
 		return nil
 	})
-
 }
 
 func (f *FSM) addTransition(from State, event Event, to State, action func(*Stream) error) {

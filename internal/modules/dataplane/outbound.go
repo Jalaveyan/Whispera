@@ -141,7 +141,7 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	om.outbounds[cfg.Tag] = tManager
 	om.log.Info("Started outbound tunnel: %s (%s)", cfg.Tag, cfg.Address)
 
-	go tManager.Connect(context.Background())
+	go func() { _ = tManager.Connect(context.Background()) }()
 
 	return nil
 }

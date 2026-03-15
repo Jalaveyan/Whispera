@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -351,12 +352,12 @@ func openFirewallPort(port int) error {
 	if _, err := exec.LookPath("ufw"); err != nil {
 		return fmt.Errorf("ufw not found in PATH, skipping firewall config")
 	}
-	cmdUDP := exec.Command("ufw", "allow", fmt.Sprintf("%d/udp", port))
+	cmdUDP := exec.CommandContext(context.Background(), "ufw", "allow", fmt.Sprintf("%d/udp", port))
 	if out, err := cmdUDP.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to allow UDP: %v (output: %s)", err, string(out))
 	}
 
-	cmdTCP := exec.Command("ufw", "allow", fmt.Sprintf("%d/tcp", port))
+	cmdTCP := exec.CommandContext(context.Background(), "ufw", "allow", fmt.Sprintf("%d/tcp", port))
 	if out, err := cmdTCP.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to allow TCP: %v (output: %s)", err, string(out))
 	}

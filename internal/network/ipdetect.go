@@ -168,7 +168,7 @@ func (d *IPDetector) queryService(ctx context.Context, service externalIPService
 }
 
 func (d *IPDetector) detectFromLocalInterfaces() (string, error) {
-	conn, err := net.DialTimeout("udp", "8.8.8.8:80", 3*time.Second)
+	conn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(context.Background(), "udp", "8.8.8.8:80")
 	if err == nil {
 		defer conn.Close()
 		localAddr := conn.LocalAddr().(*net.UDPAddr)

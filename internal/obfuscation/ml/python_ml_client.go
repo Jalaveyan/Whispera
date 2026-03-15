@@ -40,13 +40,13 @@ func GetEnvOrDefault(key, defaultValue string) string {
 }
 
 type PythonMLClient struct {
-	baseURL      string
-	httpClient   *http.Client
-	fallbackMode bool
-	mlAvailable  bool
+	baseURL               string
+	httpClient            *http.Client
+	fallbackMode          bool
+	mlAvailable           bool
 	lastMLWarningUnixNano int64
-	resultChanPool sync.Pool
-	errorChanPool  sync.Pool
+	resultChanPool        sync.Pool
+	errorChanPool         sync.Pool
 }
 
 type MLPredictionResponsePython struct {
@@ -1030,7 +1030,6 @@ func minInt(a, b int) int {
 }
 
 func (client *PythonMLClient) enhancedFallbackPrediction(packetData []byte, protocol string, direction string) *types.MLPredictionResponse {
-
 	isTLS := protocol == "tls" || protocol == "dtls" || strings.Contains(strings.ToLower(protocol), "tls")
 	features := client.prepareFeatures(packetData, isTLS)
 

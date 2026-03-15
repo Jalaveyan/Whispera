@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -198,7 +199,7 @@ func startClient(cfgPath, key string) {
 		args = append(args, "-verbose")
 	}
 
-	cmd := exec.Command(clientPath, args...)
+	cmd := exec.CommandContext(context.Background(), clientPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	sigCh := make(chan os.Signal, 1)
@@ -275,7 +276,7 @@ func waitForSOCKS() {
 	log.Printf("Waiting for SOCKS5 proxy on %s...", addr)
 
 	for i := 0; i < 30; i++ {
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
+		conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(context.Background(), "tcp", addr)
 		if err == nil {
 			conn.Close()
 			log.Println("✓ SOCKS5 proxy is ready")
@@ -313,7 +314,7 @@ tunnel:
 
 	ioutil.WriteFile(tunConfig, []byte(cfg), 0600)
 
-	cmd := exec.Command(tunPath, tunConfig)
+	cmd := exec.CommandContext(context.Background(), tunPath, tunConfig)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -365,7 +366,8 @@ func checkExternalIP() {
 		},
 	}
 
-	resp, err := client.Get("https://api.ipify.org?format=json")
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.ipify.org?format=json", nil)
+	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("IP check failed: %v", err)
 		return

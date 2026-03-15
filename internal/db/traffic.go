@@ -105,13 +105,12 @@ func (db *DB) GetUserTotalStats(ctx context.Context, userID uuid.UUID) (*TotalSt
 	var stats TotalStats
 
 	
-	db.pool.QueryRow(ctx, `
+	_ = db.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0), COALESCE(SUM(sessions), 0)
 		FROM daily_stats WHERE user_id = $1
 	`, userID).Scan(&stats.TotalBytesIn, &stats.TotalBytesOut, &stats.TotalSessions)
 
-	
-	db.pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE user_id = $1`, userID).Scan(&stats.ActiveNow)
+	_ = db.pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE user_id = $1`, userID).Scan(&stats.ActiveNow)
 
 	return &stats, nil
 }

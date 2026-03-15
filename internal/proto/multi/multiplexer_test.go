@@ -34,7 +34,7 @@ func TestStreamFlowControl(t *testing.T) {
 func TestStreamCloseCodes(t *testing.T) {
 	mux := NewStreamMultiplexer()
 	streamID := uint16(20)
-	mux.GetOrCreateStream(streamID)
+	_, _ = mux.GetOrCreateStream(streamID)
 
 	code := ErrCodeProtocolError
 	payload := EncodeStreamClose(code)

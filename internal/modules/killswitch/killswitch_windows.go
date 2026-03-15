@@ -1,6 +1,7 @@
 package killswitch
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os/exec"
@@ -30,7 +31,7 @@ func (w *WindowsKillSwitch) Name() string {
 }
 
 func (w *WindowsKillSwitch) IsSupported() bool {
-	cmd := exec.Command("netsh", "advfirewall", "show", "currentprofile")
+	cmd := exec.CommandContext(context.Background(), "netsh", "advfirewall", "show", "currentprofile")
 	err := cmd.Run()
 	return err == nil
 }
@@ -132,7 +133,7 @@ func (w *WindowsKillSwitch) addRule(name, direction, action, extra string) error
 		args = append(args, parts...)
 	}
 
-	cmd := exec.Command("netsh", args...)
+	cmd := exec.CommandContext(context.Background(), "netsh", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("netsh failed: %v, output: %s", err, string(output))
@@ -153,7 +154,7 @@ func (w *WindowsKillSwitch) addBlockAllRule(name, direction string) error {
 		"remoteip=any",
 	}
 
-	cmd := exec.Command("netsh", args...)
+	cmd := exec.CommandContext(context.Background(), "netsh", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("netsh failed: %v, output: %s", err, string(output))
@@ -164,7 +165,7 @@ func (w *WindowsKillSwitch) addBlockAllRule(name, direction string) error {
 }
 
 func (w *WindowsKillSwitch) cleanupRules() {
-	cmd := exec.Command("netsh", "advfirewall", "firewall", "show", "rule", "name=all")
+	cmd := exec.CommandContext(context.Background(), "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
 	output, err := cmd.Output()
 	if err != nil {
 		log.Warn("Failed to list firewall rules: %v", err)
@@ -186,7 +187,7 @@ func (w *WindowsKillSwitch) cleanupRules() {
 }
 
 func (w *WindowsKillSwitch) deleteRule(name string) {
-	cmd := exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", fmt.Sprintf("name=%s", name))
+	cmd := exec.CommandContext(context.Background(), "netsh", "advfirewall", "firewall", "delete", "rule", fmt.Sprintf("name=%s", name))
 	if err := cmd.Run(); err != nil {
 		log.Debug("Failed to delete rule %s: %v", name, err)
 	} else {

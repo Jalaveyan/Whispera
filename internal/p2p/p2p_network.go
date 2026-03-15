@@ -20,23 +20,23 @@ import (
 var log = logger.Module("p2p")
 
 type P2PNetwork struct {
-	mu         sync.RWMutex
-	nodes      map[string]*Node
-	bootstrap  []string
-	myNode     *Node
-	discovery  *DiscoveryService
-	routing    *RoutingEngine
-	consensus  *ConsensusEngine
-	encryption *P2PEncryption
-	sessions map[string]string
+	mu              sync.RWMutex
+	nodes           map[string]*Node
+	bootstrap       []string
+	myNode          *Node
+	discovery       *DiscoveryService
+	routing         *RoutingEngine
+	consensus       *ConsensusEngine
+	encryption      *P2PEncryption
+	sessions        map[string]string
 	DiscoveryListen string
-	udpConn *net.UDPConn
-	p2pTx   int64
-	p2pRx   int64
-	signPriv ed25519.PrivateKey
-	signPub  ed25519.PublicKey
-	ecdhPriv []byte
-	ecdhPub  []byte
+	udpConn         *net.UDPConn
+	p2pTx           int64
+	p2pRx           int64
+	signPriv        ed25519.PrivateKey
+	signPub         ed25519.PublicKey
+	ecdhPriv        []byte
+	ecdhPub         []byte
 }
 
 type Node struct {
@@ -67,7 +67,6 @@ func NewP2PNetwork(bootstrap []string) *P2PNetwork {
 }
 
 func (p *P2PNetwork) Start(ctx context.Context) error {
-
 	p.myNode = p.createMyNode()
 	_ = p.myNode
 
@@ -154,7 +153,6 @@ func (p *P2PNetwork) FindBestRoute(destination string) (*Route, error) {
 }
 
 func (p *P2PNetwork) BroadcastMessage(message []byte) error {
-
 	return nil
 }
 

@@ -123,7 +123,7 @@ func (t *Transport) Start() error {
 
 	RegisterTunnelServiceServer(t.server, &tunnelServer{transport: t})
 
-	listener, err := net.Listen("tcp", t.config.ListenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", t.config.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}

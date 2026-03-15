@@ -67,8 +67,6 @@ func isFTETLSHandshake(data []byte) bool {
 }
 
 func (fte *FTE) Transform(data []byte) ([]byte, error) {
-
-
 	fte.mutex.RLock()
 	active := fte.active
 	profile := fte.profiles[active]
@@ -182,7 +180,6 @@ func (fte *FTE) RotateProfile() {
 	fte.state = &ProtocolState{}
 	fte.lastRotationTime = time.Now()
 	fte.bytesSinceRotation = 0
-
 }
 
 func (fte *FTE) updateState(size int) {

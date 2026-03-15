@@ -333,7 +333,7 @@ func (cb *CircuitBreaker) Execute(fn func() error) error {
 			return ErrCircuitOpen
 		}
 	case CircuitHalfOpen:
-
+	default:
 	}
 	cb.mu.Unlock()
 
@@ -563,7 +563,8 @@ func (m *Metrics) Snapshot() map[string]interface{} {
 
 func GetPublicIP() string {
 	client := http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("https://api.ipify.org?format=text")
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.ipify.org?format=text", nil)
+	resp, err := client.Do(req)
 	if err != nil {
 		return ""
 	}

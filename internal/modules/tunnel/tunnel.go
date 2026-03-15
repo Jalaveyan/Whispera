@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"nhooyr.io/websocket"
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
@@ -43,7 +44,6 @@ import (
 	"whispera/internal/modules/transport/yatelemost"
 	"whispera/internal/mux"
 	"whispera/internal/obfuscation/russian"
-	"nhooyr.io/websocket"
 )
 
 var log = logger.Module("tunnel")
@@ -59,25 +59,7 @@ func safeGo(name string, fn func()) {
 	}()
 }
 
-func (m *Manager) safeGoLimited(name string, fn func()) bool {
-	wrapped := func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("PANIC in %s: %v\n%s", name, r, debug.Stack())
-			}
-		}()
-		fn()
-	}
-	if m.goroutineLimiter != nil {
-		if !m.goroutineLimiter.Go(wrapped) {
-			log.Warn("goroutine limit reached, dropping %s", name)
-			return false
-		}
-		return true
-	}
-	go wrapped()
-	return true
-}
+
 
 const (
 	ModuleName    = "tunnel.manager"
@@ -194,7 +176,6 @@ func DefaultConfig() *Config {
 }
 
 func (c *Config) Validate() error {
-
 	if c.KeepaliveInterval <= 0 {
 		c.KeepaliveInterval = 10 * time.Second
 	}
@@ -330,11 +311,11 @@ func New(cfg *Config) (*Manager, error) {
 			FrontDomain:            frontDomain,
 			EnableSNIMask:          enableSNIMask,
 			ResidentialProxies:     cfg.ResidentialProxies,
-			EnableJA3Randomization:  cfg.EnableJA3Randomize,
+			EnableJA3Randomization: cfg.EnableJA3Randomize,
 			EnableTLSFragmentation: true,
 			TLSFragmentSize:        40,
-			ConnectionBurstLimit:    5,
-			ConnectionCooldown:      2 * time.Second,
+			ConnectionBurstLimit:   5,
+			ConnectionCooldown:     2 * time.Second,
 			FailoverTimeout:        cfg.ConnectionTimeout,
 			FallbackStrategies:     []asnbypass.Strategy{asnbypass.StrategyTLSMasquerade, asnbypass.StrategyDomainFronting},
 		}
@@ -349,7 +330,6 @@ func New(cfg *Config) (*Manager, error) {
 		} else {
 			log.Info("ASN Bypass initialized (Strategy: %v)", cfg.ASNBypassStrategy)
 		}
-
 	}
 
 	if cfg.KillSwitchEnabled {
@@ -925,7 +905,6 @@ func (m *Manager) parallelDial(ctx context.Context, candidates []dialCandidate) 
 	return nil, fmt.Errorf("all transports failed: %s", strings.Join(errs, "; "))
 }
 
-
 func (m *Manager) dialVKWebRTC(ctx context.Context) (net.Conn, error) {
 	vkCfg := &vkwebrtc.Config{
 		VKToken:       m.config.VKToken,
@@ -1047,7 +1026,7 @@ func (m *Manager) dialH2C(ctx context.Context) (net.Conn, error) {
 }
 
 func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp4", m.config.ServerAddrTCP, 10*time.Second)
+	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp4", m.config.ServerAddrTCP)
 	if err != nil {
 		return nil, err
 	}
@@ -1070,8 +1049,8 @@ func (m *Manager) dialSplitHTTP(ctx context.Context) (net.Conn, error) {
 
 func (m *Manager) dialTUIC(ctx context.Context) (net.Conn, error) {
 	tr, err := tuic_transport.New(&tuic_transport.Config{
-		ServerAddr: m.config.ServerAddr,
-		SNI:        m.config.PhantomSNI,
+		ServerAddr:        m.config.ServerAddr,
+		SNI:               m.config.PhantomSNI,
 		UUID:              "00000000000000000000000000000000",
 		CongestionControl: "bbr",
 	})
@@ -1207,22 +1186,6 @@ func (m *Manager) dialOKWebRTC(ctx context.Context) (net.Conn, error) {
 		return nil, err
 	}
 	return tr.Dial(ctx, m.config.ServerAddr)
-}
-
-func (m *Manager) getCurrentSNI() string {
-	m.connMu.RLock()
-	defer m.connMu.RUnlock()
-
-	if m.currentSNI != "" {
-		return m.currentSNI
-	}
-	if m.config.PhantomSNI != "" {
-		return m.config.PhantomSNI
-	}
-	if len(m.russianSNIs) > 0 {
-		return m.russianSNIs[0]
-	}
-	return ""
 }
 
 func (m *Manager) selectNewSNI() string {
@@ -1592,7 +1555,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 									continue
 								}
 							}
-
 						}
 
 						if isWrappedFrame {
@@ -1632,7 +1594,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 				tlsDrainCount++
 				continue
 			}
-
 		}
 		consecutiveGarbage = 0
 		tlsDrainCount = 0
@@ -2419,7 +2380,6 @@ func (m *Manager) pickFastestServer(ctx context.Context) string {
 	log.Info("[LATENCY] Fastest server: %s (RTT=%v)", best.addr, best.latency)
 	return best.addr
 }
-
 
 const FrameTypeRekey = 0x08
 

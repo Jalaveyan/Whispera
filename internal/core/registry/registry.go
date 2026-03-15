@@ -328,9 +328,7 @@ func (r *registry) Events() events.EventBus {
 	return r.eventBus
 }
 
-
 func (r *registry) computeStartOrder() ([]string, error) {
-	
 	inDegree := make(map[string]int)
 	deps := make(map[string][]string)
 
@@ -362,7 +360,6 @@ func (r *registry) computeStartOrder() ([]string, error) {
 
 	order := make([]string, 0, len(r.modules))
 	for len(queue) > 0 {
-		
 		name := queue[0]
 		queue = queue[1:]
 		order = append(order, name)

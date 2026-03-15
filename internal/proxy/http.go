@@ -99,7 +99,7 @@ func (s *HTTPServer) handleCONNECT(w http.ResponseWriter, r *http.Request) {
 		targetAddr = r.URL.Host
 	}
 
-	targetConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+	targetConn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(r.Context(), "tcp", targetAddr)
 	if err != nil {
 		s.log.Error("Failed to connect to %s: %v", targetAddr, err)
 		http.Error(w, "Failed to connect to target", http.StatusBadGateway)

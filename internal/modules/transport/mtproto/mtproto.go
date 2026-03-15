@@ -24,8 +24,11 @@ import (
 
 var log = logger.Module("mtproto")
 
-func init() {
+var _ = registerFactory()
+
+func registerFactory() bool {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
+	return true
 }
 
 var handshakeBufferPool = sync.Pool{
@@ -165,7 +168,7 @@ func (t *Transport) Start() error {
 		return nil
 	}
 
-	listener, err := net.Listen("tcp", t.config.ListenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", t.config.ListenAddr)
 	if err != nil {
 		t.SetHealthy(false, fmt.Sprintf("listen failed: %v", err))
 		return fmt.Errorf("failed to listen: %w", err)
@@ -376,7 +379,7 @@ func (t *Transport) ProxyToTelegram(clientConn net.Conn, session *MTProtoSession
 		dcAddr = t.config.DCAddresses[2]
 	}
 
-	telegramConn, err := net.DialTimeout("tcp", dcAddr, 10*time.Second)
+	telegramConn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", dcAddr)
 	if err != nil {
 		log.Warn("Failed to connect to Telegram DC%d: %v", dcID, err)
 		return

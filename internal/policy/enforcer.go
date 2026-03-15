@@ -54,8 +54,8 @@ func (be *BandwidthEnforcer) RecordUpload(userID string, bytes int64) bool {
 		return true
 	}
 
-	_, _, uploadRemaining, _ := policy.CheckBandwidthLimit(uploadBytes, 0)
-	if uploadRemaining == 0 {
+	uploadAllowed, _, uploadRemaining, _ := policy.CheckBandwidthLimit(uploadBytes, 0)
+	if !uploadAllowed || uploadRemaining == 0 {
 		be.log.Warn("User %s exceeded upload limit: %d bytes", userID, uploadBytes)
 		return false
 	}
@@ -84,8 +84,8 @@ func (be *BandwidthEnforcer) RecordDownload(userID string, bytes int64) bool {
 		return true
 	}
 
-	_, _, _, downloadRemaining := policy.CheckBandwidthLimit(0, downloadBytes)
-	if downloadRemaining == 0 {
+	_, downloadAllowed, _, downloadRemaining := policy.CheckBandwidthLimit(0, downloadBytes)
+	if !downloadAllowed || downloadRemaining == 0 {
 		be.log.Warn("User %s exceeded download limit: %d bytes", userID, downloadBytes)
 		return false
 	}

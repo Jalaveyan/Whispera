@@ -61,7 +61,7 @@ func TestTransportStartStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create transport: %v", err)
 	}
-	tr.Init(context.Background(), nil)
+	_ = tr.Init(context.Background(), nil)
 
 	if err := tr.Start(); err != nil {
 		t.Fatalf("failed to start: %v", err)
@@ -84,7 +84,7 @@ func TestTransportAcceptDial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create transport: %v", err)
 	}
-	tr.Init(context.Background(), nil)
+	_ = tr.Init(context.Background(), nil)
 	if err := tr.Start(); err != nil {
 		t.Fatalf("failed to start: %v", err)
 	}

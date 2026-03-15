@@ -3,7 +3,6 @@ package logger
 import (
 	"fmt"
 	"io"
-	"math/rand"
 	"os"
 	"runtime"
 	"strings"
@@ -144,58 +143,6 @@ func (l *Logger) GetLevel() Level {
 	return l.config.Level
 }
 
-// -----------------------------------------------------------------------------
-// FAKE DATA GENERATORS (MASKING)
-// -----------------------------------------------------------------------------
-var (
-	fakePaths = []string{
-		"/", "/index.html", "/about.html", "/contact", "/style.css", "/main.js", "/logo.png",
-		"/api/v1/status", "/login", "/dashboard", "/favicon.ico", "/robots.txt",
-		"/assets/font.woff2", "/images/banner.jpg", "/sitemap.xml",
-	}
-	fakeUserAgents = []string{
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
-		"Mozilla/5.0 (X11; Linux x86_64; rv:89.0) Gecko/20100101 Firefox/89.0",
-		"Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1",
-		"Googlebot/2.1 (+http://www.google.com/bot.html)",
-	}
-	fakeMethods = []string{"GET", "POST", "HEAD"}
-	fakeCodes   = []int{200, 200, 200, 301, 302, 404, 500}
-)
-
-func fakeNginxLog() string {
-	ip := fmt.Sprintf("%d.%d.%d.%d", rand.Intn(255), rand.Intn(255), rand.Intn(255), rand.Intn(255))
-	ts := time.Now().Format("02/Jan/2006:15:04:05 -0700")
-	method := fakeMethods[rand.Intn(len(fakeMethods))]
-	// Append random query param sometimes
-	path := fakePaths[rand.Intn(len(fakePaths))]
-	if rand.Intn(3) == 0 {
-		path += fmt.Sprintf("?id=%d", rand.Intn(1000))
-	}
-	code := fakeCodes[rand.Intn(len(fakeCodes))]
-	size := rand.Intn(5000) + 200
-	ua := fakeUserAgents[rand.Intn(len(fakeUserAgents))]
-
-	// Apache/Nginx Common Log Format
-	return fmt.Sprintf("%s - - [%s] \"%s %s HTTP/1.1\" %d %d \"-\" \"%s\"\n", ip, ts, method, path, code, size, ua)
-}
-
-func fakeErrorLog() string {
-	ts := time.Now().Format("2006/01/02 15:04:05")
-	levels := []string{"error", "warn"}
-	msgs := []string{
-		"client closed connection while waiting for request",
-		"upstream timed out (110: Connection timed out) while reading response header from upstream",
-		"file not found",
-		"access forbidden by rule",
-		"open() \"/usr/share/nginx/html/favicon.ico\" failed (2: No such file or directory)",
-	}
-	// Nginx error log format
-	return fmt.Sprintf("%s [%s] %d#0: *%d %s, client: %d.%d.%d.%d, server: localhost\n",
-		ts, levels[rand.Intn(len(levels))], rand.Intn(1000)+500, rand.Intn(99999), msgs[rand.Intn(len(msgs))],
-		rand.Intn(255), rand.Intn(255), rand.Intn(255), rand.Intn(255))
-}
 
 // -----------------------------------------------------------------------------
 

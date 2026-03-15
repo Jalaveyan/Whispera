@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -75,10 +76,14 @@ func (r *Registrar) Register() error {
 	}
 
 	url := fmt.Sprintf("https://%s/api/bridge-register", r.config.UpstreamServer)
-	resp, err := r.client.Post(url, "application/json", bytes.NewReader(data))
+	req1, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+	req1.Header.Set("Content-Type", "application/json")
+	resp, err := r.client.Do(req1)
 	if err != nil {
 		url = fmt.Sprintf("http://%s/api/bridge-register", r.config.UpstreamServer)
-		resp, err = r.client.Post(url, "application/json", bytes.NewReader(data))
+		req2, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+		req2.Header.Set("Content-Type", "application/json")
+		resp, err = r.client.Do(req2)
 		if err != nil {
 			return fmt.Errorf("failed to register: %w", err)
 		}
@@ -115,7 +120,8 @@ func (r *Registrar) getPublicIP() string {
 	}
 
 	for _, svc := range services {
-		resp, err := r.client.Get(svc)
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, svc, nil)
+		resp, err := r.client.Do(req)
 		if err != nil {
 			continue
 		}

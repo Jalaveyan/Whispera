@@ -28,13 +28,11 @@ const (
 	socks5RepAddressTypeNotSupported = 0x08
 )
 
-
 type SOCKS5Proxy struct {
 	config   *Config
 	listener net.Listener
 	stats    *Stats
 }
-
 
 func NewSOCKS5Proxy(config *Config) *SOCKS5Proxy {
 	return &SOCKS5Proxy{
@@ -48,9 +46,8 @@ func (p *SOCKS5Proxy) Type() ProxyType {
 	return ProxySOCKS5
 }
 
-
 func (p *SOCKS5Proxy) Start(ctx context.Context) error {
-	listener, err := net.Listen("tcp", p.config.Addr)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", p.config.Addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", p.config.Addr, err)
 	}
@@ -58,7 +55,6 @@ func (p *SOCKS5Proxy) Start(ctx context.Context) error {
 
 	log.Printf("[SOCKS5-PROXY] ✅ Server listening on %s", p.config.Addr)
 
-	
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -76,11 +72,9 @@ func (p *SOCKS5Proxy) Start(ctx context.Context) error {
 		}
 	}()
 
-	
 	<-ctx.Done()
 	return p.Stop()
 }
-
 
 func (p *SOCKS5Proxy) Stop() error {
 	if p.listener != nil {
@@ -89,14 +83,12 @@ func (p *SOCKS5Proxy) Stop() error {
 	return nil
 }
 
-
 func (p *SOCKS5Proxy) Addr() net.Addr {
 	if p.listener != nil {
 		return p.listener.Addr()
 	}
 	return nil
 }
-
 
 func (p *SOCKS5Proxy) Stats() *Stats {
 	return p.stats
@@ -107,12 +99,10 @@ func (p *SOCKS5Proxy) Reset() {
 	}
 }
 
-
 func (p *SOCKS5Proxy) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	p.stats.Connections++
 
-	
 	if err := p.handshake(conn); err != nil {
 		p.stats.Errors++
 		log.Printf("[SOCKS5-PROXY] ❌ Handshake failed: %v", err)
@@ -126,9 +116,7 @@ func (p *SOCKS5Proxy) handleConnection(conn net.Conn) {
 	}
 }
 
-
 func (p *SOCKS5Proxy) handshake(conn net.Conn) error {
-	
 	buf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, buf); err != nil {
 		return err
@@ -143,13 +131,11 @@ func (p *SOCKS5Proxy) handshake(conn net.Conn) error {
 		return fmt.Errorf("no authentication methods")
 	}
 
-	
 	methods := make([]byte, nMethods)
 	if _, err := io.ReadFull(conn, methods); err != nil {
 		return err
 	}
 
-	
 	authMethod := byte(0x00)
 	for _, method := range methods {
 		if method == 0x00 {
@@ -158,15 +144,12 @@ func (p *SOCKS5Proxy) handshake(conn net.Conn) error {
 		}
 	}
 
-	
 	response := []byte{socks5Version, authMethod}
 	_, err := conn.Write(response)
 	return err
 }
 
-
 func (p *SOCKS5Proxy) handleRequest(conn net.Conn) error {
-	
 	buf := make([]byte, 4)
 	if _, err := io.ReadFull(conn, buf); err != nil {
 		return err
@@ -174,7 +157,7 @@ func (p *SOCKS5Proxy) handleRequest(conn net.Conn) error {
 
 	version := buf[0]
 	cmd := buf[1]
-	_ = buf[2] 
+	_ = buf[2]
 	atyp := buf[3]
 
 	if version != socks5Version {
@@ -186,13 +169,12 @@ func (p *SOCKS5Proxy) handleRequest(conn net.Conn) error {
 		return fmt.Errorf("unsupported command: %d", cmd)
 	}
 
-	
 	var dstAddr string
 	var dstPort uint16
 
 	switch atyp {
 	case socks5AtypIPv4:
-		addrBuf := make([]byte, 4+2) 
+		addrBuf := make([]byte, 4+2)
 		if _, err := io.ReadFull(conn, addrBuf); err != nil {
 			return err
 		}
@@ -206,7 +188,7 @@ func (p *SOCKS5Proxy) handleRequest(conn net.Conn) error {
 		}
 		domainLen := int(lenBuf[0])
 
-		domainBuf := make([]byte, domainLen+2) 
+		domainBuf := make([]byte, domainLen+2)
 		if _, err := io.ReadFull(conn, domainBuf); err != nil {
 			return err
 		}
@@ -214,7 +196,7 @@ func (p *SOCKS5Proxy) handleRequest(conn net.Conn) error {
 		dstPort = binary.BigEndian.Uint16(domainBuf[domainLen:])
 
 	case socks5AtypIPv6:
-		addrBuf := make([]byte, 16+2) 
+		addrBuf := make([]byte, 16+2)
 		if _, err := io.ReadFull(conn, addrBuf); err != nil {
 			return err
 		}
@@ -226,29 +208,25 @@ func (p *SOCKS5Proxy) handleRequest(conn net.Conn) error {
 		return fmt.Errorf("unsupported address type: %d", atyp)
 	}
 
-	
 	target := net.JoinHostPort(dstAddr, strconv.Itoa(int(dstPort)))
-	dstConn, err := net.DialTimeout("tcp", target, p.config.Timeout)
+	dstConn, err := (&net.Dialer{Timeout: p.config.Timeout}).DialContext(context.Background(), "tcp", target)
 	if err != nil {
 		p.sendReply(conn, socks5RepHostUnreachable, nil)
 		return fmt.Errorf("failed to connect to %s: %w", target, err)
 	}
 	defer dstConn.Close()
 
-	
 	if err := p.sendReply(conn, socks5RepSuccess, dstConn.LocalAddr()); err != nil {
 		return err
 	}
 
-	
 	p.proxyData(conn, dstConn)
 	return nil
 }
 
-
 func (p *SOCKS5Proxy) sendReply(conn net.Conn, rep byte, bindAddr net.Addr) error {
 	var buf []byte
-	buf = append(buf, socks5Version, rep, 0x00) 
+	buf = append(buf, socks5Version, rep, 0x00)
 
 	if bindAddr != nil {
 		addr := bindAddr.(*net.TCPAddr)
@@ -269,7 +247,6 @@ func (p *SOCKS5Proxy) sendReply(conn net.Conn, rep byte, bindAddr net.Addr) erro
 	_, err := conn.Write(buf)
 	return err
 }
-
 
 func (p *SOCKS5Proxy) proxyData(client, server net.Conn) {
 	done := make(chan struct{}, 2)

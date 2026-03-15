@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -100,11 +102,14 @@ func (p *Provider) SendNotification(message string) error {
 	fullMsg := fmt.Sprintf("🔒 *%s*\n\n%s\n\n🕒 %s", hostName, message, time.Now().Format(time.RFC1123))
 
 	apiURL := fmt.Sprintf(telegramAPI, cfg.Token)
-	resp, err := http.PostForm(apiURL, url.Values{
+	vals := url.Values{
 		"chat_id":    {cfg.ChatID},
 		"text":       {fullMsg},
 		"parse_mode": {"Markdown"},
-	})
+	}
+	postReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, apiURL, strings.NewReader(vals.Encode()))
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(postReq)
 
 	if err != nil {
 		return fmt.Errorf("failed to send telegram notification: %w", err)

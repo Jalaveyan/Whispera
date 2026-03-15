@@ -4,13 +4,11 @@ import (
 	"sync"
 )
 
-
 type BatchAEADState struct {
 	*AEADState
 	batchBuffer []byte
 	mu          sync.Mutex
 }
-
 
 func NewBatchAEADState(aeadState *AEADState) *BatchAEADState {
 	return &BatchAEADState{
@@ -19,11 +17,9 @@ func NewBatchAEADState(aeadState *AEADState) *BatchAEADState {
 	}
 }
 
-
 func (b *BatchAEADState) BatchEncrypt(seq uint32, aad []byte, plaintexts [][]byte) ([][]byte, error) {
 	results := make([][]byte, len(plaintexts))
 
-	
 	if len(plaintexts) == 1 {
 		ct, err := b.Encrypt(seq, aad, plaintexts[0])
 		if err != nil {
@@ -33,7 +29,6 @@ func (b *BatchAEADState) BatchEncrypt(seq uint32, aad []byte, plaintexts [][]byt
 		return results, nil
 	}
 
-	
 	var wg sync.WaitGroup
 	errChan := make(chan error, len(plaintexts))
 
@@ -41,7 +36,7 @@ func (b *BatchAEADState) BatchEncrypt(seq uint32, aad []byte, plaintexts [][]byt
 		wg.Add(1)
 		go func(idx int, pt []byte) {
 			defer wg.Done()
-			
+
 			ct, err := b.Encrypt(seq+uint32(idx), aad, pt)
 			if err != nil {
 				errChan <- err
@@ -54,14 +49,12 @@ func (b *BatchAEADState) BatchEncrypt(seq uint32, aad []byte, plaintexts [][]byt
 	wg.Wait()
 	close(errChan)
 
-	
 	if len(errChan) > 0 {
 		return nil, <-errChan
 	}
 
 	return results, nil
 }
-
 
 func (b *BatchAEADState) BatchDecrypt(seq uint32, aad []byte, ciphertexts [][]byte) ([][]byte, error) {
 	results := make([][]byte, len(ciphertexts))
@@ -101,9 +94,7 @@ func (b *BatchAEADState) BatchDecrypt(seq uint32, aad []byte, ciphertexts [][]by
 	return results, nil
 }
 
-
 func (s *AEADState) EncryptOptimized(seq uint32, aad, plaintext []byte) ([]byte, error) {
-	
 	return s.Encrypt(seq, aad, plaintext)
 }
 func (s *AEADState) EncryptControl(seq uint32, aad, plaintext []byte, encrypt bool) ([]byte, error) {
@@ -111,13 +102,11 @@ func (s *AEADState) EncryptControl(seq uint32, aad, plaintext []byte, encrypt bo
 	return s.Encrypt(seq, aad, plaintext)
 }
 
-
 type StreamAEADState struct {
 	*AEADState
 	streamCounter uint64
 	mu            sync.Mutex
 }
-
 
 func NewStreamAEADState(aeadState *AEADState) *StreamAEADState {
 	return &StreamAEADState{
@@ -126,9 +115,7 @@ func NewStreamAEADState(aeadState *AEADState) *StreamAEADState {
 	}
 }
 
-
-var streamAAD = []byte{0x01} 
-
+var streamAAD = []byte{0x01}
 
 func (s *StreamAEADState) EncryptStream(plaintext []byte) ([]byte, error) {
 	s.mu.Lock()
@@ -136,6 +123,5 @@ func (s *StreamAEADState) EncryptStream(plaintext []byte) ([]byte, error) {
 	s.streamCounter++
 	s.mu.Unlock()
 
-	
 	return s.Encrypt(seq, streamAAD, plaintext)
 }

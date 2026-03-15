@@ -304,31 +304,6 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 	return status
 }
 
-type tunnelWriter struct {
-	conn       net.Conn
-	obfuscator interfaces.Obfuscator
-	mu         *sync.Mutex
-}
-
-func (w *tunnelWriter) Write(data []byte) error {
-	if w.obfuscator != nil {
-		obfuscated, _, err := w.obfuscator.Process(data, interfaces.DirectionOutbound)
-		if err != nil {
-			return err
-		}
-		data = obfuscated
-	}
-
-	w.mu.Lock()
-	_, err := w.conn.Write(data)
-	w.mu.Unlock()
-	return err
-}
-
-func (w *tunnelWriter) RemoteAddr() net.Addr {
-	return w.conn.RemoteAddr()
-}
-
 func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	defer conn.Close()
 	clientID := conn.RemoteAddr().String()
@@ -417,6 +392,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 					stream.Write([]byte{0x01})
 					s.log.Info("Blocked connection to %s:%d by routing rule", addr, port)
 					return
+				default:
 				}
 			}
 		}

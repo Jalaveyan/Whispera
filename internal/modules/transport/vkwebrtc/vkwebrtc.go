@@ -27,8 +27,11 @@ import (
 	"whispera/internal/logger"
 )
 
-func init() {
+var _ = registerFactory()
+
+func registerFactory() bool {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
+	return true
 }
 
 var log = logger.Module("vkwebrtc")
@@ -547,7 +550,13 @@ func (t *Transport) vkGetLPServer() (string, string, int64) {
 		"https://api.vk.com/method/groups.getLongPollServer?group_id=%d&access_token=%s&v=5.199",
 		t.config.VKGroupID, t.config.VKToken)
 
-	resp, err := t.client.Get(u)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+	if err != nil {
+		log.Printf("getLPServer: %v", err)
+		time.Sleep(5 * time.Second)
+		return "", "", 0
+	}
+	resp, err := t.client.Do(req)
 	if err != nil {
 		log.Printf("getLPServer: %v", err)
 		time.Sleep(5 * time.Second)
@@ -576,7 +585,12 @@ func (t *Transport) vkPollLP(server, key string, ts *int64) {
 	}
 
 	u := fmt.Sprintf("%s?act=a_check&key=%s&ts=%d&wait=25", server, key, *ts)
-	resp, err := t.client.Get(u)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, u, nil)
+	if err != nil {
+		time.Sleep(time.Second)
+		return
+	}
+	resp, err := t.client.Do(req)
 	if err != nil {
 		time.Sleep(time.Second)
 		return
@@ -632,7 +646,12 @@ func (t *Transport) vkSendSignal(msg sigMsg) {
 		"https://api.vk.com/method/messages.send?peer_id=%d&message=%s&random_id=%d&access_token=%s&v=5.199",
 		t.config.VKPeerID, url.QueryEscape(text), time.Now().UnixNano(), t.config.VKToken)
 
-	resp, err := t.client.Get(apiURL)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, apiURL, nil)
+	if err != nil {
+		log.Printf("vkSendSignal: %v", err)
+		return
+	}
+	resp, err := t.client.Do(req)
 	if err != nil {
 		log.Printf("vkSendSignal: %v", err)
 		return

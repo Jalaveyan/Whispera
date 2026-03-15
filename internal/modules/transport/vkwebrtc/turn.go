@@ -61,7 +61,11 @@ func StartVKCall(client *http.Client, token string, groupID int64) (*VKCallSessi
 		params.Set("group_id", fmt.Sprintf("%d", groupID))
 	}
 
-	resp, err := client.Get("https://api.vk.com/method/calls.start?" + params.Encode())
+	startReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.vk.com/method/calls.start?"+params.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("calls.start: %w", err)
+	}
+	resp, err := client.Do(startReq)
 	if err != nil {
 		return nil, fmt.Errorf("calls.start: %w", err)
 	}
@@ -370,7 +374,7 @@ func GenerateHMACTURNCredentials(sharedSecret, userID string, ttl time.Duration)
 	mac := hmac.New(sha1.New, []byte(sharedSecret))
 	mac.Write([]byte(username))
 	password = base64.StdEncoding.EncodeToString(mac.Sum(nil))
-	return
+	return username, password
 }
 
 func ForceFinishCall(client *http.Client, token, callID string) error {
@@ -379,7 +383,11 @@ func ForceFinishCall(client *http.Client, token, callID string) error {
 		"call_id":      {callID},
 		"v":            {"5.199"},
 	}
-	resp, err := client.Get("https://api.vk.com/method/calls.forceFinish?" + params.Encode())
+	finishReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.vk.com/method/calls.forceFinish?"+params.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(finishReq)
 	if err != nil {
 		return err
 	}

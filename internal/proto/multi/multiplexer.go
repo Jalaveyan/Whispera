@@ -163,7 +163,6 @@ func (m *StreamMultiplexer) AllocateStream() (uint16, error) {
 		if !exists {
 			return streamID, nil
 		}
-
 	}
 }
 

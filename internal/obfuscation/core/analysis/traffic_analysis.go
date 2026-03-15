@@ -623,7 +623,6 @@ func (ta *TrafficAnalysisEngine) analyzeTimingPatterns(state *TrafficState) floa
 }
 
 func (ta *TrafficAnalysisEngine) analyzeProtocolSignatures(state *TrafficState) float64 {
-
 	if len(state.PacketSizes) > 0 {
 		avgSize := 0
 		for _, size := range state.PacketSizes {
@@ -661,7 +660,6 @@ func (ta *TrafficAnalysisEngine) analyzeFlowAnomalies(state *TrafficState) float
 }
 
 func (ta *TrafficAnalysisEngine) analyzeFragmentationPatterns(state *TrafficState) float64 {
-
 	if len(state.PacketSizes) < 5 {
 		return 0.0
 	}
@@ -686,16 +684,12 @@ func (ta *TrafficAnalysisEngine) analyzeTCPWindowScaling(state *TrafficState) fl
 	_ = state.PacketCount
 	_ = state.ByteCount
 
-
-
 	return 0.0
 }
 
 func (ta *TrafficAnalysisEngine) analyzeHTTPHeaders(state *TrafficState) float64 {
 	_ = state.PacketCount
 	_ = state.ByteCount
-
-
 
 	return 0.0
 }

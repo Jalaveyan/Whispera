@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"crypto/tls"
 	"io"
 	"net"
@@ -43,7 +44,7 @@ func NewBridge(cfg *BridgeConfig) (*Bridge, error) {
 }
 
 func (b *Bridge) Start(listenAddr string) error {
-	listener, err := net.Listen("tcp", listenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		return err
 	}
@@ -105,10 +106,10 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 
 	b.log.Debug("Bridge: forwarding connection with SNI=%s", sni)
 
-	upstreamConn, err := tls.Dial("tcp", b.upstreamAddr, &tls.Config{
+	upstreamConn, err := (&tls.Dialer{Config: &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"whispera"},
-	})
+	}}).DialContext(context.Background(), "tcp", b.upstreamAddr)
 	if err != nil {
 		b.log.Warn("Failed to connect to upstream %s: %v", b.upstreamAddr, err)
 		return
@@ -125,7 +126,9 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 
 	go func() {
 		io.Copy(upstreamConn, clientConn)
-		upstreamConn.CloseWrite()
+		if tc, ok := upstreamConn.(interface{ CloseWrite() error }); ok {
+			tc.CloseWrite()
+		}
 		done <- struct{}{}
 	}()
 

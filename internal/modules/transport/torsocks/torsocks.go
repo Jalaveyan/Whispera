@@ -148,13 +148,13 @@ func (t *Transport) handshake(conn net.Conn, host string, port uint16) error {
 
 	switch header[3] {
 	case 0x01:
-		io.ReadFull(conn, make([]byte, 6))
+		_, _ = io.ReadFull(conn, make([]byte, 6))
 	case 0x03:
 		lenBuf := make([]byte, 1)
-		io.ReadFull(conn, lenBuf)
-		io.ReadFull(conn, make([]byte, int(lenBuf[0])+2))
+		_, _ = io.ReadFull(conn, lenBuf)
+		_, _ = io.ReadFull(conn, make([]byte, int(lenBuf[0])+2))
 	case 0x04:
-		io.ReadFull(conn, make([]byte, 18))
+		_, _ = io.ReadFull(conn, make([]byte, 18))
 	}
 
 	return nil

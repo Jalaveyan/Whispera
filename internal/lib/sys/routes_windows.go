@@ -1,6 +1,7 @@
 package sys
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os/exec"
@@ -121,7 +122,7 @@ try {
 }
 `, tunName, tunIP, subnetMaskStr, tunGateway, serverIP)
 
-	cmd = exec.Command("powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psAutoRouting)
+	cmd = exec.CommandContext(context.Background(), "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psAutoRouting)
 	output, err = cmd.CombinedOutput()
 	outStr := strings.TrimSpace(string(output))
 	if err == nil && strings.Contains(outStr, "SUCCESS") {
@@ -133,7 +134,7 @@ try {
 	log.Printf("[WARN] PowerShell routing failed: %v, output: %s. Using legacy fallback...", err, outStr)
 
 	quotedName := fmt.Sprintf("name=%q", tunName)
-	cmd = exec.Command("netsh", "interface", "ipv4", "set", "address",
+	cmd = exec.CommandContext(context.Background(), "netsh", "interface", "ipv4", "set", "address",
 		quotedName, "static", tunIP, subnetMaskStr)
 	cmd.Run()
 	if err != nil {
@@ -149,16 +150,16 @@ func CleanupWindowsRoutes(tunName string, serverIP string, tunGateway string) er
 	prefixes := []string{"0.0.0.0/1", "128.0.0.0/1"}
 	for _, p := range prefixes {
 		psDelRoute := fmt.Sprintf(`Get-NetRoute -DestinationPrefix "%s" -InterfaceAlias "%s" -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue`, p, tunName)
-		_ = exec.Command("powershell", "-Command", psDelRoute).Run()
+		_ = exec.CommandContext(context.Background(), "powershell", "-Command", psDelRoute).Run()
 	}
 
 	if serverIP != "" {
 		psDelHost := fmt.Sprintf(`Get-NetRoute -DestinationPrefix "%s/32" -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue`, serverIP)
-		_ = exec.Command("powershell", "-Command", psDelHost).Run()
+		_ = exec.CommandContext(context.Background(), "powershell", "-Command", psDelHost).Run()
 	}
 
 	psResetDNS := fmt.Sprintf(`Set-DnsClientServerAddress -InterfaceAlias "%s" -ResetServerAddresses -ErrorAction SilentlyContinue`, tunName)
-	_ = exec.Command("powershell", "-Command", psResetDNS).Run()
+	_ = exec.CommandContext(context.Background(), "powershell", "-Command", psResetDNS).Run()
 
 	return nil
 }

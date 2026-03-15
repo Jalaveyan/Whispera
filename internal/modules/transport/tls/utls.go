@@ -26,7 +26,7 @@ var fingerprintMap = map[string]*utls.ClientHelloID{
 }
 
 func (c *UTLSConfig) Dial(ctx context.Context, addr string) (net.Conn, error) {
-	conn, err := net.Dial("tcp", addr)
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}

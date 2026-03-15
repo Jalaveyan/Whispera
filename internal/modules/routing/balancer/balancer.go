@@ -402,7 +402,7 @@ func (b *Balancer) Dial(ctx context.Context, clientIP string) (net.Conn, *Server
 
 		start := time.Now()
 
-		conn, err := net.DialTimeout("tcp", server.Address, b.config.HealthCheckTimeout)
+		conn, err := (&net.Dialer{Timeout: b.config.HealthCheckTimeout}).DialContext(context.Background(), "tcp", server.Address)
 		if err != nil {
 			atomic.AddInt32(&server.activeConn, -1)
 			server.RecordFailure()
@@ -528,7 +528,7 @@ func (h *HealthChecker) checkAll() {
 func (h *HealthChecker) check(server *Server) {
 	start := time.Now()
 
-	conn, err := net.DialTimeout("tcp", server.Address, h.config.HealthCheckTimeout)
+	conn, err := (&net.Dialer{Timeout: h.config.HealthCheckTimeout}).DialContext(context.Background(), "tcp", server.Address)
 	if err != nil {
 		server.RecordFailure()
 

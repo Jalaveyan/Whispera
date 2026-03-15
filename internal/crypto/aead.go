@@ -23,7 +23,6 @@ type AEADState struct {
 }
 
 func DeriveDirectionalKeys(psk []byte, isClient bool) (send, recv DirectionalKeys, err error) {
-
 	info := []byte("whispera v1 data-keys")
 	r := hkdf.New(sha256.New, psk, nil, info)
 	material := make([]byte, 72)
@@ -41,7 +40,6 @@ func DeriveDirectionalKeys(psk []byte, isClient bool) (send, recv DirectionalKey
 		copy(recv.Salt4[:], bSalt)
 		recv.Key = append([]byte(nil), bKey...)
 	} else {
-
 		copy(send.Salt4[:], bSalt)
 		send.Key = append([]byte(nil), bKey...)
 		copy(recv.Salt4[:], aSalt)

@@ -216,7 +216,6 @@ func NewConsensusEngine() *ConsensusEngine {
 }
 
 func (ce *ConsensusEngine) Start(ctx context.Context) {
-
 	go ce.proposalProcessingLoop(ctx)
 
 	go ce.leaderElectionLoop(ctx)
@@ -306,7 +305,6 @@ func (ce *ConsensusEngine) CreateProposal(
 	ce.proposals[proposalID] = proposal
 	ce.votes[proposalID] = make(map[string]*Vote)
 
-
 	return proposal, nil
 }
 
@@ -344,14 +342,12 @@ func (ce *ConsensusEngine) Vote(proposalID, voter, choice string) error {
 	ce.votes[proposalID][voter] = vote
 	proposal.Votes++
 
-
 	return nil
 }
 
 func (ce *ConsensusEngine) processProposals() {
 	ce.mu.Lock()
 	defer ce.mu.Unlock()
-
 
 	for proposalID, proposal := range ce.proposals {
 		if proposal.Status != proposalStatusPending {
@@ -373,7 +369,6 @@ func (ce *ConsensusEngine) electLeaders() {
 	ce.mu.Lock()
 	defer ce.mu.Unlock()
 
-
 	services := []string{"routing", "encryption", "discovery", "monitoring"}
 
 	for _, service := range services {
@@ -387,7 +382,6 @@ func (ce *ConsensusEngine) electLeaders() {
 func (ce *ConsensusEngine) monitorParticipants() {
 	ce.mu.RLock()
 	defer ce.mu.RUnlock()
-
 
 	active := 0
 	totalWeight := 0.0

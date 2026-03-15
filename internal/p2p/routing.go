@@ -115,7 +115,6 @@ func NewRoutingTable(myNodeID string) *RoutingTable {
 }
 
 func (re *RoutingEngine) Start(ctx context.Context) {
-
 	go re.updateMetricsLoop(ctx)
 
 	go re.optimizeRoutesLoop(ctx)
@@ -214,7 +213,6 @@ func (re *RoutingEngine) updateAllMetrics() {
 	re.mu.Lock()
 	defer re.mu.Unlock()
 
-
 	for _, metrics := range re.metrics {
 		if metrics.LastRTT > 0 {
 			metrics.Latency = time.Duration(metrics.LastRTT) * time.Millisecond
@@ -236,7 +234,6 @@ func (re *RoutingEngine) optimizeAllRoutes() {
 	re.mu.Lock()
 	defer re.mu.Unlock()
 
-
 	for dest, route := range re.bestRoutes {
 		if time.Since(route.LastUsed) > 10*time.Minute {
 			delete(re.bestRoutes, dest)
@@ -247,7 +244,6 @@ func (re *RoutingEngine) optimizeAllRoutes() {
 func (re *RoutingEngine) analyzePerformance() {
 	re.mu.RLock()
 	defer re.mu.RUnlock()
-
 
 	totalRoutes := len(re.bestRoutes)
 	activeNodes := len(re.metrics)
@@ -278,7 +274,6 @@ func (re *RoutingEngine) AddNode(node *Node) {
 	}
 
 	re.table.AddNode(node)
-
 }
 
 func (re *RoutingEngine) RemoveNode(nodeID string) {
@@ -296,7 +291,6 @@ func (re *RoutingEngine) RemoveNode(nodeID string) {
 			}
 		}
 	}
-
 }
 
 func (re *RoutingEngine) GetRoutingStats() map[string]interface{} {
@@ -310,7 +304,6 @@ func (re *RoutingEngine) GetRoutingStats() map[string]interface{} {
 		"algorithms":   len(re.algorithms),
 	}
 }
-
 
 func (rt *RoutingTable) AddNode(node *Node) {
 	rt.mu.Lock()
@@ -354,7 +347,6 @@ func (rt *RoutingTable) calculateDistance(id1, id2 string) string {
 }
 
 func (rt *RoutingTable) getBucketIndex(distance string) int {
-
 	var bytesBuf [32]byte
 	n := 0
 	for i := 0; i+1 < len(distance) && n < 32; i += 2 {
@@ -407,7 +399,6 @@ func (rt *RoutingTable) GetBucketCount() int {
 	}
 	return count
 }
-
 
 func (dht *DHTAlgorithm) FindRoute(destination string, availableNodes []*Node) *Route {
 	dht.mu.RLock()
@@ -470,7 +461,6 @@ func (dht *DHTAlgorithm) GetBestNodes(count int) []*Node {
 	return allNodes
 }
 
-
 func (flood *FloodingAlgorithm) FindRoute(destination string, availableNodes []*Node) *Route {
 	flood.mu.RLock()
 	defer flood.mu.RUnlock()
@@ -510,7 +500,6 @@ func (flood *FloodingAlgorithm) GetBestNodes(count int) []*Node {
 	}
 	return allNodes
 }
-
 
 func (astar *AStarAlgorithm) FindRoute(destination string, availableNodes []*Node) *Route {
 	astar.mu.RLock()

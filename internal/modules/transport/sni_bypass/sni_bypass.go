@@ -1,6 +1,7 @@
 package sni_bypass
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -37,7 +38,7 @@ func DialFragmented(addr string, cfg *Config) (net.Conn, error) {
 		cfg = DefaultConfig()
 	}
 
-	tcpConn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	tcpConn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +140,7 @@ func DialWithPadding(addr string, cfg *Config) (net.Conn, error) {
 		cfg = DefaultConfig()
 	}
 
-	tcpConn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	tcpConn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +255,6 @@ func randInt(min, max int) int {
 		return min
 	}
 	b := make([]byte, 1)
-	io.ReadFull(rand.Reader, b)
+	_, _ = io.ReadFull(rand.Reader, b)
 	return min + int(b[0])%(max-min)
 }

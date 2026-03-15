@@ -7,13 +7,11 @@ import (
 	"time"
 )
 
-
 type migration struct {
 	Version     int
 	Description string
 	SQL         string
 }
-
 
 func allMigrations() []migration {
 	return []migration{
@@ -103,9 +101,7 @@ func allMigrations() []migration {
 	}
 }
 
-
 func (db *DB) Migrate(ctx context.Context) error {
-	
 	_, err := db.pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version     INT PRIMARY KEY,
@@ -117,7 +113,6 @@ func (db *DB) Migrate(ctx context.Context) error {
 		return fmt.Errorf("create schema_migrations table: %w", err)
 	}
 
-	
 	var currentVersion int
 	err = db.pool.QueryRow(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&currentVersion)
 	if err != nil {

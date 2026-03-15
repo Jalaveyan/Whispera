@@ -401,7 +401,6 @@ func (he *HardwareEvasion) BypassHardwareRestrictions(ctx context.Context, restr
 	he.mu.Lock()
 	defer he.mu.Unlock()
 
-
 	technique := he.selectTechnique(restrictionType)
 	if technique == nil {
 		return fmt.Errorf("не найдена подходящая техника для %s", restrictionType)
@@ -448,7 +447,6 @@ func (he *HardwareEvasion) applyTechnique(
 	technique *RealHardwareTechnique,
 	restrictionType string,
 ) error {
-
 	switch technique.Type {
 	case "fpga":
 		return he.applyFPGABypass(ctx, restrictionType)
@@ -472,7 +470,6 @@ func (he *HardwareEvasion) applyFPGABypass(ctx context.Context, restrictionType 
 	default:
 	}
 
-
 	he.performFPGABypass(restrictionType)
 
 	he.applyFPGATechniques(restrictionType)
@@ -486,7 +483,6 @@ func (he *HardwareEvasion) applyASICBypass(ctx context.Context, restrictionType 
 		return ctx.Err()
 	default:
 	}
-
 
 	he.performASICBypass(restrictionType)
 
@@ -502,8 +498,6 @@ func (he *HardwareEvasion) applyNICBypass(ctx context.Context, restrictionType s
 	default:
 	}
 
-
-
 	he.applyNICTechniques(restrictionType)
 
 	return nil
@@ -516,8 +510,6 @@ func (he *HardwareEvasion) applyRouterBypass(ctx context.Context, restrictionTyp
 	default:
 	}
 
-
-
 	he.applyRouterTechniques(restrictionType)
 
 	return nil
@@ -529,8 +521,6 @@ func (he *HardwareEvasion) applySwitchBypass(ctx context.Context, restrictionTyp
 		return ctx.Err()
 	default:
 	}
-
-
 
 	he.applySwitchTechniques(restrictionType)
 
@@ -613,7 +603,6 @@ func (he *HardwareEvasion) applySwitchTechniques(restrictionType string) {
 func (he *HardwareEvasion) EmulateHardware(ctx context.Context, targetHardware string) error {
 	he.mu.Lock()
 	defer he.mu.Unlock()
-
 
 	if !he.isSupportedHardware(targetHardware) {
 		return fmt.Errorf("hardware %s не поддерживается", targetHardware)
@@ -762,7 +751,6 @@ func (he *HardwareEvasion) emulatePerformance(targetHardware string) map[string]
 func (he *HardwareEvasion) SpoofHardwareIdentity(ctx context.Context, targetIdentity string) error {
 	he.mu.Lock()
 	defer he.mu.Unlock()
-
 
 	err := he.applyIdentitySpoofing(targetIdentity)
 	if err != nil {

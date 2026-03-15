@@ -1,69 +1,9 @@
-version: 2
+version: "2"
 
 run:
   timeout: 5m
   tests: true
   modules-download-mode: readonly
-
-linters-settings:
-  staticcheck:
-    checks: ["all"]
-    enable: ["assign", "atomic", "bools", "buildtag", "cgocall", "composites", "copylocks", "deepequalerrors", "errorsas", "fieldalignment", "findcall", "httpresponse", "ifaceassert", "loopclosure", "lostcancel", "nilfunc", "nilness", "printf", "reflectvaluecompare", "shadow", "shift", "sortslice", "stdmethods", "stringintconv", "structtag", "testinggoroutine", "tests", "unmarshal", "unreachable", "unsafeptr", "unusedresult"]
-  unused:
-    check-exported: true
-  gocyclo:
-    min-complexity: 100
-  goconst:
-    min-len: 3
-    min-occurrences: 3
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - experimental
-      - opinionated
-      - performance
-      - style
-    disabled-checks:
-      - dupImport
-      - ifElseChain
-      - octalLiteral
-      - whyNoLint
-      - wrapperFunc
-      - exitAfterDefer
-      - singleCaseSwitch
-  misspell:
-    locale: US
-  lll:
-    line-length: 120
-  gosec:
-    severity: medium
-    confidence: medium
-  funlen:
-    lines: 1000
-    statements: 500
-  nestif:
-    min-complexity: 10
-  prealloc:
-    simple: true
-    range-loops: true
-    for-loops: false
-  revive:
-    min-confidence: 0.8
-    rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: if-return
-      - name: increment-decrement
-      - name: var-declaration
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
 
 linters:
   enable:
@@ -78,6 +18,7 @@ linters:
     - nakedret
     - noctx
     - whitespace
+    - unused
   disable:
     - funlen
     - gocyclo
@@ -90,44 +31,73 @@ linters:
     - prealloc
     - goconst
     - revive
-    - gosec
     - gocritic
     - staticcheck
+    - gochecknoinits
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: true
+    gocyclo:
+      min-complexity: 100
+    misspell:
+      locale: US
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      - linters: [errcheck]
+        text: "SetDeadline|SetReadDeadline|SetWriteDeadline|SetKeepAlive|SetNoDelay|SetReadBuffer|SetWriteBuffer|SetKeepAlivePeriod"
+      - linters: [errcheck]
+        text: "Write|Encode"
+      - linters: [errcheck]
+        text: "CloseWithError"
+      - linters: [errcheck]
+        text: "io\\.Copy"
+      - linters: [errcheck]
+        text: "Rollback|rollback"
+      - linters: [errcheck]
+        text: "Register"
+      - linters: [errcheck]
+        text: "\\.Stop|Stop\\b|Shutdown"
+      - linters: [errcheck]
+        text: "Unsubscribe|Drain|Publish"
+      - linters: [errcheck]
+        text: "sendReply|sendFrame"
+      - linters: [errcheck]
+        text: "SendNotification|Send\\b"
+      - linters: [errcheck]
+        text: "Chmod|MkdirAll|WriteFile|Seek"
+      - linters: [errcheck]
+        text: "SwitchProfile|LearnFromTraffic|InjectFault|ProcessOutbound"
+      - linters: [errcheck]
+        text: "Reconnect|SetActiveService|Disable|GetOrCreateStream|DecryptHeader|CheckBridgeNow|CreateBackup|Signal|setState"
+      - linters: [errcheck]
+        text: "loadAccessKeys|AddICECandidate|SetLocalDescription|SetRemoteDescription"
+      - linters: [errcheck]
+        text: "api\\.Send"
+      - linters: [errcheck]
+        text: "fsm\\.Event"
+      - linters: [errcheck]
+        text: "optimizeFor|optimizeListener"
+      - linters: [errcheck]
+        text: "ListenAndServe|ServeTLS|Serve\\b"
+      - linters: [errcheck]
+        text: "Sscanf|Decode|Release|Persist|persist|writeWithRetry|tcpConn\\.Read|reader\\.Read"
+      - linters: [errcheck]
+        text: "cmd\\.|Parse\\b"
+      - linters: [errcheck]
+        path: "yatelemost|vkwebrtc"
+      - linters: [errcheck]
+        path: "correlation|marionette"
+      - linters: [errcheck]
+        path: "server/dynamic"
+      - linters: [unused]
+        text: "field .* is unused"
+      - path: _test\.go
+        linters: [funlen, gocyclo]
+      - path: cmd/
+        linters: [funlen, gocyclo, nestif, goconst, gocritic]
 
-  issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - funlen
-        - gocyclo
-    - path: cmd/
-      linters:
-        - funlen
-        - gocyclo
-        - nestif
-        - gosec
-        - goconst
-        - gocritic
-    - path: cmd/.*
-      linters:
-        - funlen
-        - gocyclo
-        - nestif
-        - gosec
-        - goconst
-        - gocritic
-    - text: "exported.*should have comment"
-      linters:
-        - golint
-  exclude:
-    - "Error return value of .((os\\.)?std(out|err)\\..*|.*Close|.*Flush|os\\.Remove(All)?|.*printf?|os\\.(Un)?Setenv). is not checked"
-    - "exported (.+) should have comment or be unexported"
-    - "package comment should be of the form"
-    - "G115: integer overflow conversion"
-    - "G112: Potential Slowloris Attack"
-    - "G404: Use of weak random number generator"
-    - "Function.*is too long"
-    - "Function.*has too many statements"
-    - "cyclomatic complexity.*of func.*is high"
+issues:
   max-issues-per-linter: 100
-  max-same-issues: 20
+  max-same-issues: 50

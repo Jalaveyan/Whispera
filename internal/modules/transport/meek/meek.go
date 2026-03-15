@@ -16,14 +16,11 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
-	"whispera/internal/logger"
 )
 
 func init() {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
 }
-
-var log = logger.Module("meek")
 
 const (
 	ModuleName   = "transport.meek"

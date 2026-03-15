@@ -103,7 +103,7 @@ func (t *Transport) Start() error {
 		return err
 	}
 
-	listener, err := net.Listen("tcp", t.config.ListenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", t.config.ListenAddr)
 	if err != nil {
 		t.SetHealthy(false, fmt.Sprintf("failed to listen: %v", err))
 		return fmt.Errorf("failed to listen on TCP: %w", err)

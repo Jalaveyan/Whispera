@@ -812,7 +812,6 @@ func (r *RussianServiceEvasion) resizeToGenericRussianTarget(data []byte, target
 }
 
 func (r *RussianServiceEvasion) generateRealisticTiming(baseDelay int, variance float64) time.Duration {
-
 	thinkTime := r.generateHumanThinkTime()
 
 	jitter := r.generateNetworkJitter()
@@ -831,7 +830,6 @@ func (r *RussianServiceEvasion) generateNetworkJitter() float64 {
 }
 
 func (r *RussianServiceEvasion) GenerateScientificDeviceID() string {
-
 	deviceID := "sci_device_"
 	deviceID += string(rune(65 + secureRandInt(26)))
 	deviceID += string(rune(48 + secureRandInt(10)))

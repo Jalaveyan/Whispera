@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -255,10 +256,14 @@ func (a *Agent) post(path string, body interface{}) (*http.Response, error) {
 	}
 
 	url := fmt.Sprintf("https://%s%s", a.config.UpstreamServer, path)
-	resp, err := a.client.Post(url, "application/json", bytes.NewReader(data))
+	req1, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+	req1.Header.Set("Content-Type", "application/json")
+	resp, err := a.client.Do(req1)
 	if err != nil {
 		url = fmt.Sprintf("http://%s%s", a.config.UpstreamServer, path)
-		resp, err = a.client.Post(url, "application/json", bytes.NewReader(data))
+		req2, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+		req2.Header.Set("Content-Type", "application/json")
+		resp, err = a.client.Do(req2)
 		if err != nil {
 			return nil, err
 		}

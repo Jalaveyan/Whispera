@@ -18,7 +18,6 @@ var _ = []interface{}{
 	(*Marionette).enableFallbackMode,
 }
 
-
 func (m *Marionette) detectDPI() float64 {
 	threat := 0.0
 	threat += m.analyzeFragmentationPatterns()
@@ -93,7 +92,6 @@ func (m *Marionette) generateCoverTraffic() []byte {
 }
 
 func (m *Marionette) ApplyProductionDPIEvasion(data []byte, service string) ([]byte, time.Duration, error) {
-
 	processor := func(d []byte) ([]byte, error) {
 		var res []byte
 		var err error
@@ -175,7 +173,6 @@ func (m *Marionette) clearCoverTraffic() {
 	defer m.Mutex.Unlock()
 	m.CoverTraffic = nil
 }
-
 
 func (m *Marionette) calculateAdvancedStats(data []int) (float64, float64, float64, float64) {
 	if len(data) == 0 {
@@ -262,7 +259,6 @@ func (m *Marionette) calculateMax(values []int) int {
 	}
 	return max
 }
-
 
 type TrafficRecordCSV struct {
 	TrafficClass int       `json:"traffic_class"`
@@ -365,7 +361,6 @@ func (m *Marionette) updateProfilesFromRealData(analysis *TrafficAnalysis) {
 	}
 }
 
-
 type EffectivenessMetrics struct {
 	TotalPackets         int64
 	SuccessfulEvasion    int64
@@ -434,7 +429,6 @@ func (em *EffectivenessMetrics) ResetMetrics() {
 	em.ProfileEffectiveness = make(map[string]float64)
 	em.LastReset = util.GetGlobalTimeCache().Now()
 }
-
 
 func (m *Marionette) getPerformanceMetrics() *SystemMetrics {
 	m.Mutex.RLock()

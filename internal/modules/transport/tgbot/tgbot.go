@@ -202,7 +202,11 @@ func (t *Transport) getUpdates(timeout int) ([]incomingMsg, error) {
 	reqURL := fmt.Sprintf("%s%s/getUpdates?timeout=%d&offset=%d&allowed_updates=[\"message\"]",
 		tgAPIBase, url.PathEscape(t.cfg.MyBotToken), timeout, offset)
 
-	resp, err := t.hc.Get(reqURL)
+	getReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := t.hc.Do(getReq)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +281,12 @@ func (t *Transport) sendMessage(text string) error {
 		"text":                 {text},
 		"disable_notification": {"true"},
 	}
-	resp, err := t.hc.PostForm(tgAPIBase+url.PathEscape(t.cfg.MyBotToken)+"/sendMessage", params)
+	postReq, err := http.NewRequestWithContext(context.Background(), http.MethodPost, tgAPIBase+url.PathEscape(t.cfg.MyBotToken)+"/sendMessage", strings.NewReader(params.Encode()))
+	if err != nil {
+		return fmt.Errorf("tgbot send: %w", err)
+	}
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := t.hc.Do(postReq)
 	if err != nil {
 		return fmt.Errorf("tgbot send: %w", err)
 	}

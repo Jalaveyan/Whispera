@@ -153,7 +153,7 @@ func (t *Transport) listenInternal(ctx context.Context) error {
 		WriteTimeout: t.config.WriteTimeout,
 	}
 
-	listener, err := net.Listen("tcp", t.config.ListenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", t.config.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
@@ -174,7 +174,6 @@ func (t *Transport) listenInternal(ctx context.Context) error {
 }
 
 func (t *Transport) handleRequest(w http.ResponseWriter, r *http.Request) {
-
 	if r.URL.Path != t.config.Path {
 		http.NotFound(w, r)
 		return
@@ -199,7 +198,6 @@ func (t *Transport) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	log.Debug("New h2c connection from %s", r.RemoteAddr)
 
-
 	pr, pw := io.Pipe()
 
 	conn := &h2cConn{
@@ -218,7 +216,6 @@ func (t *Transport) handleRequest(w http.ResponseWriter, r *http.Request) {
 	buf := make([]byte, 1024*1024)
 	io.CopyBuffer(w, pr, buf)
 }
-
 
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	if t.client == nil {
@@ -243,7 +240,6 @@ func (t *Transport) Close() error {
 	return t.Stop()
 }
 
-
 type H2CClient struct {
 	config    *Config
 	transport *http2.Transport
@@ -261,7 +257,7 @@ func NewClient(cfg *Config) (*H2CClient, error) {
 	t := &http2.Transport{
 		AllowHTTP: true,
 		DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-			return net.Dial(network, addr)
+			return (&net.Dialer{}).DialContext(context.Background(), network, addr)
 		},
 		MaxHeaderListSize:          1024 * 1024 * 10,
 		StrictMaxConcurrentStreams: false,
@@ -385,7 +381,6 @@ func (u *H2CUpgrader) Upgrade(w http.ResponseWriter, r *http.Request) (net.Conn,
 
 	return conn, rw, nil
 }
-
 
 func (t *Transport) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
 	if err := t.Module.Init(ctx, cfg); err != nil {

@@ -324,43 +324,6 @@ func parseUDPHeader(data []byte) (host string, port uint16, payload []byte, err 
 	return host, port, data[offset:], nil
 }
 
-func parseUDPDataHeader(data []byte) (host string, port uint16, payload []byte, err error) {
-	if len(data) < 4 {
-		return "", 0, nil, fmt.Errorf("udp data header too short")
-	}
-	atyp := data[0]
-	switch atyp {
-	case 0x01:
-		if len(data) < 7 {
-			return "", 0, nil, fmt.Errorf("udp IPv4 header too short")
-		}
-		host = net.IP(data[1:5]).String()
-		port = binary.BigEndian.Uint16(data[5:7])
-		payload = data[7:]
-	case 0x04:
-		if len(data) < 19 {
-			return "", 0, nil, fmt.Errorf("udp IPv6 header too short")
-		}
-		host = net.IP(data[1:17]).String()
-		port = binary.BigEndian.Uint16(data[17:19])
-		payload = data[19:]
-	case 0x03:
-		if len(data) < 2 {
-			return "", 0, nil, fmt.Errorf("udp domain header too short")
-		}
-		dl := int(data[1])
-		if len(data) < 2+dl+2 {
-			return "", 0, nil, fmt.Errorf("udp domain header truncated")
-		}
-		host = string(data[2 : 2+dl])
-		port = binary.BigEndian.Uint16(data[2+dl : 2+dl+2])
-		payload = data[2+dl+2:]
-	default:
-		return "", 0, nil, fmt.Errorf("unknown addrtype 0x%02x", atyp)
-	}
-	return host, port, payload, nil
-}
-
 func buildUDPReply(host string, port uint16, payload []byte) []byte {
 	var hdr []byte
 	ip := net.ParseIP(host)

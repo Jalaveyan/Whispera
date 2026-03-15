@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -68,16 +69,16 @@ func mapErrorToReplyCode(err error) byte {
 }
 
 type SOCKS5Server struct {
-	listenAddr       string
-	handler          func(net.Conn, string, uint16) error
-	authHandler      AuthHandler
-	packetHandler    PacketHandler
-	udpRelayHandler  UDPRelayHandler
-	udpHandler       func(net.Conn) error
-	udpConn          *net.UDPConn
-	udpAddr          *net.UDPAddr
-	mu               sync.RWMutex
-	log              *logger.Logger
+	listenAddr      string
+	handler         func(net.Conn, string, uint16) error
+	authHandler     AuthHandler
+	packetHandler   PacketHandler
+	udpRelayHandler UDPRelayHandler
+	udpHandler      func(net.Conn) error
+	udpConn         *net.UDPConn
+	udpAddr         *net.UDPAddr
+	mu              sync.RWMutex
+	log             *logger.Logger
 }
 
 type PacketHandler func(data []byte, from net.Addr) error
@@ -115,7 +116,7 @@ func (s *SOCKS5Server) SetUDPRelayHandler(h UDPRelayHandler) {
 }
 
 func (s *SOCKS5Server) ListenAndServe() error {
-	listener, err := net.Listen("tcp", s.listenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", s.listenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", s.listenAddr, err)
 	}
@@ -252,8 +253,8 @@ func (s *SOCKS5Server) handleRequest(conn net.Conn) (string, uint16, error) {
 				io.CopyN(io.Discard, conn, 16)
 			case socks5ATYPDomain:
 				lenBuf := make([]byte, 1)
-				io.ReadFull(conn, lenBuf)
-				io.CopyN(io.Discard, conn, int64(lenBuf[0]))
+				_, _ = io.ReadFull(conn, lenBuf)
+				_, _ = io.CopyN(io.Discard, conn, int64(lenBuf[0]))
 			}
 			io.CopyN(io.Discard, conn, 2)
 
@@ -415,7 +416,6 @@ func (s *SOCKS5Server) handleUsernamePasswordAuth(conn net.Conn) error {
 }
 
 func (s *SOCKS5Server) handleUDPAssociate(conn net.Conn, atyp byte) (string, uint16, error) {
-
 	switch atyp {
 	case socks5ATYPIPv4:
 		addr := make([]byte, 4)
@@ -503,7 +503,6 @@ func (s *SOCKS5Server) handleUDPRelay(udpListener *net.UDPConn, tcpConn net.Conn
 		if clientAddr == nil {
 			clientAddr = addr
 		}
-
 
 		if n < 10 {
 			continue

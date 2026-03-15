@@ -67,7 +67,7 @@ func New(cfg *Config) (*Transport, error) {
 func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportHTTPUpgrade }
 
 func (t *Transport) Listen(addr string) error {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return err
 	}

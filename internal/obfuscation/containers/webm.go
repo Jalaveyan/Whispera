@@ -70,10 +70,7 @@ func (w *WebMWrapper) WrapData(data []byte) ([]byte, error) {
 	writeUInt(clusterContent, 0xE7, w.clusterTimecode)
 	w.clusterTimecode += 33
 
-
-
 	blockHeader := []byte{0x81, 0x00, 0x00, 0x80}
-
 
 	tagID := []byte{0xA3}
 	size := encodeVINT(uint64(len(blockHeader) + len(data)))
@@ -113,7 +110,6 @@ func (w *WebMWrapper) UnwrapData(data []byte) ([]byte, error) {
 		}
 
 		if id == 0xA3 {
-
 			if contentLen <= 4 {
 				return nil, errors.New("SimpleBlock too small")
 			}
@@ -129,7 +125,6 @@ func (w *WebMWrapper) UnwrapData(data []byte) ([]byte, error) {
 			payloadBuf.Write(chunk)
 			continue
 		}
-
 
 		if id == 0x18538067 || id == 0x1F43B675 {
 			continue
@@ -191,7 +186,6 @@ func readVINT(r *bytes.Reader) (uint64, int, error) {
 
 	return val, width, nil
 }
-
 
 func writeMaster(w *bytes.Buffer, id uint32, data []byte) {
 	w.Write(encodeID(id))

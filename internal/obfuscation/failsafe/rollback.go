@@ -31,7 +31,6 @@ func (fs *FailSafe) executeRollback(ctx context.Context, action *FailSafeAction)
 }
 
 func (fs *FailSafe) executeMinimalRollback(_ context.Context, action *FailSafeAction) error {
-
 	systemState := fs.analyzeSystemState()
 	if len(systemState.ActiveModules) > 0 {
 	}
@@ -67,7 +66,6 @@ func (fs *FailSafe) executeMinimalRollback(_ context.Context, action *FailSafeAc
 }
 
 func (fs *FailSafe) executeBasicRollback(_ context.Context, action *FailSafeAction) error {
-
 	systemState := fs.analyzeSystemState()
 
 	functionsToDisable := fs.identifyBasicRollbackFunctions(systemState)
@@ -196,7 +194,6 @@ func (fs *FailSafe) assessPerformanceImpact(disabledCount, totalCount int) float
 }
 
 func (fs *FailSafe) executeAggressiveRollback(_ context.Context, action *FailSafeAction) error {
-
 	systemState := fs.analyzeSystemState()
 
 	allFunctions := fs.identifyAllObfuscationFunctions()
@@ -261,7 +258,6 @@ func (fs *FailSafe) executeConservativeRollback() {
 }
 
 func (fs *FailSafe) executeDefaultRollback(_ context.Context, action *FailSafeAction) error {
-
 	fs.executeConservativeRollback()
 
 	action.Details = map[string]interface{}{

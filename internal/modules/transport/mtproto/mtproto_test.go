@@ -133,7 +133,7 @@ func TestMTProtoSessionEncryptDecrypt(t *testing.T) {
 	for i := range header {
 		header[i] = byte(i * 3)
 	}
-	session.DecryptHeader(header)
+	_ = session.DecryptHeader(header)
 
 	original := []byte("test data for encryption")
 	encrypted := session.EncryptToClient(original)

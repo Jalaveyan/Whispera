@@ -93,7 +93,7 @@ func New(cfg *Config) (*Transport, error) {
 func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportShadowsocks }
 
 func (t *Transport) Listen(addr string) error {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -169,7 +169,7 @@ func (t *Transport) newAEAD(subkey []byte) (cipher.AEAD, error) {
 func deriveSubkey(psk, salt []byte, keyLen int) []byte {
 	r := hkdf.New(sha256.New, psk, salt, []byte("ss-subkey"))
 	key := make([]byte, keyLen)
-	io.ReadFull(r, key)
+	_, _ = io.ReadFull(r, key)
 	return key
 }
 

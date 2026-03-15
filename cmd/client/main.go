@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"flag"
 	stdlog "log"
@@ -308,7 +309,7 @@ func main() {
 			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
 				vpnServerIP := net.ParseIP(host)
 				vpnPort := 8443
-				if p, err := net.LookupPort("tcp", "8443"); err == nil {
+				if p, err := net.DefaultResolver.LookupPort(context.Background(), "tcp", "8443"); err == nil {
 					vpnPort = p
 				}
 

@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-
 type HTTPProxy struct {
 	config      *Config
 	server      *http.Server
@@ -20,7 +19,6 @@ type HTTPProxy struct {
 	stats       *Stats
 	listener    net.Listener
 }
-
 
 func NewHTTPProxy(config *Config) *HTTPProxy {
 	return &HTTPProxy{
@@ -31,7 +29,6 @@ func NewHTTPProxy(config *Config) *HTTPProxy {
 	}
 }
 
-
 func (p *HTTPProxy) SetAuthHandler(handler AuthHandler) {
 	p.authHandler = handler
 }
@@ -39,7 +36,7 @@ func (p *HTTPProxy) Type() ProxyType {
 	return ProxyHTTP
 }
 func (p *HTTPProxy) Start(ctx context.Context) error {
-	listener, err := net.Listen("tcp", p.config.Addr)
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", p.config.Addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", p.config.Addr, err)
 	}
@@ -55,14 +52,12 @@ func (p *HTTPProxy) Start(ctx context.Context) error {
 
 	log.Printf("[HTTP-PROXY] ✅ Server listening on %s", p.config.Addr)
 
-	
 	go func() {
 		if err := p.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("[HTTP-PROXY] ❌ Server error: %v", err)
 		}
 	}()
 
-	
 	<-ctx.Done()
 	return p.Stop()
 }
@@ -75,14 +70,12 @@ func (p *HTTPProxy) Stop() error {
 	return nil
 }
 
-
 func (p *HTTPProxy) Addr() net.Addr {
 	if p.listener != nil {
 		return p.listener.Addr()
 	}
 	return nil
 }
-
 
 func (p *HTTPProxy) Stats() *Stats {
 	return p.stats
@@ -93,11 +86,9 @@ func (p *HTTPProxy) Reset() {
 	}
 }
 
-
 func (p *HTTPProxy) handleRequest(w http.ResponseWriter, r *http.Request) {
 	p.stats.Connections++
 
-	
 	if p.authHandler != nil && !p.checkAuth(r) {
 		p.stats.Errors++
 		p.sendAuthRequired(w)
@@ -111,7 +102,6 @@ func (p *HTTPProxy) handleRequest(w http.ResponseWriter, r *http.Request) {
 		p.handleHTTP(w, r)
 	}
 }
-
 
 func (p *HTTPProxy) checkAuth(r *http.Request) bool {
 	auth := r.Header.Get("Proxy-Authorization")
@@ -137,16 +127,13 @@ func (p *HTTPProxy) checkAuth(r *http.Request) bool {
 	return p.authHandler.Authenticate(credentials[0], credentials[1])
 }
 
-
 func (p *HTTPProxy) sendAuthRequired(w http.ResponseWriter) {
 	w.Header().Set("Proxy-Authenticate", "Basic realm=\"Whispera Proxy\"")
 	w.WriteHeader(http.StatusProxyAuthRequired)
 }
 
-
 func (p *HTTPProxy) handleHTTPS(w http.ResponseWriter, r *http.Request) {
-	
-	dstConn, err := net.DialTimeout("tcp", r.Host, p.config.Timeout)
+	dstConn, err := (&net.Dialer{Timeout: p.config.Timeout}).DialContext(r.Context(), "tcp", r.Host)
 	if err != nil {
 		p.stats.Errors++
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
@@ -154,10 +141,8 @@ func (p *HTTPProxy) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dstConn.Close()
 
-	
 	w.WriteHeader(http.StatusOK)
 
-	
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		p.stats.Errors++
@@ -173,21 +158,17 @@ func (p *HTTPProxy) handleHTTPS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer clientConn.Close()
 
-	
 	p.proxyData(clientConn, dstConn)
 }
 
-
 func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	
 	r.RequestURI = ""
 	r.URL.Host = r.Host
 	r.URL.Scheme = "http"
 
-	
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return net.DialTimeout(network, addr, p.config.Timeout)
+			return (&net.Dialer{Timeout: p.config.Timeout}).DialContext(ctx, network, addr)
 		},
 	}
 
@@ -196,7 +177,6 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		Timeout:   p.config.Timeout,
 	}
 
-	
 	resp, err := client.Do(r)
 	if err != nil {
 		p.stats.Errors++
@@ -205,7 +185,6 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
@@ -214,28 +193,23 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(resp.StatusCode)
 
-	
 	io.Copy(w, resp.Body)
 }
-
 
 func (p *HTTPProxy) proxyData(client, server net.Conn) {
 	done := make(chan struct{}, 2)
 
-	
 	bufSize := 256 * 1024
 
-	
 	go func() {
 		defer client.Close()
 		defer server.Close()
-		
+
 		buf := make([]byte, bufSize)
 		io.CopyBuffer(server, client, buf)
 		done <- struct{}{}
 	}()
 
-	
 	go func() {
 		defer client.Close()
 		defer server.Close()
@@ -244,6 +218,5 @@ func (p *HTTPProxy) proxyData(client, server net.Conn) {
 		done <- struct{}{}
 	}()
 
-	
 	<-done
 }

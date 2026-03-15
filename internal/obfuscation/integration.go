@@ -135,7 +135,6 @@ func NewIntegrationManagerWithOptions(enableML, enableFTE bool) *IntegrationMana
 }
 
 func (im *IntegrationManager) ProcessTraffic(data []byte, direction string) ([]byte, time.Duration, error) {
-
 	if im.fteEnabled && im.fte != nil {
 		transformed, err := im.fte.Transform(data)
 		if err == nil && transformed != nil && len(transformed) > 0 {

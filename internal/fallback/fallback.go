@@ -1,4 +1,3 @@
-
 package fallback
 
 import (
@@ -13,20 +12,17 @@ import (
 	"whispera/internal/core/interfaces"
 )
 
-
 type Config struct {
-	
 	TransportPriority []interfaces.TransportType
-	
+
 	RetryDelay time.Duration
-	
+
 	MaxRetries int
-	
+
 	BlockDetectionTimeout time.Duration
-	
+
 	CooldownPeriod time.Duration
 }
-
 
 func DefaultConfig() *Config {
 	return &Config{
@@ -45,31 +41,25 @@ func DefaultConfig() *Config {
 	}
 }
 
-
 type TransportDialer interface {
 	Dial(ctx context.Context, addr string) (net.Conn, error)
 	Type() interfaces.TransportType
 }
-
 
 type Manager struct {
 	config     *Config
 	transports map[interfaces.TransportType]TransportDialer
 	mu         sync.RWMutex
 
-	
 	blocked   map[interfaces.TransportType]time.Time
 	blockedMu sync.RWMutex
 
-	
 	current interfaces.TransportType
 
-	
 	fallbackCount uint64
 	successCount  uint64
 	failureCount  uint64
 }
-
 
 func New(cfg *Config) *Manager {
 	if cfg == nil {
@@ -82,7 +72,6 @@ func New(cfg *Config) *Manager {
 		blocked:    make(map[interfaces.TransportType]time.Time),
 	}
 
-	
 	if len(cfg.TransportPriority) > 0 {
 		m.current = cfg.TransportPriority[0]
 	}
@@ -90,13 +79,11 @@ func New(cfg *Config) *Manager {
 	return m
 }
 
-
 func (m *Manager) RegisterTransport(t TransportDialer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.transports[t.Type()] = t
 }
-
 
 func (m *Manager) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	m.mu.RLock()
@@ -110,20 +97,16 @@ func (m *Manager) Dial(ctx context.Context, addr string) (net.Conn, error) {
 
 	var lastErr error
 
-	
 	for _, tType := range priority {
-		
 		transport, ok := transports[tType]
 		if !ok {
 			continue
 		}
 
-		
 		if m.isBlocked(tType) {
 			continue
 		}
 
-		
 		conn, err := m.tryTransport(ctx, transport, addr)
 		if err == nil {
 			m.setActive(tType)
@@ -134,7 +117,6 @@ func (m *Manager) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		lastErr = err
 		atomic.AddUint64(&m.failureCount, 1)
 
-		
 		if m.shouldMarkBlocked(err) {
 			m.markBlocked(tType)
 			atomic.AddUint64(&m.fallbackCount, 1)
@@ -144,12 +126,10 @@ func (m *Manager) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return nil, fmt.Errorf("all transports failed, last error: %w", lastErr)
 }
 
-
 func (m *Manager) tryTransport(ctx context.Context, t TransportDialer, addr string) (net.Conn, error) {
 	var lastErr error
 
 	for i := 0; i < m.config.MaxRetries; i++ {
-		
 		dialCtx, cancel := context.WithTimeout(ctx, m.config.BlockDetectionTimeout)
 
 		conn, err := t.Dial(dialCtx, addr)
@@ -161,12 +141,10 @@ func (m *Manager) tryTransport(ctx context.Context, t TransportDialer, addr stri
 
 		lastErr = err
 
-		
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 
-		
 		if i < m.config.MaxRetries-1 {
 			select {
 			case <-ctx.Done():
@@ -179,7 +157,6 @@ func (m *Manager) tryTransport(ctx context.Context, t TransportDialer, addr stri
 	return nil, lastErr
 }
 
-
 func (m *Manager) isBlocked(t interfaces.TransportType) bool {
 	m.blockedMu.RLock()
 	blockedTime, blocked := m.blocked[t]
@@ -189,7 +166,6 @@ func (m *Manager) isBlocked(t interfaces.TransportType) bool {
 		return false
 	}
 
-	
 	if time.Since(blockedTime) > m.config.CooldownPeriod {
 		m.blockedMu.Lock()
 		delete(m.blocked, t)
@@ -200,13 +176,11 @@ func (m *Manager) isBlocked(t interfaces.TransportType) bool {
 	return true
 }
 
-
 func (m *Manager) markBlocked(t interfaces.TransportType) {
 	m.blockedMu.Lock()
 	m.blocked[t] = time.Now()
 	m.blockedMu.Unlock()
 }
-
 
 func (m *Manager) shouldMarkBlocked(err error) bool {
 	if err == nil {
@@ -215,7 +189,6 @@ func (m *Manager) shouldMarkBlocked(err error) bool {
 
 	errStr := err.Error()
 
-	
 	blockIndicators := []string{
 		"connection reset",
 		"connection refused",
@@ -236,20 +209,17 @@ func (m *Manager) shouldMarkBlocked(err error) bool {
 	return false
 }
 
-
 func (m *Manager) setActive(t interfaces.TransportType) {
 	m.mu.Lock()
 	m.current = t
 	m.mu.Unlock()
 }
 
-
 func (m *Manager) GetActive() interfaces.TransportType {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.current
 }
-
 
 func (m *Manager) GetBlockedTransports() []interfaces.TransportType {
 	m.blockedMu.RLock()
@@ -262,20 +232,17 @@ func (m *Manager) GetBlockedTransports() []interfaces.TransportType {
 	return result
 }
 
-
 func (m *Manager) UnblockAll() {
 	m.blockedMu.Lock()
 	m.blocked = make(map[interfaces.TransportType]time.Time)
 	m.blockedMu.Unlock()
 }
 
-
 func (m *Manager) Stats() (fallbacks, successes, failures uint64) {
 	return atomic.LoadUint64(&m.fallbackCount),
 		atomic.LoadUint64(&m.successCount),
 		atomic.LoadUint64(&m.failureCount)
 }
-
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsLower(s, substr))

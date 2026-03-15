@@ -9,7 +9,6 @@ import (
 	"whispera/internal/modules/qos"
 )
 
-
 type UDPTransport struct {
 	conn            net.Conn
 	config          *Config
@@ -20,18 +19,14 @@ type UDPTransport struct {
 	mu              sync.RWMutex
 }
 
-
 func NewUDPTransport(config *Config) *UDPTransport {
-	
-
 	t := &UDPTransport{
 		config:          config,
-		isVoIPOptimized: true, 
+		isVoIPOptimized: true,
 		voipQoS:         qos.NewVoIPQoS(),
 		discordDetector: qos.NewDiscordDetector(),
 	}
 
-	
 	if config.Metadata != nil && config.Metadata["voip"] == "false" {
 		t.isVoIPOptimized = false
 	}
@@ -39,13 +34,7 @@ func NewUDPTransport(config *Config) *UDPTransport {
 	return t
 }
 
-
 func (t *UDPTransport) Dial(addr string) error {
-	timeout := time.Duration(t.config.Timeout) * time.Second
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return err
@@ -56,22 +45,19 @@ func (t *UDPTransport) Dial(addr string) error {
 		return err
 	}
 
-	
 	if t.isVoIPOptimized {
 		t.optimizeForVoIP(conn)
-		
+
 		if t.voipQoS != nil {
 			t.voipQoS.Enable()
 		}
 	} else {
-		
 		t.optimizeForVoIP(conn)
 	}
 
 	t.conn = conn
 	return nil
 }
-
 
 func (t *UDPTransport) Listen() error {
 	udpAddr, err := net.ResolveUDPAddr("udp", t.config.Addr)
@@ -84,10 +70,9 @@ func (t *UDPTransport) Listen() error {
 		return err
 	}
 
-	
 	if t.isVoIPOptimized {
 		t.optimizeListenerForVoIP(conn)
-		
+
 		if t.voipQoS != nil {
 			t.voipQoS.Enable()
 		}
@@ -97,7 +82,6 @@ func (t *UDPTransport) Listen() error {
 	return nil
 }
 
-
 func (t *UDPTransport) WriteRaw(pkt []byte) error {
 	if t.conn == nil {
 		return ErrNotConnected
@@ -106,7 +90,6 @@ func (t *UDPTransport) WriteRaw(pkt []byte) error {
 	return err
 }
 
-
 func (t *UDPTransport) ReadRaw(buf []byte) (int, error) {
 	if t.conn == nil {
 		return 0, ErrNotConnected
@@ -114,29 +97,23 @@ func (t *UDPTransport) ReadRaw(buf []byte) (int, error) {
 	return t.conn.Read(buf)
 }
 
-
 func (t *UDPTransport) WriteTo(pkt []byte, addr net.Addr) (int, error) {
 	if t.listener == nil {
 		return 0, ErrNotListening
 	}
 
-	
 	if t.isVoIPOptimized && t.voipQoS != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
 		defer cancel()
 
-		
 		queuedPkt, err := t.voipQoS.ProcessPacket(ctx, pkt, pkt, addr)
 		if err == nil && queuedPkt != nil {
-			
 			return t.listener.WriteTo(queuedPkt.Data, addr)
 		}
 	}
 
-	
 	return t.listener.WriteTo(pkt, addr)
 }
-
 
 func (t *UDPTransport) ReadFrom(buf []byte) (int, net.Addr, error) {
 	if t.listener == nil {
@@ -145,7 +122,6 @@ func (t *UDPTransport) ReadFrom(buf []byte) (int, net.Addr, error) {
 
 	n, addr, err := t.listener.ReadFrom(buf)
 	if err == nil && n > 0 && t.isVoIPOptimized && t.discordDetector != nil {
-		
 		go t.discordDetector.AnalyzePacket(buf[:n], addr, t.LocalAddr())
 	}
 
@@ -169,7 +145,6 @@ func (t *UDPTransport) Close() error {
 	return lastErr
 }
 
-
 func (t *UDPTransport) LocalAddr() net.Addr {
 	if t.conn != nil {
 		return t.conn.LocalAddr()
@@ -186,55 +161,46 @@ func (t *UDPTransport) RemoteAddr() net.Addr {
 	return nil
 }
 
-
 func (t *UDPTransport) optimizeForVoIP(conn *net.UDPConn) error {
-	
-	if err := conn.SetReadBuffer(67108864); err != nil { 
-		
-		if err := conn.SetReadBuffer(16777216); err != nil { 
-			if err := conn.SetReadBuffer(8388608); err != nil { 
-				
+	if err := conn.SetReadBuffer(67108864); err != nil {
+		if err := conn.SetReadBuffer(16777216); err != nil {
+			if err := conn.SetReadBuffer(8388608); err != nil {
+
 			}
 		}
 	}
-	if err := conn.SetWriteBuffer(67108864); err != nil { 
-		
-		if err := conn.SetWriteBuffer(16777216); err != nil { 
-			if err := conn.SetWriteBuffer(8388608); err != nil { 
-				
+	if err := conn.SetWriteBuffer(67108864); err != nil {
+		if err := conn.SetWriteBuffer(16777216); err != nil {
+			if err := conn.SetWriteBuffer(8388608); err != nil {
+
 			}
 		}
 	}
 
-	
 	if file, err := conn.File(); err == nil {
 		defer file.Close()
 		fd := int(file.Fd())
 
-		
-		
 		if err := setIPTOS(fd, 0xB8); err == nil {
-			
+
 		}
 	}
 
 	return nil
 }
-
 
 func (t *UDPTransport) optimizeListenerForVoIP(conn *net.UDPConn) error {
-	
-	if err := conn.SetReadBuffer(67108864); err != nil { 
-		if err := conn.SetReadBuffer(16777216); err != nil { 
-			if err := conn.SetReadBuffer(8388608); err != nil { 
-				
+	if err := conn.SetReadBuffer(67108864); err != nil {
+		if err := conn.SetReadBuffer(16777216); err != nil {
+			if err := conn.SetReadBuffer(8388608); err != nil {
+
 			}
 		}
 	}
-	if err := conn.SetWriteBuffer(67108864); err != nil { 
-		if err := conn.SetWriteBuffer(16777216); err != nil { 
-			if err := conn.SetWriteBuffer(8388608); err != nil { 
-				
+	if err := conn.SetWriteBuffer(67108864); err != nil {
+		if err := conn.SetWriteBuffer(16777216); err != nil {
+			if err := conn.SetWriteBuffer(8388608); err != nil {
+
 			}
 		}
 	}
@@ -243,19 +209,13 @@ func (t *UDPTransport) optimizeListenerForVoIP(conn *net.UDPConn) error {
 		defer file.Close()
 		fd := int(file.Fd())
 		if err := setIPTOS(fd, 0xB8); err == nil {
-			
+
 		}
 	}
 
 	return nil
 }
 
-
 func setIPTOS(fd int, tos int) error {
-	
-	
-	
-
-	
 	return nil
 }

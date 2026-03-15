@@ -575,7 +575,6 @@ func SealUDPData(buf []byte, streamID uint16, addrType uint8, addr string, port 
 	}
 
 	binary.BigEndian.PutUint16(buf[current:], port)
-	current += 2
 
 	totalPayloadLen := udpHeaderLen + dataLen
 	WriteFrameHeader(buf[frameStart:], streamID, FrameUDPData, 0, totalPayloadLen)

@@ -400,7 +400,6 @@ func (s *Stream) Write(data []byte) error {
 	s.lastT = time.Now()
 
 	if s.Protocol == ProtoTCP && conn != nil {
-
 		n, err := conn.Write(data)
 		if err != nil {
 			return err
@@ -524,7 +523,6 @@ func (s *Stream) readFromTarget() {
 	s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 	for {
-
 		n, err := s.conn.Read(buf[HeaderSize:])
 		if err != nil {
 			if err != io.EOF {
@@ -544,7 +542,6 @@ func (s *Stream) readFromTarget() {
 				s.sackTracker.RecordPacket(s.seqNum)
 				s.seqNum++
 			}
-
 
 			if s.fecEnabled || s.packetLossRate > 2.0 {
 				encodedBuf := s.fecEncoder.EncodeFEC(buf[HeaderSize:HeaderSize+n], s.seqNum, HeaderSize)
@@ -626,7 +623,6 @@ func (s *Stream) readUDPFromTarget() {
 		}
 
 		if n > 0 {
-
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
 
@@ -694,7 +690,6 @@ func (s *Stream) readRelayUDP() {
 		}
 
 		if n > 0 {
-
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
 
@@ -1050,7 +1045,6 @@ func NewFECEncoder(k, m int) *FECEncoder {
 }
 
 func (fe *FECEncoder) EncodeFEC(data []byte, seqNum uint32, headroom int) []byte {
-
 	payloadLen := 7 + len(data)
 	totalLen := headroom + payloadLen
 
@@ -1256,43 +1250,10 @@ func (fd *FECDecoder) Reconstruct(blockStartSeq uint32, k, m int) [][]byte {
 			copy(res, data)
 
 			recovered = append(recovered, res)
-
 		}
 	}
 
 	return recovered
-}
-
-func (fd *FECDecoder) xorRecover(packets map[uint32][]byte, k int) []byte {
-	if len(packets) < k {
-		return nil
-	}
-
-	var result []byte
-	count := 0
-
-	for _, data := range packets {
-		if count == 0 {
-			result = packetPool.Get().([]byte)
-			if cap(result) < len(data) {
-				packetPool.Put(result)
-				result = make([]byte, len(data))
-			}
-			result = result[:len(data)]
-
-			copy(result, data)
-		} else {
-			for i := 0; i < len(result) && i < len(data); i++ {
-				result[i] ^= data[i]
-			}
-		}
-		count++
-		if count >= k {
-			break
-		}
-	}
-
-	return result
 }
 
 type SACKTracker struct {
@@ -1384,90 +1345,6 @@ func (st *SACKTracker) GetPacketLossRate() float32 {
 	}
 
 	return float32(st.lossCount) / float32(st.packetCount+st.lossCount) * 100
-}
-
-func (s *Stream) sendWithFEC(data []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if time.Since(s.lossCheckTime) > 30*time.Second {
-		s.packetLossRate = s.sackTracker.GetPacketLossRate()
-		s.lossCheckTime = time.Now()
-
-		if s.packetLossRate > 2.0 {
-			s.fecEnabled = true
-		} else if s.packetLossRate < 1.0 {
-			s.fecEnabled = false
-		}
-	}
-
-	if s.fecEnabled {
-		encodedData := s.fecEncoder.EncodeFEC(data, s.seqNum, 0)
-		s.seqNum++
-
-		err := s.writeWithRetry(encodedData)
-
-		if cap(encodedData) == 65536 {
-			packetPool.Put(encodedData)
-		}
-
-		parity := s.fecEncoder.GetParityPackets(s.seqNum, 0)
-		if err != nil {
-			for _, p := range parity {
-				packetPool.Put(p)
-				s.seqNum++
-			}
-			return err
-		}
-		for _, p := range parity {
-			s.writeWithRetry(p)
-			packetPool.Put(p)
-			s.seqNum++
-		}
-
-		return nil
-	}
-
-	s.seqNum++
-	return s.writeWithRetry(data)
-}
-
-func (s *Stream) writeWithRetry(data []byte) error {
-	maxRetries := 3
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if s.Protocol == ProtoTCP && s.conn != nil {
-			_, err := s.conn.Write(data)
-			if err == nil {
-				return nil
-			}
-		} else if s.Protocol == ProtoUDP && s.udpConn != nil {
-			_, err := s.udpConn.Write(data)
-			if err == nil {
-				return nil
-			}
-		}
-	}
-
-	return fmt.Errorf("failed to send data after %d retries", maxRetries)
-}
-
-func (s *Stream) receiveWithSACK(packet []byte, seqNum uint32) ([]byte, error) {
-	if s.sackEnabled {
-		s.sackTracker.RecordPacket(seqNum)
-	}
-
-	if s.fecEnabled {
-		recovered, canRecover := s.fecDecoder.DecodeFEC(packet, seqNum)
-		if canRecover && len(recovered) > 0 {
-			return recovered, nil
-		}
-
-		if len(packet) > 0 && packet[0] == 0xFF {
-			return nil, nil
-		}
-	}
-
-	return packet, nil
 }
 
 func (s *Stream) GetFECStats() map[string]interface{} {

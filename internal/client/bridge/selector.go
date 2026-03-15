@@ -15,37 +15,31 @@ import (
 	"time"
 )
 
-
 var globalTLSSessionCache = tls.NewLRUClientSessionCache(100)
-
 
 type BridgeMode int
 
 const (
-	
 	ModeDirect BridgeMode = iota
-	
+
 	ModeAuto
-	
+
 	ModeManual
 )
 
-
 type Config struct {
-	
 	Mode BridgeMode `yaml:"mode" json:"mode"`
-	
+
 	DiscoveryURL string `yaml:"discovery_url" json:"discovery_url"`
-	
+
 	ManualBridge string `yaml:"manual_bridge" json:"manual_bridge"`
-	
+
 	EnableFailover bool `yaml:"enable_failover" json:"enable_failover"`
-	
+
 	TestTimeout time.Duration `yaml:"test_timeout" json:"test_timeout"`
-	
+
 	MaxRetries int `yaml:"max_retries" json:"max_retries"`
 }
-
 
 func DefaultConfig() *Config {
 	return &Config{
@@ -56,15 +50,13 @@ func DefaultConfig() *Config {
 	}
 }
 
-
 type BridgeInfo struct {
 	ID       string `json:"id"`
 	Address  string `json:"address"`
 	Provider string `json:"provider"`
 	Latency  int    `json:"latency_ms"`
-	Failed   bool   `json:"-"` 
+	Failed   bool   `json:"-"`
 }
-
 
 type Selector struct {
 	config    *Config
@@ -73,7 +65,6 @@ type Selector struct {
 	failedIDs map[string]time.Time
 	mu        sync.RWMutex
 }
-
 
 func NewSelector(cfg *Config) *Selector {
 	if cfg == nil {
@@ -86,7 +77,6 @@ func NewSelector(cfg *Config) *Selector {
 	}
 }
 
-
 func NewSelectorWithURL(discoveryURL string) *Selector {
 	return NewSelector(&Config{
 		Mode:           ModeAuto,
@@ -97,13 +87,11 @@ func NewSelectorWithURL(discoveryURL string) *Selector {
 	})
 }
 
-
 func (s *Selector) SetMode(mode BridgeMode) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.config.Mode = mode
 }
-
 
 func (s *Selector) SetManualBridge(address string) {
 	s.mu.Lock()
@@ -112,13 +100,11 @@ func (s *Selector) SetManualBridge(address string) {
 	s.config.Mode = ModeManual
 }
 
-
 func (s *Selector) GetMode() BridgeMode {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.config.Mode
 }
-
 
 func (s *Selector) GetAvailableBridges() []*BridgeInfo {
 	s.mu.RLock()
@@ -127,7 +113,6 @@ func (s *Selector) GetAvailableBridges() []*BridgeInfo {
 	copy(result, s.bridges)
 	return result
 }
-
 
 func (s *Selector) FetchBridges(ctx context.Context) error {
 	fetchTimeout := 10 * time.Second
@@ -163,7 +148,6 @@ func (s *Selector) FetchBridges(ctx context.Context) error {
 	return nil
 }
 
-
 func (s *Selector) TestLatency(ctx context.Context, b *BridgeInfo) (time.Duration, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.config.TestTimeout)
 	defer cancel()
@@ -171,13 +155,12 @@ func (s *Selector) TestLatency(ctx context.Context, b *BridgeInfo) (time.Duratio
 	start := time.Now()
 
 	dialer := &net.Dialer{}
-	conn, err := tls.DialWithDialer(dialer, "tcp", b.Address, &tls.Config{
+	conn, err := (&tls.Dialer{NetDialer: dialer, Config: &tls.Config{
 		InsecureSkipVerify: true,
 		ClientSessionCache: globalTLSSessionCache,
-	})
+	}}).DialContext(ctx, "tcp", b.Address)
 
 	if err != nil {
-		
 		d := net.Dialer{}
 		tcpConn, tcpErr := d.DialContext(ctx, "tcp", b.Address)
 		if tcpErr != nil {
@@ -191,7 +174,6 @@ func (s *Selector) TestLatency(ctx context.Context, b *BridgeInfo) (time.Duratio
 	return time.Since(start), nil
 }
 
-
 func (s *Selector) TestAllBridges(ctx context.Context) {
 	s.mu.RLock()
 	bridges := make([]*BridgeInfo, len(s.bridges))
@@ -204,7 +186,6 @@ func (s *Selector) TestAllBridges(ctx context.Context) {
 
 	log.Printf("[BridgeSelector] Testing latency to %d bridges (lazy mode)...", len(bridges))
 
-	
 	firstReady := make(chan *BridgeInfo, 1)
 
 	for _, b := range bridges {
@@ -216,7 +197,7 @@ func (s *Selector) TestAllBridges(ctx context.Context) {
 			} else {
 				bridge.Latency = int(latency.Milliseconds())
 				log.Printf("[BridgeSelector] Bridge %s (%s): %dms", bridge.ID, bridge.Address, bridge.Latency)
-				
+
 				select {
 				case firstReady <- bridge:
 				default:
@@ -225,24 +206,20 @@ func (s *Selector) TestAllBridges(ctx context.Context) {
 		}(b)
 	}
 
-	
 	select {
 	case first := <-firstReady:
 		log.Printf("[BridgeSelector] First bridge ready: %s (%dms) - continuing in background", first.ID, first.Latency)
 	case <-ctx.Done():
-		log.Printf("[BridgeSelector] Bridge test cancelled")
+		log.Printf("[BridgeSelector] Bridge test canceled")
 	case <-time.After(s.config.TestTimeout):
 		log.Printf("[BridgeSelector] Bridge test timeout, using any available")
 	}
-	
 }
-
 
 func (s *Selector) SelectBest() *BridgeInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	
 	available := make([]*BridgeInfo, 0)
 	for _, b := range s.bridges {
 		if !s.isFailed(b.ID) {
@@ -254,14 +231,12 @@ func (s *Selector) SelectBest() *BridgeInfo {
 		return nil
 	}
 
-	
 	sort.Slice(available, func(i, j int) bool {
 		return available[i].Latency < available[j].Latency
 	})
 
 	return available[0]
 }
-
 
 func (s *Selector) GetNextBridge() *BridgeInfo {
 	s.mu.RLock()
@@ -273,7 +248,6 @@ func (s *Selector) GetNextBridge() *BridgeInfo {
 		}
 	}
 
-	
 	s.mu.RUnlock()
 	s.resetFailed()
 	s.mu.RLock()
@@ -285,7 +259,6 @@ func (s *Selector) GetNextBridge() *BridgeInfo {
 	return nil
 }
 
-
 func (s *Selector) MarkFailed(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -293,14 +266,12 @@ func (s *Selector) MarkFailed(id string) {
 	s.failedIDs[id] = time.Now()
 }
 
-
 func (s *Selector) isFailed(id string) bool {
 	failedAt, exists := s.failedIDs[id]
 	if !exists {
 		return false
 	}
 
-	
 	if time.Since(failedAt) > 5*time.Minute {
 		delete(s.failedIDs, id)
 		return false
@@ -309,13 +280,11 @@ func (s *Selector) isFailed(id string) bool {
 	return true
 }
 
-
 func (s *Selector) resetFailed() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.failedIDs = make(map[string]time.Time)
 }
-
 
 func (s *Selector) GetCurrent() *BridgeInfo {
 	s.mu.RLock()
@@ -323,13 +292,11 @@ func (s *Selector) GetCurrent() *BridgeInfo {
 	return s.current
 }
 
-
 func (s *Selector) SetCurrent(b *BridgeInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.current = b
 }
-
 
 func (s *Selector) ConnectWithMode(ctx context.Context, directAddr string) (net.Conn, *BridgeInfo, error) {
 	mode := s.GetMode()
@@ -341,7 +308,7 @@ func (s *Selector) ConnectWithMode(ctx context.Context, directAddr string) (net.
 		return conn, nil, err
 
 	case ModeManual:
-		
+
 		s.mu.RLock()
 		manualAddr := s.config.ManualBridge
 		s.mu.RUnlock()
@@ -360,7 +327,7 @@ func (s *Selector) ConnectWithMode(ctx context.Context, directAddr string) (net.
 		return conn, bridge, nil
 
 	case ModeAuto:
-		
+
 		log.Printf("[BridgeSelector] Mode: AUTO - selecting best bridge")
 		return s.Connect(ctx)
 
@@ -368,7 +335,6 @@ func (s *Selector) ConnectWithMode(ctx context.Context, directAddr string) (net.
 		return nil, nil, errors.New("unknown bridge mode")
 	}
 }
-
 
 func (s *Selector) dialDirect(ctx context.Context, addr string) (net.Conn, error) {
 	dialer := &tls.Dialer{
@@ -382,19 +348,15 @@ func (s *Selector) dialDirect(ctx context.Context, addr string) (net.Conn, error
 	return dialer.DialContext(ctx, "tcp", addr)
 }
 
-
 func (s *Selector) Connect(ctx context.Context) (net.Conn, *BridgeInfo, error) {
-
 	if len(s.bridges) == 0 {
 		if err := s.FetchBridges(ctx); err != nil {
 			return nil, nil, fmt.Errorf("failed to fetch bridges: %w", err)
 		}
 	}
 
-	
 	s.TestAllBridges(ctx)
 
-	
 	for attempt := 0; attempt < s.config.MaxRetries; attempt++ {
 		bridge := s.SelectBest()
 		if bridge == nil {
@@ -424,20 +386,18 @@ func (s *Selector) dialBridge(ctx context.Context, b *BridgeInfo) (net.Conn, err
 			Timeout: s.config.TestTimeout,
 		},
 		Config: &tls.Config{
-			InsecureSkipVerify: true, 
+			InsecureSkipVerify: true,
 		},
 	}
 
 	return dialer.DialContext(ctx, "tcp", b.Address)
 }
 
-
 func (s *Selector) HasBridges() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.bridges) > 0
 }
-
 
 func (s *Selector) BridgeCount() int {
 	s.mu.RLock()

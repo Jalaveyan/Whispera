@@ -154,13 +154,11 @@ func (f *CompactFragmentHeader) UnmarshalBinary(b []byte) error {
 			return errors.New("invalid large chunk length")
 		}
 		f.ChunkLen = binary.BigEndian.Uint16(b[offset+1 : offset+3])
-		offset += 3
 	} else {
 		if len(b) <= offset {
 			return errors.New("short chunk length")
 		}
 		f.ChunkLen = uint16(b[offset])
-		offset += 1
 	}
 
 	return nil

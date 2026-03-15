@@ -233,7 +233,7 @@ func (h *Handler) Start() error {
 		return nil
 	}
 
-	listener, err := net.Listen("tcp", h.config.ListenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", h.config.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", h.config.ListenAddr, err)
 	}
@@ -393,42 +393,7 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 	h.stats.ProxiedConnections++
 	h.proxyToDestination(conn, clientHello)
 }
-func (h *Handler) sendFakeHandshake(clientConn net.Conn, clientHello []byte, sni string) error {
-	destConn, err := h.dialDestination()
-	if err != nil {
-		return fmt.Errorf("failed to dial dest: %w", err)
-	}
-	defer destConn.Close()
-	if _, err := destConn.Write(clientHello); err != nil {
-		return fmt.Errorf("failed to write ClientHello: %w", err)
-	}
-	buf := make([]byte, 4096)
-	destConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	first := true
-	for {
-		n, err := destConn.Read(buf)
-		if n > 0 {
-			if _, wErr := clientConn.Write(buf[:n]); wErr != nil {
-				return wErr
-			}
-			destConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-			first = false
-		}
 
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() && !first {
-				return nil
-			}
-			if err == io.EOF {
-				return nil
-			}
-			if first {
-				return err
-			}
-			return nil
-		}
-	}
-}
 
 func (h *Handler) readClientHello(conn net.Conn) ([]byte, error) {
 	header := make([]byte, 5)
@@ -709,7 +674,7 @@ func (h *Handler) dialDestination() (net.Conn, error) {
 		dest = "www.google.com:443"
 	}
 
-	tcpConn, err := net.DialTimeout("tcp", dest, 10*time.Second)
+	tcpConn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", dest)
 	if err != nil {
 		return nil, err
 	}
@@ -742,20 +707,6 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 		return New(c)
 	}
 	return New(DefaultConfig())
-}
-
-func trimTrailingZeros(s string) string {
-	for len(s) > 0 && s[len(s)-1] == '0' {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
-func detectFormat(s string) string {
-	if _, err := base64.StdEncoding.DecodeString(s); err == nil {
-		return "Base64"
-	}
-	return "Unknown"
 }
 
 func isHTTP(b byte) bool {
@@ -912,15 +863,6 @@ func (h *Handler) sniRotationLoop() {
 			h.sniMu.Unlock()
 		}
 	}
-}
-
-func (h *Handler) getCurrentSNI() string {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if h.currentSNI != "" {
-		return h.currentSNI
-	}
-	return "vk.com"
 }
 
 func (h *Handler) coverTrafficLoop() {

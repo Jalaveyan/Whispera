@@ -63,7 +63,6 @@ func NewP2PEncryption() *P2PEncryption {
 }
 
 func (pe *P2PEncryption) Start(ctx context.Context) {
-
 	go pe.keyRotationLoop(ctx)
 
 	go pe.sessionCleanupLoop(ctx)
@@ -250,7 +249,6 @@ func (pe *P2PEncryption) EncryptMessage(sessionID string, data []byte) (*Encrypt
 	session.LastUsed = time.Now()
 	pe.mu.Unlock()
 
-
 	return encryptedMsg, nil
 }
 
@@ -283,14 +281,12 @@ func (pe *P2PEncryption) DecryptMessage(encryptedMsg *EncryptedMessage) ([]byte,
 	session.LastUsed = time.Now()
 	pe.mu.Unlock()
 
-
 	return plaintext, nil
 }
 
 func (pe *P2PEncryption) rotateKeys() {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
-
 
 	newKey := &EncryptionKey{
 		ID:        fmt.Sprintf("key_%d", time.Now().UnixNano()),
@@ -307,13 +303,11 @@ func (pe *P2PEncryption) rotateKeys() {
 
 	pe.keys[newKey.ID] = newKey
 	pe.lastRotation = time.Now()
-
 }
 
 func (pe *P2PEncryption) cleanupSessions() {
 	pe.mu.Lock()
 	defer pe.mu.Unlock()
-
 
 	now := time.Now()
 	cleaned := 0
@@ -331,7 +325,6 @@ func (pe *P2PEncryption) cleanupSessions() {
 func (pe *P2PEncryption) monitorSecurity() {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
-
 
 	totalSessions := len(pe.sessions)
 	totalKeys := len(pe.keys)

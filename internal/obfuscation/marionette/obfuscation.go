@@ -1,16 +1,9 @@
 package marionette
 
 import (
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/binary"
 	"math"
 	mrand "math/rand"
 	"time"
-
-	"golang.org/x/crypto/curve25519"
 
 	"whispera/internal/obfuscation/core/types"
 )
@@ -25,7 +18,6 @@ var _ = []interface{}{
 	(*Marionette).shapeTiming,
 	(*Marionette).learnPatterns,
 }
-
 
 func (m *Marionette) ApplyTrafficObfuscation(data []byte, profile *TrafficObfuscationProfile) []byte {
 	if !profile.Enabled {
@@ -83,13 +75,10 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 	m.Mutex.RLock()
 	m.Mutex.RUnlock()
 
-
 	return data
 }
 
 func (m *Marionette) addProtocolHeaders(data []byte, _ *TrafficObfuscationProfile) []byte {
-
-
 	length := len(data)
 	header := []byte{
 		0x17,
@@ -255,7 +244,6 @@ func (m *Marionette) applyStatisticalMaskingTraffic(data []byte, profile *Traffi
 	return data
 }
 
-
 func (m *Marionette) decreaseEntropyTraffic(data []byte, targetEntropy float64) []byte {
 	cur := m.calculateEntropyTraffic(data)
 	if cur <= targetEntropy {
@@ -410,159 +398,6 @@ func (m *Marionette) applySequenceObfuscationTraffic(data []byte, _ *TrafficObfu
 	return res
 }
 
-
-func (m *Marionette) generateFakeClientHello(sni string, realityPubKeyHex string) []byte {
-
-	defaultPubKey := ""
-
-	targetKey := realityPubKeyHex
-	if targetKey == "" {
-		targetKey = defaultPubKey
-	}
-
-	clientRandom := make([]byte, 32)
-	if _, err := rand.Read(clientRandom); err != nil {
-		m.Rand.Read(clientRandom)
-	}
-
-	var sessionID []byte
-
-	pubKeyBytes, err := base64.StdEncoding.DecodeString(targetKey)
-	if err == nil && len(pubKeyBytes) == 32 {
-		priv := make([]byte, 32)
-		if _, err := rand.Read(priv); err == nil {
-			myPub, err := curve25519.X25519(priv, curve25519.Basepoint)
-			if err == nil {
-				copy(clientRandom, myPub)
-
-				sharedSecret, err := curve25519.X25519(priv, pubKeyBytes)
-				if err == nil {
-					timestamp := uint64(time.Now().UnixMilli())
-					mac := hmac.New(sha256.New, sharedSecret)
-					mac.Write([]byte("whispera-session-id"))
-					timestampBytes := make([]byte, 8)
-					binary.BigEndian.PutUint64(timestampBytes, timestamp)
-					mac.Write(timestampBytes)
-					hmacResult := mac.Sum(nil)
-
-					sessionID = make([]byte, 32)
-					binary.BigEndian.PutUint64(sessionID[0:8], timestamp)
-					copy(sessionID[8:32], hmacResult[:24])
-				}
-			}
-		}
-	}
-
-	if sessionID == nil {
-		sessionID = make([]byte, 32)
-		m.Rand.Read(sessionID)
-	}
-
-
-	sniContent := []byte(sni)
-	sniExtLen := 5 + len(sniContent)
-	sniExt := make([]byte, 4+sniExtLen)
-	sniExt[0], sniExt[1] = 0x00, 0x00
-	sniExt[2], sniExt[3] = byte(sniExtLen>>8), byte(sniExtLen)
-	sniExt[4], sniExt[5] = byte((sniExtLen-2)>>8), byte(sniExtLen-2)
-	sniExt[6] = 0x00
-	sniExt[7], sniExt[8] = byte(len(sniContent)>>8), byte(len(sniContent))
-	copy(sniExt[9:], sniContent)
-
-	groups := []byte{0x00, 0x1d, 0x00, 0x17, 0x00, 0x18}
-	sgExt := make([]byte, 4+2+len(groups))
-	sgExt[0], sgExt[1] = 0x00, 0x0a
-	sgExt[2], sgExt[3] = 0x00, byte(2+len(groups))
-	sgExt[4], sgExt[5] = 0x00, byte(len(groups))
-	copy(sgExt[6:], groups)
-
-	keyShareData := make([]byte, 32)
-	m.Rand.Read(keyShareData)
-	ksContentLen := 2 + 2 + 2 + 32
-	ksExt := make([]byte, 4+ksContentLen)
-	ksExt[0], ksExt[1] = 0x00, 0x33
-	ksExt[2], ksExt[3] = byte(ksContentLen>>8), byte(ksContentLen)
-	idx := 4
-	ksExt[idx], ksExt[idx+1] = byte((ksContentLen-2)>>8), byte(ksContentLen-2)
-	idx += 2
-	ksExt[idx], ksExt[idx+1] = 0x00, 0x1d
-	idx += 2
-	ksExt[idx], ksExt[idx+1] = 0x00, 0x20
-	idx += 2
-	copy(ksExt[idx:], keyShareData)
-
-	svExt := []byte{
-		0x00, 0x2b,
-		0x00, 0x03,
-		0x02,
-		0x03, 0x04,
-	}
-
-	saExt := []byte{
-		0x00, 0x0d,
-		0x00, 0x08,
-		0x00, 0x06,
-		0x04, 0x03,
-		0x08, 0x04,
-		0x04, 0x01,
-	}
-
-	extensions := []byte{}
-	extensions = append(extensions, sniExt...)
-	extensions = append(extensions, saExt...)
-	extensions = append(extensions, sgExt...)
-	extensions = append(extensions, svExt...)
-	extensions = append(extensions, ksExt...)
-
-
-	ciphers := []byte{
-		0x13, 0x01,
-		0x13, 0x02,
-		0x13, 0x03,
-		0xc0, 0x2b,
-		0xc0, 0x2f,
-	}
-
-	compression := []byte{0x01, 0x00}
-
-	bodyLen := 2 + 32 + 1 + 32 + 2 + len(ciphers) + len(compression) + 2 + len(extensions)
-
-	handshake := make([]byte, 4+bodyLen)
-	handshake[0] = 0x01
-	handshake[1] = 0x00
-	handshake[2] = byte(bodyLen >> 8)
-	handshake[3] = byte(bodyLen)
-
-	idx = 4
-	handshake[idx], handshake[idx+1] = 0x03, 0x03
-	idx += 2
-	copy(handshake[idx:], clientRandom)
-	idx += 32
-	handshake[idx] = 32
-	idx++
-	copy(handshake[idx:], sessionID)
-	idx += 32
-	handshake[idx], handshake[idx+1] = byte(len(ciphers)>>8), byte(len(ciphers))
-	idx += 2
-	copy(handshake[idx:], ciphers)
-	idx += len(ciphers)
-	copy(handshake[idx:], compression)
-	idx += len(compression)
-	handshake[idx], handshake[idx+1] = byte(len(extensions)>>8), byte(len(extensions))
-	idx += 2
-	copy(handshake[idx:], extensions)
-
-	recordLen := len(handshake)
-	record := make([]byte, 5+recordLen)
-	record[0] = 0x16
-	record[1], record[2] = 0x03, 0x01
-	record[3], record[4] = byte(recordLen>>8), byte(recordLen)
-	copy(record[5:], handshake)
-
-	return record
-}
-
-
 func (m *Marionette) generateVKJSONPadding(padding []byte, r *mrand.Rand) {
 	for i := range padding {
 		switch i % 3 {
@@ -638,7 +473,6 @@ func (m *Marionette) generateDefaultHTTPPadding(padding []byte, r *mrand.Rand) {
 		padding[i] = byte(r.Intn(256))
 	}
 }
-
 
 func (m *Marionette) applyAction(action types.Action, data []byte, params map[string]interface{}) ([]byte, time.Duration) {
 	switch action.Type {
@@ -737,7 +571,6 @@ func evaluateIntCondition(actual int, op string, val interface{}) bool {
 	return false
 }
 
-
 func (m *Marionette) shapeSize(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
 	method, _ := params["method"].(string)
 	if method == "weighted_random" && len(data) > 4096 {
@@ -810,7 +643,6 @@ func (m *Marionette) learnPatterns(data []byte, params map[string]interface{}) (
 	}
 	return data, 0
 }
-
 
 func (m *Marionette) applyProductionVKontakteEvasion(data []byte) ([]byte, time.Duration, error) {
 	if len(data) == 0 {

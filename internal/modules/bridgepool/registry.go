@@ -75,8 +75,8 @@ func NewRegistry(persistPath string) *Registry {
 		persistPath: persistPath,
 	}
 	r.healthMonitor = NewHealthMonitor(r, 30*time.Second)
-	r.load()
-	r.loadAccessKeys()
+	_ = r.load()
+	_ = r.loadAccessKeys()
 	return r
 }
 

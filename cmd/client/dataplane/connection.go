@@ -192,7 +192,7 @@ func (c *Connection) Send(ctx context.Context) error {
 
 	if err != nil {
 		c.setError(err)
-		c.setState(StateDone)
+		_ = c.setState(StateDone)
 		return fmt.Errorf("dial failed: %w", err)
 	}
 
@@ -202,13 +202,13 @@ func (c *Connection) Send(ctx context.Context) error {
 
 	if err := c.sendHandshake(); err != nil {
 		c.setError(err)
-		c.setState(StateDone)
+		_ = c.setState(StateDone)
 		return fmt.Errorf("handshake failed: %w", err)
 	}
 
 	if err := c.receiveHeaders(); err != nil {
 		c.setError(err)
-		c.setState(StateDone)
+		_ = c.setState(StateDone)
 		return fmt.Errorf("receive headers failed: %w", err)
 	}
 

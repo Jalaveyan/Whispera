@@ -106,7 +106,7 @@ func (p *ECHProvider) fetchConfig(ctx context.Context, domain string) (*ECHDomai
 func (e *ECHProvider) fetchFromCloudflare(_ context.Context, domain string) (*ECHDomainConfig, error) {
 	dohURL := fmt.Sprintf("https://cloudflare-dns.com/dns-query?name=%s&type=HTTPS", domain)
 
-	req, err := http.NewRequest("GET", dohURL, nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, dohURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,6 @@ func (e *ECHProvider) fetchFromCloudflare(_ context.Context, domain string) (*EC
 }
 
 func (p *ECHProvider) fetchFromDNS(ctx context.Context, domain string) (*ECHDomainConfig, error) {
-
 	dohURL := fmt.Sprintf("https://cloudflare-dns.com/dns-query?name=%s&type=HTTPS", domain)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", dohURL, nil)
@@ -241,8 +240,7 @@ func (p *ECHProvider) fetchFromWellKnown(ctx context.Context, domain string) (*E
 }
 
 func (p *ECHProvider) tryCloudflareECH(_ context.Context, domain string) (*ECHDomainConfig, error) {
-
-	cnames, err := net.LookupCNAME(domain)
+	cnames, err := net.DefaultResolver.LookupCNAME(context.Background(), domain)
 	if err != nil {
 		return nil, err
 	}
@@ -271,9 +269,7 @@ func (p *ECHProvider) cacheConfig(domain string, cfg *ECHDomainConfig) {
 	p.mu.Unlock()
 }
 
-
 func extractECHFromHTTPS(data string) []byte {
-
 	parts := strings.Split(data, " ")
 	for _, part := range parts {
 		if strings.HasPrefix(part, "ech=") {
@@ -288,7 +284,6 @@ func extractECHFromHTTPS(data string) []byte {
 }
 
 func extractECHFromSVCB(data []byte) []byte {
-
 	for i := 0; i < len(data)-4; i++ {
 		if data[i] == 0x00 && data[i+1] == 0x05 {
 			length := int(data[i+2])<<8 | int(data[i+3])
@@ -319,7 +314,6 @@ func (w *ECHWrapper) WrapConnection(ctx context.Context, conn net.Conn, domain s
 	if !cfg.Valid || cfg.ECHConfig == nil {
 		return conn, nil
 	}
-
 
 	log.Info("ECH available for %s via %s", domain, cfg.PublicName)
 	return conn, nil

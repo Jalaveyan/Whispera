@@ -105,7 +105,7 @@ func (t *Transport) Type() interfaces.TransportType {
 }
 
 func (t *Transport) Listen(addr string) error {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("obfs4 listen: %w", err)
 	}

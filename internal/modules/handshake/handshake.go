@@ -548,12 +548,6 @@ func (h *Handler) HealthCheck() interfaces.HealthStatus {
 	return status
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 func Factory(cfg interface{}) (interfaces.Module, error) {
 	var config *Config
 	if c, ok := cfg.(*Config); ok {
