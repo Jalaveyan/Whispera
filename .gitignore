@@ -86,6 +86,7 @@ __pycache__/
 .Python
 env/
 venv/
+.venv/
 *.egg-info/
 
 # Data directories
