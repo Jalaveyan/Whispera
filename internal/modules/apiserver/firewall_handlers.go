@@ -53,9 +53,16 @@ func ufwPath() string {
 	return "ufw"
 }
 
+func runUFW(args ...string) ([]byte, error) {
+	ufw := ufwPath()
+	if sudo, err := exec.LookPath("sudo"); err == nil {
+		return exec.CommandContext(context.Background(), sudo, append([]string{ufw}, args...)...).CombinedOutput()
+	}
+	return exec.CommandContext(context.Background(), ufw, args...).CombinedOutput()
+}
+
 func getFirewallStatus() (*FirewallStatus, error) {
-	cmd := exec.CommandContext(context.Background(), ufwPath(), "status", "numbered")
-	out, err := cmd.CombinedOutput()
+	out, err := runUFW("status", "numbered")
 	outStr := string(out)
 	if err != nil && !strings.Contains(outStr, "Status:") {
 		return &FirewallStatus{Active: false, Rules: []FirewallRule{}}, fmt.Errorf("ufw: %s", strings.TrimSpace(outStr))
@@ -157,7 +164,7 @@ func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out, err := exec.CommandContext(context.Background(), ufwPath(), args...).CombinedOutput()
+	out, err := runUFW(args...)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
 		return
@@ -174,8 +181,7 @@ func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request
 		s.jsonError(w, http.StatusBadRequest, "rule number required")
 		return
 	}
-	cmd := exec.CommandContext(context.Background(), ufwPath(), "--force", "delete", strconv.Itoa(req.Number))
-	out, err := cmd.CombinedOutput()
+	out, err := runUFW("--force", "delete", strconv.Itoa(req.Number))
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
 		return
@@ -192,13 +198,13 @@ func (s *Server) handleFirewallToggle(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, http.StatusBadRequest, "Invalid request")
 		return
 	}
-	var cmd *exec.Cmd
+	var args []string
 	if req.Enable {
-		cmd = exec.CommandContext(context.Background(), ufwPath(), "--force", "enable")
+		args = []string{"--force", "enable"}
 	} else {
-		cmd = exec.CommandContext(context.Background(), ufwPath(), "--force", "disable")
+		args = []string{"--force", "disable"}
 	}
-	out, err := cmd.CombinedOutput()
+	out, err := runUFW(args...)
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
 		return

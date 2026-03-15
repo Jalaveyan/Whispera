@@ -1,11 +1,14 @@
 package bridgepool
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -15,6 +18,65 @@ type APIHandler struct {
 	registry          *Registry
 	trustManager      *TrustManager
 	registrationToken string
+}
+
+// geoInfo holds the result of an ipinfo.io lookup.
+type geoInfo struct {
+	Country string  `json:"country"`
+	City    string  `json:"city"`
+	Lat     float64 `json:"lat"`
+	Lon     float64 `json:"lon"`
+}
+
+// lookupGeo queries ipinfo.io for country, city and coordinates of an IP.
+// Returns zero-value geoInfo on any error (non-fatal).
+func lookupGeo(addr string) geoInfo {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if net.ParseIP(host) == nil {
+		addrs, err := net.LookupHost(host)
+		if err != nil || len(addrs) == 0 {
+			return geoInfo{}
+		}
+		host = addrs[0]
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		fmt.Sprintf("https://ipinfo.io/%s/json", host), nil)
+	if err != nil {
+		return geoInfo{}
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return geoInfo{}
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Country string `json:"country"`
+		City    string `json:"city"`
+		Loc     string `json:"loc"` // "lat,lon"
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return geoInfo{}
+	}
+
+	var lat, lon float64
+	fmt.Sscanf(result.Loc, "%f,%f", &lat, &lon)
+
+	return geoInfo{
+		Country: result.Country,
+		City:    result.City,
+		Lat:     lat,
+		Lon:     lon,
+	}
 }
 
 func NewAPIHandler(registry *Registry) *APIHandler {
@@ -79,6 +141,7 @@ func (h *APIHandler) HandleGetBridgesAdmin(w http.ResponseWriter, r *http.Reques
 func (h *APIHandler) HandleAddBridge(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Address   string  `json:"address"`
+		Name      string  `json:"name"`
 		Type      string  `json:"type"`
 		Provider  string  `json:"provider"`
 		Region    string  `json:"region"`
@@ -102,6 +165,21 @@ func (h *APIHandler) HandleAddBridge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Auto-fill geo info if not provided by the caller.
+	if req.Lat == 0 && req.Lon == 0 {
+		geo := lookupGeo(req.Address)
+		if req.Country == "" {
+			req.Country = geo.Country
+		}
+		if req.City == "" {
+			req.City = geo.City
+		}
+		if geo.Lat != 0 || geo.Lon != 0 {
+			req.Lat = geo.Lat
+			req.Lon = geo.Lon
+		}
+	}
+
 	bridgeType := BridgeOperator
 	switch strings.ToLower(req.Type) {
 	case "community":
@@ -113,6 +191,7 @@ func (h *APIHandler) HandleAddBridge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	info := &BridgeInfo{
+		Name:      req.Name,
 		Address:   req.Address,
 		Type:      bridgeType,
 		Provider:  req.Provider,

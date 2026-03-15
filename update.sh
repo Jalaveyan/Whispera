@@ -455,8 +455,7 @@ server {
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
     location / {
-        proxy_pass         https://127.0.0.1:3000;
-        proxy_ssl_verify   off;
+        proxy_pass         http://127.0.0.1:3000;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$remote_addr;
         proxy_set_header   X-Forwarded-Host \$host;
@@ -624,9 +623,19 @@ show_extras_menu() {
             echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
         fi
 
+        local BRIDGE_TOKEN=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
+
         echo ""
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
         _row "          WHISPERA MANAGEMENT MENU"
+        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
+        _row "  Web Panel:  https://${SRV_IP}:3000/  (or 127.0.0.1:3000 locally)"
+        _row "  Config:     /etc/whispera/config.yaml"
+        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
+        _row "  BRIDGE MANAGEMENT"
+        _row " 19.  Show bridge token & install command"
+        _row " 20.  Add bridge manually (enter IP + token)"
+        _row " 21.  List registered bridges"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
         _row "  1.  BBR           - Faster TCP (recommended)"
@@ -676,6 +685,37 @@ show_extras_menu() {
             16) journalctl -u whispera -f ;;
             17) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
             18) bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/update.sh) ;;
+            19)
+                local tok=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
+                if [[ -z "$tok" ]]; then
+                    log_warn "Bridge token not found at $CONF_PATH/bridge.token"
+                else
+                    echo ""
+                    echo -e "${GREEN}Bridge token:${PLAIN} $tok"
+                    echo ""
+                    echo -e "${GREEN}Install bridge on another server:${PLAIN}"
+                    echo -e "  curl -sL https://${SRV_IP}:8080/install-bridge.sh | bash -s -- ${SRV_IP}:8443 $tok"
+                fi
+                ;;
+            20)
+                read -rp "  Bridge IP:port (e.g. 1.2.3.4:8443): " BR_ADDR
+                read -rp "  Bridge token: " BR_TOK
+                if [[ -n "$BR_ADDR" && -n "$BR_TOK" ]]; then
+                    curl -sk -X POST "https://127.0.0.1:8080/api/bridges" \
+                        -H "Content-Type: application/json" \
+                        -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" \
+                        -d "{\"address\":\"$BR_ADDR\",\"token\":\"$BR_TOK\"}" && \
+                        log_success "Bridge $BR_ADDR registered" || log_err "Failed to register bridge"
+                else
+                    log_warn "Address and token are required"
+                fi
+                ;;
+            21)
+                curl -sk "https://127.0.0.1:8080/api/bridges" \
+                    -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" | \
+                    python3 -m json.tool 2>/dev/null || \
+                    log_err "Failed to fetch bridges (is Whispera running?)"
+                ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
         esac
@@ -796,6 +836,7 @@ do_update() {
             cp -r /tmp/panel-update/* "$PANEL_DEST/"
             rm -rf /tmp/panel-update
 
+
             if [[ -n "$ENV_BAK" ]]; then
                 echo "$ENV_BAK" > "$PANEL_DEST/.env"
             elif [[ ! -f "$PANEL_DEST/.env" ]]; then
@@ -817,17 +858,22 @@ ENVEOF
 
             generate_panel_cert
 
-            local PANEL_CERT="$CONF_PATH/panel.crt"
-            local PANEL_KEY="$CONF_PATH/panel.key"
+            # Remove legacy TLS vars from panel service (nginx handles TLS termination)
+            sed -i '/^Environment=TLS_CERT\|^Environment=TLS_KEY\|^Environment=HTTP_PORT/d' \
+                /etc/systemd/system/whispera-panel.service 2>/dev/null || true
 
-            if [[ -f "$PANEL_CERT" && -f "$PANEL_KEY" ]]; then
-                if ! grep -q "TLS_CERT" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
-                    sed -i "/^Environment=CORS_ORIGIN/a Environment=TLS_CERT=$PANEL_CERT\nEnvironment=TLS_KEY=$PANEL_KEY\nEnvironment=HTTP_PORT=80" \
-                        /etc/systemd/system/whispera-panel.service
-                    systemctl daemon-reload
-                    log_info "HTTPS enabled for panel service"
-                fi
+            if ! grep -q "AmbientCapabilities" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
+                sed -i "/^NoNewPrivileges/i AmbientCapabilities=CAP_NET_BIND_SERVICE" \
+                    /etc/systemd/system/whispera-panel.service
+                log_info "Added CAP_NET_BIND_SERVICE to panel service"
             fi
+            # Ensure whispera backend can manage firewall ports (CAP_NET_ADMIN)
+            if ! grep -q "CAP_NET_ADMIN" /etc/systemd/system/whispera.service 2>/dev/null; then
+                sed -i 's/AmbientCapabilities=CAP_NET_BIND_SERVICE$/AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN/' \
+                    /etc/systemd/system/whispera.service
+                log_info "Added CAP_NET_ADMIN to whispera service"
+            fi
+            systemctl daemon-reload
 
             systemctl restart whispera-panel 2>/dev/null || log_warn "Panel service not configured"
 
@@ -840,9 +886,30 @@ ENVEOF
         log_info "No panel release found, skipping panel update"
     fi
     
+    # Ensure log directory exists (required by ReadWritePaths in systemd namespace)
+    mkdir -p /var/log/whispera
+    chown whispera:whispera /var/log/whispera 2>/dev/null || true
+
+    # Ensure whispera user can run UFW via sudo (for firewall panel)
+    if [[ ! -f /etc/sudoers.d/whispera-ufw ]]; then
+        local UFW_BIN
+        UFW_BIN=$(command -v ufw 2>/dev/null || echo /usr/sbin/ufw)
+        echo "whispera ALL=(ALL) NOPASSWD: $UFW_BIN" > /etc/sudoers.d/whispera-ufw
+        chmod 440 /etc/sudoers.d/whispera-ufw
+        log_info "Configured sudo access for UFW"
+    fi
+
     if ! grep -q "WHISPERA_MASK_LOGS" /etc/systemd/system/whispera.service; then
         sed -i '/\[Service\]/a Environment=WHISPERA_MASK_LOGS=false' /etc/systemd/system/whispera.service
         systemctl daemon-reload
+    fi
+
+    # Ensure log file output is configured (needed for panel log viewer)
+    if ! grep -q "StandardOutput=append" /etc/systemd/system/whispera.service 2>/dev/null; then
+        sed -i '/ReadWritePaths=.*/a StandardOutput=append:\/var\/log\/whispera\/whispera.log\nStandardError=append:\/var\/log\/whispera\/whispera.log' \
+            /etc/systemd/system/whispera.service
+        systemctl daemon-reload
+        log_info "Enabled file logging for whispera service"
     fi
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then

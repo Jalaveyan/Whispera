@@ -33,6 +33,11 @@ func (m *Manager) StartInbound(inbound config.InboundConfig) error {
 		return fmt.Errorf("start callback not set")
 	}
 
+	if m.IsRunning(inbound.Tag) {
+		log.Printf("[DynamicManager] Inbound %s already running, skipping start", inbound.Tag)
+		return nil
+	}
+
 	ports := inbound.AllPorts()
 	if len(ports) <= 1 {
 		log.Printf("[DynamicManager] Starting inbound %s on port %d", inbound.Tag, inbound.Port)

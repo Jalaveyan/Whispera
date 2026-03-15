@@ -41,8 +41,10 @@ class WhisperaAPI {
         });
 
         if (response.status === 401) {
-            this.setToken(null);
-            window.location.href = '/';
+            if (this.token) {
+                this.setToken(null);
+                window.location.href = '/';
+            }
             throw new Error('Unauthorized');
         }
 
@@ -61,7 +63,7 @@ class WhisperaAPI {
     }
 
     async login(username, password) {
-        const data = await this.request('/api/login', {
+        const data = await this.request('/api/auth/login', {
             method: 'POST',
             body: JSON.stringify({ username, password }),
         });
@@ -75,7 +77,7 @@ class WhisperaAPI {
 
     async logout() {
         try {
-            await this.request('/api/logout', { method: 'POST' });
+            await this.request('/api/auth/logout', { method: 'POST' });
         } catch (_) {}
         this.setToken(null);
         sessionStorage.removeItem('whispera_user_id');

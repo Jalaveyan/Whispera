@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Headers, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, Headers, Query, Res, HttpStatus } from '@nestjs/common';
 import type { Response } from 'express';
 import { SystemService } from './system.service';
 
@@ -145,6 +145,26 @@ export class SystemController {
         } catch (err: any) {
             return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
                 .json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+
+    @Get('api/qr')
+    async generateQR(@Query('data') data: string, @Res() res: Response) {
+        if (!data) {
+            return res.status(HttpStatus.BAD_REQUEST).json({ error: 'data param required' });
+        }
+        try {
+            // eslint-disable-next-line @typescript-eslint/no-require-imports
+            const QRCode = require('qrcode');
+            const url: string = await QRCode.toDataURL(data, {
+                width: 220,
+                margin: 2,
+                errorCorrectionLevel: 'L',
+                color: { dark: '#000000', light: '#ffffff' },
+            });
+            return res.json({ url });
+        } catch (err: any) {
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ error: err?.message || 'QR generation failed' });
         }
     }
 }

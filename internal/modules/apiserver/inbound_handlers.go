@@ -352,13 +352,10 @@ func openFirewallPort(port int) error {
 	if _, err := exec.LookPath("ufw"); err != nil {
 		return fmt.Errorf("ufw not found in PATH, skipping firewall config")
 	}
-	cmdUDP := exec.CommandContext(context.Background(), "ufw", "allow", fmt.Sprintf("%d/udp", port))
-	if out, err := cmdUDP.CombinedOutput(); err != nil {
+	if out, err := runUFW("allow", fmt.Sprintf("%d/udp", port)); err != nil {
 		return fmt.Errorf("failed to allow UDP: %v (output: %s)", err, string(out))
 	}
-
-	cmdTCP := exec.CommandContext(context.Background(), "ufw", "allow", fmt.Sprintf("%d/tcp", port))
-	if out, err := cmdTCP.CombinedOutput(); err != nil {
+	if out, err := runUFW("allow", fmt.Sprintf("%d/tcp", port)); err != nil {
 		return fmt.Errorf("failed to allow TCP: %v (output: %s)", err, string(out))
 	}
 

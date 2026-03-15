@@ -1671,6 +1671,21 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if uri, ok := req["connectionURI"].(string); ok {
 		user.ConnectionURI = uri
 	}
+	if tl, ok := req["trafficLimit"].(float64); ok {
+		user.TrafficLimit = int64(tl)
+	}
+	if ed, ok := req["expiryDate"].(string); ok {
+		user.ExpiryDate = ed
+	}
+	if v, ok := req["obfsProfile"].(string); ok {
+		user.ObfsProfile = v
+	}
+	if v, ok := req["marionetteProfile"].(string); ok {
+		user.MarionetteProfile = v
+	}
+	if v, ok := req["russianService"].(string); ok {
+		user.RussianService = v
+	}
 
 	go saveUsers()
 	s.jsonOK(w, map[string]interface{}{"success": true, "user": user})

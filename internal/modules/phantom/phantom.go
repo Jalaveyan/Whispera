@@ -578,15 +578,20 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 			if !hmac.Equal(clientRandom, u.PublicKey[:]) {
 				continue
 			}
+			// PSK matched this user — ECDH + HMAC check
 			sharedSecret, err := curve25519.X25519(h.privateKey, clientRandom)
 			if err != nil {
-				continue
+				log.Printf("[Phantom] Auth FAILED: ECDH error for user=%s: %v", u.UserID, err)
+				return "", false
 			}
 			if verifyHMAC(sharedSecret) {
 				h.markAsSeen(clientRandomHex)
 				log.Printf("[Phantom] Auth SUCCESS: user=%s", u.UserID)
 				return u.UserID, true
 			}
+			// PSK matched but HMAC failed → server key mismatch (key was generated with a different server key)
+			log.Printf("[Phantom] Auth FAILED: SessionID HMAC mismatch for user=%s (server key may have changed)", u.UserID)
+			return "", false
 		}
 		log.Printf("[Phantom] Auth FAILED: no matching user for clientRandom")
 		return "", false

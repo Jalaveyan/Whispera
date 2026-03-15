@@ -3431,6 +3431,9 @@ class WhisperaApp {
                 ${user.privateKey ? `<button class="btn btn-secondary btn-sm" onclick="app.generateKeyForUser(${user.id})" style="padding: 4px 8px;" title="Получить ключ подключения">
                     <i class="fas fa-key"></i>
                 </button>` : ''}
+                <button class="btn btn-secondary btn-sm" onclick="app.showEditUserModal(${user.id})" style="padding: 4px 8px;" title="Редактировать">
+                    <i class="fas fa-pen"></i>
+                </button>
                 <button class="btn btn-danger btn-sm" onclick="app.deleteUser('${user.id}')" title="Удалить">
                     <i class="fas fa-trash"></i>
                 </button>
@@ -3462,6 +3465,74 @@ class WhisperaApp {
             this.showKeyModal(user.username, user.privateKey, keyRes.key);
         } catch {
             this.showKeyModal(user.username, user.privateKey);
+        }
+    }
+
+    showEditUserModal(userId) {
+        const user = this._usersById?.[userId];
+        if (!user) { this.showNotification('Пользователь не найден', 'error'); return; }
+
+        const trafficGB = user.trafficLimit ? (user.trafficLimit / 1073741824) : 0;
+        const modal = document.createElement('div');
+        modal.className = 'modal active';
+        modal.innerHTML = `
+        <div class="modal-content" style="max-width:420px;">
+            <div class="modal-header">
+                <h3>Редактировать пользователя</h3>
+                <button class="btn-close" onclick="this.closest('.modal').remove()">×</button>
+            </div>
+            <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;">
+                <div>
+                    <label style="font-size:0.85em;opacity:0.7;">Email</label>
+                    <input id="eu-username" class="form-control" type="text" value="${user.username || ''}" style="margin-top:4px;">
+                </div>
+                <div>
+                    <label style="font-size:0.85em;opacity:0.7;">Статус</label>
+                    <select id="eu-status" class="form-control" style="margin-top:4px;">
+                        <option value="active" ${user.status === 'active' ? 'selected' : ''}>Active</option>
+                        <option value="inactive" ${user.status !== 'active' ? 'selected' : ''}>Inactive</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:0.85em;opacity:0.7;">Лимит трафика (0 = безлимит)</label>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+                        <input id="eu-traffic" class="form-control" type="number" min="0" step="1" value="${trafficGB}" style="flex:1;">
+                        <span style="opacity:0.6;font-size:0.9em;">GB</span>
+                    </div>
+                </div>
+                <div>
+                    <label style="font-size:0.85em;opacity:0.7;">Дата истечения (пусто = бессрочно)</label>
+                    <input id="eu-expiry" class="form-control" type="date" value="${user.expiryDate || ''}" style="margin-top:4px;">
+                </div>
+            </div>
+            <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;padding-top:12px;">
+                <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Отмена</button>
+                <button class="btn btn-primary" onclick="app.saveUserEdit(${userId}, this.closest('.modal'))">Сохранить</button>
+            </div>
+        </div>`;
+        document.body.appendChild(modal);
+    }
+
+    async saveUserEdit(userId, modal) {
+        const username = modal.querySelector('#eu-username').value.trim();
+        const status = modal.querySelector('#eu-status').value;
+        const trafficGB = parseFloat(modal.querySelector('#eu-traffic').value) || 0;
+        const expiryDate = modal.querySelector('#eu-expiry').value;
+
+        if (!username) { this.showNotification('Email не может быть пустым', 'error'); return; }
+
+        try {
+            await api.updateUser(userId, {
+                username,
+                status,
+                trafficLimit: Math.round(trafficGB * 1073741824),
+                expiryDate: expiryDate || '',
+            });
+            modal.remove();
+            this.showNotification('Пользователь обновлён', 'success');
+            this.loadUsers();
+        } catch (err) {
+            this.showNotification('Ошибка: ' + err.message, 'error');
         }
     }
 
@@ -3865,21 +3936,19 @@ class WhisperaApp {
             setTimeout(() => {
                 const img = modal.querySelector('#key-modal-qr');
                 const qrWrap = modal.querySelector('#key-modal-qr-wrap');
-                if (img && typeof QRCode !== 'undefined') {
-                    QRCode.toDataURL(connectionURI, {
-                        width: 220, margin: 2,
-                        errorCorrectionLevel: 'L',
-                        color: { dark: '#000000', light: '#ffffff' }
-                    }, (err, url) => {
-                        if (err) {
-                            console.error('QR error:', err);
+                if (img) {
+                    fetch('/api/qr?data=' + encodeURIComponent(connectionURI))
+                        .then(r => r.json())
+                        .then(d => {
+                            if (d.url) {
+                                img.src = d.url;
+                            } else if (qrWrap) {
+                                qrWrap.innerHTML = '<span style="font-size:0.8em;opacity:0.5;text-align:center;">QR недоступен — скопируйте ключ вручную</span>';
+                            }
+                        })
+                        .catch(() => {
                             if (qrWrap) qrWrap.innerHTML = '<span style="font-size:0.8em;opacity:0.5;text-align:center;">QR недоступен — скопируйте ключ вручную</span>';
-                        } else {
-                            img.src = url;
-                        }
-                    });
-                } else if (qrWrap) {
-                    qrWrap.innerHTML = '<span style="font-size:0.8em;opacity:0.5;text-align:center;">QR недоступен — скопируйте ключ вручную</span>';
+                        });
                 }
             }, 0);
         }

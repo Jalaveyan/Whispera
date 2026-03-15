@@ -694,9 +694,19 @@ show_extras_menu() {
             echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
         fi
 
+        local BRIDGE_TOKEN=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
+
         echo ""
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
         _row "          WHISPERA MANAGEMENT MENU"
+        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
+        _row "  Web Panel:  https://${SRV_IP}:3000/  (or 127.0.0.1:3000 locally)"
+        _row "  Config:     /etc/whispera/config.yaml"
+        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
+        _row "  BRIDGE MANAGEMENT"
+        _row " 19.  Show bridge token & install command"
+        _row " 20.  Add bridge manually (enter IP + token)"
+        _row " 21.  List registered bridges"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
         _row "  1.  BBR           - Faster TCP (recommended)"
@@ -746,6 +756,37 @@ show_extras_menu() {
             16) journalctl -u whispera -f ;;
             17) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
             18) bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh) ;;
+            19)
+                local tok=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
+                if [[ -z "$tok" ]]; then
+                    log_warn "Bridge token not found at $CONF_PATH/bridge.token"
+                else
+                    echo ""
+                    echo -e "${GREEN}Bridge token:${PLAIN} $tok"
+                    echo ""
+                    echo -e "${GREEN}Install bridge on another server:${PLAIN}"
+                    echo -e "  curl -sL https://${SRV_IP}:8080/install-bridge.sh | bash -s -- ${SRV_IP}:8443 $tok"
+                fi
+                ;;
+            20)
+                read -rp "  Bridge IP:port (e.g. 1.2.3.4:8443): " BR_ADDR
+                read -rp "  Bridge token: " BR_TOK
+                if [[ -n "$BR_ADDR" && -n "$BR_TOK" ]]; then
+                    curl -sk -X POST "https://127.0.0.1:8080/api/bridges" \
+                        -H "Content-Type: application/json" \
+                        -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" \
+                        -d "{\"address\":\"$BR_ADDR\",\"token\":\"$BR_TOK\"}" && \
+                        log_success "Bridge $BR_ADDR registered" || log_err "Failed to register bridge"
+                else
+                    log_warn "Address and token are required"
+                fi
+                ;;
+            21)
+                curl -sk "https://127.0.0.1:8080/api/bridges" \
+                    -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" | \
+                    python3 -m json.tool 2>/dev/null || \
+                    log_err "Failed to fetch bridges (is Whispera running?)"
+                ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
         esac
@@ -1025,6 +1066,7 @@ ENVEOF
     cd "$PANEL_DEST"
     npm install --omit=dev --force
     
+
     log_success "Panel installed to $PANEL_DEST"
 }
 
@@ -1302,8 +1344,7 @@ server {
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
     location / {
-        proxy_pass         https://127.0.0.1:3000;
-        proxy_ssl_verify   off;
+        proxy_pass         http://127.0.0.1:3000;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$remote_addr;
         proxy_set_header   X-Forwarded-Host \$host;
@@ -1345,7 +1386,15 @@ setup_systemd() {
         log_info "Created system user 'whispera'"
     fi
 
-    chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$DAT_PATH" 2>/dev/null || true
+    # Allow whispera user to manage UFW without password (for firewall panel)
+    local UFW_BIN
+    UFW_BIN=$(command -v ufw 2>/dev/null || echo /usr/sbin/ufw)
+    echo "whispera ALL=(ALL) NOPASSWD: $UFW_BIN" > /etc/sudoers.d/whispera-ufw
+    chmod 440 /etc/sudoers.d/whispera-ufw
+    log_info "Configured sudo access for UFW"
+
+    mkdir -p "$LOG_PATH"
+    chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$DAT_PATH" "$LOG_PATH" 2>/dev/null || true
     chmod 750 "$CONF_PATH"
     chmod 640 "$CONF_PATH/config.yaml" 2>/dev/null || true
 
@@ -1365,11 +1414,13 @@ ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
-AmbientCapabilities=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera
+StandardOutput=append:/var/log/whispera/whispera.log
+StandardError=append:/var/log/whispera/whispera.log
 
 [Install]
 WantedBy=multi-user.target
@@ -1378,11 +1429,6 @@ EOF
     local NODE_BIN=$(command -v node || echo "/usr/bin/node")
 
     local PANEL_HTTPS_VARS=""
-    if [[ -f "$CONF_PATH/panel.crt" && -f "$CONF_PATH/panel.key" ]]; then
-        PANEL_HTTPS_VARS="Environment=TLS_CERT=$CONF_PATH/panel.crt
-Environment=TLS_KEY=$CONF_PATH/panel.key
-Environment=HTTP_PORT=80"
-    fi
 
     cat > /etc/systemd/system/whispera-panel.service <<EOF
 [Unit]
@@ -1399,6 +1445,7 @@ RestartSec=3
 Environment=PORT=3000
 Environment=BACKEND_URL=http://127.0.0.1:8080
 Environment=CORS_ORIGIN=*
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

@@ -25,6 +25,7 @@ const (
 
 type BridgeInfo struct {
 	ID         string     `json:"id"`
+	Name       string     `json:"name,omitempty"`
 	Address    string     `json:"address"`
 	Type       BridgeType `json:"type"`
 	Provider   string     `json:"provider"`
