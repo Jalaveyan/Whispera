@@ -6,6 +6,29 @@ on:
       - "main"
     tags:
       - 'v*'
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE**'
+      - 'Dockerfile*'
+      - 'docker-compose*.yml'
+      - '.dockerignore'
+      - 'k8s/**'
+      - 'kubernetes/**'
+      - 'helm/**'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE*'
+      - 'whisp/**'
+      - 'internal/obfuscation/ml/**.py'
+      - 'ml_engine/**.py'
+      - 'install.sh'
+      - 'update.sh'
+      - 'scripts/**'
+      - 'monitoring/**'
+      - 'deploy/**'
+      - 'Makefile'
+      - 'docker-compose*.yml'
+      - '.claude/**'
   workflow_dispatch:
 
 permissions:

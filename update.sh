@@ -376,19 +376,70 @@ EOF
 setup_autoupdate() {
     log_info "Setting up auto-update..."
     
-    cat > /etc/cron.daily/whispera-update <<EOF
-cd $WORK_DIR
-git config --global --add safe.directory $WORK_DIR 2>/dev/null || true
-git pull origin $BRANCH --quiet
-export PATH=\$PATH:/usr/local/go/bin
-go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server 2>/dev/null
-if [[ -f whispera-server ]]; then
-    cp whispera-server $BIN_PATH/whispera
-    systemctl restart whispera
+    cat > /etc/cron.daily/whispera-update <<'CRONEOF'
+#!/bin/bash
+WORK_DIR="__WORK_DIR__"
+BIN_PATH="__BIN_PATH__"
+BRANCH="__BRANCH__"
+LOG="/var/log/whispera-update.log"
+exec >> "$LOG" 2>&1
+echo "=== $(date) ==="
+
+cd "$WORK_DIR" || exit 1
+git config --global --add safe.directory "$WORK_DIR" 2>/dev/null || true
+
+BEFORE=$(git rev-parse HEAD)
+git pull origin "$BRANCH" --quiet
+AFTER=$(git rev-parse HEAD)
+
+if [[ "$BEFORE" == "$AFTER" ]]; then
+    echo "No changes."
+    exit 0
 fi
-EOF
+
+CHANGED=$(git diff --name-only "$BEFORE" "$AFTER")
+echo "Changed files:"
+echo "$CHANGED"
+
+GO_CHANGED=$(echo "$CHANGED" | grep -E '\.(go)$|^go\.(mod|sum)$' || true)
+ML_PY_CHANGED=$(echo "$CHANGED" | grep -E '^(internal/obfuscation/ml|ml_engine)/.*\.py$' || true)
+PANEL_CHANGED=$(echo "$CHANGED" | grep -E '^panel/' || true)
+
+# ML Python — просто рестарт сервиса, без пересборки
+if [[ -n "$ML_PY_CHANGED" ]]; then
+    echo "ML Python files updated — restarting whispera-ml"
+    systemctl restart whispera-ml 2>/dev/null && echo "whispera-ml restarted" || echo "whispera-ml not running"
+fi
+
+# Панель — рестарт
+if [[ -n "$PANEL_CHANGED" ]]; then
+    echo "Panel files updated — restarting whispera-panel"
+    systemctl restart whispera-panel 2>/dev/null && echo "whispera-panel restarted" || true
+fi
+
+# Go код — пересборка бинаря
+if [[ -n "$GO_CHANGED" ]]; then
+    echo "Go files updated — rebuilding whispera-server"
+    export PATH=$PATH:/usr/local/go/bin
+    go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server 2>/dev/null
+    if [[ -f whispera-server ]]; then
+        cp whispera-server "$BIN_PATH/whispera"
+        systemctl restart whispera
+        echo "whispera-server rebuilt and restarted"
+    else
+        echo "Build failed — keeping old binary"
+    fi
+fi
+CRONEOF
+
+    # Подставляем реальные пути
+    sed -i \
+        -e "s|__WORK_DIR__|$WORK_DIR|g" \
+        -e "s|__BIN_PATH__|$BIN_PATH|g" \
+        -e "s|__BRANCH__|$BRANCH|g" \
+        /etc/cron.daily/whispera-update
     chmod +x /etc/cron.daily/whispera-update
-    log_success "Auto-update enabled (daily)"
+    log_success "Auto-update enabled (daily, smart: Go→rebuild, ML-py→restart only)"
 }
 
 setup_ssh_hardening() {

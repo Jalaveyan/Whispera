@@ -3,8 +3,57 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE**'
+      - 'Dockerfile*'
+      - 'docker-compose*.yml'
+      - '.dockerignore'
+      - 'k8s/**'
+      - 'kubernetes/**'
+      - 'helm/**'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE*'
+      - 'internal/obfuscation/ml/**.py'
+      - 'ml_engine/**.py'
+      - 'whisp/**'
+      - 'panel/**'
+      - 'install.sh'
+      - 'update.sh'
+      - 'scripts/**'
+      - 'monitoring/**'
+      - 'deploy/**'
+      - 'Makefile'
+      - 'docker-compose*.yml'
+      - '.claude/**'
+      - 'scripts/**'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE**'
+      - 'Dockerfile*'
+      - 'docker-compose*.yml'
+      - '.dockerignore'
+      - 'k8s/**'
+      - 'kubernetes/**'
+      - 'helm/**'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE*'
+      - 'internal/obfuscation/ml/**.py'
+      - 'ml_engine/**.py'
+      - 'whisp/**'
+      - 'panel/**'
+      - 'install.sh'
+      - 'update.sh'
+      - 'scripts/**'
+      - 'monitoring/**'
+      - 'deploy/**'
+      - 'Makefile'
+      - 'docker-compose*.yml'
+      - '.claude/**'
 
 jobs:
   lint:
