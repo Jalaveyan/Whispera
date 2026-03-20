@@ -313,6 +313,8 @@ type Manager struct {
 	cbState       string
 
 	goroutineLimiter *base.GoroutineLimiter
+
+	fedSyncOnce sync.Once
 }
 
 func (m *Manager) getMuxConfig() *mux.Config {
@@ -2621,19 +2623,21 @@ func (m *Manager) mlStartFederatedSync(ctx context.Context) {
 	if m.config.MLServerURL == "" {
 		return
 	}
-	go func() {
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		m.mlFederatedSync(ctx)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				m.mlFederatedSync(ctx)
+	m.fedSyncOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			m.mlFederatedSync(ctx)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					m.mlFederatedSync(ctx)
+				}
 			}
-		}
-	}()
+		}()
+	})
 }
 
 func (m *Manager) mlFederatedSync(ctx context.Context) {
