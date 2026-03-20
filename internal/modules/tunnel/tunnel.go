@@ -2507,9 +2507,15 @@ func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, c
 	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
+	mlURL := m.config.MLServerURL
+	if !strings.HasPrefix(mlURL, "http://") && !strings.HasPrefix(mlURL, "https://") {
+		mlURL = "http://" + mlURL
+	}
+
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
-		m.config.MLServerURL+"/recommend/transport", bytes.NewReader(body))
+		mlURL+"/recommend/transport", bytes.NewReader(body))
 	if err != nil {
+		log.Warn("ML recommend: invalid URL %q: %v", mlURL, err)
 		return "", 0
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -2524,12 +2530,26 @@ func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, c
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		log.Warn("ML recommend: 401 Unauthorized — check ML API token")
+		return "", 0
+	}
+	if resp.StatusCode != http.StatusOK {
+		log.Warn("ML recommend: unexpected status %d", resp.StatusCode)
+		return "", 0
+	}
+
 	var result struct {
 		Transport  string  `json:"transport"`
 		Confidence float64 `json:"confidence"`
 		UsedML     bool    `json:"used_ml"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Transport == "" {
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Warn("ML recommend: decode error: %v", err)
+		return "", 0
+	}
+	if result.Transport == "" {
+		log.Warn("ML recommend: empty transport in response")
 		return "", 0
 	}
 
@@ -2561,8 +2581,12 @@ func (m *Manager) mlSendFeedback(transport string, success bool, latencyMs float
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
+		mlURL := m.config.MLServerURL
+		if !strings.HasPrefix(mlURL, "http://") && !strings.HasPrefix(mlURL, "https://") {
+			mlURL = "http://" + mlURL
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			m.config.MLServerURL+"/feedback/connection", bytes.NewReader(body))
+			mlURL+"/feedback/connection", bytes.NewReader(body))
 		if err != nil {
 			return
 		}
@@ -2575,6 +2599,9 @@ func (m *Manager) mlSendFeedback(transport string, success bool, latencyMs float
 		if err != nil {
 			log.Debug("ML feedback send failed: %v", err)
 			return
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			log.Warn("ML feedback: 401 Unauthorized — check ML API token")
 		}
 		resp.Body.Close()
 	}()
