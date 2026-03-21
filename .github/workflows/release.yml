@@ -240,7 +240,7 @@ jobs:
           if [ -z "$LAST_TAG" ]; then
              NEW_TAG="${BASE}.1"
           else
-             LAST_PATCH=$(echo "$LAST_TAG" | awk -F. '{print $3}')
+             LAST_PATCH=$(echo "$LAST_TAG" | awk -F. '{print $NF}')
              NEW_PATCH=$((LAST_PATCH + 1))
              NEW_TAG="${BASE}.${NEW_PATCH}"
           fi
