@@ -36,6 +36,13 @@ func registerFactory() bool {
 
 var log = logger.Module("vkwebrtc")
 
+var framePool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 0, maxRTPPayload)
+		return &b
+	},
+}
+
 const (
 	ModuleName    = "transport.vkwebrtc"
 	ModuleVersion = "1.0.0"
@@ -148,13 +155,14 @@ func (w *trackWriter) sendFrame(data []byte) error {
 		var payload []byte
 		var end int
 
+		bp := framePool.Get().(*[]byte)
 		if first {
 			avail := maxRTPPayload - 3
 			if avail > len(data)-offset {
 				avail = len(data) - offset
 			}
 			end = offset + avail
-			payload = make([]byte, 3+avail)
+			payload = (*bp)[:3+avail]
 			payload[0] = vp8Start
 			binary.BigEndian.PutUint16(payload[1:3], total)
 			copy(payload[3:], data[offset:end])
@@ -165,12 +173,12 @@ func (w *trackWriter) sendFrame(data []byte) error {
 				avail = len(data) - offset
 			}
 			end = offset + avail
-			payload = make([]byte, 1+avail)
+			payload = (*bp)[:1+avail]
 			payload[0] = vp8Cont
 			copy(payload[1:], data[offset:end])
 		}
 
-		if err := w.track.WriteRTP(&rtp.Packet{
+		err := w.track.WriteRTP(&rtp.Packet{
 			Header: rtp.Header{
 				Version:        2,
 				PayloadType:    rtpPayloadTypeVP8,
@@ -180,7 +188,10 @@ func (w *trackWriter) sendFrame(data []byte) error {
 				Marker:         end >= len(data),
 			},
 			Payload: payload,
-		}); err != nil {
+		})
+		*bp = (*bp)[:cap(*bp)]
+		framePool.Put(bp)
+		if err != nil {
 			return err
 		}
 		w.seq++
@@ -234,8 +245,9 @@ type Transport struct {
 	readyOnce      sync.Once
 	ready          chan struct{}
 
-	stopOnce sync.Once
-	stopChan chan struct{}
+	stopOnce  sync.Once
+	stopChan  chan struct{}
+	vkSigOnce sync.Once
 }
 
 func New(cfg *Config) (*Transport, error) {
@@ -260,8 +272,8 @@ func New(cfg *Config) (*Transport, error) {
 		config:   cfg,
 		writers:  writers,
 		client:   &http.Client{Timeout: 30 * time.Second},
-		dataIn:   make(chan []byte, 10000),
-		dataOut:  make(chan []byte, 10000),
+		dataIn:   make(chan []byte, 1024),
+		dataOut:  make(chan []byte, 1024),
 		ready:    make(chan struct{}),
 		stopChan: make(chan struct{}),
 	}, nil
@@ -473,9 +485,13 @@ func (t *Transport) handleSignalMsg(msg sigMsg) {
 }
 
 
+func (t *Transport) startVKSignaling() {
+	t.vkSigOnce.Do(func() { go t.vkSignalingLoop() })
+}
+
 func (t *Transport) Listen(_ string) error {
 	if t.config.SignalingMode == SignalingVK {
-		go t.vkSignalingLoop()
+		t.startVKSignaling()
 		return nil
 	}
 	return t.wsListen()
@@ -484,7 +500,7 @@ func (t *Transport) Listen(_ string) error {
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	switch t.config.SignalingMode {
 	case SignalingVK:
-		go t.vkSignalingLoop()
+		t.startVKSignaling()
 		offer, err := t.peerConnection.CreateOffer(nil)
 		if err != nil {
 			return nil, fmt.Errorf("create offer: %w", err)
@@ -522,7 +538,7 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 
 func (t *Transport) Accept() (net.Conn, error) {
 	if t.config.SignalingMode == SignalingVK {
-		go t.vkSignalingLoop()
+		t.startVKSignaling()
 	}
 	select {
 	case <-t.ready:
@@ -814,8 +830,7 @@ func (t *Transport) receiveTrack(track *webrtc.TrackRemote) {
 		}
 		if pkt.Header.Marker {
 			if frameWant > 0 && len(frameBuf) == frameWant {
-				out := make([]byte, frameWant)
-				copy(out, frameBuf)
+				out := make([]byte, frameWant) //nolint:pool - goes to channel, caller owns
 				select {
 				case t.dataIn <- out:
 				default:
@@ -845,7 +860,7 @@ func (t *Transport) Stop() error {
 	return t.Module.Stop()
 }
 
-func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportVKVideo }
+func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportVKWebRTC }
 func (t *Transport) Close() error                   { return t.Stop() }
 
 

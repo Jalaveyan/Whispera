@@ -58,17 +58,17 @@ func (c *Config) toYamuxConfig() *yamux.Config {
 }
 
 type Session struct {
-	session  *yamux.Session
-	conn     net.Conn
-	isServer bool
-	config   *Config
-	mu       sync.RWMutex
-
 	streamsOpened uint64
 	streamsClosed uint64
 	bytesRx       uint64
 	bytesTx       uint64
-	closed        int32
+
+	session  *yamux.Session
+	conn     net.Conn
+	config   *Config
+	mu       sync.RWMutex
+	closed   int32
+	isServer bool
 }
 
 func Client(conn net.Conn, cfg *Config) (*Session, error) {
@@ -137,7 +137,13 @@ func (s *Session) OpenStreamContext(ctx context.Context) (net.Conn, error) {
 	ch := make(chan result, 1)
 	go func() {
 		conn, err := s.OpenStream()
-		ch <- result{conn, err}
+		select {
+		case ch <- result{conn, err}:
+		case <-ctx.Done():
+			if conn != nil {
+				conn.Close()
+			}
+		}
 	}()
 
 	select {
@@ -178,7 +184,13 @@ func (s *Session) AcceptStreamContext(ctx context.Context) (net.Conn, error) {
 	ch := make(chan result, 1)
 	go func() {
 		conn, err := s.AcceptStream()
-		ch <- result{conn, err}
+		select {
+		case ch <- result{conn, err}:
+		case <-ctx.Done():
+			if conn != nil {
+				conn.Close()
+			}
+		}
 	}()
 
 	select {

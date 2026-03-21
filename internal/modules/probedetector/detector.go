@@ -2,10 +2,13 @@ package probedetector
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"whispera/internal/logger"
@@ -29,6 +32,12 @@ type Config struct {
 	MaxBanEscalation   int
 	BurstThreshold     int
 	BurstWindow        time.Duration
+
+	EnableReflection    bool
+	ReflectionPorts     []int
+	ReflectionBurstSize int
+	ReflectionDelay     time.Duration
+	MaxReflectionConns  int
 }
 
 func DefaultConfig() Config {
@@ -80,6 +89,10 @@ type Detector struct {
 	ownIPs map[string]struct{}
 
 	cleanupStop chan struct{}
+
+	reflectedTotal  uint64
+	activeReflect   int32
+	reflectHistory  map[string]time.Time
 }
 
 func New(cfg Config) *Detector {
@@ -99,15 +112,29 @@ func New(cfg Config) *Detector {
 		cfg.SNICacheExpiry = 5 * time.Minute
 	}
 
+	if cfg.ReflectionBurstSize <= 0 {
+		cfg.ReflectionBurstSize = 8
+	}
+	if cfg.ReflectionDelay <= 0 {
+		cfg.ReflectionDelay = 50 * time.Millisecond
+	}
+	if cfg.MaxReflectionConns <= 0 {
+		cfg.MaxReflectionConns = 32
+	}
+	if len(cfg.ReflectionPorts) == 0 {
+		cfg.ReflectionPorts = []int{80, 443, 8080, 8443}
+	}
+
 	d := &Detector{
-		cfg:         cfg,
-		failures:    make(map[string][]time.Time),
-		blocked:     make(map[string]blockEntry),
-		dnsLog:      make(map[string]map[string]dnsEntry),
-		sniCache:    make(map[string]sniCacheEntry),
-		banHistory:  make(map[string]int),
-		ownIPs:      make(map[string]struct{}),
-		cleanupStop: make(chan struct{}),
+		cfg:            cfg,
+		failures:       make(map[string][]time.Time),
+		blocked:        make(map[string]blockEntry),
+		dnsLog:         make(map[string]map[string]dnsEntry),
+		sniCache:       make(map[string]sniCacheEntry),
+		banHistory:     make(map[string]int),
+		ownIPs:         make(map[string]struct{}),
+		cleanupStop:    make(chan struct{}),
+		reflectHistory: make(map[string]time.Time),
 	}
 
 	for _, ip := range cfg.OwnPublicIPs {
@@ -199,6 +226,10 @@ func (d *Detector) RecordAuthFailure(clientAddr string) {
 		}
 		delete(d.failures, ip)
 		log.Info("[probe] blocked %s for %v (escalation=%d): too many auth failures", ip, banDuration, escalation)
+
+		if d.cfg.EnableReflection {
+			go d.ReflectProbe(nil, ip)
+		}
 	}
 }
 
@@ -338,15 +369,16 @@ func (d *Detector) Stats() map[string]interface{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return map[string]interface{}{
-		"blocked_ips":      len(d.blocked),
-		"tracked_ips":      len(d.failures),
-		"dns_log_size":     len(d.dnsLog),
-		"sni_cache":        len(d.sniCache),
-		"own_ips":          d.ownIPsList(),
-		"require_dns":      d.cfg.RequireDNSQuery,
-		"check_sni_own":    d.cfg.CheckSNIOwnership,
-		"escalating_bans":  d.cfg.EscalatingBans,
-		"repeat_offenders": len(d.banHistory),
+		"blocked_ips":       len(d.blocked),
+		"tracked_ips":       len(d.failures),
+		"dns_log_size":      len(d.dnsLog),
+		"sni_cache":         len(d.sniCache),
+		"own_ips":           d.ownIPsList(),
+		"require_dns":       d.cfg.RequireDNSQuery,
+		"check_sni_own":     d.cfg.CheckSNIOwnership,
+		"escalating_bans":   d.cfg.EscalatingBans,
+		"repeat_offenders":  len(d.banHistory),
+		"reflection":        d.ReflectionStats(),
 	}
 }
 
@@ -477,6 +509,91 @@ func extractIP(addr string) string {
 		return ""
 	}
 	return host
+}
+
+func (d *Detector) ReflectProbe(probeData []byte, sourceAddr string) {
+	if !d.cfg.EnableReflection {
+		return
+	}
+	ip := extractIP(sourceAddr)
+	if ip == "" {
+		return
+	}
+
+	d.mu.RLock()
+	lastReflect, seen := d.reflectHistory[ip]
+	d.mu.RUnlock()
+	if seen && time.Since(lastReflect) < 10*time.Second {
+		return
+	}
+
+	if int(atomic.LoadInt32(&d.activeReflect)) >= d.cfg.MaxReflectionConns {
+		return
+	}
+
+	d.mu.Lock()
+	d.reflectHistory[ip] = time.Now()
+	d.mu.Unlock()
+
+	atomic.AddInt32(&d.activeReflect, 1)
+	go func() {
+		defer atomic.AddInt32(&d.activeReflect, -1)
+		d.doReflect(ip, probeData)
+	}()
+}
+
+func (d *Detector) doReflect(ip string, probeData []byte) {
+	for _, port := range d.cfg.ReflectionPorts {
+		addr := fmt.Sprintf("%s:%d", ip, port)
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		if err != nil {
+			continue
+		}
+
+		for i := 0; i < d.cfg.ReflectionBurstSize; i++ {
+			noise := d.generateReflectionNoise(probeData)
+			conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+			conn.Write(noise)
+			time.Sleep(d.cfg.ReflectionDelay)
+		}
+
+		conn.Close()
+		atomic.AddUint64(&d.reflectedTotal, 1)
+		log.Debug("[probe] reflected %d noise bursts to %s", d.cfg.ReflectionBurstSize, addr)
+	}
+}
+
+func (d *Detector) generateReflectionNoise(probeData []byte) []byte {
+	sizeN, _ := rand.Int(rand.Reader, big.NewInt(1024))
+	size := 128 + int(sizeN.Int64())
+	noise := make([]byte, size)
+
+	if len(probeData) > 0 {
+		for i := range noise {
+			noise[i] = probeData[i%len(probeData)]
+		}
+	}
+
+	mutateLen := size / 4
+	mutations := make([]byte, mutateLen)
+	rand.Read(mutations)
+	offsetN, _ := rand.Int(rand.Reader, big.NewInt(int64(size-mutateLen)))
+	offset := int(offsetN.Int64())
+	copy(noise[offset:offset+mutateLen], mutations)
+
+	return noise
+}
+
+func (d *Detector) ReflectionStats() map[string]interface{} {
+	d.mu.RLock()
+	historySize := len(d.reflectHistory)
+	d.mu.RUnlock()
+	return map[string]interface{}{
+		"enabled":        d.cfg.EnableReflection,
+		"total_reflected": atomic.LoadUint64(&d.reflectedTotal),
+		"active_conns":   atomic.LoadInt32(&d.activeReflect),
+		"history_size":   historySize,
+	}
 }
 
 func pruneOlderThan(ts []time.Time, cutoff time.Time) []time.Time {

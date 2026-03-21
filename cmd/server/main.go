@@ -64,6 +64,7 @@ import (
 	_ "whispera/internal/modules/transport/vkbot"
 	_ "whispera/internal/modules/transport/vkwebrtc"
 	ws_transport "whispera/internal/modules/transport/websocket"
+	"whispera/internal/modules/mlserver"
 	_ "whispera/internal/modules/transport/yacloud"
 	_ "whispera/internal/modules/transport/yadisk"
 	_ "whispera/internal/modules/transport/yatelemost"
@@ -1228,6 +1229,26 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		manager.OnShutdown(func() { globalCorrelation.Stop() })
 		log.Printf("✅ Correlation defense enabled (padding=%v, jitter=%v, cover=%v)",
 			serverConfig.Correlation.PaddingEnabled, serverConfig.Correlation.JitterEnabled, serverConfig.Correlation.CoverTraffic)
+	}
+
+	{
+		mlCfg := &mlserver.Config{
+			ListenAddr: ":8000",
+			Token:      serverConfig.API.AuthToken,
+			DataDir:    "./ml_data",
+		}
+		if serverConfig.ML.ServerURL != "" {
+			mlCfg.ListenAddr = serverConfig.ML.ServerURL
+		}
+		mlSrv, err := mlserver.New(mlCfg)
+		if err != nil {
+			log.Printf("⚠ ML server init failed: %v", err)
+		} else {
+			if err := manager.Register(mlSrv); err != nil {
+				return err
+			}
+			log.Printf("✅ ML server (native Gorgonia engine) on %s", mlCfg.ListenAddr)
+		}
 	}
 
 	if serverConfig.Update.Enabled && serverConfig.Update.ManifestURL != "" {

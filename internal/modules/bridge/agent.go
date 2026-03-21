@@ -3,23 +3,29 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"whispera/internal/obfuscation/ml/gnet" //nolint:depguard
 )
 
 type AgentConfig struct {
-	BridgeID          string        `yaml:"bridge_id"`
-	UpstreamServer    string        `yaml:"upstream_server"`
-	RegistrationToken string        `yaml:"registration_token"`
-	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
-	MetricsInterval   time.Duration `yaml:"metrics_interval"`
+	BridgeID           string        `yaml:"bridge_id"`
+	UpstreamServer     string        `yaml:"upstream_server"`
+	RegistrationToken  string        `yaml:"registration_token"`
+	HeartbeatInterval  time.Duration `yaml:"heartbeat_interval"`
+	MetricsInterval    time.Duration `yaml:"metrics_interval"`
 	ConfigPollInterval time.Duration `yaml:"config_poll_interval"`
+	MLServerURL        string        `yaml:"ml_server_url"`
+	MLSyncInterval     time.Duration `yaml:"ml_sync_interval"`
 }
 
 func DefaultAgentConfig() *AgentConfig {
@@ -27,6 +33,7 @@ func DefaultAgentConfig() *AgentConfig {
 		HeartbeatInterval:  30 * time.Second,
 		MetricsInterval:    60 * time.Second,
 		ConfigPollInterval: 5 * time.Minute,
+		MLSyncInterval:     10 * time.Minute,
 	}
 }
 
@@ -41,6 +48,25 @@ type AgentMetrics struct {
 	Uptime       int64   `json:"uptime_seconds"`
 	BandwidthIn  int64   `json:"bandwidth_in_bps"`
 	BandwidthOut int64   `json:"bandwidth_out_bps"`
+}
+
+const (
+	miniInputSize      = 16
+	miniHiddenSize     = 24
+	miniTrafficClasses = 5
+	miniDPIClasses     = 4
+	miniTransportOut   = 8
+)
+
+type mlPrediction struct {
+	ClassID    int     `json:"class_id"`
+	Confidence float64 `json:"confidence"`
+	DPIType    int     `json:"dpi_type"`
+}
+
+type mlRecommendation struct {
+	Transport  string  `json:"transport"`
+	Confidence float64 `json:"confidence"`
 }
 
 type Agent struct {
@@ -60,20 +86,48 @@ type Agent struct {
 
 	configVersion string
 
+	mlToken      string
+	mlClient     *http.Client
+	trafficNet   *gnet.GorgoniaNet
+	dpiNet       *gnet.GorgoniaNet
+	transportNet *gnet.GorgoniaNet
+	mlMu       sync.RWMutex
+	mlReady    int32
+
+	trafficSamples []trafficSample
+	sampleMu       sync.Mutex
+	maxSamples     int
+
 	onConfigUpdate func(map[string]interface{})
 	onAlert        func(alertType, message string)
+}
+
+type trafficSample struct {
+	Features []float64 `json:"features"`
+	ClassID  int       `json:"class_id"`
+	DPIType  int       `json:"dpi_type"`
+	TS       int64     `json:"ts"`
 }
 
 func NewAgent(cfg *AgentConfig) *Agent {
 	if cfg == nil {
 		cfg = DefaultAgentConfig()
 	}
-	return &Agent{
+	a := &Agent{
 		config:  cfg,
 		client:  &http.Client{Timeout: 15 * time.Second},
-		startAt: time.Now(),
-		stopCh:  make(chan struct{}),
+		mlClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		},
+		startAt:    time.Now(),
+		stopCh:     make(chan struct{}),
+		maxSamples: 500,
 	}
+	a.initMiniNets()
+	return a
 }
 
 func (a *Agent) OnConfigUpdate(fn func(map[string]interface{})) { a.onConfigUpdate = fn }
@@ -89,6 +143,12 @@ func (a *Agent) Start() {
 	go a.heartbeatLoop()
 	go a.metricsLoop()
 	go a.configPollLoop()
+
+	if a.config.MLServerURL != "" {
+		a.wg.Add(1)
+		go a.mlSyncLoop()
+	}
+
 	log.Printf("Bridge agent started (id=%s)", a.config.BridgeID)
 }
 
@@ -96,6 +156,439 @@ func (a *Agent) Stop() {
 	close(a.stopCh)
 	a.wg.Wait()
 	log.Printf("Bridge agent stopped")
+}
+
+func (a *Agent) initMiniNets() {
+	a.trafficNet = gnet.New([]int{miniInputSize, miniHiddenSize, miniTrafficClasses})
+	a.dpiNet = gnet.New([]int{miniInputSize, miniHiddenSize, miniDPIClasses})
+	a.transportNet = gnet.New([]int{miniInputSize, miniHiddenSize, miniTransportOut})
+	atomic.StoreInt32(&a.mlReady, 1)
+}
+
+func softmax(x []float64) []float64 {
+	maxVal := x[0]
+	for _, v := range x[1:] {
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+	out := make([]float64, len(x))
+	sum := 0.0
+	for i, v := range x {
+		out[i] = math.Exp(v - maxVal)
+		sum += out[i]
+	}
+	if sum > 0 {
+		for i := range out {
+			out[i] /= sum
+		}
+	}
+	return out
+}
+
+func argmax(x []float64) (int, float64) {
+	best := 0
+	bestVal := x[0]
+	for i, v := range x[1:] {
+		if v > bestVal {
+			bestVal = v
+			best = i + 1
+		}
+	}
+	return best, bestVal
+}
+
+func (a *Agent) ExtractFeatures(data []byte) []float64 {
+	f := make([]float64, miniInputSize)
+	if len(data) == 0 {
+		return f
+	}
+
+	f[0] = float64(len(data)) / 1500.0
+
+	entropy := 0.0
+	var freq [256]int
+	for _, b := range data {
+		freq[b]++
+	}
+	n := float64(len(data))
+	for _, c := range freq {
+		if c > 0 {
+			p := float64(c) / n
+			entropy -= p * math.Log2(p)
+		}
+	}
+	f[1] = entropy / 8.0
+
+	printable := 0
+	for _, b := range data {
+		if b >= 32 && b <= 126 {
+			printable++
+		}
+	}
+	f[2] = float64(printable) / n
+
+	if len(data) >= 3 {
+		f[3] = float64(data[0]) / 255.0
+		f[4] = float64(data[1]) / 255.0
+		f[5] = float64(data[2]) / 255.0
+	}
+
+	if len(data) >= 2 && data[0] == 0x16 && data[1] == 0x03 {
+		f[6] = 1.0
+	}
+	if len(data) >= 4 && string(data[:4]) == "HTTP" {
+		f[7] = 1.0
+	}
+	if len(data) >= 4 && string(data[:4]) == "GET " {
+		f[7] = 0.8
+	}
+	if len(data) >= 5 && string(data[:5]) == "POST " {
+		f[7] = 0.9
+	}
+	if len(data) >= 4 && string(data[:4]) == "SSH-" {
+		f[8] = 1.0
+	}
+	if len(data) >= 2 && data[0] == 0x00 && data[1] <= 64 {
+		f[9] = 1.0
+	}
+
+	var sum, sumSq float64
+	limit := len(data)
+	if limit > 256 {
+		limit = 256
+	}
+	for _, b := range data[:limit] {
+		v := float64(b)
+		sum += v
+		sumSq += v * v
+	}
+	mean := sum / float64(limit)
+	variance := sumSq/float64(limit) - mean*mean
+	f[10] = mean / 255.0
+	f[11] = math.Sqrt(math.Abs(variance)) / 128.0
+
+	chiSq := 0.0
+	expected := n / 256.0
+	for _, c := range freq {
+		diff := float64(c) - expected
+		chiSq += diff * diff / expected
+	}
+	f[12] = math.Min(chiSq/1000.0, 1.0)
+
+	uniq := 0
+	for _, c := range freq {
+		if c > 0 {
+			uniq++
+		}
+	}
+	f[13] = float64(uniq) / 256.0
+
+	runs := 1
+	if len(data) > 1 {
+		for i := 1; i < len(data) && i < 256; i++ {
+			if data[i] != data[i-1] {
+				runs++
+			}
+		}
+	}
+	f[14] = float64(runs) / float64(limit)
+
+	zeros := 0
+	for _, b := range data {
+		if b == 0 {
+			zeros++
+		}
+	}
+	f[15] = float64(zeros) / n
+
+	return f
+}
+
+func (a *Agent) ClassifyTraffic(data []byte) *mlPrediction {
+	if atomic.LoadInt32(&a.mlReady) == 0 {
+		return nil
+	}
+	features := a.ExtractFeatures(data)
+	a.mlMu.RLock()
+	rawTraffic := a.trafficNet.Forward(features)
+	rawDPI := a.dpiNet.Forward(features)
+	a.mlMu.RUnlock()
+
+	probs := softmax(rawTraffic)
+	classID, confidence := argmax(probs)
+
+	dpiProbs := softmax(rawDPI)
+	dpiType, _ := argmax(dpiProbs)
+
+	a.recordSample(features, classID, dpiType)
+
+	return &mlPrediction{
+		ClassID:    classID,
+		Confidence: confidence,
+		DPIType:    dpiType,
+	}
+}
+
+func (a *Agent) RecommendTransport() *mlRecommendation {
+	if atomic.LoadInt32(&a.mlReady) == 0 {
+		return nil
+	}
+
+	features := make([]float64, miniInputSize)
+	metrics := a.collectMetrics()
+	features[0] = float64(metrics.Connections) / 100.0
+	features[1] = float64(metrics.BandwidthIn) / 1e9
+	features[2] = float64(metrics.BandwidthOut) / 1e9
+	features[3] = float64(metrics.MemoryMB) / 1024.0
+	features[4] = float64(metrics.Goroutines) / 1000.0
+	features[5] = float64(metrics.Uptime) / 86400.0
+
+	a.sampleMu.Lock()
+	nSamples := len(a.trafficSamples)
+	var avgDPI float64
+	if nSamples > 0 {
+		last := a.trafficSamples
+		if len(last) > 20 {
+			last = last[len(last)-20:]
+		}
+		for _, s := range last {
+			avgDPI += float64(s.DPIType)
+		}
+		avgDPI /= float64(len(last))
+	}
+	a.sampleMu.Unlock()
+	features[6] = avgDPI / 4.0
+	features[7] = float64(nSamples) / float64(a.maxSamples)
+
+	a.mlMu.RLock()
+	raw := a.transportNet.Forward(features)
+	a.mlMu.RUnlock()
+
+	probs := softmax(raw)
+	idx, confidence := argmax(probs)
+
+	transports := []string{"tcp", "tls", "grpc", "http2", "noise_ik", "dtls", "vkwebrtc", "mirage"}
+	transport := "tcp"
+	if idx < len(transports) {
+		transport = transports[idx]
+	}
+
+	return &mlRecommendation{
+		Transport:  transport,
+		Confidence: confidence,
+	}
+}
+
+func (a *Agent) recordSample(features []float64, classID, dpiType int) {
+	a.sampleMu.Lock()
+	defer a.sampleMu.Unlock()
+	if len(a.trafficSamples) >= a.maxSamples {
+		a.trafficSamples = a.trafficSamples[1:]
+	}
+	a.trafficSamples = append(a.trafficSamples, trafficSample{
+		Features: features,
+		ClassID:  classID,
+		DPIType:  dpiType,
+		TS:       time.Now().Unix(),
+	})
+}
+
+func (a *Agent) mlSyncLoop() {
+	defer a.wg.Done()
+
+	a.fetchMLToken()
+	a.syncMLWeights()
+
+	interval := a.config.MLSyncInterval
+	if interval == 0 {
+		interval = 10 * time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.stopCh:
+			return
+		case <-ticker.C:
+			a.syncMLWeights()
+			a.uploadSamples()
+		}
+	}
+}
+
+func (a *Agent) fetchMLToken() {
+	body := map[string]interface{}{
+		"bridge_id": a.config.BridgeID,
+		"token":     a.config.RegistrationToken,
+	}
+
+	resp, err := a.post("/api/ml/config", body)
+	if err != nil {
+		log.Printf("ML token fetch failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Token     string `json:"token"`
+		ServerURL string `json:"server_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return
+	}
+
+	a.mlMu.Lock()
+	a.mlToken = result.Token
+	if result.ServerURL != "" {
+		a.config.MLServerURL = result.ServerURL
+	}
+	a.mlMu.Unlock()
+
+	log.Printf("ML token acquired from upstream")
+}
+
+func (a *Agent) mlPost(path string, body interface{}) (*http.Response, error) {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	a.mlMu.RLock()
+	mlURL := a.config.MLServerURL
+	token := a.mlToken
+	a.mlMu.RUnlock()
+
+	if mlURL == "" {
+		return nil, fmt.Errorf("ML server URL not configured")
+	}
+
+	url := fmt.Sprintf("https://%s%s", mlURL, path)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := a.mlClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ML HTTPS request failed: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		a.fetchMLToken()
+		return nil, fmt.Errorf("ML 401 unauthorized, token refreshed")
+	}
+
+	if resp.StatusCode >= 400 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("ML HTTP %d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
+func (a *Agent) mlGet(path string) (*http.Response, error) {
+	a.mlMu.RLock()
+	mlURL := a.config.MLServerURL
+	token := a.mlToken
+	a.mlMu.RUnlock()
+
+	if mlURL == "" {
+		return nil, fmt.Errorf("ML server URL not configured")
+	}
+
+	url := fmt.Sprintf("https://%s%s", mlURL, path)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := a.mlClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ML HTTPS request failed: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("ML HTTP %d", resp.StatusCode)
+	}
+	return resp, nil
+}
+
+func (a *Agent) syncMLWeights() {
+	resp, err := a.mlGet("/federated/download")
+	if err != nil {
+		log.Printf("ML weights sync failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Deltas []struct {
+			Traffic   []gnet.LayerDef `json:"traffic"`
+			DPI       []gnet.LayerDef `json:"dpi"`
+			Transport []gnet.LayerDef `json:"transport"`
+		} `json:"deltas"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return
+	}
+
+	if len(result.Deltas) == 0 {
+		return
+	}
+
+	a.mlMu.Lock()
+	defer a.mlMu.Unlock()
+	delta := result.Deltas[len(result.Deltas)-1]
+	if len(delta.Traffic) > 0 {
+		a.trafficNet.LoadWeights(delta.Traffic)
+	}
+	if len(delta.DPI) > 0 {
+		a.dpiNet.LoadWeights(delta.DPI)
+	}
+	if len(delta.Transport) > 0 {
+		a.transportNet.LoadWeights(delta.Transport)
+	}
+	log.Printf("ML weights synced from server")
+}
+
+func (a *Agent) uploadSamples() {
+	a.sampleMu.Lock()
+	if len(a.trafficSamples) == 0 {
+		a.sampleMu.Unlock()
+		return
+	}
+	samples := make([]trafficSample, len(a.trafficSamples))
+	copy(samples, a.trafficSamples)
+	a.trafficSamples = a.trafficSamples[:0]
+	a.sampleMu.Unlock()
+
+	body := map[string]interface{}{
+		"bridge_id": a.config.BridgeID,
+		"samples":   samples,
+		"ts":        time.Now().Unix(),
+	}
+	resp, err := a.mlPost("/federated/upload", body)
+	if err != nil {
+		a.sampleMu.Lock()
+		a.trafficSamples = append(samples, a.trafficSamples...)
+		if len(a.trafficSamples) > a.maxSamples {
+			a.trafficSamples = a.trafficSamples[:a.maxSamples]
+		}
+		a.sampleMu.Unlock()
+		return
+	}
+	resp.Body.Close()
+	log.Printf("ML samples uploaded: %d", len(samples))
 }
 
 func (a *Agent) heartbeatLoop() {
@@ -172,6 +665,17 @@ func (a *Agent) collectMetrics() *AgentMetrics {
 
 func (a *Agent) sendHeartbeat() {
 	metrics := a.collectMetrics()
+
+	var mlInfo map[string]interface{}
+	if rec := a.RecommendTransport(); rec != nil {
+		mlInfo = map[string]interface{}{
+			"recommended_transport": rec.Transport,
+			"confidence":            rec.Confidence,
+			"samples_collected":     len(a.trafficSamples),
+			"ml_ready":              atomic.LoadInt32(&a.mlReady) == 1,
+		}
+	}
+
 	body := map[string]interface{}{
 		"id":             a.config.BridgeID,
 		"token":          a.config.RegistrationToken,
@@ -182,6 +686,7 @@ func (a *Agent) sendHeartbeat() {
 		"bandwidth_in":   metrics.BandwidthIn,
 		"bandwidth_out":  metrics.BandwidthOut,
 		"config_version": a.configVersion,
+		"ml":             mlInfo,
 	}
 
 	resp, err := a.post("/api/bridge-heartbeat", body)
@@ -194,12 +699,25 @@ func (a *Agent) sendHeartbeat() {
 	}
 
 	var result struct {
-		Success      bool     `json:"success"`
-		SSHKeys      []string `json:"ssh_keys"`
-		ConfigVersion string  `json:"config_version"`
+		Success       bool     `json:"success"`
+		SSHKeys       []string `json:"ssh_keys"`
+		ConfigVersion string   `json:"config_version"`
+		MLServerURL   string   `json:"ml_server_url"`
+		MLToken       string   `json:"ml_token"`
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
 	resp.Body.Close()
+
+	if result.MLServerURL != "" {
+		a.mlMu.Lock()
+		a.config.MLServerURL = result.MLServerURL
+		a.mlMu.Unlock()
+	}
+	if result.MLToken != "" {
+		a.mlMu.Lock()
+		a.mlToken = result.MLToken
+		a.mlMu.Unlock()
+	}
 }
 
 func (a *Agent) sendMetrics() {
@@ -260,13 +778,7 @@ func (a *Agent) post(path string, body interface{}) (*http.Response, error) {
 	req1.Header.Set("Content-Type", "application/json")
 	resp, err := a.client.Do(req1)
 	if err != nil {
-		url = fmt.Sprintf("http://%s%s", a.config.UpstreamServer, path)
-		req2, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
-		req2.Header.Set("Content-Type", "application/json")
-		resp, err = a.client.Do(req2)
-		if err != nil {
-			return nil, err
-		}
+		return nil, fmt.Errorf("HTTPS request failed (HTTP fallback disabled): %w", err)
 	}
 
 	if resp.StatusCode >= 400 {

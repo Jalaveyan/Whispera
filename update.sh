@@ -419,10 +419,10 @@ if [[ -d "$ML_DIR/.git" ]]; then
     fi
 fi
 
-# ML Python из основного репо — просто рестарт сервиса, без пересборки
+# ML встроен в основной Go бинарник — рестарт основного сервиса достаточно
 if [[ -n "$ML_PY_CHANGED" ]]; then
-    echo "ML Python files updated — restarting whispera-ml"
-    systemctl restart whispera-ml 2>/dev/null && echo "whispera-ml restarted" || echo "whispera-ml not running"
+    echo "ML files updated — restarting whispera (ML is built-in)"
+    systemctl restart whispera 2>/dev/null && echo "whispera restarted" || echo "whispera not running"
 fi
 
 # Панель — рестарт
@@ -804,7 +804,7 @@ show_extras_menu() {
             21)
                 curl -sk "https://127.0.0.1:8080/api/bridges" \
                     -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" | \
-                    python3 -m json.tool 2>/dev/null || \
+                    jq . 2>/dev/null || cat || \
                     log_err "Failed to fetch bridges (is Whispera running?)"
                 ;;
             0|"") log_info "Exiting menu."; break ;;
@@ -1088,110 +1088,16 @@ ENVEOF
             log_warn "ML repo clone failed"
     fi
 
-    # ── ML service — обновление / установка ─────────────────────────────────
-    # Путь к скрипту: сначала из ML репо, затем из основного репо
-    local ML_SCRIPT
-    if [[ -f "$ML_DIR/ml_api_server.py" ]]; then
-        ML_SCRIPT="$ML_DIR/ml_api_server.py"
-    else
-        ML_SCRIPT="$WORK_DIR/internal/obfuscation/ml/ml_api_server.py"
-    fi
-    local PYTHON_BIN
-    PYTHON_BIN=$(command -v python3 || command -v python || echo "")
-    if [[ -n "$PYTHON_BIN" && -f "$ML_SCRIPT" ]]; then
-
-        # Ресурсы сервера (могут измениться с момента первой установки)
-        local SRV_CORES SRV_RAMMB ML_PROFILE MEM_LIMIT RETRAIN_THRESH
-        SRV_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
-        SRV_RAMMB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}' || echo 1024)
-
-        if   [[ $SRV_CORES -le 1 || $SRV_RAMMB -lt 2048 ]]; then
-            ML_PROFILE="minimal";  MEM_LIMIT="256M"; RETRAIN_THRESH="200"
-        elif [[ $SRV_CORES -ge 8 && $SRV_RAMMB -ge 8192 ]]; then
-            ML_PROFILE="full";     MEM_LIMIT="1G";   RETRAIN_THRESH="1000"
-        else
-            ML_PROFILE="standard"; MEM_LIMIT="512M"; RETRAIN_THRESH="500"
-        fi
-
-        # Читаем текущий профиль из юнита (если уже установлен)
-        local CURRENT_PROFILE
-        CURRENT_PROFILE=$(grep "WHISPERA_ML_PROFILE=" /etc/systemd/system/whispera-ml.service 2>/dev/null \
-            | cut -d= -f2 | tr -d '[:space:]')
-
-        # Обновляем зависимости если профиль изменился или сервис новый
-        if [[ "$CURRENT_PROFILE" != "$ML_PROFILE" || ! -f /etc/systemd/system/whispera-ml.service ]]; then
-            log_info "ML profile: $CURRENT_PROFILE → $ML_PROFILE (${SRV_CORES} cores, ${SRV_RAMMB} MB RAM)"
-
-            $PYTHON_BIN -m pip install --quiet \
-                fastapi uvicorn pydantic python-multipart \
-                numpy "scikit-learn>=1.6.1,<1.7.0" scipy joblib cryptography 2>/dev/null || true
-
-            if [[ "$ML_PROFILE" == "full" ]]; then
-                $PYTHON_BIN -m pip install --quiet tensorflow-cpu 2>/dev/null || \
-                    $PYTHON_BIN -m pip install --quiet onnxruntime skl2onnx 2>/dev/null || true
-            else
-                $PYTHON_BIN -m pip install --quiet onnxruntime skl2onnx 2>/dev/null || true
-            fi
-
-            # Переобучаем модели под новый профиль
-            local TRAIN_SCRIPT
-            if [[ -f "$ML_DIR/train_onnx_models.py" ]]; then
-                TRAIN_SCRIPT="$ML_DIR/train_onnx_models.py"
-            else
-                TRAIN_SCRIPT="$WORK_DIR/ml_engine/train_onnx_models.py"
-            fi
-            if [[ -f "$TRAIN_SCRIPT" ]]; then
-                WHISPERA_ML_PROFILE="$ML_PROFILE" \
-                    $PYTHON_BIN "$TRAIN_SCRIPT" 2>/dev/null && \
-                    log_success "ML models retrained for profile: $ML_PROFILE" || \
-                    log_warn "ML model training failed"
-            fi
-        else
-            log_info "ML profile unchanged ($ML_PROFILE) — skipping deps update"
-        fi
-
-        # Всегда обновляем systemd-юнит (мог измениться при обновлении)
-        # WorkingDirectory и PYTHONPATH зависят от того, есть ли отдельный ML репо
-        local ML_WORK_DIR ML_PYTHONPATH
-        if [[ -d "$ML_DIR/.git" ]]; then
-            ML_WORK_DIR="$ML_DIR"
-            ML_PYTHONPATH="$ML_DIR"
-        else
-            ML_WORK_DIR="$WORK_DIR/internal/obfuscation/ml"
-            ML_PYTHONPATH="$WORK_DIR/ml_engine"
-        fi
-
-        cat > /etc/systemd/system/whispera-ml.service <<EOF
-[Unit]
-Description=Whispera ML Server
-After=network.target
-
-[Service]
-User=whispera
-Group=whispera
-WorkingDirectory=$ML_WORK_DIR
-ExecStart=$PYTHON_BIN $ML_SCRIPT
-Restart=on-failure
-RestartSec=10
-Environment=WHISPERA_ML_PORT=8000
-Environment=PYTHONPATH=$ML_PYTHONPATH
-Environment=WHISPERA_ML_PROFILE=$ML_PROFILE
-Environment=WHISPERA_ML_RETRAIN_THRESHOLD=$RETRAIN_THRESH
-MemoryMax=$MEM_LIMIT
-MemorySwapMax=0
-
-[Install]
-WantedBy=multi-user.target
-EOF
+    # ── ML engine встроен в основной Go бинарник (модуль mlserver, порт 8000) ──
+    log_info "ML engine is built into the main Whispera binary (no Python required)"
+    if [[ -f /etc/systemd/system/whispera-ml.service ]]; then
+        log_info "Removing legacy Python ML service..."
+        systemctl stop whispera-ml 2>/dev/null || true
+        systemctl disable whispera-ml 2>/dev/null || true
+        rm -f /etc/systemd/system/whispera-ml.service
         systemctl daemon-reload
-        systemctl enable whispera-ml >/dev/null 2>&1
-        if systemctl restart whispera-ml 2>/dev/null; then
-            log_info "ML service started (profile: $ML_PROFILE)"
-            _enable_ml_in_config
-        else
-            log_warn "ML service failed to start (check: journalctl -u whispera-ml)"
-        fi
     fi
+    _enable_ml_in_config
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then
         local MTD
@@ -1206,22 +1112,12 @@ EOF
         RELAY_COUNT=$(grep -c "^relay:" "$CONF_PATH/config.yaml" 2>/dev/null || echo 0)
         if [[ "$RELAY_COUNT" -gt 1 ]]; then
             log_warn "Config: duplicate relay: blocks detected ($RELAY_COUNT). Merging..."
-            python3 - <<'PYEOF' "$CONF_PATH/config.yaml"
-import sys, re
-
-path = sys.argv[1]
-content = open(path).read()
-
-content = re.sub(r'\nrelay:\n( {2}[^\n]+\n)+(?=relay:)', '\n', content)
-
-blocks = list(re.finditer(r'^relay:.*?(?=\n\S|\Z)', content, re.MULTILINE | re.DOTALL))
-if len(blocks) > 1:
-    for b in blocks[:-1]:
-        content = content[:b.start()] + content[b.end():]
-
-open(path, 'w').write(content)
-print('Done')
-PYEOF
+            awk '
+            /^relay:/ { if (seen_relay) { skip=1; next } seen_relay=1 }
+            skip && /^[^ ]/ && !/^relay:/ { skip=0 }
+            !skip { print }
+            ' "$CONF_PATH/config.yaml" > "$CONF_PATH/config.yaml.tmp" && \
+                mv "$CONF_PATH/config.yaml.tmp" "$CONF_PATH/config.yaml"
             log_success "relay: blocks merged"
         fi
 

@@ -19,8 +19,7 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/PULL_REQUEST_TEMPLATE*'
       - 'whisp/**'
-      - 'internal/obfuscation/ml/**.py'
-      - 'ml_engine/**.py'
+      - '**.py'
       - 'install.sh'
       - 'update.sh'
       - 'scripts/**'
@@ -103,6 +102,34 @@ jobs:
           path: whispera-go-client-x86_64-pc-windows-msvc.exe
           retention-days: 5
 
+  build-ml-server:
+    name: Build ML Server (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version: '1.24.x'
+
+      - name: Build
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags "-s -w -X main.Version=${{ github.ref_name }}" `
+            -o whispera-ml-server.exe ./cmd/mlserver
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: whispera-ml-server-windows
+          path: whispera-ml-server.exe
+          retention-days: 5
+
   build-panel:
     name: Build Panel
     runs-on: ubuntu-latest
@@ -139,7 +166,7 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-server, build-panel, build-go-client]
+    needs: [build-server, build-panel, build-go-client, build-ml-server]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test' || startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
@@ -155,6 +182,8 @@ jobs:
         run: |
           mkdir -p release-files
           find artifacts -type f -name '*.tar.gz' -exec cp {} release-files/ \;
+          find artifacts -type f -name 'whispera-go-client-*.exe' -exec cp {} release-files/ \;
+          find artifacts -type f -name 'whispera-ml-server.exe' -exec cp {} release-files/ \;
           echo "Release files:"
           ls -la release-files/
 
@@ -255,3 +284,12 @@ jobs:
           files: release-files/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trigger Whisp Client rebuild
+        if: github.ref == 'refs/heads/main'
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.WHISP_DISPATCH_TOKEN }}
+          repository: Jalaveyan/Whisp
+          event-type: upstream-release
+          client-payload: '{"version": "${{ steps.next_ver.outputs.new_tag }}"}'

@@ -137,6 +137,8 @@ func (t *Transport) Start() error {
 	return nil
 }
 
+func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportYaDisk }
+
 func (t *Transport) Stop() error {
 	t.stopOnce.Do(func() { close(t.stopCh) })
 	return nil

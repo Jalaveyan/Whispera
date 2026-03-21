@@ -2,6 +2,7 @@ package evasion
 
 import (
 	"crypto/md5"
+	"crypto/rand"
 	"fmt"
 	"strings"
 )
@@ -131,15 +132,28 @@ func (m *Marionette) applyJA3Evasion(_ []byte) []byte {
 
 func (m *Marionette) generateTLSClientHello() []byte {
 	clientHello := make([]byte, 0, 512)
-	clientHello = append(clientHello, 0x03, 0x04)
+	clientHello = append(clientHello, 0x03, 0x03)
 	random := make([]byte, 32)
-	for i := range random {
-		random[i] = byte(m.generateRealisticRandom(256))
-	}
+	rand.Read(random)
 	clientHello = append(clientHello, random...)
-	clientHello = append(clientHello, 0x00)
 
-	ciphers := []uint16{0x1301, 0x1302, 0x1303}
+	sessionIDLen := cryptoRandInt(33)
+	sessionID := make([]byte, sessionIDLen)
+	rand.Read(sessionID)
+	clientHello = append(clientHello, byte(sessionIDLen))
+	clientHello = append(clientHello, sessionID...)
+
+	allCiphers := []uint16{0x1301, 0x1302, 0x1303, 0xc02b, 0xc02f, 0xc02c, 0xc030, 0xcca9, 0xcca8, 0xc013, 0xc014, 0x009c, 0x009d, 0x002f, 0x0035}
+	numCiphers := 3 + cryptoRandInt(len(allCiphers)-3)
+	used := make(map[int]bool)
+	var ciphers []uint16
+	for len(ciphers) < numCiphers {
+		idx := cryptoRandInt(len(allCiphers))
+		if !used[idx] {
+			used[idx] = true
+			ciphers = append(ciphers, allCiphers[idx])
+		}
+	}
 	clientHello = append(clientHello, byte(len(ciphers)*2>>8), byte(len(ciphers)*2&0xFF))
 	for _, suite := range ciphers {
 		clientHello = append(clientHello, byte(suite>>8), byte(suite&0xFF))
@@ -178,14 +192,13 @@ func (m *Marionette) applyJA4Evasion(_ []byte) []byte {
 }
 
 func (m *Marionette) calculateJA4Hash(extensions []byte) []byte {
-	hash := make([]byte, 20)
-	for i := 0; i < 20 && i < len(extensions); i++ {
-		hash[i] = extensions[i] ^ byte(i*11)
-	}
-	return hash
+	hash := md5.Sum(extensions)
+	return hash[:]
 }
 
 func (m *Marionette) generateJA4Extensions() []byte {
-	extensions := make([]byte, 0, 128)
-	return extensions
+	size := 16 + cryptoRandInt(64)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }

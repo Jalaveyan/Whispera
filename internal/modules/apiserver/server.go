@@ -36,6 +36,7 @@ import (
 	"whispera/internal/network"
 	"whispera/internal/stats"
 
+	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -73,6 +74,7 @@ type Config struct {
 	AdminUsername  string
 	AdminPassword  string
 	LoginRateLimit int
+	TLSFingerprint string
 }
 
 func DefaultConfig() *Config {
@@ -92,9 +94,10 @@ func (c *Config) Validate() error {
 
 type Server struct {
 	*base.Module
-	config *Config
-	server *http.Server
-	mux    *http.ServeMux
+	config      *Config
+	server      *http.Server
+	http3Server *http3.Server
+	mux         *http.ServeMux
 
 	registry registry.Registry
 
@@ -263,6 +266,8 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("DELETE /api/firewall/rules", s.handleFirewallDeleteRule)
 	s.Handle("POST /api/firewall/toggle", s.handleFirewallToggle)
 	s.Handle("GET /api/backup", s.handleGetBackup)
+	s.Handle("GET /api/backup/full", s.handleGetBackupFull)
+	s.Handle("GET /api/backup/list", s.handleBackupList)
 	s.Handle("POST /api/backup/restore", s.handleRestoreBackup)
 
 	s.Handle("GET /api/sessions", s.handleGetSessionsAPI)
@@ -302,6 +307,10 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/ml/config", s.handleMLConfig)
 	s.Handle("POST /api/ml/token/rotate", s.handleMLTokenRotate)
 	s.Handle("GET /api/events", s.handleGetEvents)
+
+	s.Handle("GET /api/fingerprints", s.handleGetFingerprints)
+	s.Handle("POST /api/fingerprints/set", s.handleSetFingerprint)
+	s.Handle("GET /api/failover/status", s.handleFailoverStatus)
 }
 
 func (s *Server) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
@@ -390,6 +399,19 @@ func (s *Server) Start() error {
 		}
 	}()
 
+	if s.config.TLSCert != "" && s.config.TLSKey != "" {
+		s.http3Server = &http3.Server{
+			Addr:    s.config.ListenAddr,
+			Handler: handler,
+		}
+		go func() {
+			if err := s.http3Server.ListenAndServeTLS(s.config.TLSCert, s.config.TLSKey); err != nil {
+				log.Warn("HTTP/3 server error: %v", err)
+			}
+		}()
+		log.Info("HTTP/3 (QUIC) enabled on %s", s.config.ListenAddr)
+	}
+
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
@@ -407,6 +429,9 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() error {
+	if s.http3Server != nil {
+		s.http3Server.Close()
+	}
 	if s.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -557,14 +582,48 @@ func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("X-XSS-Protection", "1; mode=block")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), interest-cohort=()")
+		h.Set("Cache-Control", "no-store, no-cache, must-revalidate, private")
 		if r.TLS != nil {
-			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload")
+			if s.http3Server != nil {
+				h.Set("Alt-Svc", `h3="`+s.config.ListenAddr+`"; ma=86400`)
+			}
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/sub/") {
 			h.Set("Content-Security-Policy", "default-src 'none'")
 		}
+
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+			origin := r.Header.Get("Origin")
+			referer := r.Header.Get("Referer")
+			if origin != "" && !s.isAllowedOrigin(origin) {
+				http.Error(w, `{"error":"origin not allowed"}`, http.StatusForbidden)
+				return
+			}
+			if origin == "" && referer == "" {
+				ct := r.Header.Get("Content-Type")
+				if !strings.Contains(ct, "application/json") && !strings.Contains(ct, "multipart/form-data") {
+					http.Error(w, `{"error":"missing origin"}`, http.StatusForbidden)
+					return
+				}
+			}
+		}
+
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) isAllowedOrigin(origin string) bool {
+	if len(s.config.AllowedOrigins) == 0 || s.config.AllowedOrigins[0] == "*" {
+		return true
+	}
+	for _, o := range s.config.AllowedOrigins {
+		if strings.EqualFold(o, origin) {
+			return true
+		}
+	}
+	return false
 }
 
 const maxAPIBodyBytes = 1 << 20
@@ -2705,9 +2764,11 @@ func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
 
 	events := RecentEvents(limit)
 
-	out, err := exec.CommandContext(context.Background(), "journalctl", "-u", "whispera", "-n", fmt.Sprintf("%d", limit), "--no-pager", "--output=short-iso").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "journalctl", "-u", "whispera", "-n", fmt.Sprintf("%d", limit), "--no-pager", "--output=short-iso").Output()
 	if err == nil && len(out) > 0 {
-		lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+		lines := sanitizeLogLines(strings.Split(strings.TrimRight(string(out), "\n"), "\n"))
 		s.jsonOK(w, map[string]interface{}{"success": true, "logs": lines, "events": events, "source": "journalctl"})
 		return
 	}
@@ -2722,11 +2783,23 @@ func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
 		if len(all) > limit {
 			all = all[len(all)-limit:]
 		}
-		s.jsonOK(w, map[string]interface{}{"success": true, "logs": all, "events": events, "source": path})
+		s.jsonOK(w, map[string]interface{}{"success": true, "logs": sanitizeLogLines(all), "events": events, "source": path})
 		return
 	}
 
 	s.jsonOK(w, map[string]interface{}{"success": true, "logs": []string{}, "events": events, "source": "none"})
+}
+
+func sanitizeLogLines(lines []string) []string {
+	out := make([]string, len(lines))
+	replacer := strings.NewReplacer("<", "&lt;", ">", "&gt;", "&", "&amp;")
+	for i, l := range lines {
+		if len(l) > 4096 {
+			l = l[:4096] + "..."
+		}
+		out[i] = replacer.Replace(l)
+	}
+	return out
 }
 
 func readProcStatCPU() (idle, total uint64, err error) {

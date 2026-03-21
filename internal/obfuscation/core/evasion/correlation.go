@@ -15,11 +15,32 @@ type CorrelationDefense struct {
 	paddingEnabled bool
 	delayJitter    time.Duration
 	mixEnabled     bool
+	sessionSeed    [16]byte
 
 	sendBucket   *leakyBucket
 	recvBucket   *leakyBucket
 	delayBuffer  chan delayedPacket
 	stopCh       chan struct{}
+}
+
+func (cd *CorrelationDefense) sessionBucketSizes() []int {
+	if cd.sessionSeed == [16]byte{} {
+		crand.Read(cd.sessionSeed[:])
+	}
+	base := []int{128, 256, 512, 1024, 1500}
+	sizes := make([]int, len(base))
+	for i, b := range base {
+		jitter := int(cd.sessionSeed[i%16]) % 64
+		if i%2 == 0 {
+			sizes[i] = b + jitter
+		} else {
+			sizes[i] = b - jitter/2 + jitter
+		}
+		if sizes[i] < 64 {
+			sizes[i] = 64
+		}
+	}
+	return sizes
 }
 
 type delayedPacket struct {
@@ -78,8 +99,8 @@ func NewCorrelationDefense(config *CorrelationConfig) *CorrelationDefense {
 		paddingEnabled: config.PaddingEnabled,
 		delayJitter:    config.DelayJitter,
 		mixEnabled:     config.MixEnabled,
-		sendBucket:     newLeakyBucket(float64(config.ConstantRatePPS), 10),
-		recvBucket:     newLeakyBucket(float64(config.ConstantRatePPS), 10),
+		sendBucket:     newLeakyBucket(float64(config.ConstantRatePPS), 50),
+		recvBucket:     newLeakyBucket(float64(config.ConstantRatePPS), 50),
 		delayBuffer:    make(chan delayedPacket, 1024),
 		stopCh:         make(chan struct{}),
 	}
@@ -102,9 +123,9 @@ type CorrelationConfig struct {
 func DefaultCorrelationConfig() *CorrelationConfig {
 	return &CorrelationConfig{
 		Enabled:         true,
-		ConstantRatePPS: 100,
+		ConstantRatePPS: 10000,
 		PaddingEnabled:  true,
-		DelayJitter:     50 * time.Millisecond,
+		DelayJitter:     5 * time.Millisecond,
 		MixEnabled:      true,
 	}
 }
@@ -150,7 +171,7 @@ func (cd *CorrelationDefense) padToConstantSize(data []byte) []byte {
 		return data
 	}
 
-	sizes := []int{128, 256, 512, 1024, 1500}
+	sizes := cd.sessionBucketSizes()
 	target := sizes[len(sizes)-1]
 	for _, s := range sizes {
 		if len(data)+4 <= s {
@@ -203,7 +224,7 @@ func (cd *CorrelationDefense) randomDelay() time.Duration {
 }
 
 func (cd *CorrelationDefense) delayDispatcher() {
-	ticker := time.NewTicker(5 * time.Millisecond)
+	ticker := time.NewTicker(1 * time.Millisecond)
 	defer ticker.Stop()
 
 	var pending []delayedPacket

@@ -80,13 +80,7 @@ func (r *Registrar) Register() error {
 	req1.Header.Set("Content-Type", "application/json")
 	resp, err := r.client.Do(req1)
 	if err != nil {
-		url = fmt.Sprintf("http://%s/api/bridge-register", r.config.UpstreamServer)
-		req2, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
-		req2.Header.Set("Content-Type", "application/json")
-		resp, err = r.client.Do(req2)
-		if err != nil {
-			return fmt.Errorf("failed to register: %w", err)
-		}
+		return fmt.Errorf("HTTPS registration failed (HTTP fallback disabled): %w", err)
 	}
 	defer resp.Body.Close()
 

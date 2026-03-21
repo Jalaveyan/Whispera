@@ -11,11 +11,11 @@ func TestDefaultCorrelationConfig(t *testing.T) {
 	if !cfg.Enabled {
 		t.Error("expected enabled by default")
 	}
-	if cfg.ConstantRatePPS != 100 {
-		t.Errorf("expected 100 pps, got %d", cfg.ConstantRatePPS)
+	if cfg.ConstantRatePPS != 10000 {
+		t.Errorf("expected 10000 pps, got %d", cfg.ConstantRatePPS)
 	}
-	if cfg.DelayJitter != 50*time.Millisecond {
-		t.Errorf("expected 50ms jitter, got %v", cfg.DelayJitter)
+	if cfg.DelayJitter != 5*time.Millisecond {
+		t.Errorf("expected 5ms jitter, got %v", cfg.DelayJitter)
 	}
 }
 
@@ -31,8 +31,8 @@ func TestPaddingRoundTrip(t *testing.T) {
 	original := []byte("hello world test data for padding")
 	padded := cd.padToConstantSize(original)
 
-	if len(padded) != 128 && len(padded) != 256 {
-		t.Errorf("expected padded to bucket size, got %d", len(padded))
+	if len(padded) < len(original)+4 {
+		t.Errorf("padded too small: %d", len(padded))
 	}
 
 	recovered := cd.unpadFromConstantSize(padded)
@@ -50,23 +50,25 @@ func TestPaddingBucketSizes(t *testing.T) {
 	})
 	defer cd.Stop()
 
-	tests := []struct {
-		dataLen  int
-		expected int
-	}{
-		{10, 128},
-		{100, 128},
-		{200, 256},
-		{400, 512},
-		{600, 1024},
-		{1200, 1500},
+	sizes := cd.sessionBucketSizes()
+	if len(sizes) != 5 {
+		t.Fatalf("expected 5 bucket sizes, got %d", len(sizes))
+	}
+	for i, s := range sizes {
+		if s < 64 {
+			t.Errorf("bucket %d too small: %d", i, s)
+		}
 	}
 
-	for _, tt := range tests {
-		data := make([]byte, tt.dataLen)
+	for _, dataLen := range []int{10, 100, 200, 400, 600, 1200} {
+		data := make([]byte, dataLen)
 		padded := cd.padToConstantSize(data)
-		if len(padded) != tt.expected {
-			t.Errorf("data %d bytes: expected bucket %d, got %d", tt.dataLen, tt.expected, len(padded))
+		if len(padded) < dataLen+4 {
+			t.Errorf("data %d bytes: padded %d too small", dataLen, len(padded))
+		}
+		recovered := cd.unpadFromConstantSize(padded)
+		if len(recovered) != dataLen {
+			t.Errorf("data %d bytes: round-trip got %d", dataLen, len(recovered))
 		}
 	}
 }

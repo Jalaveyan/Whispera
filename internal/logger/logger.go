@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -62,20 +63,23 @@ type Config struct {
 	TimeFormat  string
 	Stdout      io.Writer
 	Stderr      io.Writer
-	MaskLogs    bool // Enable fake (masked) logs
+	MaskLogs    bool
+	JSONMode    bool
 }
 
 func DefaultConfig() *Config {
 	mask := os.Getenv("WHISPERA_MASK_LOGS") == "false"
+	jsonMode := os.Getenv("WHISPERA_LOG_JSON") == "true"
 	return &Config{
 		Level:       LevelInfo,
-		EnableColor: true,
+		EnableColor: !jsonMode,
 		Prefix:      "[WHISPERA]",
 		ShowCaller:  false,
 		TimeFormat:  "2006-01-02 15:04:05",
 		Stdout:      os.Stdout,
 		Stderr:      os.Stderr,
 		MaskLogs:    mask,
+		JSONMode:    jsonMode,
 	}
 }
 
@@ -151,18 +155,6 @@ func (l *Logger) log(level Level, msg string, args ...interface{}) {
 		return
 	}
 
-	// l.mu.Lock()
-	// defer l.mu.Unlock()
-
-	// if l.config.MaskLogs {
-	// 	if level >= LevelError {
-	// 		fmt.Fprint(l.config.Stdout, fakeErrorLog())
-	// 	} else {
-	// 		fmt.Fprint(l.config.Stdout, fakeNginxLog())
-	// 	}
-	// 	return
-	// }
-
 	var out io.Writer
 	if level >= LevelError {
 		out = l.config.Stderr
@@ -170,9 +162,44 @@ func (l *Logger) log(level Level, msg string, args ...interface{}) {
 		out = l.config.Stdout
 	}
 
+	now := time.Now()
+
+	var formatted string
+	if len(args) > 0 {
+		formatted = fmt.Sprintf(msg, args...)
+	} else {
+		formatted = msg
+	}
+
+	if l.config.JSONMode {
+		entry := map[string]interface{}{
+			"ts":    now.Format(time.RFC3339Nano),
+			"level": level.String(),
+			"msg":   formatted,
+		}
+		for k, v := range l.fields {
+			entry[k] = v
+		}
+		if l.config.ShowCaller {
+			if _, file, line, ok := runtime.Caller(2); ok {
+				parts := strings.Split(file, "/")
+				if len(parts) > 0 {
+					file = parts[len(parts)-1]
+				}
+				entry["caller"] = fmt.Sprintf("%s:%d", file, line)
+			}
+		}
+		data, _ := json.Marshal(entry)
+		data = append(data, '\n')
+		l.mu.Lock()
+		out.Write(data)
+		l.mu.Unlock()
+		return
+	}
+
 	var sb strings.Builder
 
-	timestamp := time.Now().Format(l.config.TimeFormat)
+	timestamp := now.Format(l.config.TimeFormat)
 
 	colorReset := "\033[0m"
 	if l.config.EnableColor {
@@ -184,7 +211,13 @@ func (l *Logger) log(level Level, msg string, args ...interface{}) {
 		sb.WriteString(" ")
 	}
 
-	sb.WriteString(fmt.Sprintf("[%s] [%s] ", timestamp, level.String()))
+	sb.WriteString(fmt.Sprintf("[%s] [%-5s] ", timestamp, level.String()))
+
+	if len(l.fields) > 0 {
+		if mod, ok := l.fields["module"]; ok {
+			sb.WriteString(fmt.Sprintf("[%s] ", mod))
+		}
+	}
 
 	if l.config.ShowCaller {
 		_, file, line, ok := runtime.Caller(2)
@@ -197,15 +230,18 @@ func (l *Logger) log(level Level, msg string, args ...interface{}) {
 		}
 	}
 
-	if len(args) > 0 {
-		sb.WriteString(fmt.Sprintf(msg, args...))
-	} else {
-		sb.WriteString(msg)
-	}
+	sb.WriteString(formatted)
 
 	if len(l.fields) > 0 {
-		sb.WriteString(" |")
+		first := true
 		for k, v := range l.fields {
+			if k == "module" {
+				continue
+			}
+			if first {
+				sb.WriteString(" |")
+				first = false
+			}
 			sb.WriteString(fmt.Sprintf(" %s=%v", k, v))
 		}
 	}
@@ -216,7 +252,9 @@ func (l *Logger) log(level Level, msg string, args ...interface{}) {
 
 	sb.WriteString("\n")
 
+	l.mu.Lock()
 	fmt.Fprint(out, sb.String())
+	l.mu.Unlock()
 }
 
 func (l *Logger) Debug(msg string, args ...interface{}) {

@@ -50,14 +50,16 @@ type BridgeInfo struct {
 }
 
 type AccessKey struct {
-	ID        string    `json:"id"`
-	BridgeID  string    `json:"bridge_id"`
-	UserID    string    `json:"user_id"`
-	SSHKey    string    `json:"ssh_key"`
-	ExpiresAt time.Time `json:"expires_at"`
-	CreatedAt time.Time `json:"created_at"`
-	Used      bool      `json:"used"`
-	OneTime   bool      `json:"one_time"`
+	ID             string    `json:"id"`
+	BridgeID       string    `json:"bridge_id"`
+	UserID         string    `json:"user_id"`
+	SSHKey         string    `json:"ssh_key"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	CreatedAt      time.Time `json:"created_at"`
+	Used           bool      `json:"used"`
+	OneTime        bool      `json:"one_time"`
+	PinnedIP       string    `json:"pinned_ip,omitempty"`
+	ChallengeHMAC  string    `json:"challenge_hmac,omitempty"`
 }
 
 type Registry struct {

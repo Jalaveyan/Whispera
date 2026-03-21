@@ -1,7 +1,8 @@
 package evasion
 
 import (
-
+	"crypto/rand"
+	"encoding/binary"
 	"time"
 
 	"whispera/internal/obfuscation/core/types"
@@ -48,13 +49,9 @@ func (m *Marionette) applyResizeAction(data []byte, params map[string]interface{
 		return data, 0
 	}
 
-	paddingSize := targetSize - len(data)
 	result := make([]byte, targetSize)
 	copy(result, data)
-
-	for i := 0; i < paddingSize; i++ {
-		result[len(data)+i] = byte(32 + (i % 95))
-	}
+	rand.Read(result[len(data):])
 
 	return result, 0
 }
@@ -206,95 +203,40 @@ func (m *Marionette) applyMLEvasionAction(data []byte, params map[string]interfa
 }
 
 func (m *Marionette) applyMLEvasion(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
-	adversarialExamples, _ := params["adversarial_examples"].(bool)
-	behavioralMimicry, _ := params["behavioral_mimicry"].(bool)
-	trafficShaping, _ := params["traffic_shaping"].(bool)
-	protocolFidelity, _ := params["protocol_fidelity"].(bool)
-	hardwareEvasion, _ := params["hardware_evasion"].(bool)
+	if m.Adversarial != nil {
+		result := m.Adversarial.Apply(data)
 
-	ja3Evasion, _ := params["ja3_evasion"].(bool)
-	ja4Evasion, _ := params["ja4_evasion"].(bool)
-	greaseEvasion, _ := params["grease_evasion"].(bool)
-	alpnEvasion, _ := params["alpn_evasion"].(bool)
-	echEvasion, _ := params["ech_evasion"].(bool)
-	hpackEvasion, _ := params["hpack_evasion"].(bool)
-	qpackEvasion, _ := params["qpack_evasion"].(bool)
-	dohEvasion, _ := params["doh_evasion"].(bool)
-	doqEvasion, _ := params["doq_evasion"].(bool)
-	timingAnalysisEvasion, _ := params["timing_analysis_evasion"].(bool)
-	flowAnalysisEvasion, _ := params["flow_analysis_evasion"].(bool)
-	statisticalEvasion, _ := params["statistical_evasion"].(bool)
-	mlClassificationEvasion, _ := params["ml_classification_evasion"].(bool)
+		ja3Evasion, _ := params["ja3_evasion"].(bool)
+		echEvasion, _ := params["ech_evasion"].(bool)
+		greaseEvasion, _ := params["grease_evasion"].(bool)
 
-	if behavioralMimicry {
-		behavioralData := m.applyEnhancedBehavioralMimicry(data)
-		data = append(data, behavioralData...)
-	}
-
-	if adversarialExamples {
-		noiseSize := len(data) / 20
-		if noiseSize < 4 {
-			noiseSize = 4
+		if ja3Evasion && len(result) > 5 && result[0] == 0x16 {
+			me := &MLEvasion{adversarial: m.Adversarial}
+			if ja3 := me.ApplyJA3Evasion(result); ja3 != nil {
+				result = ja3
+			}
 		}
-		noise := make([]byte, noiseSize)
-		for i := range noise {
-			noise[i] = byte((i*13 + len(data)*7) % 256)
+		if echEvasion {
+			me := &MLEvasion{adversarial: m.Adversarial}
+			echData := me.ApplyECHEvasion(result)
+			result = append(result, echData...)
 		}
-		data = append(data, noise...)
+		if greaseEvasion {
+			me := &MLEvasion{adversarial: m.Adversarial}
+			greaseData := me.ApplyGREASEEvasion(result)
+			result = append(result, greaseData...)
+		}
+
+		return result, 0
 	}
 
-	if ja3Evasion {
-		data = append(data, m.applyJA3Evasion(data)...)
+	noiseSize := len(data) / 20
+	if noiseSize < 4 {
+		noiseSize = 4
 	}
-	if ja4Evasion {
-		data = append(data, m.applyJA4Evasion(data)...)
-	}
-	if greaseEvasion {
-		data = append(data, m.applyGREASEEvasion(data)...)
-	}
-	if alpnEvasion {
-		data = append(data, m.applyALPNEvasion(data)...)
-	}
-	if echEvasion {
-		data = append(data, m.applyECHEvasion(data)...)
-	}
-	if hpackEvasion {
-		data = append(data, m.applyHPACKEvasion(data)...)
-	}
-	if qpackEvasion {
-		data = append(data, m.applyQPACKEvasion(data)...)
-	}
-	if dohEvasion {
-		data = append(data, m.applyDoHEvasion(data)...)
-	}
-	if doqEvasion {
-		data = append(data, m.applyDoQEvasion(data)...)
-	}
-	if timingAnalysisEvasion {
-		data = append(data, m.applyTimingAnalysisEvasion(data)...)
-	}
-	if flowAnalysisEvasion {
-		data = append(data, m.applyFlowAnalysisEvasion(data)...)
-	}
-	if statisticalEvasion {
-		data = append(data, m.applyStatisticalEvasion(data)...)
-	}
-	if mlClassificationEvasion {
-		data = append(data, m.applyMLClassificationEvasion(data)...)
-	}
-
-	if protocolFidelity {
-		padding := []byte{0x00, 0x01, 0x02, 0x03}
-		data = append(data, padding...)
-	}
-
-	if hardwareEvasion {
-	}
-
-	if trafficShaping {
-	}
-
-	return data, 0
+	noise := make([]byte, noiseSize)
+	rand.Read(noise)
+	return append(data, noise...), 0
 }
 
 func (m *Marionette) applyDPIEvasionAction(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
@@ -354,75 +296,94 @@ func (m *Marionette) applyTLSEvasion(data []byte, _ map[string]interface{}) ([]b
 
 func (m *Marionette) applyGREASEEvasion(_ []byte) []byte {
 	var greaseValues = [16]byte{0x0a, 0x0a, 0x1a, 0x1a, 0x2a, 0x2a, 0x3a, 0x3a, 0x4a, 0x4a, 0x5a, 0x5a, 0x6a, 0x6a, 0x7a, 0x7a}
-	greaseObfuscation := make([]byte, 4)
-	greaseValuesLen := len(greaseValues)
-	for i := 0; i < 4; i++ {
-		greaseIndex := m.generateRealisticRandom(greaseValuesLen)
-		greaseObfuscation[i] = greaseValues[greaseIndex]
+	count := 2 + cryptoRandInt(6)
+	greaseObfuscation := make([]byte, count)
+	for i := range greaseObfuscation {
+		greaseObfuscation[i] = greaseValues[cryptoRandInt(len(greaseValues))]
 	}
 	return greaseObfuscation
 }
 
 func (m *Marionette) applyALPNEvasion(_ []byte) []byte {
-	var alpnPatterns = [4][6]byte{
-		{0x68, 0x32, 0x68, 0x74, 0x74, 0x70},
-		{0x68, 0x33, 0x68, 0x74, 0x74, 0x70},
-		{0x68, 0x32, 0x68, 0x74, 0x74, 0x70},
-		{0x68, 0x33, 0x68, 0x74, 0x74, 0x70},
+	alpnProtos := [][]byte{
+		{0x02, 'h', '2'},
+		{0x08, 'h', 't', 't', 'p', '/', '1', '.', '1'},
+		{0x02, 'h', '3'},
 	}
-	patternIndex := m.generateRealisticRandom(len(alpnPatterns))
-	alpnObfuscation := make([]byte, 6)
-	copy(alpnObfuscation, alpnPatterns[patternIndex][:])
-	return alpnObfuscation
+	chosen := alpnProtos[cryptoRandInt(len(alpnProtos))]
+	result := make([]byte, len(chosen))
+	copy(result, chosen)
+	return result
 }
 
 func (m *Marionette) applyECHEvasion(_ []byte) []byte {
-	echObfuscation := make([]byte, 12)
-	return echObfuscation
+	size := 8 + cryptoRandInt(24)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) applyHPACKEvasion(_ []byte) []byte {
-	hpackObfuscation := make([]byte, 8)
-	return hpackObfuscation
+	size := 4 + cryptoRandInt(16)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) applyQPACKEvasion(_ []byte) []byte {
-	qpackObfuscation := make([]byte, 8)
-	return qpackObfuscation
+	size := 4 + cryptoRandInt(16)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) applyDoHEvasion(_ []byte) []byte {
-	dohObfuscation := make([]byte, 6)
-	return dohObfuscation
+	size := 4 + cryptoRandInt(12)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) applyDoQEvasion(_ []byte) []byte {
-	doqObfuscation := make([]byte, 6)
-	return doqObfuscation
+	size := 4 + cryptoRandInt(12)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) applyTimingAnalysisEvasion(_ []byte) []byte {
-	timingObfuscation := make([]byte, 6)
-	return timingObfuscation
+	size := 4 + cryptoRandInt(16)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) applyFlowAnalysisEvasion(_ []byte) []byte {
-	flowObfuscation := make([]byte, 6)
-	return flowObfuscation
+	size := 4 + cryptoRandInt(20)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) applyStatisticalEvasion(_ []byte) []byte {
-	statisticalObfuscation := make([]byte, 10)
-	return statisticalObfuscation
+	size := 6 + cryptoRandInt(24)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) applyMLClassificationEvasion(_ []byte) []byte {
-	mlObfuscation := make([]byte, 24)
-	return mlObfuscation
+	size := 12 + cryptoRandInt(48)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) applyEnhancedBehavioralMimicry(_ []byte) []byte {
-	return []byte{0x01, 0x02}
+	size := 2 + cryptoRandInt(8)
+	buf := make([]byte, size)
+	rand.Read(buf)
+	return buf
 }
 
 func (m *Marionette) mimicHumanBehavior(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
@@ -437,11 +398,18 @@ func (m *Marionette) mimicDeviceBehavior(data []byte, _ map[string]interface{}) 
 	return data, 0
 }
 
-func (m *Marionette) generateRealisticRandom(n int) int {
+func cryptoRandInt(n int) int {
 	if n <= 0 {
 		return 0
 	}
-	return int(util.GetGlobalTimeCache().Now().UnixNano()) % n
+	var buf [8]byte
+	rand.Read(buf[:])
+	v := binary.LittleEndian.Uint64(buf[:])
+	return int(v % uint64(n))
+}
+
+func (m *Marionette) generateRealisticRandom(n int) int {
+	return cryptoRandInt(n)
 }
 
 func (m *Marionette) generateRealisticPadding(size int) []byte {
@@ -450,38 +418,29 @@ func (m *Marionette) generateRealisticPadding(size int) []byte {
 	if profileName != "" {
 		padding = m.generateServiceSpecificPadding(profileName, size)
 	} else {
-		for i := range padding {
-			padding[i] = byte(32 + (i % 95))
-		}
+		rand.Read(padding)
 	}
 	return padding
 }
 
 func (m *Marionette) generateServiceSpecificPadding(profile string, size int) []byte {
 	padding := make([]byte, size)
+	rand.Read(padding)
 	switch profile {
 	case "vk":
-		for i := 0; i < size; i++ {
+		for i := range padding {
 			switch i % 3 {
 			case 0:
-				padding[i] = byte(32 + (i % 95))
+				padding[i] = 32 + padding[i]%95
 			case 1:
-				padding[i] = byte(97 + (i % 26))
+				padding[i] = 97 + padding[i]%26
 			default:
-				padding[i] = byte(48 + (i % 10))
+				padding[i] = 48 + padding[i]%10
 			}
 		}
-	case "yandex":
-		for i := 0; i < size; i++ {
-			padding[i] = byte(32 + (i % 95))
-		}
-	case "mailru":
-		for i := 0; i < size; i++ {
-			padding[i] = byte(32 + (i % 95))
-		}
-	default:
-		for i := 0; i < size; i++ {
-			padding[i] = byte(32 + (i % 95))
+	case "yandex", "mailru", "ozon", "rutube":
+		for i := range padding {
+			padding[i] = 32 + padding[i]%95
 		}
 	}
 	return padding

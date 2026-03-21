@@ -784,7 +784,7 @@ show_extras_menu() {
             21)
                 curl -sk "https://127.0.0.1:8080/api/bridges" \
                     -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" | \
-                    python3 -m json.tool 2>/dev/null || \
+                    jq . 2>/dev/null || cat || \
                     log_err "Failed to fetch bridges (is Whispera running?)"
                 ;;
             0|"") log_info "Exiting menu."; break ;;
@@ -1156,7 +1156,7 @@ generate_config() {
          PG_PASS="whispera" 
     fi
     
-    local ADMIN_PASS=$(openssl rand -hex 12 2>/dev/null || head -c 24 /dev/urandom | xxd -p | head -c 24)
+    local ADMIN_PASS=$(openssl rand -base64 32 2>/dev/null | tr -dc 'A-Za-z0-9!@#$%^&*_+-=' | head -c 36)
     echo "$ADMIN_PASS" > "$CONF_PATH/admin.pass"
     chmod 600 "$CONF_PATH/admin.pass"
 
@@ -1412,7 +1412,9 @@ setup_systemd() {
 Description=Whispera Server (Backend)
 Documentation=https://github.com/Jalaveyan/Whispera
 After=network.target network-online.target
-Requires=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 User=whispera
@@ -1420,8 +1422,10 @@ Group=whispera
 WorkingDirectory=$WORK_DIR
 Environment=WHISPERA_MASK_LOGS=true
 ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080
-Restart=on-failure
+Restart=always
 RestartSec=5
+WatchdogSec=30
+TimeoutStopSec=30
 LimitNOFILE=65535
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
@@ -1442,6 +1446,8 @@ EOF
 [Unit]
 Description=Whispera Panel (Frontend)
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
 
 [Service]
 User=whispera
@@ -1450,6 +1456,8 @@ WorkingDirectory=$DAT_PATH/panel
 ExecStart=$NODE_BIN bundle/index.js
 Restart=always
 RestartSec=3
+WatchdogSec=15
+TimeoutStopSec=10
 Environment=PORT=3000
 Environment=BACKEND_URL=http://127.0.0.1:8080
 Environment=CORS_ORIGIN=*
@@ -1464,88 +1472,46 @@ $PANEL_HTTPS_VARS
 WantedBy=multi-user.target
 EOF
 
-    # ── ML service — адаптивная установка под ресурсы сервера ───────────────
-    local ML_SCRIPT="$WORK_DIR/internal/obfuscation/ml/ml_api_server.py"
-    local PYTHON_BIN
-    PYTHON_BIN=$(command -v python3 || command -v python || echo "")
-    if [[ -n "$PYTHON_BIN" && -f "$ML_SCRIPT" ]]; then
-
-        # Определяем ресурсы сервера
-        local SRV_CORES SRV_RAMMB ML_PROFILE MEM_LIMIT RETRAIN_THRESH
-        SRV_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
-        SRV_RAMMB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}' || echo 1024)
-
-        if   [[ $SRV_CORES -le 1 || $SRV_RAMMB -lt 2048 ]]; then
-            ML_PROFILE="minimal";  MEM_LIMIT="256M"; RETRAIN_THRESH="200"
-        elif [[ $SRV_CORES -ge 8 && $SRV_RAMMB -ge 8192 ]]; then
-            ML_PROFILE="full";     MEM_LIMIT="1G";   RETRAIN_THRESH="1000"
-        else
-            ML_PROFILE="standard"; MEM_LIMIT="512M"; RETRAIN_THRESH="500"
-        fi
-
-        log_info "Server: ${SRV_CORES} core(s), ${SRV_RAMMB} MB RAM → ML profile: $ML_PROFILE"
-
-        # Базовые зависимости (нужны всегда)
-        $PYTHON_BIN -m pip install --quiet \
-            fastapi uvicorn pydantic python-multipart \
-            numpy "scikit-learn>=1.6.1,<1.7.0" scipy joblib cryptography 2>/dev/null || \
-            log_warn "Some base ML deps failed to install"
-
-        # ML inference backend
-        if [[ "$ML_PROFILE" == "full" ]]; then
-            # Мощный сервер: пробуем tensorflow-cpu (~600 MB)
-            log_info "Installing tensorflow-cpu (full profile, may take a few minutes)..."
-            $PYTHON_BIN -m pip install --quiet tensorflow-cpu 2>/dev/null || {
-                log_warn "tensorflow-cpu failed — falling back to onnxruntime"
-                $PYTHON_BIN -m pip install --quiet onnxruntime skl2onnx 2>/dev/null || true
-            }
-        else
-            # Minimal/Standard: onnxruntime CPU (~60 MB, Python 3.9+)
-            $PYTHON_BIN -m pip install --quiet onnxruntime skl2onnx 2>/dev/null || \
-                log_warn "onnxruntime install failed — ML will use heuristics"
-        fi
-
-        # Обучаем ONNX-модели (нужны skl2onnx + sklearn)
-        local TRAIN_SCRIPT="$WORK_DIR/ml_engine/train_onnx_models.py"
-        if [[ -f "$TRAIN_SCRIPT" ]]; then
-            log_info "Training ML models (profile: $ML_PROFILE)..."
-            WHISPERA_ML_PROFILE="$ML_PROFILE" \
-                $PYTHON_BIN "$TRAIN_SCRIPT" 2>/dev/null && \
-                log_success "ML models trained" || \
-                log_warn "ML model training failed — heuristics will be used"
-        fi
-
-        cat > /etc/systemd/system/whispera-ml.service <<EOF
-[Unit]
-Description=Whispera ML Server
-After=network.target
-
-[Service]
-User=whispera
-Group=whispera
-WorkingDirectory=$WORK_DIR/internal/obfuscation/ml
-ExecStart=$PYTHON_BIN $ML_SCRIPT
-Restart=on-failure
-RestartSec=10
-Environment=WHISPERA_ML_PORT=8000
-Environment=PYTHONPATH=$WORK_DIR/ml_engine
-Environment=WHISPERA_ML_PROFILE=$ML_PROFILE
-Environment=WHISPERA_ML_RETRAIN_THRESHOLD=$RETRAIN_THRESH
-MemoryMax=$MEM_LIMIT
-MemorySwapMax=0
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    fi
+    # ── ML service — встроен в основной Go бинарник (модуль mlserver, порт 8000) ──
+    log_info "ML engine is built into the main Whispera binary (no Python required)"
+    _enable_ml_in_config
 
     systemctl daemon-reload
     systemctl enable whispera >/dev/null 2>&1
     systemctl enable whispera-panel >/dev/null 2>&1
-    [[ -f /etc/systemd/system/whispera-ml.service ]] && systemctl enable whispera-ml >/dev/null 2>&1
 
-    systemctl restart whispera
-    log_success "Whispera service started"
+    cat > /etc/systemd/system/whispera-watchdog.service <<WEOF
+[Unit]
+Description=Whispera Watchdog
+After=whispera.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'for svc in whispera whispera-panel; do systemctl is-enabled \$svc &>/dev/null && ! systemctl is-active \$svc &>/dev/null && systemctl restart \$svc && echo "[\$(date)] restarted \$svc" >> /var/log/whispera/watchdog.log; done'
+WEOF
+
+    cat > /etc/systemd/system/whispera-watchdog.timer <<WEOF
+[Unit]
+Description=Whispera Watchdog Timer
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=120
+
+[Install]
+WantedBy=timers.target
+WEOF
+
+    systemctl enable whispera-watchdog.timer >/dev/null 2>&1
+    systemctl start whispera-watchdog.timer >/dev/null 2>&1
+
+    systemctl daemon-reload
+
+    if systemctl restart whispera 2>/dev/null; then
+        log_success "Whispera service started"
+    else
+        log_warn "Whispera service failed to start — check /var/log/whispera/whispera.log"
+    fi
 
     if systemctl restart whispera-panel 2>/dev/null; then
         log_success "Panel service started"
@@ -1553,14 +1519,7 @@ EOF
         log_warn "Panel service not started (panel may not be installed yet — run option 18 later)"
     fi
 
-    if [[ -f /etc/systemd/system/whispera-ml.service ]]; then
-        if systemctl restart whispera-ml 2>/dev/null; then
-            log_success "ML service started"
-            _enable_ml_in_config
-        else
-            log_warn "ML service not started (install fastapi+uvicorn manually: pip3 install fastapi uvicorn)"
-        fi
-    fi
+    log_success "ML engine runs inside main Whispera process (port 8000)"
 }
 
 # Прописывает ml.enabled=true в config.yaml после успешного запуска ML сервиса

@@ -45,15 +45,15 @@ func (ps *ProtocolSelector) SelectProtocol(networkConditions *NetworkConditions)
 	var response *types.MLPredictionResponse
 	var err error
 
-	if ps.mlSystem != nil && ps.mlSystem.mlClient != nil {
-		response, err = ps.mlSystem.mlClient.PredictTraffic(testPacket, "protocol_selection", "outbound")
-		if err != nil {
-			log.Warn("ML prediction failed: %v, using default", err)
+	if ps.mlSystem != nil && ps.mlSystem.engine != nil {
+		response = ps.mlSystem.engine.Predict(testPacket, "protocol_selection", "outbound")
+		if response == nil {
 			return ps.getDefaultRecommendation(networkConditions), nil
 		}
 	} else {
 		return ps.getDefaultRecommendation(networkConditions), nil
 	}
+	_ = err
 
 	recommendation := ps.analyzeMLPrediction(response, networkConditions)
 

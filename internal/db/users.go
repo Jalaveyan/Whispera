@@ -312,6 +312,11 @@ func (db *DB) SetAdmin(ctx context.Context, userID uuid.UUID, isAdmin bool) erro
 	return err
 }
 
+func (db *DB) SetUserActive(ctx context.Context, userID uuid.UUID, active bool) error {
+	_, err := db.pool.Exec(ctx, `UPDATE users SET is_active = $1, updated_at = NOW() WHERE id = $2`, active, userID)
+	return err
+}
+
 
 func (db *DB) ListUsers(ctx context.Context, limit, offset int) ([]User, error) {
 	rows, err := db.pool.Query(ctx, `

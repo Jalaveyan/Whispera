@@ -86,6 +86,8 @@ type Marionette struct {
 	Metrics        *EvasionSystemMetrics
 	FallbackMode   bool
 
+	Adversarial *AdversarialEngine
+
 	EvasionWorkerPool types.EvasionWorkerPoolInterface
 	RuleCache         sync.Map
 	ProcessingQueue   chan *PacketJob
@@ -120,6 +122,7 @@ func NewMarionette() *Marionette {
 			LastCleanup: util.GetGlobalTimeCache().Now().UnixNano(),
 		},
 		FallbackMode: false,
+		Adversarial:  NewAdversarialEngine(),
 
 		Ctx:             ctx,
 		Cancel:          cancel,
@@ -315,18 +318,30 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 			if err != nil {
 				m.recordMLFailure()
 				m.enableFallbackMode()
+				if m.Adversarial != nil {
+					features := m.Adversarial.extractFeatures(data)
+					m.Adversarial.RecordFeedback(true, m.Adversarial.bestVector.strategy, m.Adversarial.intensity, features)
+				}
 			} else {
 				m.recordMLSuccess()
 				if len(result) > 0 && !bytes.Equal(result, data) {
 					data = result
 				}
+				if m.Adversarial != nil {
+					features := m.Adversarial.extractFeatures(data)
+					m.Adversarial.RecordFeedback(false, m.Adversarial.bestVector.strategy, m.Adversarial.intensity, features)
+				}
 			}
 			m.Mutex.Unlock()
-		case <-time.After(10 * time.Millisecond):
+		case <-time.After(50 * time.Millisecond):
 			m.Mutex.Lock()
 			m.recordMLFailure()
 			m.Mutex.Unlock()
 		}
+	}
+
+	if m.Adversarial != nil && direction == "outbound" {
+		data = m.Adversarial.Apply(data)
 	}
 
 	if hasAdaptive && !inFallback {

@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -90,7 +91,7 @@ func TestAgentCollectMetrics(t *testing.T) {
 
 func TestAgentHeartbeat(t *testing.T) {
 	var received bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/bridge-heartbeat" {
 			received = true
 			var body map[string]interface{}
@@ -110,6 +111,12 @@ func TestAgentHeartbeat(t *testing.T) {
 		MetricsInterval:   1 * time.Hour,
 		ConfigPollInterval: 1 * time.Hour,
 	})
+	agent.client = &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 
 	agent.sendHeartbeat()
 	if !received {
@@ -121,7 +128,7 @@ func TestAgentConfigUpdateCallback(t *testing.T) {
 	var callbackCalled bool
 	var callbackConfig map[string]interface{}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success":        true,
 			"has_update":     true,
@@ -138,6 +145,12 @@ func TestAgentConfigUpdateCallback(t *testing.T) {
 		MetricsInterval:   1 * time.Hour,
 		ConfigPollInterval: 1 * time.Hour,
 	})
+	agent.client = &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
 	agent.OnConfigUpdate(func(cfg map[string]interface{}) {
 		callbackCalled = true
 		callbackConfig = cfg

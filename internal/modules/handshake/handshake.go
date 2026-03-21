@@ -276,11 +276,14 @@ func (h *Handler) handleInit(ctx context.Context, data []byte, addr net.Addr) (i
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
-	padLenBuf := make([]byte, 1)
-	rand.Read(padLenBuf)
-	respPadLen := int(padLenBuf[0]) & 0x1F
+	sizeBuf := make([]byte, 2)
+	rand.Read(sizeBuf)
+	respSize := HandshakeMinSize + int(sizeBuf[0])%(HandshakeMaxSize-HandshakeMinSize+1)
+	if respSize < 38 {
+		respSize = 38
+	}
 
-	response := make([]byte, 48+respPadLen)
+	response := make([]byte, respSize)
 	response[0] = byte(HandshakeTypeResponse)
 	response[1] = 0x00
 
@@ -290,10 +293,8 @@ func (h *Handler) handleInit(ctx context.Context, data []byte, addr net.Addr) (i
 	response[4] = byte(sid >> 8)
 	response[5] = byte(sid)
 	copy(response[6:38], seed)
-	rand.Read(response[38:47])
-	response[47] = byte(respPadLen)
-	if respPadLen > 0 {
-		rand.Read(response[48:])
+	if respSize > 38 {
+		rand.Read(response[38:])
 	}
 	session.SetMetadata("handshake_response", response)
 
@@ -384,18 +385,21 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 		}
 	}
 
-	padLenBuf := make([]byte, 1)
-	rand.Read(padLenBuf)
-	padLen := int(padLenBuf[0]) & 0x1F
-
-	initPkt := make([]byte, 64+padLen)
-	initPkt[0] = byte(HandshakeTypeInit)
-	initPkt[1] = 0x01
-	copy(initPkt[2:18], clientUUID[:])
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
 		return nil, fmt.Errorf("failed to generate seed: %w", err)
 	}
+
+	sizeBuf := make([]byte, 2)
+	rand.Read(sizeBuf)
+	totalSize := HandshakeMinSize + int(sizeBuf[0])%(HandshakeMaxSize-HandshakeMinSize+1)
+	if totalSize < 54 {
+		totalSize = 54
+	}
+	initPkt := make([]byte, totalSize)
+	initPkt[0] = byte(HandshakeTypeInit)
+	initPkt[1] = 0x01
+	copy(initPkt[2:18], clientUUID[:])
 
 	copy(initPkt[18:50], seed)
 
@@ -405,11 +409,7 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 	initPkt[52] = byte(ts >> 8)
 	initPkt[53] = byte(ts)
 
-	rand.Read(initPkt[54:63])
-	initPkt[63] = byte(padLen)
-	if padLen > 0 {
-		rand.Read(initPkt[64:])
-	}
+	rand.Read(initPkt[54:])
 
 	h.PublishEvent(events.EventTypeHandshakeStarted, map[string]interface{}{
 		"address": addr.String(),

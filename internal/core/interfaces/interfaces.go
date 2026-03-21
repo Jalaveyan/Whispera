@@ -82,8 +82,8 @@ const (
 	TransportTGBot        TransportType = "tgbot"
 	TransportCDNWorker    TransportType = "cdnworker"
 	TransportMTProto     TransportType = "mtproto"
+	TransportMirage      TransportType = "mirage"
 
-	// Комбо-транспорты (стекирование)
 	TransportSSMeek          TransportType = "shadowsocks+meek"
 	TransportSSObfs4         TransportType = "shadowsocks+obfs4"
 	TransportObfs4Meek       TransportType = "obfs4+meek"
@@ -107,13 +107,8 @@ type Transport interface {
 	Close() error
 }
 
-// DialableTransport — расширение Transport для стекирования.
-// Транспорты, поддерживающие работу поверх уже открытого соединения,
-// реализуют этот интерфейс. Используется ChainedTransport.
 type DialableTransport interface {
 	Transport
-	// DialConn выполняет handshake поверх уже установленного conn
-	// вместо самостоятельного открытия TCP-соединения.
 	DialConn(ctx context.Context, conn net.Conn, addr string) (net.Conn, error)
 }
 
@@ -382,7 +377,6 @@ type DataPlane interface {
 
 
 type TUNDevice interface {
-	// Name returns the interface name
 	Name() string
 
 	

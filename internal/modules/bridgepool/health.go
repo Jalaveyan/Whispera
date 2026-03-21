@@ -85,9 +85,12 @@ func (h *HealthMonitor) checkAll() {
 	log.Printf("[BridgePool] Checking health of %d bridges (lazy mode)", len(bridges))
 
 	firstAlive := make(chan *BridgeInfo, 1)
+	sem := make(chan struct{}, 10)
 
 	for _, bridge := range bridges {
+		sem <- struct{}{}
 		go func(b *BridgeInfo) {
+			defer func() { <-sem }()
 			h.checkBridge(b)
 			if b.IsAlive {
 				select {

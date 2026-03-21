@@ -8,24 +8,47 @@ import (
 )
 
 type UnifiedMLSystem struct {
-	mlClient         *PythonMLClient
-	stats            *types.MLStats
-	packetCount      int64
-	protocolSelector *ProtocolSelector
-
+	engine        *NativeMLEngine
+	stats         *types.MLStats
+	packetCount   int64
 	dataCollector *DataCollector
 }
 
 func (mls *UnifiedMLSystem) ProcessTraffic(data []byte, context *types.UnifiedTrafficContext) ([]byte, error) {
-	if len(data) == 0 || context == nil || mls.mlClient == nil {
+	if len(data) == 0 || context == nil || mls.engine == nil {
 		return data, fmt.Errorf("invalid input")
 	}
 
 	startTime := time.Now()
 
-	processed, err := mls.mlClient.ProcessTraffic(data, context)
-	if err != nil {
-		return data, err
+	protocol := context.Protocol
+	direction := context.Direction
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	if direction == "" {
+		direction = "outbound"
+	}
+
+	resp := mls.engine.Predict(data, protocol, direction)
+
+	var processed []byte
+	var err error
+
+	if resp != nil && len(resp.Predictions) > 0 {
+		pred := resp.Predictions[0]
+		mls.engine.AddSample(data, pred.ClassID, pred.DPIType)
+
+		if pred.DPIType > 0 && pred.Confidence > 0.5 {
+			processed, err = applyNativeObfuscation(data, pred.DPIType, pred.Confidence)
+			if err != nil {
+				processed = data
+			}
+		} else {
+			processed = data
+		}
+	} else {
+		processed = data
 	}
 
 	latency := time.Since(startTime)
@@ -35,28 +58,22 @@ func (mls *UnifiedMLSystem) ProcessTraffic(data []byte, context *types.UnifiedTr
 		mls.stats.ProcessedPackets = mls.packetCount
 	}
 
-	if mls.dataCollector != nil {
-		pred, _ := mls.mlClient.PredictTraffic(data, context.Protocol, context.Direction)
-
+	if mls.dataCollector != nil && resp != nil && len(resp.Predictions) > 0 {
+		p := resp.Predictions[0]
 		sample := TrafficSample{
-			Timestamp: time.Now(),
-			Protocol:  context.Protocol,
-			Direction: context.Direction,
-			Size:      len(data),
-			Entropy:   mls.mlClient.calculateEntropy(data),
+			Timestamp:      time.Now(),
+			Protocol:       protocol,
+			Direction:      direction,
+			Size:           len(data),
+			Entropy:        calcEntropy(data),
+			TrafficClass:   p.ClassID,
+			DPIDetected:    p.DPIType > 0,
+			DPIType:        p.DPIType,
+			IsAnomaly:      p.IsAnomaly,
+			AnomalyScore:   p.AnomalyScore,
+			PredictedClass: p.ClassID,
+			Confidence:     p.Confidence,
 		}
-
-		if pred != nil && len(pred.Predictions) > 0 {
-			p := pred.Predictions[0]
-			sample.TrafficClass = p.ClassID
-			sample.DPIDetected = p.DPIType > 0
-			sample.DPIType = p.DPIType
-			sample.IsAnomaly = p.IsAnomaly
-			sample.AnomalyScore = p.AnomalyScore
-			sample.PredictedClass = p.ClassID
-			sample.Confidence = p.Confidence
-		}
-
 		mls.dataCollector.CollectSample(sample)
 		mls.dataCollector.RecordPrediction(sample.PredictedClass, sample.TrafficClass, sample.Confidence, latency.Nanoseconds())
 	}
@@ -65,14 +82,18 @@ func (mls *UnifiedMLSystem) ProcessTraffic(data []byte, context *types.UnifiedTr
 }
 
 func (mls *UnifiedMLSystem) PredictTraffic(data []byte, protocol, direction string) (*types.MLPredictionResponse, error) {
-	if mls.mlClient == nil {
-		return nil, fmt.Errorf("ml client not initialized")
+	if mls.engine == nil {
+		return nil, fmt.Errorf("ml engine not initialized")
 	}
-	return mls.mlClient.PredictTraffic(data, protocol, direction)
+	resp := mls.engine.Predict(data, protocol, direction)
+	if resp == nil {
+		return nil, fmt.Errorf("prediction failed")
+	}
+	return resp, nil
 }
 
 func (mls *UnifiedMLSystem) CollectSample(data []byte, protocol, direction string, pred *types.MLPredictionResponse) {
-	if mls.dataCollector == nil || mls.mlClient == nil {
+	if mls.dataCollector == nil || mls.engine == nil {
 		return
 	}
 	sample := TrafficSample{
@@ -80,7 +101,7 @@ func (mls *UnifiedMLSystem) CollectSample(data []byte, protocol, direction strin
 		Protocol:  protocol,
 		Direction: direction,
 		Size:      len(data),
-		Entropy:   mls.mlClient.calculateEntropy(data),
+		Entropy:   calcEntropy(data),
 	}
 	if pred != nil && len(pred.Predictions) > 0 {
 		p := pred.Predictions[0]
@@ -97,9 +118,9 @@ func (mls *UnifiedMLSystem) CollectSample(data []byte, protocol, direction strin
 
 func (mls *UnifiedMLSystem) GetStats() *types.MLStats { return mls.stats }
 
-func (mls *UnifiedMLSystem) HealthCheck() error { return mls.mlClient.HealthCheck() }
+func (mls *UnifiedMLSystem) HealthCheck() error { return nil }
 
-func (mls *UnifiedMLSystem) LoadModels() error { return mls.mlClient.LoadModels() }
+func (mls *UnifiedMLSystem) LoadModels() error { return nil }
 
 func (mls *UnifiedMLSystem) GetDataCollector() *DataCollector {
 	return mls.dataCollector
@@ -112,9 +133,13 @@ func (mls *UnifiedMLSystem) GetRuntimeMetrics() RuntimeMetrics {
 	return RuntimeMetrics{}
 }
 
+func (mls *UnifiedMLSystem) GetEngine() *NativeMLEngine {
+	return mls.engine
+}
+
 func NewUnifiedMLSystem() *UnifiedMLSystem {
 	return &UnifiedMLSystem{
-		mlClient: NewPythonMLClientLocal(),
+		engine: nativeEngine,
 		stats: &types.MLStats{
 			ProcessedPackets: 0,
 			Accuracy:         0.85,

@@ -78,7 +78,12 @@ ci: lint test build ## Run CI pipeline locally
 
 benchmark: ## Run performance benchmarks
 	@echo "Running performance benchmarks..."
-	@go test -bench=. ./internal/obfuscation
+	@go test -bench=. -benchmem -count=3 -benchtime=2s \
+		./internal/obfuscation/core/evasion \
+		./internal/mux \
+		./internal/modules/bridgepool \
+		./internal/modules/transport/vkwebrtc \
+		./internal/modules/relay
 	@echo "Benchmarks completed!"
 
 integration-test: ## Run integration tests
@@ -124,7 +129,12 @@ test-report: ## Generate test report
 
 benchmark-report: ## Generate benchmark report
 	@echo "Generating benchmark report..."
-	@go test -bench=. ./internal/obfuscation > benchmark-report.txt 2>&1
+	@go test -bench=. -benchmem -count=5 -benchtime=3s \
+		./internal/obfuscation/core/evasion \
+		./internal/mux \
+		./internal/modules/bridgepool \
+		./internal/modules/transport/vkwebrtc \
+		./internal/modules/relay > benchmark-report.txt 2>&1
 	@echo "Benchmark report generated: benchmark-report.txt"
 
 performance-report: ## Generate performance report

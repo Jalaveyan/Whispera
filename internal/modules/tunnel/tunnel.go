@@ -33,12 +33,16 @@ import (
 	h2c_transport "whispera/internal/modules/transport/h2c"
 	"whispera/internal/modules/transport/httpupgrade"
 	"whispera/internal/modules/transport/meek"
+	"whispera/internal/modules/transport/mirage"
+	"whispera/internal/modules/transport/mtproto"
+	"whispera/internal/modules/transport/obfs4"
 	"whispera/internal/modules/transport/okwebrtc"
 	quic_transport "whispera/internal/modules/transport/quic"
 	"whispera/internal/modules/transport/shadowsocks"
 	shadowtls_transport "whispera/internal/modules/transport/shadowtls"
 	splithttp_transport "whispera/internal/modules/transport/splithttp"
 	"whispera/internal/modules/transport/tgbot"
+	"whispera/internal/modules/transport/snowflake"
 	"whispera/internal/modules/transport/torsocks"
 	tuic_transport "whispera/internal/modules/transport/tuic"
 	"whispera/internal/modules/transport/vkbot"
@@ -48,6 +52,7 @@ import (
 	"whispera/internal/modules/transport/yadisk"
 	"whispera/internal/modules/transport/yatelemost"
 	"whispera/internal/mux"
+	"whispera/internal/obfuscation/core/evasion"
 	"whispera/internal/obfuscation/russian"
 )
 
@@ -71,12 +76,9 @@ func dohDialer() *net.Dialer {
 	}
 }
 
-// mlHTTPClient используется только для запросов к локальному ml_api_server.
-// InsecureSkipVerify=true — допустимо, т.к. сервер слушает на 127.0.0.1
-// и самоподписанный сертификат не даёт защиты от внешних атак.
 var mlHTTPClient = &http.Client{
 	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	},
 }
 
@@ -189,19 +191,13 @@ type Config struct {
 
 	TransportConfig map[string]interface{}
 
-	// CustomDialFn overrides the default transport dial when set.
-	// Used for multi-hop: dial the next hop through an existing tunnel stream.
 	CustomDialFn func(ctx context.Context) (net.Conn, error)
 
-	// MLServerURL включает ML-режим выбора транспорта.
-	// Если задан, клиент запрашивает рекомендацию у ml_api_server перед каждым
-	// подключением и отправляет фидбек после завершения. Формат: "https://127.0.0.1:8000"
-	// Пустая строка — ML отключён, транспорт берётся из Transport как обычно.
+	DesyncConfig    *evasion.DesyncConfig
+	FlowTableConfig *evasion.FlowTableConfig
+
 	MLServerURL string
 
-	// MLToken — API-токен для авторизации запросов к ml_api_server.
-	// Хранится в data/api_token рядом с ml_api_server.py и читается при старте клиента.
-	// Отправляется заголовком: Authorization: Bearer <token>
 	MLToken string
 }
 
@@ -281,15 +277,13 @@ type Manager struct {
 
 	streamIdx         uint32
 	reconnectAttempts uint32
-	reconnecting      int32 // atomic: 1 пока идёт Reconnect, 0 в остальное время
+	reconnecting      int32
 	bytesUp           uint64
 	bytesDown         uint64
 	lastKeepalive     time.Time
 	lastPong          time.Time
 	connectedAt       time.Time
 
-	// reconnectDone закрывается когда текущий Reconnect завершился (успешно или нет).
-	// Пересоздаётся при каждом новом запуске Reconnect под connMu.
 	reconnectDone chan struct{}
 
 	onStateChange func(TunnelState)
@@ -346,7 +340,6 @@ func New(cfg *Config) (*Manager, error) {
 		goroutineLimiter: base.NewGoroutineLimiter(1024),
 		reconnectDone:    make(chan struct{}),
 	}
-	// Закрываем начальный канал сразу — не идёт никакой reconnect
 	close(m.reconnectDone)
 
 	if cfg.EnableASNBypass || cfg.EnablePhantom {
@@ -540,9 +533,6 @@ func (m *Manager) Connect(ctx context.Context) error {
 		}
 	}
 
-	// ML-режим: если задан MLServerURL — запрашиваем рекомендацию транспорта.
-	// Применяем только если transport пустой, "auto", или это первая попытка
-	// (не fallback из Reconnect — там своя логика).
 	if m.config.MLServerURL != "" {
 		m.mlStartFederatedSync(ctx)
 		if rec, conf := m.mlRecommendTransport(ctx); rec != "" && conf >= 0.55 {
@@ -587,6 +577,8 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 			}
 			return
 		}
+
+		conn = evasion.NewDesyncConn(conn, m.config.DesyncConfig)
 
 		if m.handshake != nil && !m.config.EnablePhantom {
 			session, err := m.handshake.InitiateHandshake(ctx, conn, conn.RemoteAddr())
@@ -663,7 +655,9 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		}
 	}
 
-	go spawnConnection(0)
+	for i := 0; i < targetPoolSize; i++ {
+		go spawnConnection(i)
+	}
 
 	var firstConn *managedConn
 	errCount := 0
@@ -671,9 +665,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	select {
 	case firstConn = <-firstConnReady:
-		for i := 1; i < targetPoolSize; i++ {
-			go spawnConnection(i)
-		}
 	case <-timeout:
 		err := fmt.Errorf("connection timeout after %v", m.config.ConnectionTimeout)
 		if !isRotation {
@@ -683,14 +674,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		poolMu.Lock()
-		count := len(connectedPool)
-		poolMu.Unlock()
-		log.Info("[%s] Background pool status: %d/%d connections after 500ms", op, count, targetPoolSize)
-	}()
 
 	if firstConn == nil {
 		for i := 0; i < targetPoolSize; i++ {
@@ -767,7 +750,16 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no transport candidates configured")
 	}
-	return m.parallelDial(ctx, candidates)
+
+	dialer := func(dctx context.Context) (net.Conn, error) {
+		return m.parallelDial(dctx, candidates)
+	}
+
+	if cfg := m.config.FlowTableConfig; cfg != nil && cfg.Enabled {
+		return evasion.DialWithFlowTableBypass(ctx, dialer, cfg)
+	}
+
+	return dialer(ctx)
 }
 
 func (m *Manager) preparePhantomASN() {
@@ -857,6 +849,18 @@ func (m *Manager) buildCandidates() []dialCandidate {
 	}
 	if t == "domainfront" && m.tcfg("front_domain") != "" {
 		cc = append(cc, dialCandidate{"domainfront", true, m.dialDomainFront})
+	}
+	if only("mirage") && m.tcfg("secret") != "" {
+		cc = append(cc, dialCandidate{"mirage", true, m.dialMirage})
+	}
+	if only("mtproto") && m.tcfg("mtproto_secret") != "" {
+		cc = append(cc, dialCandidate{"mtproto", true, m.dialMTProto})
+	}
+	if only("snowflake") {
+		cc = append(cc, dialCandidate{"snowflake", true, m.dialSnowflake})
+	}
+	if only("obfs4") && m.tcfg("obfs4_node_id") != "" && m.tcfg("obfs4_public_key") != "" {
+		cc = append(cc, dialCandidate{"obfs4", true, m.dialObfs4})
 	}
 
 	circumvention := !auto && explicit == nil && (t == "meek" || t == "torsocks" || t == "domainfront")
@@ -1251,6 +1255,65 @@ func (m *Manager) dialOKWebRTC(ctx context.Context) (net.Conn, error) {
 	return tr.Dial(ctx, m.config.ServerAddr)
 }
 
+func (m *Manager) dialMirage(ctx context.Context) (net.Conn, error) {
+	host, portStr, _ := net.SplitHostPort(m.config.ServerAddr)
+	port := 443
+	if portStr != "" {
+		fmt.Sscanf(portStr, "%d", &port)
+	}
+	tr, err := mirage.New(&mirage.Config{
+		Secret:       m.tcfg("secret"),
+		TargetServer: host,
+		TargetPort:   port,
+		SNI:          m.tcfg("mirage_sni"),
+		Fingerprint:  m.tcfg("mirage_fingerprint"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialMTProto(ctx context.Context) (net.Conn, error) {
+	tr, err := mtproto.New(&mtproto.Config{
+		Secret:      m.tcfg("mtproto_secret"),
+		EnableFakeTLS: m.tcfg("mtproto_faketls") != "false",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialSnowflake(ctx context.Context) (net.Conn, error) {
+	cfg := snowflake.DefaultConfig()
+	if v := m.tcfg("snowflake_broker"); v != "" {
+		cfg.BrokerURL = v
+	}
+	if v := m.tcfg("snowflake_stun"); v != "" {
+		cfg.STUNServer = v
+	}
+	if v := m.tcfg("snowflake_front"); v != "" {
+		cfg.FrontDomain = v
+	}
+	tr, err := snowflake.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
+func (m *Manager) dialObfs4(ctx context.Context) (net.Conn, error) {
+	tr, err := obfs4.New(&obfs4.Config{
+		NodeID:    m.tcfg("obfs4_node_id"),
+		PublicKey: m.tcfg("obfs4_public_key"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, m.config.ServerAddr)
+}
+
 func (m *Manager) selectNewSNI() string {
 	m.connMu.Lock()
 	defer m.connMu.Unlock()
@@ -1389,9 +1452,6 @@ func (m *Manager) Disconnect() {
 }
 
 func (m *Manager) Reconnect(ctx context.Context) error {
-	// Только один Reconnect может идти одновременно.
-	// Если уже запущен — ждём его завершения и возвращаем успех,
-	// чтобы вызывающий не думал что соединения нет.
 	if !atomic.CompareAndSwapInt32(&m.reconnecting, 0, 1) {
 		m.connMu.RLock()
 		done := m.reconnectDone
@@ -1404,7 +1464,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		return nil
 	}
 
-	// Создаём новый канал-уведомитель до сброса флага.
 	newDone := make(chan struct{})
 	m.connMu.Lock()
 	m.reconnectDone = newDone
@@ -1424,9 +1483,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	delay := m.config.ReconnectInterval
 	attempts := 0
 
-	// Transport fallback: если задан конкретный транспорт и он N раз подряд
-	// не смог переподключиться — переходим в режим "auto" (race всех кандидатов).
-	// После успеха восстанавливаем оригинальный транспорт.
 	const fallbackAfterAttempts = 3
 	originalTransport := m.config.Transport
 	transportFallbackActivated := false
@@ -1454,7 +1510,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			return err
 		}
 
-		// Активируем transport fallback после N провалов на одном транспорте
 		if attempts == fallbackAfterAttempts+1 &&
 			originalTransport != "" && originalTransport != "auto" &&
 			!transportFallbackActivated {
@@ -1473,7 +1528,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			m.mlSendFeedback(usedTransport, true, dialLatency)
 			m.circuitBreakerSuccess()
 			if transportFallbackActivated {
-				// Восстанавливаем исходный транспорт для следующего reconnect
 				m.config.Transport = originalTransport
 				log.Info("Transport fallback: connection restored, reverting to '%s'", originalTransport)
 			}
@@ -1911,9 +1965,6 @@ func (m *Manager) Recycle(buf []byte) {
 }
 
 func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
-	// Если пул пуст и идёт переподключение — ждём его завершения.
-	// Это позволяет DNS-запросам и новым TCP-соединениям не падать
-	// во время кратковременного разрыва.
 	for {
 		m.connMu.RLock()
 		pool := m.activePool
@@ -1924,15 +1975,12 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 			break
 		}
 
-		// Пул ещё пуст; проверяем — есть ли активный reconnect
 		if atomic.LoadInt32(&m.reconnecting) == 0 {
 			return nil, fmt.Errorf("not connected")
 		}
 
-		// Ждём либо завершения reconnect, либо отмены контекста
 		select {
 		case <-done:
-			// reconnect завершился — проверяем пул снова
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -2436,9 +2484,6 @@ func (m *Manager) sendKeepalive() {
 		log.Warn("Keepalive send failed: %v", err)
 	} else {
 		m.lastKeepalive = time.Now()
-		// Намеренно НЕ обновляем lastPong здесь — он обновляется только
-		// при получении данных/pong от сервера в readLoop.
-		// Иначе детектор тишины (silentDuration > 60s) никогда не срабатывает.
 	}
 }
 
@@ -2493,9 +2538,6 @@ func (m *Manager) getReconnectDelay() time.Duration {
 	return delay + jitter
 }
 
-// mlRecommendTransport запрашивает у ml_api_server рекомендацию транспорта.
-// Возвращает имя транспорта и confidence. При любой ошибке возвращает ("", 0) —
-// вызывающий продолжает с текущим config.Transport.
 func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, confidence float64) {
 	if m.config.MLServerURL == "" {
 		return "", 0
@@ -2521,7 +2563,7 @@ func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, c
 
 	mlURL := m.config.MLServerURL
 	if !strings.HasPrefix(mlURL, "http://") && !strings.HasPrefix(mlURL, "https://") {
-		mlURL = "http://" + mlURL
+		mlURL = "https://" + mlURL
 	}
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
@@ -2570,8 +2612,6 @@ func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, c
 	return result.Transport, result.Confidence
 }
 
-// mlSendFeedback отправляет результат подключения в ml_api_server.
-// Вызывается асинхронно — не блокирует основной поток.
 func (m *Manager) mlSendFeedback(transport string, success bool, latencyMs float64) {
 	if m.config.MLServerURL == "" || transport == "" {
 		return
@@ -2595,7 +2635,7 @@ func (m *Manager) mlSendFeedback(transport string, success bool, latencyMs float
 
 		mlURL := m.config.MLServerURL
 		if !strings.HasPrefix(mlURL, "http://") && !strings.HasPrefix(mlURL, "https://") {
-			mlURL = "http://" + mlURL
+			mlURL = "https://" + mlURL
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			mlURL+"/feedback/connection", bytes.NewReader(body))
@@ -2642,6 +2682,9 @@ func (m *Manager) mlStartFederatedSync(ctx context.Context) {
 
 func (m *Manager) mlFederatedSync(ctx context.Context) {
 	base := m.config.MLServerURL
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "https://" + base
+	}
 
 	dlCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()

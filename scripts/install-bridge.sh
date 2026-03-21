@@ -208,6 +208,13 @@ ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=${CONFIG_DIR}
 PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
@@ -216,10 +223,53 @@ EOF
 log_info "Configuring firewall..."
 if command -v ufw &> /dev/null; then
     ufw allow ${LISTEN_PORT}/tcp
+    ufw limit 22/tcp
+    ufw default deny incoming
+    ufw default allow outgoing
     ufw --force enable
 elif command -v firewall-cmd &> /dev/null; then
     firewall-cmd --permanent --add-port=${LISTEN_PORT}/tcp
+    firewall-cmd --permanent --add-rich-rule='rule family="ipv4" service name="ssh" limit value="4/m" accept'
     firewall-cmd --reload
+fi
+
+log_info "Setting up fail2ban..."
+if ! command -v fail2ban-server &> /dev/null; then
+    apt-get install -y fail2ban 2>/dev/null || yum install -y fail2ban 2>/dev/null || true
+fi
+if command -v fail2ban-server &> /dev/null; then
+    mkdir -p /etc/fail2ban/filter.d
+    cat > /etc/fail2ban/filter.d/whispera-bridge.conf <<'FILTER'
+[Definition]
+failregex = ^.*authentication failed from <HOST>.*$
+            ^.*invalid token from <HOST>.*$
+            ^.*rejected connection from <HOST>.*$
+ignoreregex =
+FILTER
+
+    cat > /etc/fail2ban/jail.d/whispera-bridge.conf <<JAIL
+[DEFAULT]
+bantime  = 24h
+findtime = 2m
+maxretry = 3
+backend  = systemd
+
+[sshd]
+enabled = true
+maxretry = 3
+
+[whispera-bridge]
+enabled  = true
+port     = ${LISTEN_PORT}
+filter   = whispera-bridge
+logpath  = /var/log/whispera/bridge.log
+maxretry = 5
+bantime  = 12h
+findtime = 5m
+JAIL
+
+    systemctl enable fail2ban
+    systemctl restart fail2ban
 fi
 
 log_info "Starting Whispera Bridge..."
