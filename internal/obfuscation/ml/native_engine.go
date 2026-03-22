@@ -23,20 +23,24 @@ import (
 
 const (
 	InputSize          = 52
-	HiddenSize1        = 128
-	HiddenSize2        = 64
-	HiddenSize3        = 32
+	HiddenSize1        = 256
+	HiddenSize2        = 128
+	HiddenSize3        = 64
+	HiddenSize4        = 32
 	TrafficClasses     = 7
-	DPIClasses         = 6
+	DPIClasses         = 9
 	TransportFeatures  = 42
 	TransportChoices   = 28
-	DefaultLR          = 0.001
-	DefaultL2          = 0.0001
+	DefaultLR          = 0.0005
+	DefaultL2          = 0.00005
 	BatchSize          = 32
-	ReplayBufferSize   = 5000
-	PseudoLabelMinConf = 0.85
+	ReplayBufferSize   = 10000
+	PseudoLabelMinConf = 0.90
 	SelfLearnInterval  = 300 * time.Second
 	RetrainThreshold   = 200
+	ValidationSplit    = 0.2
+	MinAccForDeploy    = 0.60
+	AccDegradationWarn = 0.10
 )
 
 type GorgoniaNet = gnet.GorgoniaNet
@@ -77,6 +81,12 @@ type TransportStats struct {
 	LastUpdate time.Time
 }
 
+type blockStats struct {
+	success int64
+	fail    int64
+	lastSeen time.Time
+}
+
 type ModelState struct {
 	TrafficLayers   []LayerDef        `json:"traffic"`
 	DPILayers       []LayerDef        `json:"dpi"`
@@ -109,6 +119,8 @@ type NativeMLEngine struct {
 	pseudoLabelCount  int64
 	retrainCount      int64
 	accuracy          float64
+	valAccuracy       float64
+	prevAccuracy      float64
 	lastTrained       time.Time
 	samplesAfterTrain int64
 
@@ -118,6 +130,14 @@ type NativeMLEngine struct {
 	trainLoss       float64
 	stopTraining    chan struct{}
 	stopSelfLearn   chan struct{}
+
+	labeledBuf *ReplayBuffer
+
+	blockHistory sync.Map
+
+	flowAnalyzer  *FlowAnalyzer
+	rlAgent       *RLTransportAgent
+	tspuDetector  *TSPUDetector
 }
 
 func NewNativeMLEngine(modelDir string) *NativeMLEngine {
@@ -127,17 +147,24 @@ func NewNativeMLEngine(modelDir string) *NativeMLEngine {
 		stopTraining:  make(chan struct{}),
 		stopSelfLearn: make(chan struct{}),
 		replayBuf:     newReplayBuffer(ReplayBufferSize),
+		labeledBuf:    newReplayBuffer(ReplayBufferSize / 2),
 	}
 	e.initProtocolPatterns()
 	e.featureNorm = &FeatureNormalizer{
 		Mean: make([]float64, InputSize),
 		Std:  ones(InputSize),
 	}
-	e.trafficNet = gnet.New([]int{InputSize, HiddenSize1, HiddenSize2, HiddenSize3, TrafficClasses})
-	e.dpiNet = gnet.New([]int{InputSize, HiddenSize2, HiddenSize3, DPIClasses})
-	e.anomalyNet = gnet.New([]int{InputSize, HiddenSize2, HiddenSize3, 1})
-	e.transportNet = gnet.New([]int{TransportFeatures, HiddenSize2, HiddenSize3, TransportChoices})
+	e.trafficNet = gnet.New([]int{InputSize, HiddenSize1, HiddenSize2, HiddenSize3, HiddenSize4, TrafficClasses})
+	e.dpiNet = gnet.New([]int{InputSize, HiddenSize2, HiddenSize3, HiddenSize4, DPIClasses})
+	e.anomalyNet = gnet.New([]int{InputSize, HiddenSize2, HiddenSize3, HiddenSize4, 1})
+	e.transportNet = gnet.New([]int{TransportFeatures, HiddenSize2, HiddenSize3, HiddenSize4, TransportChoices})
+	e.flowAnalyzer = NewFlowAnalyzer()
+	e.rlAgent = NewRLTransportAgent(modelDir)
+	e.tspuDetector = NewTSPUDetector()
 	e.loadModel()
+	if e.ShouldPretrain() {
+		go e.PretrainFromPatterns()
+	}
 	go e.selfLearnLoop()
 	return e
 }
@@ -283,6 +310,9 @@ func (e *NativeMLEngine) selfLearnLoop() {
 					e.Train(30)
 					atomic.StoreInt64(&e.samplesAfterTrain, 0)
 					atomic.AddInt64(&e.retrainCount, 1)
+					e.saveModel()
+					log.Info("Model weights persisted to disk after retraining (samples=%d, retrain_count=%d)",
+						after, atomic.LoadInt64(&e.retrainCount))
 				}()
 			}
 		}
@@ -667,16 +697,17 @@ func (e *NativeMLEngine) normalize(features []float64) []float64 {
 func (e *NativeMLEngine) Predict(data []byte, protocol, direction string) *types.MLPredictionResponse {
 	atomic.AddInt64(&e.predictionCount, 1)
 
+	var patternHint int = -1
 	for _, p := range e.protocolPatterns {
 		if p.Magic != nil && len(data) > p.Offset+len(p.Magic) {
 			if bytes.Equal(data[p.Offset:p.Offset+len(p.Magic)], p.Magic) {
-				return e.buildResponse(p.ClassID, p.Confidence, protocol, direction, data, 0, "")
+				patternHint = p.ClassID
+				break
 			}
 		}
 	}
-
-	if isDNSPacket(data) {
-		return e.buildResponse(2, 0.90, protocol, direction, data, 0, "")
+	if patternHint < 0 && isDNSPacket(data) {
+		patternHint = 2
 	}
 
 	features := e.ExtractFeatures(data)
@@ -692,33 +723,37 @@ func (e *NativeMLEngine) Predict(data []byte, protocol, direction string) *types
 	classID := argmax(probs)
 	confidence := probs[classID]
 
+	if patternHint >= 0 {
+		e.addGroundTruth(features, patternHint, 0)
+	}
+
+	if confidence >= PseudoLabelMinConf {
+		if patternHint < 0 || classID == patternHint {
+			e.addPseudoLabel(features, classID, 0)
+		}
+	}
+
 	dpiProbs := softmaxF64(rawDPI)
 	dpiType := argmax(dpiProbs)
 	dpiConf := dpiProbs[dpiType]
 	dpiName := ""
 	if dpiConf > 0.6 && dpiType > 0 {
-		switch dpiType {
-		case 1:
-			dpiName = "http_inspection"
-		case 2:
-			dpiName = "tls_inspection"
-		case 3:
-			dpiName = "deep_packet_inspection"
-		case 4:
-			dpiName = "protocol_fingerprint"
-		case 5:
-			dpiName = "ok_ru_fingerprint"
-		}
+		dpiName = dpiTypeName(dpiType)
 	} else {
 		dpiType = 0
 	}
 
+	if e.tspuDetector != nil {
+		tspuType, tspuConf := e.tspuDetector.DetectTSPU()
+		if tspuType != DPITypeNone && tspuConf > dpiConf {
+			dpiType = tspuType
+			dpiConf = tspuConf
+			dpiName = dpiTypeName(tspuType)
+		}
+	}
+
 	anomalyScore := sigmoidF64(rawAnomaly[0])
 	isAnomaly := anomalyScore > 0.7
-
-	if confidence >= PseudoLabelMinConf {
-		e.addPseudoLabel(features, classID, dpiType)
-	}
 
 	return &types.MLPredictionResponse{
 		Predictions: []types.PredictionResult{
@@ -739,6 +774,59 @@ func (e *NativeMLEngine) Predict(data []byte, protocol, direction string) *types
 	}
 }
 
+func (e *NativeMLEngine) PredictWithFlow(data []byte, protocol, direction, flowKey string, interArrivalMs float64) *types.MLPredictionResponse {
+	resp := e.Predict(data, protocol, direction)
+
+	if flowKey != "" && e.flowAnalyzer != nil {
+		flowFeatures := ExtractFlowFeatures(data, direction, interArrivalMs)
+		e.flowAnalyzer.Update(flowKey, flowFeatures)
+
+		patternClass := e.matchPattern(data)
+		if patternClass >= 0 {
+			go e.flowAnalyzer.LearnOnline(flowKey, patternClass)
+		}
+
+		flowClass, flowConf := e.flowAnalyzer.GetFlowConfidence(flowKey)
+		if flowClass >= 0 && flowConf > 0.6 && len(resp.Predictions) > 0 {
+			pktConf := resp.Predictions[0].Confidence
+			if flowClass != resp.Predictions[0].ClassID && flowConf > pktConf {
+				resp.Predictions[0].ClassID = flowClass
+				resp.Predictions[0].Confidence = 0.4*pktConf + 0.6*flowConf
+			} else if flowClass == resp.Predictions[0].ClassID {
+				resp.Predictions[0].Confidence = math.Min(1.0, pktConf+0.1*flowConf)
+			}
+			resp.ModelUsed = "gorgonia_mlp+lstm_go"
+		}
+	}
+	return resp
+}
+
+func (e *NativeMLEngine) matchPattern(data []byte) int {
+	for _, p := range e.protocolPatterns {
+		if p.Magic != nil && len(data) > p.Offset+len(p.Magic) {
+			if bytes.Equal(data[p.Offset:p.Offset+len(p.Magic)], p.Magic) {
+				return p.ClassID
+			}
+		}
+	}
+	if isDNSPacket(data) {
+		return 2
+	}
+	return -1
+}
+
+func (e *NativeMLEngine) RLAgent() *RLTransportAgent {
+	return e.rlAgent
+}
+
+func (e *NativeMLEngine) GetFlowAnalyzer() *FlowAnalyzer {
+	return e.flowAnalyzer
+}
+
+func (e *NativeMLEngine) GetTSPUDetector() *TSPUDetector {
+	return e.tspuDetector
+}
+
 func (e *NativeMLEngine) addPseudoLabel(features []float64, classID, dpiType int) {
 	sample := TrainingSample{Features: features, ClassID: classID, DPIType: dpiType, IsLabeled: false}
 	e.mu.Lock()
@@ -746,6 +834,48 @@ func (e *NativeMLEngine) addPseudoLabel(features []float64, classID, dpiType int
 	e.mu.Unlock()
 	atomic.AddInt64(&e.pseudoLabelCount, 1)
 	atomic.AddInt64(&e.samplesAfterTrain, 1)
+}
+
+func (e *NativeMLEngine) addGroundTruth(features []float64, classID, dpiType int) {
+	sample := TrainingSample{Features: features, ClassID: classID, DPIType: dpiType, IsLabeled: true}
+	e.mu.Lock()
+	e.labeledBuf.add(sample)
+	e.replayBuf.add(sample)
+	e.mu.Unlock()
+	atomic.AddInt64(&e.samplesAfterTrain, 1)
+}
+
+func (e *NativeMLEngine) RecordBlockEvent(transport string, success bool) {
+	hour := time.Now().Truncate(time.Hour).Unix()
+	key := fmt.Sprintf("%s:%d", transport, hour)
+	val, _ := e.blockHistory.LoadOrStore(key, &blockStats{})
+	bs := val.(*blockStats)
+	if success {
+		atomic.AddInt64(&bs.success, 1)
+	} else {
+		atomic.AddInt64(&bs.fail, 1)
+	}
+	bs.lastSeen = time.Now()
+}
+
+func (e *NativeMLEngine) PredictBlockRisk(transport string) float64 {
+	now := time.Now()
+	var totalSuccess, totalFail int64
+	for h := 0; h < 24; h++ {
+		bucket := now.Add(-time.Duration(h) * time.Hour).Truncate(time.Hour).Unix()
+		key := fmt.Sprintf("%s:%d", transport, bucket)
+		if val, ok := e.blockHistory.Load(key); ok {
+			bs := val.(*blockStats)
+			weight := int64(24 - h)
+			totalSuccess += atomic.LoadInt64(&bs.success) * weight
+			totalFail += atomic.LoadInt64(&bs.fail) * weight
+		}
+	}
+	total := totalSuccess + totalFail
+	if total == 0 {
+		return 0
+	}
+	return float64(totalFail) / float64(total)
 }
 
 func (e *NativeMLEngine) DetectDPI(data []byte, protocol, direction string) *types.MLPredictionResponse {
@@ -760,24 +890,10 @@ func (e *NativeMLEngine) DetectDPI(data []byte, protocol, direction string) *typ
 	dpiType := argmax(probs)
 	confidence := probs[dpiType]
 
-	dpiName := ""
-	switch dpiType {
-	case 1:
-		dpiName = "http_inspection"
-	case 2:
-		dpiName = "tls_inspection"
-	case 3:
-		dpiName = "deep_packet_inspection"
-	case 4:
-		dpiName = "protocol_fingerprint"
-	case 5:
-		dpiName = "statistical_analysis"
-	}
-
 	return &types.MLPredictionResponse{
 		Predictions: []types.PredictionResult{{
 			ClassID: dpiType, Confidence: confidence, Protocol: protocol,
-			Direction: direction, DPIType: dpiType, DPIName: dpiName,
+			Direction: direction, DPIType: dpiType, DPIName: dpiTypeName(dpiType),
 		}},
 		ModelUsed: "gorgonia_mlp_go_dpi", Confidence: confidence, Timestamp: time.Now(),
 	}
@@ -1094,19 +1210,50 @@ done:
 			correct++
 		}
 	}
-	acc := float64(correct) / float64(len(samples))
+	trainAcc := float64(correct) / float64(len(samples))
+
+	e.mu.Lock()
+	valSamples := e.labeledBuf.getAll()
+	e.mu.Unlock()
+
+	var valAcc float64
+	if len(valSamples) >= 10 {
+		valCorrect := 0
+		for _, s := range valSamples {
+			normF := e.normalizeSnapshot(s.Features)
+			raw := trafficNet.Forward(normF)
+			probs := softmaxF64(raw)
+			if argmax(probs) == s.ClassID {
+				valCorrect++
+			}
+		}
+		valAcc = float64(valCorrect) / float64(len(valSamples))
+	} else {
+		valAcc = trainAcc
+	}
+
+	prevAcc := e.accuracy
+	if prevAcc > MinAccForDeploy && valAcc < prevAcc-AccDegradationWarn {
+		log.Warn("Model degradation detected: val_acc=%.3f < prev=%.3f. Rejecting update.", valAcc, prevAcc)
+		return len(samples), valAcc
+	}
 
 	e.mu.Lock()
 	e.trafficNet = trafficNet
 	e.dpiNet = dpiNet
 	e.anomalyNet = anomalyNet
-	e.accuracy = acc
+	e.accuracy = trainAcc
+	e.valAccuracy = valAcc
+	e.prevAccuracy = prevAcc
 	e.lastTrained = time.Now()
 	e.trainLoss = totalLoss
 	e.mu.Unlock()
 
+	log.Info("Training complete: train_acc=%.3f val_acc=%.3f loss=%.4f samples=%d val_samples=%d",
+		trainAcc, valAcc, totalLoss, len(samples), len(valSamples))
+
 	e.saveModel()
-	return len(samples), acc
+	return len(samples), valAcc
 }
 
 func (e *NativeMLEngine) StopTraining() {

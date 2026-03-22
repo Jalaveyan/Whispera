@@ -119,16 +119,20 @@ func (c *ClientAuth) GenerateSessionID() (clientRandom, sessionID []byte, err er
 	}
 
 	timestamp := uint64(time.Now().UnixMilli())
+	nonce := make([]byte, 4)
+	rand.Read(nonce)
 	mac := hmac.New(sha256.New, authKey)
 	mac.Write([]byte("whispera-session-id"))
 	timestampBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(timestampBytes, timestamp)
 	mac.Write(timestampBytes)
+	mac.Write(nonce)
 	hmacResult := mac.Sum(nil)
 
 	sessionID = make([]byte, 32)
 	binary.BigEndian.PutUint64(sessionID[0:8], timestamp)
-	copy(sessionID[8:32], hmacResult[:24])
+	copy(sessionID[8:12], nonce)
+	copy(sessionID[12:32], hmacResult[:20])
 	return ephemeralPub, sessionID, nil
 }
 

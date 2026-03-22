@@ -596,7 +596,9 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		ts := make([]byte, 8)
 		binary.BigEndian.PutUint64(ts, timestamp)
 		mac.Write(ts)
-		return hmac.Equal(sessionID[8:32], mac.Sum(nil)[:24])
+		nonce := sessionID[8:12]
+		mac.Write(nonce)
+		return hmac.Equal(sessionID[12:32], mac.Sum(nil)[:20])
 	}
 
 	if h.config.GetUsers != nil {

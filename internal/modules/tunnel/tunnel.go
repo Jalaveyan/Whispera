@@ -545,6 +545,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 
 	if m.config.MLServerURL != "" {
 		m.mlStartFederatedSync(ctx)
+		m.mlStartTransportWatchdog(ctx)
 		if rec, conf := m.mlRecommendTransport(ctx); rec != "" && conf >= 0.55 {
 			m.config.Transport = rec
 		}
@@ -1072,9 +1073,6 @@ func (m *Manager) dialASNBypass(ctx context.Context) (net.Conn, error) {
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
 	}
-	// NOTE: phantom auth is already embedded by dialTLSMasquerade via SetPhantomConfig
-	// (clientRandom + sessionID patched into the uTLS ClientHello).
-	// Do NOT call phantomAuth.WrapConn here — it would send a duplicate ClientHello.
 	return conn, nil
 }
 
@@ -1636,8 +1634,16 @@ func (m *Manager) circuitBreakerSuccess() {
 
 func (m *Manager) RotateSNI() {
 	oldSNI := m.currentSNI
+	oldTransport := m.config.Transport
 	newSNI := m.selectNewSNI()
 	log.Info("Initiating Seamless SNI Rotation to: %s", newSNI)
+
+	if m.config.MLServerURL != "" {
+		if rec, conf := m.mlRecommendTransport(m.Context()); rec != "" && conf >= 0.55 && rec != oldTransport {
+			log.Info("[ML-Rotate] Transport switch during SNI rotation: %s → %s (confidence=%.2f)", oldTransport, rec, conf)
+			m.config.Transport = rec
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1648,10 +1654,17 @@ func (m *Manager) RotateSNI() {
 		m.connMu.Lock()
 		m.currentSNI = oldSNI
 		m.connMu.Unlock()
+		m.config.Transport = oldTransport
 
+		if m.config.MLServerURL != "" {
+			go m.mlSendFeedback(m.config.Transport, false, 0)
+		}
 		return
 	}
 
+	if m.config.MLServerURL != "" {
+		go m.mlSendFeedback(m.config.Transport, true, 0)
+	}
 	log.Info("SNI Rotation complete. Old connections will drain gracefully.")
 }
 
@@ -2149,7 +2162,7 @@ func (m *Manager) Send(data []byte) error {
 
 				chunk := data[start:end]
 
-				measure := chunkIdx&3 == 0 // sample every 4th chunk
+				measure := chunkIdx&3 == 0
 				var tStart time.Time
 				if measure {
 					tStart = time.Now()
@@ -2703,6 +2716,34 @@ func (m *Manager) mlSendFeedback(transport string, success bool, latencyMs float
 	}()
 }
 
+func (m *Manager) mlStartTransportWatchdog(ctx context.Context) {
+	if m.config.MLServerURL == "" {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				rec, conf := m.mlRecommendTransport(ctx)
+				if rec == "" || conf < 0.65 {
+					continue
+				}
+				if rec == m.config.Transport {
+					continue
+				}
+				log.Info("[ML-Watchdog] Transport change recommended: %s → %s (confidence=%.2f)",
+					m.config.Transport, rec, conf)
+				m.config.Transport = rec
+				m.rotateTransport()
+			}
+		}
+	}()
+}
+
 func (m *Manager) mlStartFederatedSync(ctx context.Context) {
 	if m.config.MLServerURL == "" {
 		return
@@ -2900,8 +2941,33 @@ func (m *Manager) rotateTransport() {
 		return
 	}
 
-	log.Info("[REKEY] Rotating %d transport connections for PFS", poolSize)
+	oldTransport := m.config.Transport
+	if m.config.MLServerURL != "" {
+		if rec, conf := m.mlRecommendTransport(m.Context()); rec != "" && conf >= 0.55 {
+			if rec != oldTransport {
+				log.Info("[REKEY] ML recommends transport switch: %s → %s (confidence=%.2f)", oldTransport, rec, conf)
+				m.config.Transport = rec
+			}
+		}
+	}
+
+	log.Info("[REKEY] Rotating %d transport connections for PFS (transport=%s)", poolSize, m.config.Transport)
 
 	m.setState(StateReconnecting)
 	m.Reconnect(m.Context())
+
+	if m.config.MLServerURL != "" {
+		go func() {
+			time.Sleep(5 * time.Second)
+			m.connMu.RLock()
+			success := len(m.activePool) > 0
+			m.connMu.RUnlock()
+			m.mlSendFeedback(m.config.Transport, success, 0)
+			if !success && m.config.Transport != oldTransport {
+				log.Warn("[REKEY] ML transport %s failed, reverting to %s", m.config.Transport, oldTransport)
+				m.config.Transport = oldTransport
+				m.Reconnect(m.Context())
+			}
+		}()
+	}
 }

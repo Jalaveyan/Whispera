@@ -138,7 +138,6 @@ func (s *MLServer) Start() error {
 	}
 
 	if s.tlsCert != "" && s.tlsKey != "" {
-		// Explicit TLS certs provided — serve HTTPS
 		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 		cert, err := tls.LoadX509KeyPair(s.tlsCert, s.tlsKey)
 		if err != nil {
@@ -155,7 +154,6 @@ func (s *MLServer) Start() error {
 		s.addLogf("ML server started on %s (HTTPS, native Go MLP engine)", s.listenAddr)
 		log.Printf("ML server started on %s (HTTPS)", s.listenAddr)
 	} else {
-		// No TLS certs — serve plain HTTP (safe for localhost)
 		go func() {
 			serveErr := s.httpServer.Serve(ln)
 			if serveErr != nil && serveErr != http.ErrServerClosed {
@@ -231,6 +229,8 @@ func (s *MLServer) registerRoutes() {
 	s.mux.HandleFunc("GET /federated/losses", s.handleFedLosses)
 	s.mux.HandleFunc("POST /federated/upload", s.handleFedUpload)
 	s.mux.HandleFunc("GET /federated/download", s.handleFedDownload)
+	s.mux.HandleFunc("GET /federated/dataset", s.handleFedDatasetExport)
+	s.mux.HandleFunc("GET /federated/dataset/stats", s.handleFedDatasetStats)
 	s.mux.HandleFunc("GET /datasets", s.handleDatasetsList)
 	s.mux.HandleFunc("POST /datasets/capture", s.handleDatasetsCapture)
 	s.mux.HandleFunc("POST /datasets/upload", s.handleDatasetsUpload)
@@ -238,6 +238,11 @@ func (s *MLServer) registerRoutes() {
 	s.mux.HandleFunc("GET /adversarial/status", s.handleAdversarialStatus)
 	s.mux.HandleFunc("POST /adversarial/evolve", s.handleAdversarialEvolve)
 	s.mux.HandleFunc("POST /adversarial/feedback", s.handleAdversarialFeedback)
+
+	// TSPU-specific endpoints.
+	s.mux.HandleFunc("GET /tspu/stats", s.handleTSPUStats)
+	s.mux.HandleFunc("POST /tspu/rst", s.handleTSPURST)
+	s.mux.HandleFunc("POST /tspu/bandwidth", s.handleTSPUBandwidth)
 }
 
 func (s *MLServer) jsonReply(w http.ResponseWriter, data interface{}) {
@@ -499,7 +504,7 @@ func (s *MLServer) handleRecommendTransport(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	transport := s.engine.RecommendTransport(rttData, successRates, latencies)
+	mlpTransport := s.engine.RecommendTransport(rttData, successRates, latencies)
 
 	dpiRisk := "low"
 	reachable := 0
@@ -516,19 +521,80 @@ func (s *MLServer) handleRecommendTransport(w http.ResponseWriter, r *http.Reque
 		dpiRisk = "medium"
 	}
 
+	transport := mlpTransport
 	confidence := 0.85
 	reason := fmt.Sprintf("ML neural network selected based on %d probes, %d transport stats", len(rttData), len(stats))
-	if len(stats) == 0 {
+	usedRL := false
+	tspuDetected := false
+
+	if tspuDet := s.engine.GetTSPUDetector(); tspuDet != nil {
+		tType, tConf := tspuDet.DetectTSPU()
+		if tType != ml.DPITypeNone && tConf > 0.5 {
+			tspuDetected = true
+			dpiRisk = "tspu"
+			countermeasure := ml.TSPUCountermeasure(tType)
+			if countermeasure != "" {
+				transport = countermeasure
+				confidence = tConf
+				reason = fmt.Sprintf("TSPU detected (type=%d, conf=%.2f) -> countermeasure: %s",
+					tType, tConf, countermeasure)
+			}
+		}
+	}
+
+	if rlAgent := s.engine.RLAgent(); rlAgent != nil {
+		var rttArr [4]float64
+		for i := 0; i < 4 && i < len(rttData); i++ {
+			rttArr[i] = rttData[i]
+		}
+		var totalSuccess, totalFail float64
+		for _, v := range stats {
+			if m, ok := v.(map[string]interface{}); ok {
+				if s, ok := m["success"].(int64); ok {
+					totalSuccess += float64(s)
+				}
+				if f, ok := m["fail"].(int64); ok {
+					totalFail += float64(f)
+				}
+			}
+		}
+		total := totalSuccess + totalFail
+		succRate := 0.5
+		failRate := 0.5
+		if total > 0 {
+			succRate = totalSuccess / total
+			failRate = totalFail / total
+		}
+		blockRisk := s.engine.PredictBlockRisk(mlpTransport)
+		dpiDetected := dpiRisk == "high" || dpiRisk == "critical"
+		hour := time.Now().Hour()
+
+		state := rlAgent.EncodeState(rttArr, succRate, failRate, dpiDetected, 0, hour, blockRisk)
+		rlTransport, _, explored := rlAgent.SelectTransport(state)
+
+		rlStats := rlAgent.Stats()
+		bufSize, _ := rlStats["buffer_size"].(int)
+		if bufSize > ml.RLBatchSize*4 && !explored && !tspuDetected {
+			transport = rlTransport
+			confidence = 0.90
+			reason = fmt.Sprintf("RL-DQN selected (buffer=%d, eps=%.3f)", bufSize, rlStats["epsilon"])
+			usedRL = true
+		}
+	}
+
+	if len(stats) == 0 && !usedRL && !tspuDetected {
 		confidence = 0.6
 		reason = "ML selected (no historical feedback yet)"
 	}
 
 	s.jsonReply(w, map[string]interface{}{
-		"dpi_risk":    dpiRisk,
-		"transport":   transport,
-		"options":     "",
-		"description": reason,
-		"confidence":  confidence,
+		"dpi_risk":      dpiRisk,
+		"transport":     transport,
+		"options":       "",
+		"description":   reason,
+		"confidence":    confidence,
+		"used_rl":       usedRL,
+		"tspu_detected": tspuDetected,
 	})
 }
 
@@ -559,6 +625,22 @@ func (s *MLServer) handleFeedbackConnection(w http.ResponseWriter, r *http.Reque
 	ts.Count++
 	s.feedbackMu.Unlock()
 
+	s.engine.RecordBlockEvent(req.Transport, req.Success)
+	if tspuDet := s.engine.GetTSPUDetector(); tspuDet != nil {
+		if !req.Success && req.Latency < float64(ml.TSPURSTThresholdMs) {
+			tspuDet.RecordRST("", time.Duration(req.Latency)*time.Millisecond)
+		}
+	}
+
+	if rlAgent := s.engine.RLAgent(); rlAgent != nil {
+		reward := ml.ComputeReward(req.Success, req.Latency)
+		actionIdx := rlAgent.TransportIndex(req.Transport)
+		if actionIdx >= 0 {
+			state := make([]float64, ml.RLStateSize)
+			rlAgent.RecordExperience(state, actionIdx, reward, state, !req.Success)
+		}
+	}
+
 	s.addLogf("feedback: %s success=%v latency=%.0fms", req.Transport, req.Success, req.Latency)
 	s.jsonReply(w, map[string]string{"status": "ok"})
 }
@@ -572,6 +654,52 @@ func (s *MLServer) handleFeedbackStats(w http.ResponseWriter, r *http.Request) {
 	}
 	s.feedbackMu.Unlock()
 	s.jsonReply(w, stats)
+}
+
+func (s *MLServer) handleTSPUStats(w http.ResponseWriter, r *http.Request) {
+	if tspuDet := s.engine.GetTSPUDetector(); tspuDet != nil {
+		tType, tConf := tspuDet.DetectTSPU()
+		stats := tspuDet.Stats()
+		stats["detected_type"] = tType
+		stats["detected_confidence"] = tConf
+		if tType != ml.DPITypeNone {
+			stats["countermeasure"] = ml.TSPUCountermeasure(tType)
+		}
+		s.jsonReply(w, stats)
+	} else {
+		s.jsonReply(w, map[string]string{"status": "tspu_detector_not_initialized"})
+	}
+}
+
+func (s *MLServer) handleTSPURST(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SNI       string  `json:"sni"`
+		TimeToRST float64 `json:"time_to_rst_ms"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if tspuDet := s.engine.GetTSPUDetector(); tspuDet != nil {
+		tspuDet.RecordRST(req.SNI, time.Duration(req.TimeToRST)*time.Millisecond)
+	}
+	s.addLogf("tspu_rst: sni=%s time=%.1fms", req.SNI, req.TimeToRST)
+	s.jsonReply(w, map[string]string{"status": "ok"})
+}
+
+func (s *MLServer) handleTSPUBandwidth(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Transport   string  `json:"transport"`
+		BytesPerSec float64 `json:"bytes_per_sec"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if tspuDet := s.engine.GetTSPUDetector(); tspuDet != nil {
+		tspuDet.RecordBandwidth(req.Transport, req.BytesPerSec)
+	}
+	s.jsonReply(w, map[string]string{"status": "ok"})
 }
 
 func (s *MLServer) handleTrainStart(w http.ResponseWriter, r *http.Request) {
@@ -733,15 +861,56 @@ func (s *MLServer) handleFedLosses(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *MLServer) handleFedUpload(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 100*1024))
+	body, err := io.ReadAll(io.LimitReader(r.Body, 10*1024*1024))
 	if err != nil {
 		http.Error(w, "read error", http.StatusBadRequest)
 		return
 	}
+
 	fname := fmt.Sprintf("delta_%d.json", time.Now().UnixNano())
 	os.WriteFile(filepath.Join(s.fedDir, fname), body, 0600)
-	s.addLogf("federated delta uploaded: %s (%d bytes)", fname, len(body))
+
+	var upload struct {
+		Samples []json.RawMessage `json:"samples"`
+		Count   int               `json:"count"`
+	}
+	if json.Unmarshal(body, &upload) == nil && len(upload.Samples) > 0 {
+		s.appendToDataset(upload.Samples)
+		s.addLogf("federated upload: %s — %d samples appended to dataset (total: %d)",
+			fname, len(upload.Samples), s.datasetSampleCount())
+	} else {
+		s.addLogf("federated delta uploaded: %s (%d bytes, no samples field)", fname, len(body))
+	}
+
 	s.jsonReply(w, map[string]string{"status": "ok"})
+}
+
+func (s *MLServer) appendToDataset(samples []json.RawMessage) {
+	dsPath := filepath.Join(s.fedDir, "aggregated_dataset.jsonl")
+	f, err := os.OpenFile(dsPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	for _, sample := range samples {
+		f.Write(sample)
+		f.Write([]byte("\n"))
+	}
+}
+
+func (s *MLServer) datasetSampleCount() int {
+	dsPath := filepath.Join(s.fedDir, "aggregated_dataset.jsonl")
+	data, err := os.ReadFile(dsPath)
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, b := range data {
+		if b == '\n' {
+			count++
+		}
+	}
+	return count
 }
 
 func (s *MLServer) handleFedDownload(w http.ResponseWriter, r *http.Request) {
@@ -759,6 +928,46 @@ func (s *MLServer) handleFedDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.jsonReply(w, map[string]interface{}{"deltas": deltas, "count": len(deltas)})
+}
+
+func (s *MLServer) handleFedDatasetExport(w http.ResponseWriter, r *http.Request) {
+	dsPath := filepath.Join(s.fedDir, "aggregated_dataset.jsonl")
+	info, err := os.Stat(dsPath)
+	if err != nil {
+		s.jsonReply(w, map[string]interface{}{"error": "no dataset yet", "samples": 0})
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", "attachment; filename=whispera_ml_dataset.jsonl")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", info.Size()))
+	http.ServeFile(w, r, dsPath)
+}
+
+func (s *MLServer) handleFedDatasetStats(w http.ResponseWriter, r *http.Request) {
+	dsPath := filepath.Join(s.fedDir, "aggregated_dataset.jsonl")
+	info, err := os.Stat(dsPath)
+	if err != nil {
+		s.jsonReply(w, map[string]interface{}{
+			"samples": 0, "size_bytes": 0, "clients": 0,
+		})
+		return
+	}
+
+	entries, _ := os.ReadDir(s.fedDir)
+	deltaCount := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "delta_") {
+			deltaCount++
+		}
+	}
+
+	s.jsonReply(w, map[string]interface{}{
+		"samples":      s.datasetSampleCount(),
+		"size_bytes":   info.Size(),
+		"size_mb":      float64(info.Size()) / (1024 * 1024),
+		"uploads":      deltaCount,
+		"last_modified": info.ModTime().UTC().Format(time.RFC3339),
+	})
 }
 
 func (s *MLServer) handleDatasetsList(w http.ResponseWriter, r *http.Request) {

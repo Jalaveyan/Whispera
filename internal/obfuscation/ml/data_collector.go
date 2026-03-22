@@ -1,7 +1,10 @@
 package ml
 
 import (
+	"bytes"
+	"crypto/tls"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -31,6 +34,12 @@ type DataCollector struct {
 	featureStats *FeatureStatistics
 
 	onNewSample func(sample TrafficSample)
+
+	// ML server upload
+	mlServerURL  string
+	mlToken      string
+	lastUpload   time.Time
+	uploadedCount uint64
 }
 
 type TrafficSample struct {
@@ -241,6 +250,82 @@ func (dc *DataCollector) backgroundSaveLoop() {
 	for range ticker.C {
 		if err := dc.SaveToDisk(); err != nil {
 			log.Warn("Save error: %v", err)
+		}
+	}
+}
+
+func (dc *DataCollector) SetMLServer(url, token string) {
+	dc.mlServerURL = url
+	dc.mlToken = token
+	if url != "" {
+		go dc.backgroundUploadLoop()
+	}
+}
+
+var uploadHTTPClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	},
+}
+
+// UploadToMLServer sends collected samples to the ML server for centralized learning.
+func (dc *DataCollector) UploadToMLServer() error {
+	if dc.mlServerURL == "" {
+		return nil
+	}
+
+	dc.mu.RLock()
+	if len(dc.samples) == 0 {
+		dc.mu.RUnlock()
+		return nil
+	}
+	batch := make([]TrafficSample, len(dc.samples))
+	copy(batch, dc.samples)
+	dc.mu.RUnlock()
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"samples":    batch,
+		"uploaded_at": time.Now().UTC(),
+		"count":      len(batch),
+	})
+	if err != nil {
+		return err
+	}
+
+	url := dc.mlServerURL
+	if url[len(url)-1] != '/' {
+		url += "/"
+	}
+	req, err := http.NewRequest(http.MethodPost, url+"federated/upload", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if dc.mlToken != "" {
+		req.Header.Set("Authorization", "Bearer "+dc.mlToken)
+	}
+
+	resp, err := uploadHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
+		atomic.AddUint64(&dc.uploadedCount, uint64(len(batch)))
+		dc.lastUpload = time.Now()
+		log.Info("Uploaded %d samples to ML server (%d total)", len(batch), atomic.LoadUint64(&dc.uploadedCount))
+	}
+	return nil
+}
+
+func (dc *DataCollector) backgroundUploadLoop() {
+	ticker := time.NewTicker(3 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := dc.UploadToMLServer(); err != nil {
+			log.Warn("ML upload error: %v", err)
 		}
 	}
 }
