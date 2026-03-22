@@ -13,6 +13,7 @@ import (
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
 	"whispera/internal/modules/bridgepool"
+	"whispera/internal/util"
 )
 
 func init() {
@@ -97,13 +98,14 @@ type packetJob struct {
 }
 
 type natEntry struct {
-	SrcAddr     net.Addr
-	DstAddr     net.Addr
-	SessionID   uint32
-	StreamID    uint16
-	Destination *interfaces.Destination
-	CreatedAt   time.Time
-	LastUsed    time.Time
+	SrcAddr      net.Addr
+	DstAddr      net.Addr
+	SessionID    uint32
+	StreamID     uint16
+	Destination  *interfaces.Destination
+	CreatedAt    time.Time
+	LastUsed     time.Time
+	lastUsedNano int64 // atomic, avoids time.Now() per lookup
 }
 
 func New(cfg *Config) (*Processor, error) {
@@ -220,16 +222,8 @@ func (p *Processor) ProcessInbound(ctx context.Context, packet *interfaces.Packe
 		packet.Payload = decrypted
 	}
 
-	if p.obfuscator != nil {
-		deobfuscated, _, err := p.obfuscator.Process(packet.Payload, interfaces.DirectionInbound)
-		if err != nil {
-			atomic.AddUint64(&p.packetsDropped, 1)
-			return fmt.Errorf("deobfuscation failed: %w", err)
-		}
-		packet.Payload = deobfuscated
-	}
 
-	key := fmt.Sprintf("%s->%s", packet.SrcAddr.String(), packet.DstAddr.String())
+	key := packet.SrcAddr.String() + "->" + packet.DstAddr.String()
 	if entry, ok := p.LookupNATEntry(key); ok {
 		return p.handleDestination(packet.Payload, entry.Destination)
 	}
@@ -421,14 +415,16 @@ func (p *Processor) AddNATEntry(key string, srcAddr, dstAddr net.Addr, sessionID
 	p.natTableMu.Lock()
 	defer p.natTableMu.Unlock()
 
+	now := time.Now()
 	p.natTable[key] = &natEntry{
-		SrcAddr:     srcAddr,
-		DstAddr:     dstAddr,
-		SessionID:   sessionID,
-		StreamID:    streamID,
-		Destination: dest,
-		CreatedAt:   time.Now(),
-		LastUsed:    time.Now(),
+		SrcAddr:      srcAddr,
+		DstAddr:      dstAddr,
+		SessionID:    sessionID,
+		StreamID:     streamID,
+		Destination:  dest,
+		CreatedAt:    now,
+		LastUsed:     now,
+		lastUsedNano: now.UnixNano(),
 	}
 
 	atomic.StoreUint64(&p.natEntries, uint64(len(p.natTable)))
@@ -440,7 +436,7 @@ func (p *Processor) LookupNATEntry(key string) (*natEntry, bool) {
 
 	entry, ok := p.natTable[key]
 	if ok {
-		entry.LastUsed = time.Now()
+		atomic.StoreInt64(&entry.lastUsedNano, util.GetGlobalTimeCache().NowNano())
 	}
 	return entry, ok
 }
@@ -463,9 +459,9 @@ func (p *Processor) cleanupNAT() {
 	p.natTableMu.Lock()
 	defer p.natTableMu.Unlock()
 
-	now := time.Now()
+	cutoff := time.Now().Add(-5 * time.Minute).UnixNano()
 	for key, entry := range p.natTable {
-		if now.Sub(entry.LastUsed) > 5*time.Minute {
+		if atomic.LoadInt64(&entry.lastUsedNano) < cutoff {
 			delete(p.natTable, key)
 		}
 	}

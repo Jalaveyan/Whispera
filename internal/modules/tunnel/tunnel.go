@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -109,6 +110,15 @@ var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, 66048)
 	},
+}
+
+func isConnResetOrBroken(err error) bool {
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		msg := opErr.Err.Error()
+		return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset")
+	}
+	return false
 }
 
 type TunnelState int
@@ -1062,6 +1072,13 @@ func (m *Manager) dialASNBypass(ctx context.Context) (net.Conn, error) {
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
 	}
+	if m.config.EnablePhantom && m.phantomAuth != nil {
+		sni := m.getRotationSNI()
+		if err := m.phantomAuth.WrapConn(conn, sni); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("phantom wrap asn_bypass: %w", err)
+		}
+	}
 	return conn, nil
 }
 
@@ -1089,7 +1106,18 @@ func (m *Manager) dialH2C(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return h2cTrans.Dial(ctx, m.config.ServerAddrTCP)
+	conn, err := h2cTrans.Dial(ctx, m.config.ServerAddrTCP)
+	if err != nil {
+		return nil, err
+	}
+	if m.config.EnablePhantom && m.phantomAuth != nil {
+		sni := m.getRotationSNI()
+		if err := m.phantomAuth.WrapConn(conn, sni); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("phantom wrap h2c: %w", err)
+		}
+	}
+	return conn, nil
 }
 
 func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
@@ -1099,6 +1127,13 @@ func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
+	}
+	if m.config.EnablePhantom && m.phantomAuth != nil {
+		sni := m.getRotationSNI()
+		if err := m.phantomAuth.WrapConn(conn, sni); err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("phantom wrap: %w", err)
+		}
 	}
 	return conn, nil
 }
@@ -2053,10 +2088,11 @@ func (m *Manager) Send(data []byte) error {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		targetConn := m.activeConn
+		var targetConn *managedConn
 
+		m.connMu.Lock()
+		targetConn = m.activeConn
 		if len(data) >= 8 {
-			m.connMu.Lock()
 			if frameType == FrameTypeConnect {
 				if len(m.activePool) > 0 {
 					idx := streamID % uint16(len(m.activePool))
@@ -2079,13 +2115,11 @@ func (m *Manager) Send(data []byte) error {
 					delete(m.streamConns, streamID)
 				}
 			}
-			m.connMu.Unlock()
 		}
+		conn := targetConn
+		m.connMu.Unlock()
 
-		m.connMu.RLock()
-		if targetConn == nil {
-			m.connMu.RUnlock()
-
+		if conn == nil {
 			state := m.GetState()
 			if state == StateReconnecting || state == StateRotating || state == StateConnecting {
 				if frameType == FrameTypeData {
@@ -2098,8 +2132,6 @@ func (m *Manager) Send(data []byte) error {
 			}
 			return fmt.Errorf("not connected")
 		}
-		conn := targetConn
-		m.connMu.RUnlock()
 
 		total := len(data)
 		n := 0
@@ -2112,6 +2144,7 @@ func (m *Manager) Send(data []byte) error {
 
 		if total > currentChunkSize {
 			start := 0
+			chunkIdx := 0
 			for start < total {
 				end := start + currentChunkSize
 				if end > total {
@@ -2120,9 +2153,12 @@ func (m *Manager) Send(data []byte) error {
 
 				chunk := data[start:end]
 
-				tStart := time.Now()
+				measure := chunkIdx&3 == 0 // sample every 4th chunk
+				var tStart time.Time
+				if measure {
+					tStart = time.Now()
+				}
 				wn, wErr := conn.Write(chunk)
-				duration := time.Since(tStart)
 
 				n += wn
 				if wErr != nil {
@@ -2130,23 +2166,27 @@ func (m *Manager) Send(data []byte) error {
 					break
 				}
 
-				if duration < 2*time.Millisecond {
-					if currentChunkSize < maxChunkSize {
-						currentChunkSize = currentChunkSize * 3 / 2
-						if currentChunkSize > maxChunkSize {
-							currentChunkSize = maxChunkSize
+				if measure {
+					duration := time.Since(tStart)
+					if duration < 2*time.Millisecond {
+						if currentChunkSize < maxChunkSize {
+							currentChunkSize = currentChunkSize * 3 / 2
+							if currentChunkSize > maxChunkSize {
+								currentChunkSize = maxChunkSize
+							}
 						}
-					}
-				} else if duration > 100*time.Millisecond {
-					if currentChunkSize > minChunkSize {
-						currentChunkSize = currentChunkSize * 2 / 3
-						if currentChunkSize < minChunkSize {
-							currentChunkSize = minChunkSize
+					} else if duration > 100*time.Millisecond {
+						if currentChunkSize > minChunkSize {
+							currentChunkSize = currentChunkSize * 2 / 3
+							if currentChunkSize < minChunkSize {
+								currentChunkSize = minChunkSize
+							}
 						}
 					}
 				}
 
 				start += wn
+				chunkIdx++
 			}
 			err = writeErr
 		} else {
@@ -2155,8 +2195,7 @@ func (m *Manager) Send(data []byte) error {
 		if err != nil {
 			lastErr = err
 
-			errMsg := err.Error()
-			isClosed := strings.Contains(errMsg, "closed") || strings.Contains(errMsg, "broken pipe") || strings.Contains(errMsg, "connection reset") || strings.Contains(errMsg, "EOF")
+			isClosed := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || isConnResetOrBroken(err)
 
 			if isClosed {
 				if frameType == FrameTypeData {
@@ -2402,15 +2441,24 @@ func (s *StreamConn) Read(b []byte) (n int, err error) {
 }
 
 func (s *StreamConn) Write(b []byte) (n int, err error) {
-	frame := make([]byte, FrameHeaderSize+len(b))
+	frameLen := FrameHeaderSize + len(b)
+	frame := bufferPool.Get().([]byte)
+	if cap(frame) < frameLen {
+		frame = make([]byte, frameLen)
+	} else {
+		frame = frame[:frameLen]
+	}
+
 	binary.BigEndian.PutUint16(frame[0:2], s.streamID)
 	frame[2] = 0x02
 	frame[3] = 0x00
 	binary.BigEndian.PutUint32(frame[4:8], uint32(len(b)))
 	copy(frame[8:], b)
 
-	if err := s.manager.Send(frame); err != nil {
-		return 0, err
+	sendErr := s.manager.Send(frame)
+	bufferPool.Put(frame[:cap(frame)])
+	if sendErr != nil {
+		return 0, sendErr
 	}
 	return len(b), nil
 }

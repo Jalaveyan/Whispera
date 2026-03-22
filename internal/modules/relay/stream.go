@@ -535,8 +535,9 @@ func (s *Stream) readFromTarget() {
 
 		if n > 0 {
 			s.bytesIn += uint64(n)
-			s.lastT = time.Now()
-			s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			now := time.Now()
+			s.lastT = now
+			s.conn.SetReadDeadline(now.Add(60 * time.Second))
 
 			if s.sackEnabled {
 				s.sackTracker.RecordPacket(s.seqNum)

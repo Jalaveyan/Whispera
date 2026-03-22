@@ -9,10 +9,11 @@ import (
 )
 
 type UnifiedMLSystem struct {
-	engine        *NativeMLEngine
-	stats         *types.MLStats
-	packetCount   int64
-	dataCollector *DataCollector
+	engine         *NativeMLEngine
+	stats          *types.MLStats
+	packetCount    int64
+	dataCollector  *DataCollector
+	lastPrediction atomic.Value // stores *types.MLPredictionResponse
 }
 
 func (mls *UnifiedMLSystem) ProcessTraffic(data []byte, context *types.UnifiedTrafficContext) ([]byte, error) {
@@ -32,6 +33,9 @@ func (mls *UnifiedMLSystem) ProcessTraffic(data []byte, context *types.UnifiedTr
 	}
 
 	resp := mls.engine.Predict(data, protocol, direction)
+	if resp != nil {
+		mls.lastPrediction.Store(resp)
+	}
 
 	var processed []byte
 	var err error
@@ -115,6 +119,13 @@ func (mls *UnifiedMLSystem) CollectSample(data []byte, protocol, direction strin
 		sample.Confidence = p.Confidence
 	}
 	mls.dataCollector.CollectSample(sample)
+}
+
+func (mls *UnifiedMLSystem) LastPrediction() *types.MLPredictionResponse {
+	if v := mls.lastPrediction.Load(); v != nil {
+		return v.(*types.MLPredictionResponse)
+	}
+	return nil
 }
 
 func (mls *UnifiedMLSystem) GetStats() *types.MLStats { return mls.stats }

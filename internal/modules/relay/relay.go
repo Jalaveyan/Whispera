@@ -441,17 +441,15 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 			}
 		}()
 		go func() {
-			buf := make([]byte, 65535)
+			buf := make([]byte, 2+65535)
 			for {
-				n, err := target.Read(buf)
+				n, err := target.Read(buf[2:])
 				if err != nil {
 					errCh <- err
 					return
 				}
-				frame := make([]byte, 2+n)
-				binary.BigEndian.PutUint16(frame[:2], uint16(n))
-				copy(frame[2:], buf[:n])
-				if _, err := stream.Write(frame); err != nil {
+				binary.BigEndian.PutUint16(buf[:2], uint16(n))
+				if _, err := stream.Write(buf[:2+n]); err != nil {
 					errCh <- err
 					return
 				}

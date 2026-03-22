@@ -34,14 +34,10 @@ func (m *Marionette) applyMLPipeline(data []byte, direction string) []byte {
 
 	cnt := atomic.AddInt64(&mlSampleCounter, 1)
 	if cnt%10 == 0 {
-		go func() {
-			pred, predErr := m.MlSystem.PredictTraffic(data, protocol, direction)
-			if predErr != nil {
-				return
-			}
-			m.MlSystem.CollectSample(data, protocol, direction, pred)
+		pred := m.MlSystem.LastPrediction()
+		if pred != nil {
 			m.reactToMLPrediction(pred, profile, active)
-		}()
+		}
 	}
 
 	return processed
