@@ -3,8 +3,6 @@
 set -e
 
 WORK_DIR="/opt/whispera"
-ML_DIR="/opt/whispera-ml"
-ML_REPO="https://github.com/Jalaveyan/ml.git"
 BIN_PATH="/usr/local/bin"
 DAT_PATH="/usr/local/share/whispera"
 CONF_PATH="/etc/whispera"
@@ -381,7 +379,6 @@ setup_autoupdate() {
     cat > /etc/cron.daily/whispera-update <<'CRONEOF'
 #!/bin/bash
 WORK_DIR="__WORK_DIR__"
-ML_DIR="/opt/whispera-ml"
 BIN_PATH="__BIN_PATH__"
 BRANCH="__BRANCH__"
 LOG="/var/log/whispera-update.log"
@@ -407,17 +404,6 @@ echo "$CHANGED"
 GO_CHANGED=$(echo "$CHANGED" | grep -E '\.(go)$|^go\.(mod|sum)$' || true)
 ML_PY_CHANGED=$(echo "$CHANGED" | grep -E '^(internal/obfuscation/ml|ml_engine)/.*\.py$' || true)
 PANEL_CHANGED=$(echo "$CHANGED" | grep -E '^panel/' || true)
-
-# ML repo (Jalaveyan/ml) — подтягиваем и рестартим
-if [[ -d "$ML_DIR/.git" ]]; then
-    ML_BEFORE=$(git -C "$ML_DIR" rev-parse HEAD 2>/dev/null || echo "")
-    git -C "$ML_DIR" pull origin main --quiet 2>/dev/null || true
-    ML_AFTER=$(git -C "$ML_DIR" rev-parse HEAD 2>/dev/null || echo "")
-    if [[ "$ML_BEFORE" != "$ML_AFTER" ]]; then
-        echo "ML repo updated — restarting whispera-ml"
-        systemctl restart whispera-ml 2>/dev/null && echo "whispera-ml restarted" || echo "whispera-ml not running"
-    fi
-fi
 
 # ML встроен в основной Go бинарник — рестарт основного сервиса достаточно
 if [[ -n "$ML_PY_CHANGED" ]]; then
@@ -1064,31 +1050,11 @@ ENVEOF
         fi
     fi
 
-    # ── ML repo — подтягиваем изменения из Jalaveyan/ml ─────────────────────
-    if [[ -d "$ML_DIR/.git" ]]; then
-        log_info "Pulling ML repo updates..."
-        local ML_BEFORE ML_AFTER ML_CHANGED
-        ML_BEFORE=$(git -C "$ML_DIR" rev-parse HEAD 2>/dev/null || echo "")
-        git -C "$ML_DIR" pull origin main --quiet 2>/dev/null || log_warn "ML repo pull failed"
-        ML_AFTER=$(git -C "$ML_DIR" rev-parse HEAD 2>/dev/null || echo "")
-
-        if [[ -n "$ML_BEFORE" && "$ML_BEFORE" != "$ML_AFTER" ]]; then
-            ML_CHANGED=$(git -C "$ML_DIR" diff --name-only "$ML_BEFORE" "$ML_AFTER" 2>/dev/null || true)
-            log_info "ML repo updated: $(echo "$ML_CHANGED" | wc -l) files"
-            systemctl restart whispera-ml 2>/dev/null && \
-                log_success "whispera-ml restarted (ML repo updated)" || \
-                log_warn "whispera-ml restart failed"
-        else
-            log_info "ML repo: no changes"
-        fi
-    elif command -v git &>/dev/null; then
-        log_info "Cloning ML repo → $ML_DIR"
-        git clone "$ML_REPO" "$ML_DIR" --quiet 2>/dev/null && \
-            log_success "ML repo cloned to $ML_DIR" || \
-            log_warn "ML repo clone failed"
-    fi
-
     # ── ML engine встроен в основной Go бинарник (модуль mlserver, порт 8000) ──
+    if [[ -d "/opt/whispera-ml" ]]; then
+        log_info "Removing legacy ML repo at /opt/whispera-ml..."
+        rm -rf "/opt/whispera-ml"
+    fi
     log_info "ML engine is built into the main Whispera binary (no Python required)"
     if [[ -f /etc/systemd/system/whispera-ml.service ]]; then
         log_info "Removing legacy Python ML service..."
