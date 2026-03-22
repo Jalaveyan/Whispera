@@ -603,7 +603,10 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 	}
 
 	if h.config.GetUsers != nil {
-		for _, u := range h.config.GetUsers() {
+		users := h.config.GetUsers()
+		log.Printf("[Phantom] Auth: clientRandom=%s, checking %d users", hex.EncodeToString(clientRandom), len(users))
+		for _, u := range users {
+			log.Printf("[Phantom] Auth: user=%s expectedPub=%s", u.UserID, hex.EncodeToString(u.PublicKey[:]))
 			if !hmac.Equal(clientRandom, u.PublicKey[:]) {
 				continue
 			}
