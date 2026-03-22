@@ -417,11 +417,9 @@ func (h *Handler) readClientHello(conn net.Conn) ([]byte, error) {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
 
-	// Check if this is a fragmented ClientHello (handshake length > record payload).
-	// TLS allows splitting one handshake message across multiple records.
 	if len(body) >= 4 && body[0] == tlsHandshakeClientHello {
 		hsLen := int(body[1])<<16 | int(body[2])<<8 | int(body[3])
-		totalNeeded := 4 + hsLen // handshake header + handshake body
+		totalNeeded := 4 + hsLen
 
 		for len(body) < totalNeeded {
 			var nextHeader [5]byte
@@ -445,7 +443,6 @@ func (h *Handler) readClientHello(conn net.Conn) ([]byte, error) {
 
 	clientHello := make([]byte, 5+len(body))
 	copy(clientHello, header)
-	// Update the record length in the header to reflect the reassembled body
 	binary.BigEndian.PutUint16(clientHello[3:5], uint16(len(body)))
 	copy(clientHello[5:], body)
 	return clientHello, nil
@@ -571,8 +568,8 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return "", false
 	}
 
-	clientRandomHex := hex.EncodeToString(clientRandom)
-	if h.isReplay(clientRandomHex) {
+	replayKey := hex.EncodeToString(clientRandom) + hex.EncodeToString(sessionID)
+	if h.isReplay(replayKey) {
 		log.Printf("[Phantom] Auth rejected: replay attack detected")
 		return "", false
 	}
@@ -610,18 +607,16 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 			if !hmac.Equal(clientRandom, u.PublicKey[:]) {
 				continue
 			}
-			// PSK matched this user — ECDH + HMAC check
 			sharedSecret, err := curve25519.X25519(h.privateKey, clientRandom)
 			if err != nil {
 				log.Printf("[Phantom] Auth FAILED: ECDH error for user=%s: %v", u.UserID, err)
 				return "", false
 			}
 			if verifyHMAC(sharedSecret) {
-				h.markAsSeen(clientRandomHex)
+				h.markAsSeen(replayKey)
 				log.Printf("[Phantom] Auth SUCCESS: user=%s", u.UserID)
 				return u.UserID, true
 			}
-			// PSK matched but HMAC failed → server key mismatch (key was generated with a different server key)
 			log.Printf("[Phantom] Auth FAILED: SessionID HMAC mismatch for user=%s (server key may have changed)", u.UserID)
 			return "", false
 		}
@@ -637,7 +632,7 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		log.Printf("[Phantom] Auth FAILED: SessionID mismatch")
 		return "", false
 	}
-	h.markAsSeen(clientRandomHex)
+	h.markAsSeen(replayKey)
 	log.Printf("[Phantom] Auth SUCCESS (fallback, no user list)")
 	return "default", true
 }
