@@ -323,11 +323,13 @@ type TLSConfig struct {
 }
 
 type PhantomStreamConfig struct {
-	Dest        string   `yaml:"dest" json:"dest"`
-	ServerNames []string `yaml:"server_names" json:"server_names"`
-	PrivateKey  string   `yaml:"private_key" json:"private_key"`
-	ShortIds    []string `yaml:"short_ids" json:"short_ids"`
-	MaxTimeDiff int      `yaml:"max_time_diff" json:"max_time_diff"`
+	Dest               string   `yaml:"dest" json:"dest"`
+	ServerNames        []string `yaml:"server_names" json:"server_names"`
+	PrivateKey         string   `yaml:"private_key" json:"private_key"`
+	ShortIds           []string `yaml:"short_ids" json:"short_ids"`
+	MaxTimeDiff        int      `yaml:"max_time_diff" json:"max_time_diff"`
+	EnableObfuscation  bool     `yaml:"enable_obfuscation" json:"enable_obfuscation"`
+	ObfuscationProfile string   `yaml:"obfuscation_profile" json:"obfuscation_profile"`
 }
 
 type WebSocketConfig struct {
@@ -776,6 +778,9 @@ func (p *Provider) notifyChanges(old, new *ServerConfig) {
 	}
 	if old.Obfuscation.Profile != new.Obfuscation.Profile {
 		p.notifyWatchers("obfuscation.profile", new.Obfuscation.Profile)
+	}
+	if len(old.Outbounds) != len(new.Outbounds) {
+		p.notifyWatchers("outbounds", new.Outbounds)
 	}
 }
 

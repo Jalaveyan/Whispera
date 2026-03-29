@@ -75,7 +75,8 @@ type Config struct {
 
 	RussianServiceName string `yaml:"russian_service_name"`
 
-	EnableObfuscation bool `yaml:"enable_obfuscation"`
+	EnableObfuscation    bool   `yaml:"enable_obfuscation"`
+	ObfuscationProfile   string `yaml:"obfuscation_profile"`
 
 	EnableSNIRotation bool `yaml:"enable_sni_rotation"`
 
@@ -95,13 +96,15 @@ type UserEntry struct {
 
 func DefaultConfig() *Config {
 	return &Config{
-		Enabled:     false,
-		ListenAddr:  ":8443",
-		Dest:        "cloudflare.com:443",
-		ServerNames: []string{"cloudflare.com"},
-		ShortIds:    []string{""},
-		MaxTimeDiff: 300000,
-		Fingerprint: "chrome",
+		Enabled:            false,
+		ListenAddr:         ":8443",
+		Dest:               "cloudflare.com:443",
+		ServerNames:        []string{"cloudflare.com"},
+		ShortIds:           []string{""},
+		MaxTimeDiff:        300000,
+		Fingerprint:        "chrome",
+		EnableObfuscation:  true,
+		ObfuscationProfile: "vk",
 	}
 }
 
@@ -112,8 +115,9 @@ type Handler struct {
 
 	privateKey []byte
 
-	mu          sync.RWMutex
-	activeConns map[string]net.Conn
+	mu             sync.RWMutex
+	activeConns    map[string]net.Conn
+	authedConns    map[string]net.Conn
 
 	replayMu       sync.Mutex
 	replayCache    map[string]time.Time
@@ -171,13 +175,23 @@ func New(cfg *Config) (*Handler, error) {
 		}
 	}
 
+	integrationMgr := obfuscation.NewIntegrationManager()
+	if cfg.EnableObfuscation && cfg.ObfuscationProfile != "" {
+		if err := integrationMgr.SetProfile(cfg.ObfuscationProfile); err != nil {
+			log.Printf("[Phantom] Warning: failed to set obfuscation profile %q: %v", cfg.ObfuscationProfile, err)
+		} else {
+			log.Printf("[Phantom] Marionette obfuscation enabled with profile: %s", cfg.ObfuscationProfile)
+		}
+	}
+
 	h := &Handler{
 		Module:         base.NewModule(ModuleName, ModuleVersion, nil),
 		config:         cfg,
 		activeConns:    make(map[string]net.Conn),
+		authedConns:    make(map[string]net.Conn),
 		replayCache:    make(map[string]time.Time),
 		maxTimeDiff:    maxTimeDiff,
-		integrationMgr: obfuscation.NewIntegrationManager(),
+		integrationMgr: integrationMgr,
 	}
 
 	log.Printf("[Phantom] Handler init: maxTimeDiff=%v, serverNames=%v, shortIds=%v",
@@ -408,6 +422,14 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		if h.config.OnAuthenticated != nil {
 			obfuscatedConn := h.WrapWithObfuscation(conn)
 			trackedConn := stats.WrapConn(obfuscatedConn, clientID)
+			h.mu.Lock()
+			h.authedConns[remoteAddr] = trackedConn
+			h.mu.Unlock()
+			defer func() {
+				h.mu.Lock()
+				delete(h.authedConns, remoteAddr)
+				h.mu.Unlock()
+			}()
 			h.config.OnAuthenticated(trackedConn, clientID)
 		}
 		return
@@ -636,15 +658,15 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 
 	if h.config.GetUsers != nil {
 		users := h.config.GetUsers()
-		log.Printf("[Phantom] Auth: clientRandom=%s, checking %d users", hex.EncodeToString(clientRandom), len(users))
+		log.Debug("[Phantom] Auth: clientRandom=%s, checking %d users", hex.EncodeToString(clientRandom), len(users))
 		for _, u := range users {
-			log.Printf("[Phantom] Auth: user=%s expectedPub=%s", u.UserID, hex.EncodeToString(u.PublicKey[:]))
+			log.Debug("[Phantom] Auth: checking user=%s", u.UserID)
 			if !hmac.Equal(clientRandom, u.PublicKey[:]) {
 				continue
 			}
 			sharedSecret, err := curve25519.X25519(h.privateKey, clientRandom)
 			if err != nil {
-				log.Printf("[Phantom] Auth FAILED: ECDH error for user=%s: %v", u.UserID, err)
+				log.Debug("[Phantom] Auth FAILED: ECDH error for user=%s: %v", u.UserID, err)
 				return "", false
 			}
 			if verifyHMAC(sharedSecret) {
@@ -652,7 +674,7 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 				log.Printf("[Phantom] Auth SUCCESS: user=%s", u.UserID)
 				return u.UserID, true
 			}
-			log.Printf("[Phantom] Auth FAILED: SessionID HMAC mismatch for user=%s (server key may have changed)", u.UserID)
+			log.Debug("[Phantom] Auth FAILED: SessionID HMAC mismatch for user=%s", u.UserID)
 			return "", false
 		}
 		log.Printf("[Phantom] Auth FAILED: no matching user for clientRandom")
@@ -721,18 +743,25 @@ func (h *Handler) proxyToDestination(clientConn net.Conn, clientHello []byte) {
 		return
 	}
 
+	deadline := time.Now().Add(5 * time.Minute)
+	clientConn.SetDeadline(deadline)
+	destConn.SetDeadline(deadline)
+
 	done := make(chan struct{}, 2)
 
 	go func() {
 		io.Copy(destConn, clientConn)
+		destConn.SetReadDeadline(time.Now())
 		done <- struct{}{}
 	}()
 
 	go func() {
 		io.Copy(clientConn, destConn)
+		clientConn.SetReadDeadline(time.Now())
 		done <- struct{}{}
 	}()
 
+	<-done
 	<-done
 }
 func (h *Handler) dialDestination() (net.Conn, error) {
@@ -790,26 +819,34 @@ func (h *Handler) handleHTTPFallback(conn net.Conn) {
 		h.probeDetector.RecordAuthFailure(remoteAddr)
 	}
 
-	delay := time.Duration(200+randInt(800)) * time.Millisecond
-	time.Sleep(delay)
-
 	dest := h.config.Dest
 	if dest == "" {
 		dest = "www.google.com:443"
 	}
-	host, _, _ := net.SplitHostPort(dest)
-	if host == "" {
-		host = dest
+	destConn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(context.Background(), "tcp", dest)
+	if err != nil {
+		time.Sleep(time.Duration(200+randInt(600)) * time.Millisecond)
+		return
 	}
+	defer destConn.Close()
 
-	responses := []string{
-		fmt.Sprintf("HTTP/1.1 301 Moved Permanently\r\nLocation: https://%s/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", host),
-		"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-		"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-		fmt.Sprintf("HTTP/1.1 302 Found\r\nLocation: https://%s/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", host),
-	}
-	resp := responses[randInt(len(responses))]
-	conn.Write([]byte(resp))
+	deadline := time.Now().Add(30 * time.Second)
+	conn.SetDeadline(deadline)
+	destConn.SetDeadline(deadline)
+
+	done := make(chan struct{}, 2)
+	go func() {
+		io.Copy(destConn, conn)
+		destConn.SetReadDeadline(time.Now())
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(conn, destConn)
+		conn.SetReadDeadline(time.Now())
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
 }
 
 var _ = (*tls.Config)(nil)
@@ -946,8 +983,8 @@ func (h *Handler) coverTrafficLoop() {
 
 func (h *Handler) sendCoverTraffic() {
 	h.mu.RLock()
-	conns := make([]net.Conn, 0, len(h.activeConns))
-	for _, conn := range h.activeConns {
+	conns := make([]net.Conn, 0, len(h.authedConns))
+	for _, conn := range h.authedConns {
 		conns = append(conns, conn)
 	}
 	h.mu.RUnlock()

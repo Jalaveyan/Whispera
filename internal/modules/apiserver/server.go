@@ -2418,7 +2418,7 @@ func (s *Server) handleAddRoutingRule(w http.ResponseWriter, r *http.Request) {
 	case "block":
 		rule.Destination = interfaces.Destination{Type: interfaces.DestinationBlock}
 	default:
-		rule.Destination = interfaces.Destination{Type: interfaces.DestinationDirect}
+		rule.Destination = interfaces.Destination{Type: interfaces.DestinationType(req.Outbound), Tag: req.Outbound}
 	}
 
 	if err := router.AddRule(rule); err != nil {

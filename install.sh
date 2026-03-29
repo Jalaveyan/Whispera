@@ -1532,7 +1532,7 @@ LimitNOFILE=65535
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /etc/ufw /lib/ufw /var/lib/ufw /run/ufw
+ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /etc/ufw /lib/ufw /var/lib/ufw /run/ufw /run/ufw.lock
 StandardOutput=append:/var/log/whispera/whispera.log
 StandardError=append:/var/log/whispera/whispera.log
 

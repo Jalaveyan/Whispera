@@ -1086,6 +1086,15 @@ ENVEOF
                     /etc/systemd/system/whispera.service
                 log_info "Added CAP_NET_ADMIN to whispera service"
             fi
+            if ! grep -q "/run/ufw.lock" /etc/systemd/system/whispera.service 2>/dev/null; then
+                if grep -q "^ReadWritePaths=" /etc/systemd/system/whispera.service 2>/dev/null; then
+                    sed -i 's|^ReadWritePaths=\(.*\)|\1 /run/ufw.lock|' /etc/systemd/system/whispera.service
+                else
+                    sed -i '/^ProtectSystem=strict/a ReadWritePaths=/run/ufw.lock /run/ufw /etc/ufw /lib/ufw /var/lib/ufw /var/log/whispera' \
+                        /etc/systemd/system/whispera.service
+                fi
+                log_info "Added /run/ufw.lock to ReadWritePaths in whispera service"
+            fi
             systemctl daemon-reload
 
             _repair_panel_bundle "$PANEL_DEST"

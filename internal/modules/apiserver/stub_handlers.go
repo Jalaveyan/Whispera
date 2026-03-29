@@ -8,11 +8,10 @@ import (
 )
 
 func (s *Server) handleAdblockStats(w http.ResponseWriter, r *http.Request) {
-	total := adblock.Global.BlockedCount()
 	s.jsonOK(w, map[string]interface{}{
-		"total_blocked": total,
-		"dns_blocked":   total,
-		"https_blocked": 0,
+		"total_blocked": adblock.Global.BlockedCount(),
+		"dns_blocked":   adblock.Global.DNSBlockedCount(),
+		"https_blocked": adblock.Global.HTTPSBlockedCount(),
 		"ml_blocked":    0,
 	})
 }

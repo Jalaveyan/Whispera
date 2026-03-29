@@ -250,15 +250,25 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			inboundMaxTimeDiff = serverConfig.Phantom.MaxTimeDiff
 		}
 
+		obfuscProfile := inbound.StreamSettings.Phantom.ObfuscationProfile
+		if obfuscProfile == "" {
+			obfuscProfile = "vk"
+		}
+		enableObfusc := true
+		if inbound.StreamSettings.Phantom.ObfuscationProfile != "" && !inbound.StreamSettings.Phantom.EnableObfuscation {
+			enableObfusc = false
+		}
 		pCfg := &phantom.Config{
-			Enabled:     true,
-			ListenAddr:  listenAddr,
-			Dest:        inbound.StreamSettings.Phantom.Dest,
-			PrivateKey:  pPrivKey,
-			ServerNames: inboundServerNames,
-			ShortIds:    inboundShortIds,
-			MaxTimeDiff: inboundMaxTimeDiff,
-			Fingerprint: serverConfig.Phantom.Fingerprint,
+			Enabled:            true,
+			ListenAddr:         listenAddr,
+			Dest:               inbound.StreamSettings.Phantom.Dest,
+			PrivateKey:         pPrivKey,
+			ServerNames:        inboundServerNames,
+			ShortIds:           inboundShortIds,
+			MaxTimeDiff:        inboundMaxTimeDiff,
+			Fingerprint:        serverConfig.Phantom.Fingerprint,
+			EnableObfuscation:  enableObfusc,
+			ObfuscationProfile: obfuscProfile,
 			GetUsers: func() []phantom.UserEntry {
 				registered := apiserver.GetRegisteredUsers()
 				entries := make([]phantom.UserEntry, 0, len(registered))
@@ -1126,6 +1136,20 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	})
 	globalRelay = relayServer
 	relayServer.SetRouter(routerEngine)
+	if om := dataPlaneProcessor.GetOutboundManager(); om != nil {
+		relayServer.SetOutboundDial(om.Dial)
+		if serverConfig != nil {
+			om.UpdateOutbounds(serverConfig.Outbounds)
+		}
+		outboundsCh := configProvider.Watch("outbounds")
+		go func() {
+			for val := range outboundsCh {
+				if outbounds, ok := val.([]modconfig.OutboundConfig); ok {
+					om.UpdateOutbounds(outbounds)
+				}
+			}
+		}()
+	}
 	if err := manager.Register(relayServer); err != nil {
 		return err
 	}

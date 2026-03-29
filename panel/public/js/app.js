@@ -1828,10 +1828,30 @@ class WhisperaApp {
             }
         });
 
+        document.getElementById('btn-white-cloudinit')?.addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/bridge-white-cloudinit');
+                if (!res.ok) throw new Error(await res.text());
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'install-white-bridge.sh';
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (e) {
+                this.showNotification('Ошибка: ' + e.message, 'error');
+            }
+        });
+
         document.getElementById('add-inbound-btn')?.addEventListener('click', () => this.showModal('add-inbound-modal'));
         document.getElementById('add-inbound-form')?.addEventListener('submit', (e) => {
             e.preventDefault();
             this.handleAddInbound();
+        });
+        document.querySelector('[name="enable_obfuscation"]')?.addEventListener('change', function () {
+            const row = document.getElementById('inbound-obfuscation-profile-row');
+            if (row) row.style.display = this.checked ? 'flex' : 'none';
         });
         document.querySelector('[name="transport"]')?.addEventListener('change', (e) => {
             this.onInboundTransportChange(e.target.value);
@@ -2164,6 +2184,7 @@ class WhisperaApp {
             yatelemost:  { label: 'Yandex Telemost параметры', hint: 'conference_id', placeholder: '{"conference_id":"..."}' },
             snowflake:   { label: 'Snowflake параметры', hint: 'broker_url, front_domain', placeholder: '{"broker_url":"https://snowflake-broker.torproject.net/"}' },
             torsocks:    { label: 'Tor SOCKS параметры', hint: 'proxy_addr (обычно 127.0.0.1:9050)', placeholder: '{"proxy_addr":"127.0.0.1:9050"}' },
+            mirage:      { label: 'Mirage параметры', hint: 'password, fingerprint (chrome/firefox/safari/ios/android/random), dest (fallback TLS-хост)', placeholder: '{"password":"secret","fingerprint":"chrome","dest":"www.google.com:443"}' },
         };
         const sniGroup = document.getElementById('inbound-sni-group');
         const paramsGroup = document.getElementById('inbound-params-group');
@@ -2311,6 +2332,8 @@ class WhisperaApp {
         if (!usesPhantom && raw.params_json) {
             try { params = JSON.parse(raw.params_json); } catch { params = {}; }
         }
+        const enableObfuscation = raw.enable_obfuscation === 'on';
+        const obfuscationProfile = raw.obfuscation_profile || 'vk';
         const data = {
             tag: raw.tag,
             protocol: raw.protocol,
@@ -2318,7 +2341,11 @@ class WhisperaApp {
             stream_settings: {
                 network: transport,
                 security: usesPhantom ? 'phantom' : 'none',
-                phantom: usesPhantom ? { server_names: serverNames } : undefined,
+                phantom: usesPhantom ? {
+                    server_names: serverNames,
+                    enable_obfuscation: enableObfuscation,
+                    obfuscation_profile: enableObfuscation ? obfuscationProfile : undefined,
+                } : undefined,
                 params: Object.keys(params).length > 0 ? params : undefined
             }
         };

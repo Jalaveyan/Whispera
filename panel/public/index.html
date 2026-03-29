@@ -513,6 +513,26 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header">
+                        <div class="card-title"><i class="fas fa-shield-alt" style="color:#a78bfa;"></i> Белые мосты (White)</div>
+                    </div>
+                    <div class="card-body">
+                        <p style="color:var(--md-sys-color-on-surface-variant);font-size:0.87em;margin-bottom:14px;">
+                            Белые мосты — приватные узлы с ключами доступа. Клиент может подключиться только с выданным access key. Поддерживают TCP ping и SSH-администрирование.
+                        </p>
+                        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                            <button id="btn-white-cloudinit" class="btn btn-secondary btn-sm">
+                                <i class="fas fa-download"></i> Скачать install-white-bridge.sh
+                            </button>
+                        </div>
+                        <div id="white-bridge-install-hint" style="margin-top:12px;display:none;">
+                            <p style="color:var(--md-sys-color-on-surface-variant);font-size:0.82em;margin-bottom:6px;">Запустите на новой машине:</p>
+                            <pre id="white-bridge-curl-cmd" style="background:rgba(0,0,0,0.3);padding:10px 14px;border-radius:6px;font-size:0.78em;overflow-x:auto;white-space:pre;margin:0;color:#a78bfa;"></pre>
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <section id="page-subscriptions" class="page">
@@ -961,6 +981,7 @@
                         </div>
                         <div style="opacity:0.5;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin:4px 0 2px;" data-i18n="modal.user.transport.bypass">Обходы</div>
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+                            <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="mirage"> Mirage (uTLS)</label>
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="meek"> Meek</label>
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="torsocks"> Tor SOCKS</label>
                             <label class="transport-cb-label"><input type="checkbox" name="transport-cb" value="domainfront"> Domain Fronting</label>
@@ -1017,6 +1038,7 @@
                 <div class="form-group">
                     <label data-i18n="modal.bridge.type">Тип</label>
                     <select name="type">
+                        <option value="white">White (приватный, с ключами доступа)</option>
                         <option value="operator">Operator (trust 100)</option>
                         <option value="user" selected>User (trust 75)</option>
                         <option value="community">Community (trust 50)</option>
@@ -1074,6 +1096,9 @@
                             <option value="splithttp">SplitHTTP (XHTTP)</option>
                             <option value="tuic">TUIC (QUIC)</option>
                         </optgroup>
+                        <optgroup label="TLS-маскировка" data-i18n-label="modal.inbound.group.tls_mask">
+                            <option value="mirage">Mirage (uTLS fingerprint)</option>
+                        </optgroup>
                         <optgroup label="Публичная инфраструктура" data-i18n-label="modal.inbound.group.public_infra">
                             <option value="meek">Meek</option>
                             <option value="domainfront">Domain Fronting</option>
@@ -1103,6 +1128,26 @@
                     <textarea name="params_json" rows="3"
                         style="width:100%;font-family:monospace;font-size:12px;background:#1a1a2e;color:#eee;border:1px solid #333;border-radius:4px;padding:8px;box-sizing:border-box;"></textarea>
                     <small id="inbound-params-hint" style="color:#888;font-size:11px;"></small>
+                </div>
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" name="enable_obfuscation" checked>
+                        <span>Marionette обфускация трафика</span>
+                        <span style="font-size:11px;color:#888;font-weight:normal;">(маскирует под поведение мессенджера)</span>
+                    </label>
+                    <div id="inbound-obfuscation-profile-row" style="margin-top:8px;display:flex;align-items:center;gap:8px;">
+                        <label style="font-size:12px;color:#888;white-space:nowrap;">Профиль:</label>
+                        <select name="obfuscation_profile" style="flex:1;font-size:12px;">
+                            <option value="vk" selected>VK (ВКонтакте)</option>
+                            <option value="yandex">Яндекс</option>
+                            <option value="mailru">Mail.ru</option>
+                            <option value="mobile_vk_android">VK Android</option>
+                            <option value="mobile_vk_ios">VK iOS</option>
+                            <option value="websocket">WebSocket</option>
+                            <option value="http2">HTTP/2</option>
+                            <option value="quic">QUIC</option>
+                        </select>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary modal-close"

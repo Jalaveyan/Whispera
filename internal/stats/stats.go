@@ -322,7 +322,8 @@ func GetAllUserStats() []*UserStats {
 
 type TrafficConn struct {
 	net.Conn
-	UserID string
+	UserID  string
+	closeOnce sync.Once
 }
 
 func (c *TrafficConn) Read(b []byte) (n int, err error) {
@@ -341,11 +342,30 @@ func (c *TrafficConn) Write(b []byte) (n int, err error) {
 	return
 }
 
+func (c *TrafficConn) Close() error {
+	err := c.Conn.Close()
+	c.closeOnce.Do(func() {
+		DeregisterConn(c.UserID, c)
+		Global().DecrementSessionCount(c.UserID)
+	})
+	return err
+}
+
 func WrapConn(conn net.Conn, userID string) net.Conn {
-	return &TrafficConn{
+	tc := &TrafficConn{
 		Conn:   conn,
 		UserID: userID,
 	}
+	RegisterConn(userID, tc)
+	g := Global()
+	g.IncrementSessionCount(userID)
+	if addr := conn.RemoteAddr(); addr != nil {
+		host, _, err := net.SplitHostPort(addr.String())
+		if err == nil {
+			g.SetUserIP(userID, host)
+		}
+	}
+	return tc
 }
 
 var connRegistry struct {

@@ -20,10 +20,12 @@ type Rule struct {
 }
 
 type Engine struct {
-	mu      sync.RWMutex
-	rules   map[string]*Rule // id → rule
-	nextID  int
-	blocked uint64 // atomic: total blocked connections
+	mu           sync.RWMutex
+	rules        map[string]*Rule
+	nextID       int
+	blocked      uint64
+	dnsBlocked   uint64
+	httpsBlocked uint64
 }
 
 type persist struct {
@@ -110,46 +112,68 @@ func (e *Engine) List() []*Rule {
 	return out
 }
 
-// IsBlocked checks addr (hostname or IP) against enabled rules.
-// Supports exact match and wildcard prefix (*.example.com).
-func (e *Engine) IsBlocked(addr string) bool {
+func (e *Engine) matches(addr string) bool {
 	if addr == "" {
 		return false
 	}
 	host := strings.ToLower(addr)
-	// strip port if present
 	if i := strings.LastIndex(host, ":"); i > 0 {
-		if !strings.Contains(host[:i], "]") { // not IPv6
+		if !strings.Contains(host[:i], "]") {
 			host = host[:i]
 		}
 	}
-
 	e.mu.RLock()
-	matched := false
+	defer e.mu.RUnlock()
 	for _, r := range e.rules {
 		if !r.Enabled {
 			continue
 		}
 		pat := strings.ToLower(r.Domain)
 		if pat == host {
-			matched = true
-			break
+			return true
 		}
 		if strings.HasPrefix(pat, "*.") {
-			suffix := pat[1:] // ".example.com"
+			suffix := pat[1:]
 			if host == pat[2:] || strings.HasSuffix(host, suffix) {
-				matched = true
-				break
+				return true
 			}
 		}
 	}
-	e.mu.RUnlock()
-	if matched {
+	return false
+}
+
+func (e *Engine) IsBlocked(addr string) bool {
+	if e.matches(addr) {
 		atomic.AddUint64(&e.blocked, 1)
+		return true
 	}
-	return matched
+	return false
+}
+
+func (e *Engine) IsBlockedDNS(addr string) bool {
+	if e.matches(addr) {
+		atomic.AddUint64(&e.dnsBlocked, 1)
+		return true
+	}
+	return false
+}
+
+func (e *Engine) IsBlockedHTTPS(addr string) bool {
+	if e.matches(addr) {
+		atomic.AddUint64(&e.httpsBlocked, 1)
+		return true
+	}
+	return false
 }
 
 func (e *Engine) BlockedCount() int64 {
-	return int64(atomic.LoadUint64(&e.blocked))
+	return int64(atomic.LoadUint64(&e.blocked) + atomic.LoadUint64(&e.dnsBlocked) + atomic.LoadUint64(&e.httpsBlocked))
+}
+
+func (e *Engine) DNSBlockedCount() int64 {
+	return int64(atomic.LoadUint64(&e.dnsBlocked))
+}
+
+func (e *Engine) HTTPSBlockedCount() int64 {
+	return int64(atomic.LoadUint64(&e.httpsBlocked))
 }

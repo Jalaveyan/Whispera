@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"whispera/internal/adblock"
 	"whispera/internal/core/base"
 	"whispera/internal/logger"
 )
@@ -185,6 +186,15 @@ func (p *Proxy) handleConn(conn net.Conn) {
 	br := bufio.NewReader(conn)
 	req, err := http.ReadRequest(br)
 	if err != nil {
+		return
+	}
+
+	host := req.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if adblock.Global.IsBlockedHTTPS(host) {
+		conn.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"))
 		return
 	}
 

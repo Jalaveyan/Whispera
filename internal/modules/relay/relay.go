@@ -81,6 +81,8 @@ type Server struct {
 	connectSuccess uint64
 	connectFailed  uint64
 
+	outboundDial func(ctx context.Context, tag, network, addr string) (net.Conn, error)
+
 	log *logger.Logger
 	mu  sync.RWMutex
 }
@@ -154,6 +156,12 @@ func (s *Server) SetRouter(r interfaces.Router) {
 	s.routerMu.Lock()
 	s.router = r
 	s.routerMu.Unlock()
+}
+
+func (s *Server) SetOutboundDial(fn func(ctx context.Context, tag, network, addr string) (net.Conn, error)) {
+	s.mu.Lock()
+	s.outboundDial = fn
+	s.mu.Unlock()
 }
 
 func (s *Server) RegisterSessionWriter(sessionID uint32, writer ResponseWriter) {
@@ -375,6 +383,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 
 	dialer := s.proxyDialer
+	var outboundTag string
 	if network == "udp" {
 		dialer = proxy.Direct
 	} else {
@@ -393,12 +402,29 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 					s.log.Info("Blocked connection to %s:%d by routing rule", addr, port)
 					return
 				default:
+					if dest.Tag != "" {
+						outboundTag = dest.Tag
+					}
 				}
 			}
 		}
 	}
 
-	target, err := dialer.Dial(network, fmt.Sprintf("%s:%d", addr, port))
+	targetAddr := fmt.Sprintf("%s:%d", addr, port)
+	var target net.Conn
+	var err error
+	if outboundTag != "" {
+		s.mu.RLock()
+		dialFn := s.outboundDial
+		s.mu.RUnlock()
+		if dialFn != nil {
+			target, err = dialFn(context.Background(), outboundTag, network, targetAddr)
+		} else {
+			target, err = dialer.Dial(network, targetAddr)
+		}
+	} else {
+		target, err = dialer.Dial(network, targetAddr)
+	}
 	if err != nil {
 		stream.Write([]byte{0x01})
 		s.log.Warn("Dial %s:%d failed: %v", addr, port, err)
