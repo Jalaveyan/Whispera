@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const dataFile = "/etc/whispera/adblock.json"
@@ -29,8 +30,11 @@ type Engine struct {
 }
 
 type persist struct {
-	Rules  []*Rule `json:"rules"`
-	NextID int     `json:"next_id"`
+	Rules        []*Rule `json:"rules"`
+	NextID       int     `json:"next_id"`
+	Blocked      uint64  `json:"blocked"`
+	DNSBlocked   uint64  `json:"dns_blocked"`
+	HTTPSBlocked uint64  `json:"https_blocked"`
 }
 
 var Global = &Engine{
@@ -39,6 +43,13 @@ var Global = &Engine{
 
 func init() {
 	Global.Load()
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			Global.Save()
+		}
+	}()
 }
 
 func (e *Engine) Load() {
@@ -59,6 +70,9 @@ func (e *Engine) Load() {
 		e.nextID = p.NextID
 	}
 	e.mu.Unlock()
+	atomic.StoreUint64(&e.blocked, p.Blocked)
+	atomic.StoreUint64(&e.dnsBlocked, p.DNSBlocked)
+	atomic.StoreUint64(&e.httpsBlocked, p.HTTPSBlocked)
 	log.Printf("[adblock] loaded %d rules", len(p.Rules))
 }
 
@@ -71,7 +85,13 @@ func (e *Engine) Save() {
 	nid := e.nextID
 	e.mu.RUnlock()
 
-	data, err := json.Marshal(persist{Rules: list, NextID: nid})
+	data, err := json.Marshal(persist{
+		Rules:        list,
+		NextID:       nid,
+		Blocked:      atomic.LoadUint64(&e.blocked),
+		DNSBlocked:   atomic.LoadUint64(&e.dnsBlocked),
+		HTTPSBlocked: atomic.LoadUint64(&e.httpsBlocked),
+	})
 	if err != nil {
 		log.Printf("[adblock] marshal error: %v", err)
 		return

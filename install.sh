@@ -1690,19 +1690,16 @@ setup_firewall() {
 }
 
 show_connection_key() {
-    local PUBLIC_KEY
-    PUBLIC_KEY=$(cat "$CONF_PATH/server.pub" 2>/dev/null)
-    if [[ -z "$PUBLIC_KEY" ]]; then
-        log_warn "Public key not found at $CONF_PATH/server.pub — run 'keygen' first"
-        return
-    fi
     local SERVER_IP=$(get_public_ip)
-    
+    local ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
+
     echo ""
     echo -e "${GREEN}================================================================${PLAIN}"
-    echo -e "${GREEN} CLIENT CONNECTION KEY                                          ${PLAIN}"
+    echo -e "${GREEN} WEB PANEL                                                      ${PLAIN}"
     echo -e "${GREEN}================================================================${PLAIN}"
-    echo -e "${BLUE}whispera://${SERVER_IP}:8443?pub=${PUBLIC_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome${PLAIN}"
+    echo -e "  URL:      ${BLUE}https://${SERVER_IP}/${PLAIN}"
+    echo -e "  User:     ${BLUE}admin${PLAIN}"
+    echo -e "  Password: ${BLUE}${ADMIN_PASS}${PLAIN}"
     echo -e "${GREEN}================================================================${PLAIN}"
     echo ""
 }

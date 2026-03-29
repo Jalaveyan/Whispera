@@ -794,16 +794,16 @@ show_extras_menu() {
     while true; do
         clear
 
-        local PUB_KEY=$(cat "$CONF_PATH/server.pub" 2>/dev/null)
         local SRV_IP=$(get_public_ip)
-        if [[ -n "$PUB_KEY" ]]; then
-            echo ""
-            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
-            echo -e "${GREEN} CONNECTION KEY${PLAIN}"
-            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
-            echo -e "${BLUE}whispera://${SRV_IP}:8443?pub=${PUB_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome${PLAIN}"
-            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
-        fi
+        local ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
+        echo ""
+        echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
+        echo -e "${GREEN} WEB PANEL${PLAIN}"
+        echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
+        echo -e "  URL:      ${BLUE}https://${SRV_IP}/${PLAIN}"
+        echo -e "  User:     ${BLUE}admin${PLAIN}"
+        echo -e "  Password: ${BLUE}${ADMIN_PASS}${PLAIN}"
+        echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
 
         local BRIDGE_TOKEN=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
 
@@ -811,7 +811,7 @@ show_extras_menu() {
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
         _row "          WHISPERA MANAGEMENT MENU"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row "  Web Panel:  https://${SRV_IP}:3000/"
+        _row "  Web Panel:  https://${SRV_IP}/"
         _row "  Config:     /etc/whispera/config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  BRIDGE MANAGEMENT"
@@ -1234,12 +1234,15 @@ ENVEOF
     echo -e "  Web Panel:      ${GREEN}https://whispera-ui/${PLAIN}"
     echo -e "  ${GREEN}${SERVER_IP} whispera-ui${PLAIN}  → в файл /etc/hosts (Linux/Mac) или C:\\Windows\\System32\\drivers\\etc\\hosts (Windows)"
     
-    if [[ -n "$PUBLIC_KEY" ]]; then
+    local ADMIN_PASS_UPD=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
+    if [[ -n "$ADMIN_PASS_UPD" ]]; then
         echo ""
         echo -e "${GREEN}================================================================${PLAIN}"
-        echo -e "${GREEN} CLIENT CONNECTION KEY                                          ${PLAIN}"
+        echo -e "${GREEN} WEB PANEL                                                      ${PLAIN}"
         echo -e "${GREEN}================================================================${PLAIN}"
-        echo -e "${BLUE}whispera://${SERVER_IP}:8443?pub=${PUBLIC_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome${PLAIN}"
+        echo -e "  URL:      ${BLUE}https://${SERVER_IP}/${PLAIN}"
+        echo -e "  User:     ${BLUE}admin${PLAIN}"
+        echo -e "  Password: ${BLUE}${ADMIN_PASS_UPD}${PLAIN}"
         echo -e "${GREEN}================================================================${PLAIN}"
     fi
     echo ""
