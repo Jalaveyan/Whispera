@@ -358,7 +358,10 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 			phantomClientRandom = cr
 			phantomSessionID = sid
 
-			if err := uconn.BuildHandshakeState(); err == nil {
+			if uconn.HandshakeState.Hello == nil {
+				_ = uconn.BuildHandshakeState()
+			}
+			if uconn.HandshakeState.Hello != nil {
 				uconn.HandshakeState.Hello.SessionId = make([]byte, 32)
 
 				if len(phantomSessionID) == 32 {
