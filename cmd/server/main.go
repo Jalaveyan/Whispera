@@ -66,6 +66,7 @@ import (
 	ws_transport "whispera/internal/modules/transport/websocket"
 	"whispera/internal/modules/mlserver"
 	_ "whispera/internal/modules/transport/yacloud"
+	mlpkg "whispera/internal/obfuscation/ml"
 	_ "whispera/internal/modules/transport/yadisk"
 	_ "whispera/internal/modules/transport/yatelemost"
 )
@@ -808,6 +809,13 @@ func main() {
 		log.Println("✓ Configuration validated successfully")
 		os.Exit(0)
 	}
+	manager.OnStop(func() error {
+		if eng := mlpkg.GetNativeEngine(); eng != nil {
+			eng.Close()
+		}
+		return nil
+	})
+
 	if err := manager.Run(); err != nil {
 		log.Fatalf("Application error: %v", err)
 	}
