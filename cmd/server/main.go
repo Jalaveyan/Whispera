@@ -128,6 +128,9 @@ var (
 
 	activeListeners = make(map[string]net.Listener)
 	listenersMutex  sync.RWMutex
+
+	phantomHandlers   = make(map[string]*phantom.Handler)
+	phantomHandlersMu sync.RWMutex
 )
 
 var udpIPRate struct {
@@ -329,6 +332,9 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			phantomHandler.SetProbeDetector(globalProbeDetector)
 			phantomHandler.SetConnGuard(globalProbeDetector.Guard)
 		}
+		phantomHandlersMu.Lock()
+		phantomHandlers[inbound.Tag] = phantomHandler
+		phantomHandlersMu.Unlock()
 		log.Printf("  ✨ [Dynamic] Enabled Phantom/Reality on inbound %s", inbound.Tag)
 	} else {
 		privKey := ""
@@ -529,6 +535,9 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			listenersMutex.Lock()
 			delete(activeListeners, inbound.Tag)
 			listenersMutex.Unlock()
+			phantomHandlersMu.Lock()
+			delete(phantomHandlers, inbound.Tag)
+			phantomHandlersMu.Unlock()
 			log.Printf("⏹ [Dynamic] Stopped inbound %s", inbound.Tag)
 		}()
 
@@ -1283,6 +1292,14 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
 		globalProbeDetector.Start()
 		apiServer.SetProbeDetector(globalProbeDetector)
+
+		phantomHandlersMu.RLock()
+		for _, ph := range phantomHandlers {
+			ph.SetProbeDetector(globalProbeDetector)
+			ph.SetConnGuard(globalProbeDetector.Guard)
+		}
+		phantomHandlersMu.RUnlock()
+		log.Printf("[Server] ProbeDetector propagated to %d phantom handler(s)", len(phantomHandlers))
 	}
 
 	if serverConfig.Bot.Enabled {
@@ -1340,7 +1357,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			if err := manager.Register(mlSrv); err != nil {
 				return err
 			}
-			// Set env var so internal components (Marionette etc.) find the ML server.
 			localML := "http://127.0.0.1" + listenAddr
 			if !strings.HasPrefix(listenAddr, ":") {
 				localML = "http://" + listenAddr

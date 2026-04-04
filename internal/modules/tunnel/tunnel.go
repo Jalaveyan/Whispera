@@ -1025,9 +1025,8 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		if only("h2c") || auto {
 			cc = append(cc, dialCandidate{"h2c", false, m.dialH2C})
 		}
-		// Always include plain TCP when phantom is enabled — it uses WrapConn for auth
-		// and serves as a reliable fallback regardless of the recommended transport.
-		if only("tcp") || auto || m.config.EnablePhantom {
+		phantomViaASN := m.asnBypassDialer != nil && m.config.EnablePhantom
+		if only("tcp") || auto || (m.config.EnablePhantom && !phantomViaASN) {
 			cc = append(cc, dialCandidate{"tcp", true, m.dialTCP})
 		}
 	}

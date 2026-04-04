@@ -342,9 +342,18 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 
 	remoteAddr := conn.RemoteAddr().String()
 
-	if h.connGuard != nil {
-		defer h.connGuard.Done(conn.RemoteAddr())
+	// connGuardDone tracks whether we've already released the pending slot.
+	// We release it as soon as the handshake phase is complete (auth success or
+	// proxy decision), NOT at the end of the tunnel session. Holding it for the
+	// full session duration blocks reconnects because MaxPendingPerIP is small.
+	connGuardDone := false
+	releaseConnGuard := func() {
+		if h.connGuard != nil && !connGuardDone {
+			connGuardDone = true
+			h.connGuard.Done(conn.RemoteAddr())
+		}
 	}
+	defer releaseConnGuard()
 
 	h.mu.Lock()
 	h.activeConns[remoteAddr] = conn
@@ -362,6 +371,7 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		if allowed, reason := h.probeDetector.CheckConnection(remoteAddr, ""); !allowed {
 			log.Debug("[probe] blocked %s (blocklist): %s", remoteAddr, reason)
 			h.stats.ProxiedConnections++
+			releaseConnGuard()
 			h.handleHTTPFallback(conn)
 			return
 		}
@@ -386,7 +396,10 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 			if h.probeDetector != nil {
 				h.probeDetector.RecordAuthFailure(remoteAddr)
 			}
+			releaseConnGuard()
 			h.handleHTTPFallback(conn)
+		} else if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			log.Debug("Connection closed before ClientHello from %s", remoteAddr)
 		} else {
 			log.Printf("Failed to read ClientHello from %s: %v", remoteAddr, err)
 		}
@@ -398,6 +411,7 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 	sni, _, clientRandom, sessionID, err := h.parseClientHello(clientHello)
 	if err != nil {
 		log.Printf("Failed to parse ClientHello from %s: %v - activating fallback", remoteAddr, err)
+		releaseConnGuard()
 		h.proxyToDestination(conn, clientHello)
 		return
 	}
@@ -406,12 +420,16 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		if allowed, reason := h.probeDetector.CheckConnection(remoteAddr, sni); !allowed {
 			log.Debug("[probe] blocked %s (SNI=%s): %s", remoteAddr, sni, reason)
 			h.stats.ProxiedConnections++
+			releaseConnGuard()
 			h.proxyToDestination(conn, clientHello)
 			return
 		}
 	}
 
 	clientID, ok := h.authenticateClient(clientRandom, sessionID)
+
+	// Release the pending slot now — handshake phase is done regardless of outcome.
+	releaseConnGuard()
 
 	if ok {
 		h.stats.AuthenticatedClients++
