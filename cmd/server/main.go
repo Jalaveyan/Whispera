@@ -1324,13 +1324,14 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	}
 
 	{
+		listenAddr := ":8000"
+		if serverConfig.ML.ListenAddr != "" {
+			listenAddr = serverConfig.ML.ListenAddr
+		}
 		mlCfg := &mlserver.Config{
-			ListenAddr: ":8000",
+			ListenAddr: listenAddr,
 			Token:      serverConfig.API.AuthToken,
 			DataDir:    "./ml_data",
-		}
-		if serverConfig.ML.ServerURL != "" {
-			mlCfg.ListenAddr = serverConfig.ML.ServerURL
 		}
 		mlSrv, err := mlserver.New(mlCfg)
 		if err != nil {
@@ -1339,7 +1340,13 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			if err := manager.Register(mlSrv); err != nil {
 				return err
 			}
-			log.Printf("✅ ML server (native Gorgonia engine) on %s", mlCfg.ListenAddr)
+			// Set env var so internal components (Marionette etc.) find the ML server.
+			localML := "http://127.0.0.1" + listenAddr
+			if !strings.HasPrefix(listenAddr, ":") {
+				localML = "http://" + listenAddr
+			}
+			os.Setenv("WHISPERA_ML_SERVER", localML)
+			log.Printf("✅ ML server (native Gorgonia engine) on %s", listenAddr)
 		}
 	}
 

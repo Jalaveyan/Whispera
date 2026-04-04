@@ -2090,6 +2090,7 @@ class WhisperaApp {
             document.querySelectorAll('input[name="transport-cb"]').forEach(cb => { cb.checked = cb.value === 'tcp'; });
             this.loadUsers();
 
+            const createdInboundTags = [];
             if (portVal > 0) {
                 const serverTransports = new Set(['tcp', 'udp', 'ws', 'httpupgrade', 'h2c', 'grpc', 'shadowtls', 'shadowsocks']);
                 const existingInbounds = this._cachedInbounds || [];
@@ -2120,9 +2121,14 @@ class WhisperaApp {
                                     phantom: usesPhantom ? { server_names: sni ? [sni] : [] } : undefined,
                                 }
                             });
+                            createdInboundTags.push(tag);
                         } catch (e) {
                             console.warn(`Auto-create inbound ${tag} failed:`, e.message);
                         }
+                    } else {
+                        // Inbound уже существует — всё равно записываем тег для последующей очистки.
+                        const tag = transports.length > 1 ? `inbound-${portVal}-${tr}` : `inbound-${portVal}`;
+                        createdInboundTags.push(tag);
                     }
                 }
                 this._cachedInbounds = null;
@@ -2144,7 +2150,9 @@ class WhisperaApp {
                     const keyRes = await api.generateConnectionKey(keyOpts);
                     const userId = res.user?.id;
                     if (userId && keyRes.key) {
-                        api.updateUser(userId, { connectionURI: keyRes.key }).catch(() => {});
+                        const updatePayload = { connectionURI: keyRes.key };
+                        if (createdInboundTags.length > 0) updatePayload.inboundTags = createdInboundTags;
+                        api.updateUser(userId, updatePayload).catch(() => {});
                     }
                     this.showKeyModal(res.user?.username || email, privKey, keyRes.key);
                 } catch {
@@ -3448,7 +3456,7 @@ class WhisperaApp {
             const subs = data.subscriptions || data || [];
 
             if (subs.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="5" class="text-center"><div style="display:flex;flex-direction:column;align-items:center;gap:12px"><i class="fas fa-rss" style="font-size:32px;opacity:.3"></i><span>${this.t('table.empty.subscriptions')}</span></div></td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="5" class="text-center"><div style="display:flex;flex-direction:column;align-items:center;gap:12px"><i class="fas fa-rss" style="font-size:32px;opacity:.3"></i><span>Нет подписок</span></div></td></tr>`;
                 return;
             }
 
@@ -3468,7 +3476,7 @@ class WhisperaApp {
                     <td>${esc(transports)}</td>
                     <td>${esc(userCount)}</td>
                     <td>
-                        <button class="btn btn-secondary btn-sm sub-copy-btn" data-id="${esc(s.id)}" title="${this.t('common.copy') || 'Копировать URL'}">
+                        <button class="btn btn-secondary btn-sm sub-copy-btn" data-id="${esc(s.id)}" title="Копировать URL">
                             <i class="fas fa-copy"></i>
                         </button>
                         <button class="btn btn-danger btn-sm sub-del-btn" data-id="${esc(s.id)}">

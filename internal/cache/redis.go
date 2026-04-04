@@ -7,11 +7,13 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type silentLogger struct{}
+
+func (silentLogger) Printf(_ context.Context, _ string, _ ...interface{}) {}
 
 type RedisCache struct {
 	client *redis.Client
 }
-
 
 func NewRedisCache(redisURL string) (*RedisCache, error) {
 	opt, err := redis.ParseURL(redisURL)
@@ -19,9 +21,10 @@ func NewRedisCache(redisURL string) (*RedisCache, error) {
 		return nil, err
 	}
 
+	redis.SetLogger(silentLogger{})
+
 	client := redis.NewClient(opt)
 
-	
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -36,7 +39,7 @@ func NewRedisCache(redisURL string) (*RedisCache, error) {
 func (r *RedisCache) Get(ctx context.Context, key string) ([]byte, error) {
 	val, err := r.client.Get(ctx, key).Bytes()
 	if err == redis.Nil {
-		return nil, nil // Key not found
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"whispera/internal/modules/config"
@@ -159,15 +160,32 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 	if err := openFirewallPort(req.Port); err != nil {
 		log.Printf("[API] ⚠️ Warning: Failed to open firewall port %d: %v", req.Port, err)
 	}
+
+	if portOccupiedByExistingInbound(cfgProvider, req) {
+		log.Printf("[API] Port %d already has an active inbound with network=%s, restart required",
+			req.Port, req.StreamSettings.Network)
+		s.jsonOK(w, map[string]interface{}{
+			"success":         true,
+			"message":         fmt.Sprintf("Inbound saved. Port %d already in use — restart required to activate.", req.Port),
+			"restart_required": true,
+			"inbound":         req,
+		})
+		return
+	}
+
 	if err := startDynamicInbound(req); err != nil {
-		log.Printf("[API] ⚠️ Warning: Inbound saved but failed to start dynamically: %v", err)
+		if isAddrInUseErr(err) {
+			log.Printf("[API] Port %d busy (likely same-port multiport config), restart to activate", req.Port)
+		} else {
+			log.Printf("[API] ⚠️ Warning: Inbound saved but failed to start dynamically: %v", err)
+		}
 		log.Printf("[API] → Run 'systemctl restart whispera' to activate")
 
 		s.jsonOK(w, map[string]interface{}{
-			"success": true,
-			"message": "Inbound added to config but requires restart to activate",
-			"warning": fmt.Sprintf("Failed to start dynamically: %s. Please restart server.", err.Error()),
-			"inbound": req,
+			"success":         true,
+			"message":         "Inbound saved, restart required to activate",
+			"restart_required": true,
+			"inbound":         req,
 		})
 		return
 	}
@@ -179,6 +197,41 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 		"message": fmt.Sprintf("Inbound added and started on port %d (no restart needed!)", req.Port),
 		"inbound": req,
 	})
+}
+
+func portOccupiedByExistingInbound(cfgProvider *config.Provider, incoming config.InboundConfig) bool {
+	cfg := cfgProvider.GetConfig()
+	if cfg == nil {
+		return false
+	}
+	inNet := incoming.StreamSettings.Network
+	if inNet == "" {
+		inNet = "tcp"
+	}
+	if inNet == "udp" {
+		return false
+	}
+	for _, in := range cfg.Inbounds {
+		if in.Tag == incoming.Tag {
+			continue
+		}
+		if in.Port != incoming.Port {
+			continue
+		}
+		net := in.StreamSettings.Network
+		if net == "" {
+			net = "tcp"
+		}
+		if net != "udp" {
+			return true
+		}
+	}
+	return false
+}
+
+func isAddrInUseErr(err error) bool {
+	return err != nil && (strings.Contains(err.Error(), "address already in use") ||
+		strings.Contains(err.Error(), "bind: address already in use"))
 }
 
 func startDynamicInbound(inbound config.InboundConfig) error {

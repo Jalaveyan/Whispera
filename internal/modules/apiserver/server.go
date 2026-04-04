@@ -14,9 +14,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1372,6 +1374,8 @@ type User struct {
 	ObfsProfile       string `json:"obfsProfile,omitempty"`
 	MarionetteProfile string `json:"marionetteProfile,omitempty"`
 	RussianService    string `json:"russianService,omitempty"`
+
+	InboundTags []string `json:"inboundTags,omitempty"`
 }
 
 const userDataFile = "/etc/whispera/users.json"
@@ -1832,6 +1836,15 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if v, ok := req["russianService"].(string); ok {
 		user.RussianService = v
 	}
+	if tags, ok := req["inboundTags"].([]interface{}); ok {
+		strs := make([]string, 0, len(tags))
+		for _, t := range tags {
+			if s, ok := t.(string); ok {
+				strs = append(strs, s)
+			}
+		}
+		user.InboundTags = strs
+	}
 
 	go saveUsers()
 	s.jsonOK(w, map[string]interface{}{"success": true, "user": user})
@@ -1848,11 +1861,110 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userStoreMu.Lock()
+	user := userStore[req.ID]
 	delete(userStore, req.ID)
 	userStoreMu.Unlock()
 	go saveUsers()
 
+	if user != nil {
+		go s.deleteUserInbounds(user)
+	}
+
 	s.jsonOK(w, map[string]interface{}{"success": true, "message": "User deleted"})
+}
+
+// deleteUserInbounds удаляет все инбаунды, принадлежащие пользователю.
+func (s *Server) deleteUserInbounds(user *User) {
+	if s.registry == nil {
+		return
+	}
+	mod, ok := s.registry.Get("config.provider")
+	if !ok {
+		return
+	}
+	cfgProvider, ok := mod.(*config.Provider)
+	if !ok {
+		return
+	}
+
+	tagsToDelete := append([]string(nil), user.InboundTags...)
+
+	// Если теги не сохранены — вывести из ConnectionURI по порту.
+	if len(tagsToDelete) == 0 && user.ConnectionURI != "" {
+		port := extractPortFromConnectionKey(user.ConnectionURI)
+		if port != "" {
+			for _, transport := range []string{"tcp", "udp", "h2c", "shadowtls"} {
+				tagsToDelete = append(tagsToDelete, fmt.Sprintf("inbound-%s-%s", port, transport))
+			}
+		}
+	}
+
+	if len(tagsToDelete) == 0 {
+		return
+	}
+
+	tagSet := make(map[string]bool, len(tagsToDelete))
+	for _, t := range tagsToDelete {
+		tagSet[t] = true
+	}
+
+	_ = cfgProvider.Update(func(cfg *config.ServerConfig) {
+		kept := make([]config.InboundConfig, 0, len(cfg.Inbounds))
+		for _, in := range cfg.Inbounds {
+			if !tagSet[in.Tag] {
+				kept = append(kept, in)
+			}
+		}
+		cfg.Inbounds = kept
+	})
+}
+
+// extractPortFromConnectionKey извлекает порт из connection key формата whispera://.
+func extractPortFromConnectionKey(key string) string {
+	key = strings.TrimSpace(key)
+	if !strings.HasPrefix(key, "whispera://") {
+		return ""
+	}
+	if strings.Contains(key, "?") {
+		u, err := url.Parse(key)
+		if err == nil && u.Port() != "" {
+			return u.Port()
+		}
+	}
+	raw := key[len("whispera://"):]
+	if idx := strings.IndexByte(raw, '?'); idx >= 0 {
+		raw = raw[:idx]
+	}
+	var decoded []byte
+	var err error
+	for _, enc := range []func(string) ([]byte, error){
+		base64.StdEncoding.DecodeString,
+		base64.URLEncoding.DecodeString,
+		base64.RawURLEncoding.DecodeString,
+	} {
+		decoded, err = enc(raw)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return ""
+	}
+	var ck struct {
+		Server    string `json:"server"`
+		ServerTCP string `json:"server_tcp"`
+	}
+	if json.Unmarshal(decoded, &ck) != nil {
+		return ""
+	}
+	srv := ck.Server
+	if srv == "" {
+		srv = ck.ServerTCP
+	}
+	if _, port, err := net.SplitHostPort(srv); err == nil {
+		return port
+	}
+	return ""
 }
 
 type KeyPair struct {
@@ -2964,7 +3076,7 @@ func (s *Server) handleMLTokenRotate(w http.ResponseWriter, r *http.Request) {
 	newToken := hex.EncodeToString(tokenBytes)
 
 	path := mlTokenFilePath(mlCfg.TokenFile)
-	if err := os.MkdirAll(strings.TrimSuffix(path, "/api_token"), 0755); err == nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err == nil {
 		_ = os.WriteFile(path, []byte(newToken), 0600)
 	}
 

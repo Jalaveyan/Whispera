@@ -46,7 +46,13 @@ const (
 type MLConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 
+	// ServerURL — публичный адрес ML-сервера, вшивается в connection key.
+	// Должен быть доступен клиентам снаружи, например "http://1.2.3.4:8000".
 	ServerURL string `yaml:"server_url" json:"server_url"`
+
+	// ListenAddr — адрес, на котором ML-сервер слушает на этой машине.
+	// Если не задан, используется ":8000".
+	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
 
 	TokenFile string `yaml:"token_file" json:"token_file"`
 }
