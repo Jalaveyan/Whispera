@@ -15,6 +15,5 @@ export declare class RoutingService {
     constructor(httpService: HttpService, configService: ConfigService);
     getRules(token: string): Promise<RoutingRule[]>;
     addRule(token: string, rule: Partial<RoutingRule>): Promise<RoutingRule>;
-    updateRule(token: string, id: string, rule: Partial<RoutingRule>): Promise<RoutingRule>;
     deleteRule(token: string, id: string): Promise<void>;
 }

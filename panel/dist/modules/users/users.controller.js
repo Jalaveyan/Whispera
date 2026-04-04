@@ -20,6 +20,9 @@ class CreateUserDto {
     password;
     traffic_limit;
     valid_until;
+    obfs_profile;
+    marionette_profile;
+    russian_service;
 }
 let UsersController = class UsersController {
     usersService;
@@ -32,28 +35,49 @@ let UsersController = class UsersController {
             const users = await this.usersService.getUsers(token);
             return res.json({ success: true, users });
         }
-        catch {
-            return res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch users' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch users';
+            return res.status(status).json({ success: false, error: msg });
         }
     }
     async createUser(auth, dto, res) {
         try {
             const token = auth?.replace('Bearer ', '');
-            const user = await this.usersService.createUser(token, dto.email, dto.password, dto.traffic_limit, dto.valid_until);
+            const user = await this.usersService.createUser(token, {
+                username: dto.email,
+                trafficLimit: dto.traffic_limit,
+                expiryDate: dto.valid_until,
+                obfsProfile: dto.obfs_profile,
+                marionetteProfile: dto.marionette_profile,
+                russianService: dto.russian_service,
+            });
             return res.json({ success: true, user });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to create user' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to create user';
+            return res.status(status).json({ success: false, error: msg });
         }
     }
     async updateUser(auth, id, body, res) {
         try {
             const token = auth?.replace('Bearer ', '');
-            await this.usersService.updateUser(token, id, body.email, body.password);
-            return res.json({ success: true });
+            const user = await this.usersService.updateUser(token, id, {
+                username: body.username ?? body.email,
+                status: body.status,
+                trafficLimit: body.trafficLimit,
+                expiryDate: body.expiryDate,
+                obfsProfile: body.obfsProfile,
+                russianService: body.russianService,
+                marionetteProfile: body.marionetteProfile,
+            });
+            return res.json({ success: true, user });
         }
-        catch (error) {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update user' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to update user';
+            return res.status(status).json({ success: false, error: msg });
         }
     }
     async deleteUser(auth, id, res) {
@@ -62,8 +86,22 @@ let UsersController = class UsersController {
             await this.usersService.deleteUser(token, id);
             return res.json({ success: true });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete user' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to delete user';
+            return res.status(status).json({ success: false, error: msg });
+        }
+    }
+    async generateConnectionKey(auth, body, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const result = await this.usersService.generateConnectionKey(token, body);
+            return res.json(result);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to generate key';
+            return res.status(status).json({ success: false, error: msg });
         }
     }
     async getUserStats(auth, id, res) {
@@ -72,8 +110,10 @@ let UsersController = class UsersController {
             const stats = await this.usersService.getUserStats(token, id);
             return res.json(stats);
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to fetch stats' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch stats';
+            return res.status(status).json({ success: false, error: msg });
         }
     }
 };
@@ -96,7 +136,7 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], UsersController.prototype, "createUser", null);
 __decorate([
-    (0, common_1.Put)('api/v2/users/:id'),
+    (0, common_1.Put)('api/users/:id'),
     __param(0, (0, common_1.Headers)('authorization')),
     __param(1, (0, common_1.Param)('id')),
     __param(2, (0, common_1.Body)()),
@@ -114,6 +154,15 @@ __decorate([
     __metadata("design:paramtypes", [String, String, Object]),
     __metadata("design:returntype", Promise)
 ], UsersController.prototype, "deleteUser", null);
+__decorate([
+    (0, common_1.Post)('api/keys/connection'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:returntype", Promise)
+], UsersController.prototype, "generateConnectionKey", null);
 __decorate([
     (0, common_1.Get)('api/users/:id/stats'),
     __param(0, (0, common_1.Headers)('authorization')),

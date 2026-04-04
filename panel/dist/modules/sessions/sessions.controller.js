@@ -26,8 +26,9 @@ let SessionsController = class SessionsController {
             const sessions = await this.sessionsService.getSessions(token);
             return res.json({ success: true, sessions });
         }
-        catch {
-            return res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch sessions' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch sessions' });
         }
     }
     async killSession(auth, id, res) {
@@ -36,8 +37,9 @@ let SessionsController = class SessionsController {
             await this.sessionsService.killSession(token, id);
             return res.json({ success: true });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to kill session' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to kill session' });
         }
     }
 };

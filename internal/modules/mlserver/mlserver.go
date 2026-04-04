@@ -211,6 +211,7 @@ func (s *MLServer) authMiddleware(next http.Handler) http.Handler {
 func (s *MLServer) registerRoutes() {
 	s.mux.HandleFunc("GET /health", s.handleHealth)
 	s.mux.HandleFunc("GET /logs", s.handleLogs)
+	s.mux.HandleFunc("POST /logs/clear", s.handleLogsClear)
 	s.mux.HandleFunc("GET /models/status", s.handleModelsStatus)
 	s.mux.HandleFunc("POST /models/load", s.handleModelsLoad)
 	s.mux.HandleFunc("GET /self-learning/status", s.handleSelfLearningStatus)
@@ -240,7 +241,6 @@ func (s *MLServer) registerRoutes() {
 	s.mux.HandleFunc("POST /adversarial/evolve", s.handleAdversarialEvolve)
 	s.mux.HandleFunc("POST /adversarial/feedback", s.handleAdversarialFeedback)
 
-	// TSPU-specific endpoints.
 	s.mux.HandleFunc("GET /tspu/stats", s.handleTSPUStats)
 	s.mux.HandleFunc("POST /tspu/rst", s.handleTSPURST)
 	s.mux.HandleFunc("POST /tspu/bandwidth", s.handleTSPUBandwidth)
@@ -287,15 +287,31 @@ func (s *MLServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	s.jsonReply(w, map[string]interface{}{"lines": out})
 }
 
+func (s *MLServer) handleLogsClear(w http.ResponseWriter, r *http.Request) {
+	s.logMu.Lock()
+	s.logLines = s.logLines[:0]
+	s.logMu.Unlock()
+	s.jsonReply(w, map[string]string{"status": "ok"})
+}
+
 func (s *MLServer) handleModelsStatus(w http.ResponseWriter, r *http.Request) {
 	stats := s.engine.GetStats()
+	samples, _ := stats["samples"].(int64)
+	retrains, _ := stats["retrains"].(int64)
+	accuracy, _ := stats["accuracy"].(float64)
+	isTrained := samples > 0 || retrains > 0 || accuracy > 0
+	lastTrained, _ := stats["last_trained"].(int64)
+	lastUpdated := time.Unix(lastTrained, 0).Format(time.RFC3339)
+	if lastTrained == 0 {
+		lastUpdated = ""
+	}
 	s.jsonReply(w, map[string]interface{}{
 		"models": []map[string]interface{}{
 			{
 				"model_name":   "traffic_classifier",
-				"is_trained":   true,
-				"accuracy":     stats["accuracy"],
-				"last_updated": time.Now().Format(time.RFC3339),
+				"is_trained":   isTrained,
+				"accuracy":     accuracy,
+				"last_updated": lastUpdated,
 				"parameters":   stats["parameters"],
 			},
 		},
@@ -753,7 +769,7 @@ func (s *MLServer) handleScan(w http.ResponseWriter, r *http.Request) {
 	ports := map[int]string{
 		22: "SSH", 53: "DNS", 80: "HTTP", 443: "HTTPS", 993: "IMAPS",
 		1080: "SOCKS", 1194: "OpenVPN", 3128: "Proxy", 5222: "XMPP",
-		8080: "HTTP-Alt", 8443: "HTTPS-Alt", 9050: "Tor", 4443: "Whispera",
+		8080: "HTTP-Alt", 8443: "Whispera", 9050: "Tor", 4443: "HTTPS-Alt",
 		51820: "WireGuard",
 	}
 
@@ -775,12 +791,15 @@ func (s *MLServer) handleScan(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			start := time.Now()
 			conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "tcp", net.JoinHostPort(host, strconv.Itoa(p)))
-			lat := int(time.Since(start).Milliseconds())
+			elapsed := time.Since(start)
 			open := err == nil
+			var lat int
 			if open {
 				conn.Close()
-			} else {
-				lat = 0
+				lat = int(elapsed.Milliseconds())
+				if lat == 0 {
+					lat = 1
+				}
 			}
 			mu.Lock()
 			results = append(results, scanResult{

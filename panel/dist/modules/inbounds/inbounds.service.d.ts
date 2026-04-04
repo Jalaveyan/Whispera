@@ -5,10 +5,16 @@ export interface Inbound {
     protocol: string;
     listen: string;
     port: number;
+    ports?: number[];
     transport: string;
     security: string;
     private_key?: string;
     public_key?: string;
+}
+export interface TransportCredentials {
+    transport: string;
+    credentials: Record<string, unknown>;
+    client_config: Record<string, unknown>;
 }
 export declare class InboundsService {
     private readonly httpService;
@@ -19,4 +25,6 @@ export declare class InboundsService {
     addInbound(token: string, inbound: Partial<Inbound>): Promise<Inbound>;
     deleteInbound(token: string, tag: string): Promise<void>;
     getPublicKey(token: string, port: number): Promise<string>;
+    generateTransportCredentials(token: string, transport: string): Promise<TransportCredentials>;
+    generateMultiTransportCredentials(token: string, transports: string[]): Promise<Record<string, TransportCredentials>>;
 }

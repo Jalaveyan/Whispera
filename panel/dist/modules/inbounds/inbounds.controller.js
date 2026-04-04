@@ -26,8 +26,9 @@ let InboundsController = class InboundsController {
             const inbounds = await this.inboundsService.getInbounds(token);
             return res.json({ success: true, inbounds });
         }
-        catch {
-            return res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch inbounds' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch inbounds' });
         }
     }
     async addInbound(auth, inbound, res) {
@@ -36,8 +37,9 @@ let InboundsController = class InboundsController {
             const result = await this.inboundsService.addInbound(token, inbound);
             return res.json({ success: true, inbound: result });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add inbound' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to add inbound' });
         }
     }
     async deleteInbound(auth, tag, res) {
@@ -46,8 +48,9 @@ let InboundsController = class InboundsController {
             await this.inboundsService.deleteInbound(token, tag);
             return res.json({ success: true });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete inbound' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to delete inbound' });
         }
     }
     async getPublicKey(auth, port, res) {
@@ -56,8 +59,9 @@ let InboundsController = class InboundsController {
             const publicKey = await this.inboundsService.getPublicKey(token, parseInt(port));
             return res.json({ success: true, public_key: publicKey });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to get public key' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to get public key' });
         }
     }
 };

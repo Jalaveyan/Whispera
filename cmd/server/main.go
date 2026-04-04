@@ -251,14 +251,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			inboundMaxTimeDiff = serverConfig.Phantom.MaxTimeDiff
 		}
 
-		obfuscProfile := inbound.StreamSettings.Phantom.ObfuscationProfile
-		if obfuscProfile == "" {
-			obfuscProfile = "vk"
-		}
-		enableObfusc := true
-		if inbound.StreamSettings.Phantom.ObfuscationProfile != "" && !inbound.StreamSettings.Phantom.EnableObfuscation {
-			enableObfusc = false
-		}
 		pCfg := &phantom.Config{
 			Enabled:            true,
 			ListenAddr:         listenAddr,
@@ -268,8 +260,8 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			ShortIds:           inboundShortIds,
 			MaxTimeDiff:        inboundMaxTimeDiff,
 			Fingerprint:        serverConfig.Phantom.Fingerprint,
-			EnableObfuscation:  enableObfusc,
-			ObfuscationProfile: obfuscProfile,
+			EnableObfuscation:  false,
+			ObfuscationProfile: "",
 			GetUsers: func() []phantom.UserEntry {
 				registered := apiserver.GetRegisteredUsers()
 				entries := make([]phantom.UserEntry, 0, len(registered))

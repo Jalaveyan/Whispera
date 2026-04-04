@@ -26,8 +26,9 @@ let BridgesController = class BridgesController {
             const bridges = await this.bridgesService.getBridges(token);
             return res.json({ success: true, bridges });
         }
-        catch {
-            return res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch bridges' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch bridges' });
         }
     }
     async addBridge(auth, bridge, res) {
@@ -36,8 +37,9 @@ let BridgesController = class BridgesController {
             const result = await this.bridgesService.addBridge(token, bridge);
             return res.json({ success: true, bridge: result });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add bridge' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to add bridge' });
         }
     }
     async deleteBridge(auth, id, res) {
@@ -46,8 +48,9 @@ let BridgesController = class BridgesController {
             await this.bridgesService.deleteBridge(token, id);
             return res.json({ success: true });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete bridge' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to delete bridge' });
         }
     }
     async getCloudInit(auth, res) {
@@ -56,8 +59,130 @@ let BridgesController = class BridgesController {
             const script = await this.bridgesService.getCloudInit(token);
             return res.send(script);
         }
-        catch {
-            return res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).send('Failed to generate cloud-init');
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).send('Failed to generate cloud-init');
+        }
+    }
+    async getBridgesAdmin(auth, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.getBridgesAdmin(token);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async getBridgeStats(auth, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.getBridgeStats(token);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async checkBridge(auth, id, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.checkBridge(token, id);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async getBridgeToken(auth, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.getToken(token);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async regenerateBridgeToken(auth, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.regenerateToken(token);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async addBridgeDirect(auth, body, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.addBridgeDirect(token, body);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async deleteBridgeDirect(auth, body, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.deleteBridgeDirect(token, body);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async getBridgeMap(auth, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.getBridgeMap(token);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async connectToBridge(auth, bridgeId, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.connectToBridge(token, bridgeId);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async scanBridges(auth, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.scanBridges(token);
+            return res.json(data);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+    async getBridgeCloudinit(auth, res) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const script = await this.bridgesService.getCloudInit(token);
+            return res.send(script);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).send('Failed to generate cloud-init');
         }
     }
 };
@@ -96,6 +221,98 @@ __decorate([
     __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", Promise)
 ], BridgesController.prototype, "getCloudInit", null);
+__decorate([
+    (0, common_1.Get)('api/bridge-admin'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "getBridgesAdmin", null);
+__decorate([
+    (0, common_1.Get)('api/bridge-stats'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "getBridgeStats", null);
+__decorate([
+    (0, common_1.Post)('api/bridge-check'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Body)('id')),
+    __param(2, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "checkBridge", null);
+__decorate([
+    (0, common_1.Get)('api/bridge-token'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "getBridgeToken", null);
+__decorate([
+    (0, common_1.Post)('api/bridge-token-regenerate'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "regenerateBridgeToken", null);
+__decorate([
+    (0, common_1.Post)('api/bridge-add'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "addBridgeDirect", null);
+__decorate([
+    (0, common_1.Post)('api/bridge-delete'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "deleteBridgeDirect", null);
+__decorate([
+    (0, common_1.Get)('api/bridge-map'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "getBridgeMap", null);
+__decorate([
+    (0, common_1.Post)('api/bridge-connect'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Body)('bridge_id')),
+    __param(2, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, String, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "connectToBridge", null);
+__decorate([
+    (0, common_1.Post)('api/bridge-scan'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "scanBridges", null);
+__decorate([
+    (0, common_1.Get)('api/bridge-cloudinit'),
+    __param(0, (0, common_1.Headers)('authorization')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "getBridgeCloudinit", null);
 exports.BridgesController = BridgesController = __decorate([
     (0, common_1.Controller)(),
     __metadata("design:paramtypes", [bridges_service_1.BridgesService])

@@ -30,19 +30,25 @@ let InboundsService = class InboundsService {
         return response.data.inbounds || response.data || [];
     }
     async addInbound(token, inbound) {
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/inbounds`, inbound, { headers: { Authorization: `Bearer ${token}` } }));
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/inbounds/add`, inbound, { headers: { Authorization: `Bearer ${token}` } }));
         return response.data;
     }
     async deleteInbound(token, tag) {
-        await (0, rxjs_1.firstValueFrom)(this.httpService.delete(`${this.backendUrl}/api/inbounds/${tag}`, {
-            headers: { Authorization: `Bearer ${token}` },
-        }));
+        await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/inbounds/delete`, { tag }, { headers: { Authorization: `Bearer ${token}` } }));
     }
     async getPublicKey(token, port) {
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/publickey/${port}`, {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/inbounds/pubkey?port=${port}`, {
             headers: { Authorization: `Bearer ${token}` },
         }));
         return response.data.public_key || response.data;
+    }
+    async generateTransportCredentials(token, transport) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/keys/transport`, { transport }, { headers: { Authorization: `Bearer ${token}` } }));
+        return response.data.result;
+    }
+    async generateMultiTransportCredentials(token, transports) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/keys/multi-transport`, { transports }, { headers: { Authorization: `Bearer ${token}` } }));
+        return response.data.results;
     }
 };
 exports.InboundsService = InboundsService;

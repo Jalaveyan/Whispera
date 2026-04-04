@@ -23,43 +23,31 @@ let UsersService = class UsersService {
         this.configService = configService;
         this.backendUrl = this.configService.get('BACKEND_URL') || 'http://localhost:8080';
     }
-    async getUsers(token, limit = 50, offset = 0) {
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/v2/users`, {
-            headers: { Authorization: `Bearer ${token}` },
-            params: { limit, offset },
-        }));
-        return response.data.users || [];
-    }
-    async getUser(token, id) {
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/v2/users/${id}`, {
+    async getUsers(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/users`, {
             headers: { Authorization: `Bearer ${token}` },
         }));
-        return response.data;
+        return response.data.users || response.data || [];
     }
-    async createUser(token, email, password, trafficLimit, validUntil) {
-        const payload = { email, password };
-        if (trafficLimit !== undefined)
-            payload.traffic_limit = trafficLimit;
-        if (validUntil !== undefined)
-            payload.valid_until = validUntil;
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/v2/users`, payload, { headers: { Authorization: `Bearer ${token}` } }));
+    async createUser(token, dto) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/users/add`, dto, { headers: { Authorization: `Bearer ${token}` } }));
         return response.data.user;
     }
-    async updateUser(token, id, email, password) {
-        const payload = { email };
-        if (password)
-            payload.password = password;
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.put(`${this.backendUrl}/api/v2/users/${id}`, payload, { headers: { Authorization: `Bearer ${token}` } }));
-        return response.data;
+    async updateUser(token, id, data) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.put(`${this.backendUrl}/api/users/${id}`, data, { headers: { Authorization: `Bearer ${token}` } }));
+        return response.data.user;
     }
     async deleteUser(token, id) {
-        await (0, rxjs_1.firstValueFrom)(this.httpService.delete(`${this.backendUrl}/api/v2/users/${id}`, {
-            headers: { Authorization: `Bearer ${token}` },
-        }));
+        await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/users/delete`, { id: parseInt(id, 10) }, { headers: { Authorization: `Bearer ${token}` } }));
+    }
+    async generateConnectionKey(token, opts) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/keys/connection`, opts, { headers: { Authorization: `Bearer ${token}` } }));
+        return response.data;
     }
     async getUserStats(token, id) {
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/v2/users/${id}/stats`, {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/v1/stats/users`, {
             headers: { Authorization: `Bearer ${token}` },
+            params: { user_id: id },
         }));
         return response.data;
     }

@@ -74,6 +74,62 @@ let SystemService = SystemService_1 = class SystemService {
             throw err;
         }
     }
+    async getConfig(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/v1/config`, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: this.requestTimeout,
+        }));
+        return response.data;
+    }
+    async updateConfig(token, config) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/v1/config/update`, config, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: this.requestTimeout,
+        }));
+        return response.data;
+    }
+    async renewCert(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/v1/config/renew-cert`, {}, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: this.requestTimeout,
+        }));
+        return response.data;
+    }
+    async getBackup(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/backup`, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: 30000,
+        }));
+        return response.data;
+    }
+    async restoreBackup(token, backup) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/backup/restore`, backup, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: 30000,
+        }));
+        return response.data;
+    }
+    async getProbeStats(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/probe/stats`, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: this.requestTimeout,
+        }));
+        return response.data;
+    }
+    async probeBlockIP(token, ip, reason) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/probe/block`, { ip, reason }, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: this.requestTimeout,
+        }));
+        return response.data;
+    }
+    async probeUnblockIP(token, ip) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/probe/unblock`, { ip }, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: this.requestTimeout,
+        }));
+        return response.data;
+    }
     async getHealth() {
         try {
             const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/v1/health`, {
@@ -88,6 +144,29 @@ let SystemService = SystemService_1 = class SystemService {
             this.logger.error(`Health check error: ${err.message}`);
             return { healthy: false, error: err.message };
         }
+    }
+    async getMLConfig(token) {
+        try {
+            const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/ml/config`, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: this.requestTimeout,
+            }).pipe((0, rxjs_1.timeout)(this.requestTimeout), (0, rxjs_1.catchError)(err => {
+                this.logger.warn(`ML config fetch failed: ${err.message}`);
+                return (0, rxjs_2.of)({ data: { enabled: false, server_url: '', token_set: false } });
+            })));
+            return response.data;
+        }
+        catch (err) {
+            this.logger.error(`ML config error: ${err.message}`);
+            return { enabled: false, server_url: '', token_set: false };
+        }
+    }
+    async rotateMLToken(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/ml/token/rotate`, {}, {
+            headers: { Authorization: `Bearer ${token}` },
+            timeout: this.requestTimeout,
+        }).pipe((0, rxjs_1.timeout)(this.requestTimeout)));
+        return response.data;
     }
 };
 exports.SystemService = SystemService;

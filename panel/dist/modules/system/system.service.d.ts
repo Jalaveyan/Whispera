@@ -23,5 +23,15 @@ export declare class SystemService {
     getSystemInfo(token: string): Promise<SystemInfo>;
     getStats(token: string): Promise<SystemStats>;
     reloadConfig(token: string): Promise<void>;
+    getConfig(token: string): Promise<any>;
+    updateConfig(token: string, config: any): Promise<any>;
+    renewCert(token: string): Promise<any>;
+    getBackup(token: string): Promise<any>;
+    restoreBackup(token: string, backup: any): Promise<any>;
+    getProbeStats(token: string): Promise<any>;
+    probeBlockIP(token: string, ip: string, reason: string): Promise<any>;
+    probeUnblockIP(token: string, ip: string): Promise<any>;
     getHealth(): Promise<any>;
+    getMLConfig(token: string): Promise<any>;
+    rotateMLToken(token: string): Promise<any>;
 }

@@ -23,10 +23,14 @@ let SubscriptionsService = class SubscriptionsService {
         this.configService = configService;
         this.backendUrl = this.configService.get('BACKEND_URL') || 'http://localhost:8080';
     }
-    async getSubscriptions(token) {
+    async getSubscriptions(token, host = '', proto = 'https') {
         try {
             const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/subscriptions`, {
-                headers: { Authorization: `Bearer ${token}` },
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    'X-Forwarded-Host': host,
+                    'X-Forwarded-Proto': proto,
+                },
             }));
             return response.data.subscriptions || response.data || [];
         }
@@ -36,19 +40,28 @@ let SubscriptionsService = class SubscriptionsService {
             throw e;
         }
     }
-    async addSubscription(token, subscription) {
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/subscriptions/add`, subscription, { headers: { Authorization: `Bearer ${token}` } }));
-        return response.data;
+    async addSubscription(token, dto, host = '', proto = 'https') {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/subscriptions/add`, dto, {
+            headers: {
+                Authorization: `Bearer ${token}`,
+                'X-Forwarded-Host': host,
+                'X-Forwarded-Proto': proto,
+            },
+        }));
+        return response.data.subscription;
     }
-    async updateSubscription(token, id, subscription) {
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/subscriptions/update`, { id, ...subscription }, { headers: { Authorization: `Bearer ${token}` } }));
-        return response.data;
+    async updateSubscription(token, id, dto) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/subscriptions/update`, { id, ...dto }, { headers: { Authorization: `Bearer ${token}` } }));
+        return response.data.subscription;
     }
     async deleteSubscription(token, id) {
         await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/subscriptions/delete`, { id }, { headers: { Authorization: `Bearer ${token}` } }));
     }
-    async updateAll(token) {
-        await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/subscriptions/update-all`, {}, { headers: { Authorization: `Bearer ${token}` } }));
+    async getSubscriptionContent(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/sub/${token}`, {
+            responseType: 'text',
+        }));
+        return response.data;
     }
 };
 exports.SubscriptionsService = SubscriptionsService;

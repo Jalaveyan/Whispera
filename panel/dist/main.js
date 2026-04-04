@@ -37,14 +37,26 @@ const core_1 = require("@nestjs/core");
 const common_1 = require("@nestjs/common");
 const app_module_1 = require("./app.module");
 const path_1 = require("path");
+const fs_1 = require("fs");
+const http = __importStar(require("http"));
 const express = __importStar(require("express"));
 async function bootstrap() {
-    const app = await core_1.NestFactory.create(app_module_1.AppModule);
+    const tlsCertPath = process.env.TLS_CERT;
+    const tlsKeyPath = process.env.TLS_KEY;
+    let httpsOptions;
+    if (tlsCertPath && tlsKeyPath && (0, fs_1.existsSync)(tlsCertPath) && (0, fs_1.existsSync)(tlsKeyPath)) {
+        httpsOptions = {
+            cert: (0, fs_1.readFileSync)(tlsCertPath),
+            key: (0, fs_1.readFileSync)(tlsKeyPath),
+        };
+    }
+    const app = await core_1.NestFactory.create(app_module_1.AppModule, httpsOptions ? { httpsOptions } : {});
     app.useGlobalPipes(new common_1.ValidationPipe({
         transform: true,
     }));
+    const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
     app.enableCors({
-        origin: process.env.CORS_ORIGIN || '*',
+        origin: corsOrigin.split(',').map(o => o.trim()),
         credentials: true,
     });
     const publicPath = (0, path_1.join)(__dirname, '..', 'public');
@@ -57,8 +69,21 @@ async function bootstrap() {
         res.sendFile((0, path_1.join)(publicPath, 'index.html'));
     });
     const port = process.env.PORT || 3000;
-    await app.listen(port);
-    console.log(`🚀 Whispera Panel running on http://localhost:${port}`);
+    const host = process.env.LISTEN_HOST || '127.0.0.1';
+    await app.listen(port, host);
+    const proto = httpsOptions ? 'https' : 'http';
+    console.log(`Whispera Panel running on ${proto}://localhost:${port}`);
+    if (httpsOptions) {
+        const httpPort = parseInt(process.env.HTTP_PORT || '80', 10);
+        const httpsPort = String(port);
+        http.createServer((req, res) => {
+            const host = (req.headers.host || '').replace(/:\d+$/, '');
+            res.writeHead(301, { Location: `https://${host}:${httpsPort}${req.url}` });
+            res.end();
+        }).listen(httpPort, () => {
+            console.log(`HTTP→HTTPS redirect on port ${httpPort}`);
+        });
+    }
 }
 bootstrap();
 //# sourceMappingURL=main.js.map

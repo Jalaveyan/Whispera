@@ -23,6 +23,7 @@ const subscriptions_module_1 = require("./modules/subscriptions/subscriptions.mo
 const adblock_module_1 = require("./modules/adblock/adblock.module");
 const logs_module_1 = require("./modules/logs/logs.module");
 const upload_module_1 = require("./modules/upload/upload.module");
+const firewall_module_1 = require("./modules/firewall/firewall.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -47,6 +48,7 @@ exports.AppModule = AppModule = __decorate([
             adblock_module_1.AdblockModule,
             logs_module_1.LogsModule,
             upload_module_1.UploadModule,
+            firewall_module_1.FirewallModule,
         ],
     })
 ], AppModule);

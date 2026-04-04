@@ -413,6 +413,7 @@ func New(cfg *Config) (*Manager, error) {
 
 		if cfg.EnablePhantom {
 			asnConfig.Strategy = asnbypass.StrategyTLSMasquerade
+			asnConfig.FallbackStrategies = nil
 		}
 
 		m.asnBypassDialer = asnbypass.NewDialer(asnConfig)
@@ -1024,7 +1025,9 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		if only("h2c") || auto {
 			cc = append(cc, dialCandidate{"h2c", false, m.dialH2C})
 		}
-		if only("tcp") || auto {
+		// Always include plain TCP when phantom is enabled — it uses WrapConn for auth
+		// and serves as a reliable fallback regardless of the recommended transport.
+		if only("tcp") || auto || m.config.EnablePhantom {
 			cc = append(cc, dialCandidate{"tcp", true, m.dialTCP})
 		}
 	}

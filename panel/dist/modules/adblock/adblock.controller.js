@@ -26,8 +26,9 @@ let AdblockController = class AdblockController {
             const stats = await this.adblockService.getStats(token);
             return res.json(stats);
         }
-        catch {
-            return res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch adblock stats' });
+        catch (err) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch adblock stats';
+            return res.status(err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
     async getRules(auth, res) {
@@ -36,8 +37,9 @@ let AdblockController = class AdblockController {
             const rules = await this.adblockService.getRules(token);
             return res.json({ success: true, rules });
         }
-        catch {
-            return res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch adblock rules' });
+        catch (err) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch adblock rules';
+            return res.status(err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
     async addRule(auth, rule, res) {
@@ -46,8 +48,9 @@ let AdblockController = class AdblockController {
             const result = await this.adblockService.addRule(token, rule);
             return res.json({ success: true, rule: result });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add rule' });
+        catch (err) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to add rule';
+            return res.status(err?.response?.status || common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
     async deleteRule(auth, id, res) {
@@ -56,8 +59,9 @@ let AdblockController = class AdblockController {
             await this.adblockService.deleteRule(token, id);
             return res.json({ success: true });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete rule' });
+        catch (err) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to delete rule';
+            return res.status(err?.response?.status || common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
     async updateSettings(auth, settings, res) {
@@ -66,8 +70,9 @@ let AdblockController = class AdblockController {
             await this.adblockService.updateSettings(token, settings);
             return res.json({ success: true });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update settings' });
+        catch (err) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to update settings';
+            return res.status(err?.response?.status || common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
 };

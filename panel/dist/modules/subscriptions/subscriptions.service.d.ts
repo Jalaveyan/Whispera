@@ -3,20 +3,26 @@ import { ConfigService } from '@nestjs/config';
 export interface Subscription {
     id: string;
     name: string;
-    url: string;
-    interval: string;
-    lastUpdate: string;
-    serverCount: number;
-    enabled: boolean;
+    token: string;
+    sub_url: string;
+    user_ids: number[];
+    transports: string[];
+    created_at: string;
+    updated_at: string;
+}
+export interface CreateSubscriptionDto {
+    name: string;
+    user_ids?: number[];
+    transports?: string[];
 }
 export declare class SubscriptionsService {
     private readonly httpService;
     private readonly configService;
     private readonly backendUrl;
     constructor(httpService: HttpService, configService: ConfigService);
-    getSubscriptions(token: string): Promise<Subscription[]>;
-    addSubscription(token: string, subscription: Partial<Subscription>): Promise<Subscription>;
-    updateSubscription(token: string, id: string, subscription: Partial<Subscription>): Promise<Subscription>;
+    getSubscriptions(token: string, host?: string, proto?: string): Promise<Subscription[]>;
+    addSubscription(token: string, dto: CreateSubscriptionDto, host?: string, proto?: string): Promise<Subscription>;
+    updateSubscription(token: string, id: string, dto: Partial<CreateSubscriptionDto>): Promise<Subscription>;
     deleteSubscription(token: string, id: string): Promise<void>;
-    updateAll(token: string): Promise<void>;
+    getSubscriptionContent(token: string): Promise<string>;
 }

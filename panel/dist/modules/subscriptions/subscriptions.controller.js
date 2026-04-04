@@ -20,35 +20,42 @@ let SubscriptionsController = class SubscriptionsController {
     constructor(subscriptionsService) {
         this.subscriptionsService = subscriptionsService;
     }
-    async getSubscriptions(auth, res) {
+    async getSubscriptions(auth, req, res) {
         try {
             const token = auth?.replace('Bearer ', '');
-            const subscriptions = await this.subscriptionsService.getSubscriptions(token);
+            const host = req.headers['x-forwarded-host'] || req.headers['host'] || '';
+            const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+            const subscriptions = await this.subscriptionsService.getSubscriptions(token, host, proto);
             return res.json({ success: true, subscriptions });
         }
-        catch {
-            return res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch subscriptions' });
+        catch (err) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to fetch subscriptions';
+            return res.status(err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: msg });
         }
     }
-    async addSubscription(auth, subscription, res) {
+    async addSubscription(auth, dto, req, res) {
         try {
             const token = auth?.replace('Bearer ', '');
-            const result = await this.subscriptionsService.addSubscription(token, subscription);
+            const host = req.headers['x-forwarded-host'] || req.headers['host'] || '';
+            const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+            const result = await this.subscriptionsService.addSubscription(token, dto, host, proto);
             return res.json({ success: true, subscription: result });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add subscription' });
+        catch (err) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to add subscription';
+            return res.status(err?.response?.status || common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
     async updateSubscription(auth, body, res) {
         try {
             const token = auth?.replace('Bearer ', '');
-            const { id, ...subscription } = body;
-            const result = await this.subscriptionsService.updateSubscription(token, id, subscription);
+            const { id, ...dto } = body;
+            const result = await this.subscriptionsService.updateSubscription(token, id, dto);
             return res.json({ success: true, subscription: result });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update subscription' });
+        catch (err) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to update subscription';
+            return res.status(err?.response?.status || common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
     async deleteSubscription(auth, id, res) {
@@ -57,18 +64,25 @@ let SubscriptionsController = class SubscriptionsController {
             await this.subscriptionsService.deleteSubscription(token, id);
             return res.json({ success: true });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete subscription' });
+        catch (err) {
+            const msg = err?.response?.data?.error || err?.response?.data?.message || err?.message || 'Failed to delete subscription';
+            return res.status(err?.response?.status || common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: msg });
         }
     }
     async updateAll(auth, res) {
+        void auth;
+        return res.json({ success: true });
+    }
+    async serveSubscription(token, res) {
         try {
-            const token = auth?.replace('Bearer ', '');
-            await this.subscriptionsService.updateAll(token);
-            return res.json({ success: true });
+            const content = await this.subscriptionsService.getSubscriptionContent(token);
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.setHeader('Content-Disposition', 'attachment; filename="whispera-sub.txt"');
+            res.setHeader('Profile-Update-Interval', '24');
+            return res.send(content);
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update all subscriptions' });
+        catch (err) {
+            return res.status(err?.response?.status || common_1.HttpStatus.NOT_FOUND).send('Not Found');
         }
     }
 };
@@ -76,18 +90,20 @@ exports.SubscriptionsController = SubscriptionsController;
 __decorate([
     (0, common_1.Get)('api/subscriptions'),
     __param(0, (0, common_1.Headers)('authorization')),
-    __param(1, (0, common_1.Res)()),
+    __param(1, (0, common_1.Req)()),
+    __param(2, (0, common_1.Res)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:paramtypes", [String, Object, Object]),
     __metadata("design:returntype", Promise)
 ], SubscriptionsController.prototype, "getSubscriptions", null);
 __decorate([
     (0, common_1.Post)('api/subscriptions/add'),
     __param(0, (0, common_1.Headers)('authorization')),
     __param(1, (0, common_1.Body)()),
-    __param(2, (0, common_1.Res)()),
+    __param(2, (0, common_1.Req)()),
+    __param(3, (0, common_1.Res)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:paramtypes", [String, Object, Object, Object]),
     __metadata("design:returntype", Promise)
 ], SubscriptionsController.prototype, "addSubscription", null);
 __decorate([
@@ -116,6 +132,14 @@ __decorate([
     __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", Promise)
 ], SubscriptionsController.prototype, "updateAll", null);
+__decorate([
+    (0, common_1.Get)('sub/:token'),
+    __param(0, (0, common_1.Param)('token')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], SubscriptionsController.prototype, "serveSubscription", null);
 exports.SubscriptionsController = SubscriptionsController = __decorate([
     (0, common_1.Controller)(),
     __metadata("design:paramtypes", [subscriptions_service_1.SubscriptionsService])

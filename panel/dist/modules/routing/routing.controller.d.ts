@@ -5,6 +5,5 @@ export declare class RoutingController {
     constructor(routingService: RoutingService);
     getRules(auth: string, res: Response): Promise<Response<any, Record<string, any>>>;
     addRule(auth: string, rule: Partial<RoutingRule>, res: Response): Promise<Response<any, Record<string, any>>>;
-    updateRule(auth: string, id: string, rule: Partial<RoutingRule>, res: Response): Promise<Response<any, Record<string, any>>>;
     deleteRule(auth: string, id: string, res: Response): Promise<Response<any, Record<string, any>>>;
 }

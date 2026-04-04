@@ -26,8 +26,9 @@ let OutboundsController = class OutboundsController {
             const outbounds = await this.outboundsService.getOutbounds(token);
             return res.json({ success: true, outbounds });
         }
-        catch {
-            return res.status(common_1.HttpStatus.INTERNAL_SERVER_ERROR).json({ success: false, error: 'Failed to fetch outbounds' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch outbounds' });
         }
     }
     async addOutbound(auth, outbound, res) {
@@ -36,8 +37,9 @@ let OutboundsController = class OutboundsController {
             const result = await this.outboundsService.addOutbound(token, outbound);
             return res.json({ success: true, outbound: result });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add outbound' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to add outbound' });
         }
     }
     async deleteOutbound(auth, tag, res) {
@@ -46,8 +48,9 @@ let OutboundsController = class OutboundsController {
             await this.outboundsService.deleteOutbound(token, tag);
             return res.json({ success: true });
         }
-        catch {
-            return res.status(common_1.HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to delete outbound' });
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to delete outbound' });
         }
     }
 };

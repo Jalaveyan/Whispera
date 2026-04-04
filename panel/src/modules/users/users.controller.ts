@@ -57,14 +57,28 @@ export class UsersController {
     async updateUser(
         @Headers('authorization') auth: string,
         @Param('id') id: string,
-        @Body() body: { email?: string; status?: string },
+        @Body() body: {
+            username?: string;
+            email?: string;
+            status?: string;
+            trafficLimit?: number;
+            expiryDate?: string;
+            obfsProfile?: string;
+            russianService?: string;
+            marionetteProfile?: string;
+        },
         @Res() res: Response,
     ) {
         try {
             const token = auth?.replace('Bearer ', '');
             const user = await this.usersService.updateUser(token, id, {
-                username: body.email,
+                username: body.username ?? body.email,
                 status: body.status,
+                trafficLimit: body.trafficLimit,
+                expiryDate: body.expiryDate,
+                obfsProfile: body.obfsProfile,
+                russianService: body.russianService,
+                marionetteProfile: body.marionetteProfile,
             });
             return res.json({ success: true, user });
         } catch (err: any) {

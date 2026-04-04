@@ -42,6 +42,66 @@ let BridgesService = class BridgesService {
         }));
         return response.data;
     }
+    async getBridgesAdmin(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/bridge-admin`, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
+    async getBridgeStats(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/bridge-stats`, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
+    async checkBridge(token, id) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/bridge-check`, { id }, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
+    async getToken(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/bridge-token`, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
+    async regenerateToken(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/bridge-token-regenerate`, {}, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
+    async addBridgeDirect(token, body) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/bridge-add`, body, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
+    async deleteBridgeDirect(token, body) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/bridge-delete`, body, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
+    async getBridgeMap(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/bridge-map`, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
+    async connectToBridge(token, bridgeId) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/bridge-connect`, { bridge_id: bridgeId }, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
+    async scanBridges(token) {
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/bridge-scan`, {}, {
+            headers: { Authorization: `Bearer ${token}` },
+        }));
+        return response.data;
+    }
 };
 exports.BridgesService = BridgesService;
 exports.BridgesService = BridgesService = __decorate([

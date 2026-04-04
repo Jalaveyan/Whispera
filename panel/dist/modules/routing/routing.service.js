@@ -30,17 +30,11 @@ let RoutingService = class RoutingService {
         return response.data.rules || [];
     }
     async addRule(token, rule) {
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/routing/rules`, rule, { headers: { Authorization: `Bearer ${token}` } }));
-        return response.data;
-    }
-    async updateRule(token, id, rule) {
-        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.put(`${this.backendUrl}/api/routing/rules/${id}`, rule, { headers: { Authorization: `Bearer ${token}` } }));
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/routing/rules/add`, rule, { headers: { Authorization: `Bearer ${token}` } }));
         return response.data;
     }
     async deleteRule(token, id) {
-        await (0, rxjs_1.firstValueFrom)(this.httpService.delete(`${this.backendUrl}/api/routing/rules/${id}`, {
-            headers: { Authorization: `Bearer ${token}` },
-        }));
+        await (0, rxjs_1.firstValueFrom)(this.httpService.post(`${this.backendUrl}/api/routing/rules/delete`, { id }, { headers: { Authorization: `Bearer ${token}` } }));
     }
 };
 exports.RoutingService = RoutingService;
