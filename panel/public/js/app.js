@@ -3437,27 +3437,45 @@ class WhisperaApp {
             const subs = data.subscriptions || data || [];
 
             if (subs.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="text-center">Нет подписок</td></tr>';
+                tbody.innerHTML = `<tr><td colspan="5" class="text-center"><div style="display:flex;flex-direction:column;align-items:center;gap:12px"><i class="fas fa-rss" style="font-size:32px;opacity:.3"></i><span>${this.t('table.empty.subscriptions')}</span></div></td></tr>`;
                 return;
             }
 
-            tbody.innerHTML = subs.map(s => `
-                <tr>
-                    <td>${s.name}</td>
-                    <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-                        <span title="${s.sub_url || ''}">${s.sub_url || '-'}</span>
+            this._subById = {};
+            subs.forEach(s => { this._subById[s.id] = s; });
+
+            tbody.innerHTML = subs.map(s => {
+                const esc = v => String(v || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+                const url = s.sub_url || '';
+                const transports = (s.transports || []).join(', ') || '—';
+                const userCount = (s.user_ids || []).length || '—';
+                return `<tr>
+                    <td>${esc(s.name)}</td>
+                    <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                        <span title="${esc(url)}">${esc(url) || '-'}</span>
                     </td>
-                    <td>${(s.transports || []).join(', ') || 'все'}</td>
+                    <td>${esc(transports)}</td>
+                    <td>${esc(userCount)}</td>
                     <td>
-                        <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${s.sub_url || ''}').then(()=>app.showNotification('URL скопирован','success'))" title="Копировать URL">
+                        <button class="btn btn-secondary btn-sm sub-copy-btn" data-id="${esc(s.id)}" title="${this.t('common.copy') || 'Копировать URL'}">
                             <i class="fas fa-copy"></i>
                         </button>
-                        <button class="btn btn-danger btn-sm" onclick="app.deleteSubscription('${s.id}')">
+                        <button class="btn btn-danger btn-sm sub-del-btn" data-id="${esc(s.id)}">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
-                </tr>
-            `).join('');
+                </tr>`;
+            }).join('');
+
+            tbody.querySelectorAll('.sub-copy-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const s = this._subById[btn.dataset.id];
+                    if (s?.sub_url) navigator.clipboard.writeText(s.sub_url).then(() => this.showNotification('URL скопирован', 'success'));
+                });
+            });
+            tbody.querySelectorAll('.sub-del-btn').forEach(btn => {
+                btn.addEventListener('click', () => this.deleteSubscription(btn.dataset.id));
+            });
         } catch (error) {
             tbody.innerHTML = '<tr><td colspan="5" class="text-center">Ошибка загрузки</td></tr>';
         }
