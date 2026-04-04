@@ -3416,12 +3416,19 @@ class WhisperaApp {
                 return;
             }
 
+            const tagBadge = tag => {
+                if (tag === 'direct') return `<span style="background:rgba(74,222,128,0.15);color:#4ade80;padding:2px 8px;border-radius:4px;font-size:0.85em;">▶ direct</span>`;
+                if (tag === 'block')  return `<span style="background:rgba(248,113,113,0.15);color:#f87171;padding:2px 8px;border-radius:4px;font-size:0.85em;">✕ block</span>`;
+                if (tag === 'proxy')  return `<span style="background:rgba(167,139,250,0.15);color:#a78bfa;padding:2px 8px;border-radius:4px;font-size:0.85em;">⇢ proxy</span>`;
+                return `<span style="background:rgba(251,191,36,0.15);color:#fbbf24;padding:2px 8px;border-radius:4px;font-size:0.85em;">⇢ ${tag}</span>`;
+            };
+            const typeLabel = t => t === 'domain' ? '🌐 домен' : t === 'ip' ? '📡 IP' : t;
             tbody.innerHTML = rules.map(r => `
     <tr>
-                    <td>${r.type}</td>
-                    <td>${r.domain || r.ip || '-'}</td>
-                    <td>${r.outboundTag}</td>
-                    <td>${r.priority || 0}</td>
+                    <td>${typeLabel(r.type)}</td>
+                    <td style="font-family:monospace;font-size:0.9em;">${r.domain || r.ip || '-'}</td>
+                    <td>${tagBadge(r.outboundTag)}</td>
+                    <td style="opacity:0.6;">${r.priority || 0}</td>
                     <td>
                         <button class="btn btn-danger btn-sm" onclick="app.deleteRoutingRule('${r.id}')">
                             <i class="fas fa-trash"></i>
@@ -3481,7 +3488,8 @@ class WhisperaApp {
                 btn.addEventListener('click', () => this.deleteSubscription(btn.dataset.id));
             });
         } catch (error) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center">Ошибка загрузки</td></tr>';
+            const msg = error?.message || 'Ошибка соединения с сервером';
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center" style="color:var(--md-sys-color-error,#f87171)"><i class="fas fa-exclamation-circle"></i> ${msg}</td></tr>`;
         }
     }
 
@@ -3610,7 +3618,7 @@ class WhisperaApp {
                 <h3>Редактировать пользователя</h3>
                 <button class="modal-close modal-close-icon" onclick="this.closest('.modal').remove()"><i class="fas fa-times"></i></button>
             </div>
-            <div class="modal-body" style="display:flex;flex-direction:column;gap:2px;">
+            <div class="modal-body" style="display:flex;flex-direction:column;gap:14px;max-height:70vh;overflow-y:auto;padding-right:4px;">
                 ${field('Email', `<input id="eu-username" class="form-control" type="text" value="${user.username || ''}">`)}
                 ${field('Статус', `
                     <select id="eu-status" class="form-control">
@@ -3623,50 +3631,56 @@ class WhisperaApp {
                         <span style="opacity:0.6;font-size:0.9em;white-space:nowrap;">GB &nbsp;(0 = ∞)</span>
                     </div>`)}
                 ${field('Дата истечения', `<input id="eu-expiry" class="form-control" type="date" value="${user.expiryDate || ''}" placeholder="бессрочно">`)}
-                ${field('Профиль обфускации', `
-                    <select id="eu-obfs" class="form-control">
-                        <option value=""    ${!user.obfsProfile                  ? 'selected' : ''}>По умолчанию</option>
-                        <option value="vk"  ${user.obfsProfile === 'vk'          ? 'selected' : ''}>VK</option>
-                        <option value="ok"  ${user.obfsProfile === 'ok'          ? 'selected' : ''}>OK</option>
-                        <option value="yt"  ${user.obfsProfile === 'yt'          ? 'selected' : ''}>YouTube</option>
-                    </select>`)}
-                ${field('Российский сервис (ASN bypass)', `
-                    <select id="eu-russian" class="form-control">
-                        <option value=""           ${!user.russianService                    ? 'selected' : ''}>Авто</option>
-                        <option value="vk"         ${user.russianService === 'vk'            ? 'selected' : ''}>VK</option>
-                        <option value="ok"         ${user.russianService === 'ok'            ? 'selected' : ''}>Одноклассники</option>
-                        <option value="yandex"     ${user.russianService === 'yandex'        ? 'selected' : ''}>Яндекс</option>
-                        <option value="wildberries"${user.russianService === 'wildberries'   ? 'selected' : ''}>Wildberries</option>
-                    </select>`)}
-                ${field('Профиль Marionette', `
-                    <select id="eu-marionette" class="form-control">
-                        <option value="" ${!user.marionetteProfile ? 'selected' : ''}>— нет —</option>
-                        <optgroup label="Мессенджеры (Android)">
-                            <option value="telegram"    ${user.marionetteProfile === 'telegram'    ? 'selected' : ''}>Telegram</option>
-                            <option value="vk"          ${user.marionetteProfile === 'vk'          ? 'selected' : ''}>VK Мессенджер</option>
-                            <option value="vkvideo"     ${user.marionetteProfile === 'vkvideo'     ? 'selected' : ''}>VK Видео</option>
-                            <option value="instagram"   ${user.marionetteProfile === 'instagram'   ? 'selected' : ''}>Instagram</option>
-                            <option value="max"         ${user.marionetteProfile === 'max'         ? 'selected' : ''}>MAX (Mail.ru)</option>
-                            <option value="wechat"      ${user.marionetteProfile === 'wechat'      ? 'selected' : ''}>WeChat</option>
-                            <option value="facebook"    ${user.marionetteProfile === 'facebook'    ? 'selected' : ''}>Facebook Messenger</option>
-                        </optgroup>
-                        <optgroup label="Мессенджеры (iOS)">
-                            <option value="telegram_ios"  ${user.marionetteProfile === 'telegram_ios'  ? 'selected' : ''}>Telegram iOS</option>
-                            <option value="vk_ios"        ${user.marionetteProfile === 'vk_ios'        ? 'selected' : ''}>VK iOS</option>
-                            <option value="instagram_ios" ${user.marionetteProfile === 'instagram_ios' ? 'selected' : ''}>Instagram iOS</option>
-                            <option value="wechat_ios"    ${user.marionetteProfile === 'wechat_ios'    ? 'selected' : ''}>WeChat iOS</option>
-                            <option value="facebook_ios"  ${user.marionetteProfile === 'facebook_ios'  ? 'selected' : ''}>Facebook iOS</option>
-                        </optgroup>
-                        <optgroup label="Музыка">
-                            <option value="spotify"      ${user.marionetteProfile === 'spotify'      ? 'selected' : ''}>Spotify</option>
-                            <option value="yandex_music" ${user.marionetteProfile === 'yandex_music' ? 'selected' : ''}>Яндекс Музыка</option>
-                            <option value="vk_music"     ${user.marionetteProfile === 'vk_music'     ? 'selected' : ''}>VK Музыка</option>
-                        </optgroup>
-                        <optgroup label="Видео">
-                            <option value="youtube"          ${user.marionetteProfile === 'youtube'          ? 'selected' : ''}>YouTube</option>
-                            <option value="vk_video_stream"  ${user.marionetteProfile === 'vk_video_stream'  ? 'selected' : ''}>VK Video Stream</option>
-                        </optgroup>
-                    </select>`)}
+                <div style="border-top:1px solid rgba(255,255,255,0.08);padding-top:10px;margin-top:-2px;">
+                    <div style="font-size:0.72em;text-transform:uppercase;opacity:0.45;letter-spacing:0.07em;margin-bottom:10px;">Обфускация и маршрутизация</div>
+                    ${field('Профиль обфускации', `
+                        <select id="eu-obfs" class="form-control">
+                            <option value=""    ${!user.obfsProfile                  ? 'selected' : ''}>По умолчанию</option>
+                            <option value="vk"  ${user.obfsProfile === 'vk'          ? 'selected' : ''}>VK</option>
+                            <option value="ok"  ${user.obfsProfile === 'ok'          ? 'selected' : ''}>OK</option>
+                            <option value="yt"  ${user.obfsProfile === 'yt'          ? 'selected' : ''}>YouTube</option>
+                        </select>`)}
+                    ${field('ASN bypass (рос. сервисы)', `
+                        <select id="eu-russian" class="form-control">
+                            <option value=""           ${!user.russianService                    ? 'selected' : ''}>Авто</option>
+                            <option value="vk"         ${user.russianService === 'vk'            ? 'selected' : ''}>VK</option>
+                            <option value="ok"         ${user.russianService === 'ok'            ? 'selected' : ''}>Одноклассники</option>
+                            <option value="yandex"     ${user.russianService === 'yandex'        ? 'selected' : ''}>Яндекс</option>
+                            <option value="wildberries"${user.russianService === 'wildberries'   ? 'selected' : ''}>Wildberries</option>
+                        </select>
+                        <span style="font-size:11px;opacity:0.5;">Маршрутизация трафика через ASN указанного сервиса</span>`)}
+                    ${field('Marionette (имитация трафика)', `
+                        <select id="eu-marionette" class="form-control" size="1">
+                            <option value="" ${!user.marionetteProfile ? 'selected' : ''}>— нет —</option>
+                            <optgroup label="─── Мессенджеры (Android) ───">
+                                <option value="telegram"    ${user.marionetteProfile === 'telegram'    ? 'selected' : ''}>Telegram</option>
+                                <option value="vk"          ${user.marionetteProfile === 'vk'          ? 'selected' : ''}>VK Мессенджер</option>
+                                <option value="vkvideo"     ${user.marionetteProfile === 'vkvideo'     ? 'selected' : ''}>VK Видео</option>
+                                <option value="instagram"   ${user.marionetteProfile === 'instagram'   ? 'selected' : ''}>Instagram</option>
+                                <option value="max"         ${user.marionetteProfile === 'max'         ? 'selected' : ''}>MAX (Mail.ru)</option>
+                                <option value="wechat"      ${user.marionetteProfile === 'wechat'      ? 'selected' : ''}>WeChat</option>
+                                <option value="facebook"    ${user.marionetteProfile === 'facebook'    ? 'selected' : ''}>Facebook Messenger</option>
+                            </optgroup>
+                            <optgroup label="─── Мессенджеры (iOS) ───">
+                                <option value="telegram_ios"  ${user.marionetteProfile === 'telegram_ios'  ? 'selected' : ''}>Telegram iOS</option>
+                                <option value="vk_ios"        ${user.marionetteProfile === 'vk_ios'        ? 'selected' : ''}>VK iOS</option>
+                                <option value="instagram_ios" ${user.marionetteProfile === 'instagram_ios' ? 'selected' : ''}>Instagram iOS</option>
+                                <option value="wechat_ios"    ${user.marionetteProfile === 'wechat_ios'    ? 'selected' : ''}>WeChat iOS</option>
+                                <option value="facebook_ios"  ${user.marionetteProfile === 'facebook_ios'  ? 'selected' : ''}>Facebook iOS</option>
+                            </optgroup>
+                            <optgroup label="─── Музыка ───">
+                                <option value="spotify"      ${user.marionetteProfile === 'spotify'      ? 'selected' : ''}>Spotify</option>
+                                <option value="yandex_music" ${user.marionetteProfile === 'yandex_music' ? 'selected' : ''}>Яндекс Музыка</option>
+                                <option value="vk_music"     ${user.marionetteProfile === 'vk_music'     ? 'selected' : ''}>VK Музыка</option>
+                            </optgroup>
+                            <optgroup label="─── Видео ───">
+                                <option value="youtube"          ${user.marionetteProfile === 'youtube'          ? 'selected' : ''}>YouTube</option>
+                                <option value="vk_video_stream"  ${user.marionetteProfile === 'vk_video_stream'  ? 'selected' : ''}>VK Video Stream</option>
+                            </optgroup>
+                        </select>
+                        <span style="font-size:11px;opacity:0.5;">Имитирует TLS-паттерны указанного приложения</span>`)}
+                    ${field('SNI (для Phantom/TLS)', `<input id="eu-sni" class="form-control" type="text" value="${user.sni || ''}" placeholder="авто (из настроек входящего)">`)}
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Отмена</button>
@@ -3684,6 +3698,7 @@ class WhisperaApp {
         const obfsProfile = modal.querySelector('#eu-obfs').value;
         const russianService = modal.querySelector('#eu-russian').value;
         const marionetteProfile = modal.querySelector('#eu-marionette')?.value || '';
+        const sni = modal.querySelector('#eu-sni')?.value.trim() || '';
 
         if (!username) { this.showNotification('Email не может быть пустым', 'error'); return; }
 
@@ -3696,6 +3711,7 @@ class WhisperaApp {
                 obfsProfile,
                 russianService,
                 marionetteProfile,
+                sni,
             });
             modal.remove();
             this.showNotification('Пользователь обновлён', 'success');
