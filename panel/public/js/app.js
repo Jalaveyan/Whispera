@@ -1839,6 +1839,10 @@ class WhisperaApp {
                 a.download = 'install-white-bridge.sh';
                 a.click();
                 URL.revokeObjectURL(url);
+                const hint = document.getElementById('white-bridge-install-hint');
+                const cmd = document.getElementById('white-bridge-curl-cmd');
+                if (hint) hint.style.display = '';
+                if (cmd) cmd.textContent = 'bash install-white-bridge.sh';
             } catch (e) {
                 this.showNotification('Ошибка: ' + e.message, 'error');
             }
