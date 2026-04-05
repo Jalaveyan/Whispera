@@ -1587,6 +1587,9 @@ func (m *Manager) Disconnect() {
 }
 
 func (m *Manager) Reconnect(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if !atomic.CompareAndSwapInt32(&m.reconnecting, 0, 1) {
 		m.connMu.RLock()
 		done := m.reconnectDone
