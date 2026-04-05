@@ -193,6 +193,10 @@ func (d *Detector) RecordAuthFailure(clientAddr string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	if b, ok := d.blocked[ip]; ok && now.Before(b.until) {
+		return
+	}
+
 	d.failures[ip] = append(d.failures[ip], now)
 	d.failures[ip] = pruneOlderThan(d.failures[ip], now.Add(-d.cfg.FailWindow))
 

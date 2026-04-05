@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -648,9 +649,13 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return "", false
 	}
 
-	timestamp := binary.BigEndian.Uint64(sessionID[0:8])
+	rawTS := binary.BigEndian.Uint64(sessionID[0:8])
+	if rawTS > uint64(math.MaxInt64) {
+		log.Printf("[Phantom] Auth rejected: invalid timestamp (overflow)")
+		return "", false
+	}
 	now := time.Now()
-	diff := now.Sub(time.UnixMilli(int64(timestamp)))
+	diff := now.Sub(time.UnixMilli(int64(rawTS)))
 	if diff < 0 {
 		diff = -diff
 	}
@@ -668,7 +673,7 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		mac := hmac.New(sha256.New, authKey)
 		mac.Write([]byte("whispera-session-id"))
 		ts := make([]byte, 8)
-		binary.BigEndian.PutUint64(ts, timestamp)
+		binary.BigEndian.PutUint64(ts, rawTS)
 		mac.Write(ts)
 		nonce := sessionID[8:12]
 		mac.Write(nonce)
