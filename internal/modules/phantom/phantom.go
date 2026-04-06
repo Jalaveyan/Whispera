@@ -26,7 +26,6 @@ import (
 	"whispera/internal/core/registry"
 	"whispera/internal/logger"
 	"whispera/internal/obfuscation"
-	"whispera/internal/obfuscation/russian"
 	"whispera/internal/stats"
 )
 
@@ -343,10 +342,6 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 
 	remoteAddr := conn.RemoteAddr().String()
 
-	// connGuardDone tracks whether we've already released the pending slot.
-	// We release it as soon as the handshake phase is complete (auth success or
-	// proxy decision), NOT at the end of the tunnel session. Holding it for the
-	// full session duration blocks reconnects because MaxPendingPerIP is small.
 	connGuardDone := false
 	releaseConnGuard := func() {
 		if h.connGuard != nil && !connGuardDone {
@@ -422,14 +417,13 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 			log.Debug("[probe] blocked %s (SNI=%s): %s", remoteAddr, sni, reason)
 			h.stats.ProxiedConnections++
 			releaseConnGuard()
-			h.proxyToDestination(conn, clientHello)
+			h.proxyToSNI(conn, clientHello, sni)
 			return
 		}
 	}
 
 	clientID, ok := h.authenticateClient(clientRandom, sessionID)
 
-	// Release the pending slot now — handshake phase is done regardless of outcome.
 	releaseConnGuard()
 
 	if ok {
@@ -459,14 +453,8 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		h.probeDetector.RecordAuthFailure(remoteAddr)
 	}
 
-	if !h.isAllowedSNI(sni) {
-		log.Printf("Rejected SNI: %s from %s", sni, remoteAddr)
-		h.proxyToDestination(conn, clientHello)
-		return
-	}
-
 	h.stats.ProxiedConnections++
-	h.proxyToDestination(conn, clientHello)
+	h.proxyToSNI(conn, clientHello, sni)
 }
 
 
@@ -613,26 +601,6 @@ func (h *Handler) parseSNI(data []byte) string {
 	return string(data[5 : 5+nameLen])
 }
 
-func (h *Handler) isAllowedSNI(sni string) bool {
-	if h.config.UseRussianService && h.config.RussianServiceName != "" {
-		tunneler := russian.NewRussianTunneler()
-		expectedDomain := tunneler.GetServiceDomain(h.config.RussianServiceName)
-		if expectedDomain != "" && sni == expectedDomain {
-			return true
-		}
-	}
-
-	if len(h.config.ServerNames) == 0 {
-		return true
-	}
-	for _, allowed := range h.config.ServerNames {
-		if sni == allowed {
-			return true
-		}
-	}
-	return false
-}
-
 func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bool) {
 	if len(h.privateKey) == 0 {
 		log.Println("[Phantom] Auth rejected: no private key configured")
@@ -754,16 +722,21 @@ func (h *Handler) replayCacheCleanupLoop() {
 }
 
 
-func (h *Handler) proxyToDestination(clientConn net.Conn, clientHello []byte) {
-	destConn, err := h.dialDestination()
+func (h *Handler) proxyToSNI(clientConn net.Conn, clientHello []byte, sni string) {
+	target := h.sniProxyTarget(sni)
+	if target == "" {
+		return
+	}
+
+	destConn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(
+		context.Background(), "tcp", target)
 	if err != nil {
-		log.Printf("Failed to connect to dest %s: %v", h.config.Dest, err)
+		log.Debug("proxyToSNI dial %s: %v", target, err)
 		return
 	}
 	defer destConn.Close()
 
 	if _, err := destConn.Write(clientHello); err != nil {
-		log.Printf("Failed to forward ClientHello: %v", err)
 		return
 	}
 
@@ -788,18 +761,60 @@ func (h *Handler) proxyToDestination(clientConn net.Conn, clientHello []byte) {
 	<-done
 	<-done
 }
-func (h *Handler) dialDestination() (net.Conn, error) {
-	dest := h.config.Dest
-	if dest == "" {
-		dest = "www.google.com:443"
+
+func (h *Handler) sniProxyTarget(sni string) string {
+	if sni == "" {
+		return h.defaultDest()
 	}
 
-	tcpConn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", dest)
+	h.sniMu.RLock()
+	cur := h.currentSNI
+	h.sniMu.RUnlock()
+	if cur != "" && strings.EqualFold(sni, cur) {
+		return net.JoinHostPort(sni, "443")
+	}
+
+	for _, allowed := range h.config.ServerNames {
+		if strings.EqualFold(sni, allowed) {
+			return net.JoinHostPort(sni, "443")
+		}
+	}
+
+	h.sniMu.RLock()
+	pool := h.sniDomains
+	h.sniMu.RUnlock()
+	for _, d := range pool {
+		if strings.EqualFold(sni, d) {
+			return net.JoinHostPort(sni, "443")
+		}
+	}
+
+	destHost := h.destHost()
+	if destHost != "" && strings.EqualFold(sni, destHost) {
+		return h.defaultDest()
+	}
+
+	return ""
+}
+
+func (h *Handler) defaultDest() string {
+	if h.config.Dest != "" {
+		return h.config.Dest
+	}
+	return "cloudflare.com:443"
+}
+
+func (h *Handler) destHost() string {
+	d := h.defaultDest()
+	host, _, err := net.SplitHostPort(d)
 	if err != nil {
-		return nil, err
+		return d
 	}
+	return host
+}
 
-	return tcpConn, nil
+func (h *Handler) proxyToDestination(clientConn net.Conn, clientHello []byte) {
+	h.proxyToSNI(clientConn, clientHello, h.destHost())
 }
 
 func (h *Handler) GetStats() Stats {
