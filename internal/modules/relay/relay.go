@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	mrand "math/rand"
 	"net"
 	"net/url"
 	"strings"
@@ -325,12 +326,13 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
+	kaBase := 30 + mrand.Intn(61)
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     256 * 1024 * 1024,
 		MaxStreamBuffer:      4 * 1024 * 1024,
-		KeepAliveInterval:    10 * time.Second,
-		KeepAliveTimeout:     90 * time.Second,
+		KeepAliveInterval:    time.Duration(kaBase) * time.Second,
+		KeepAliveTimeout:     120 * time.Second,
 		MaxConcurrentStreams: 1024,
 	}
 

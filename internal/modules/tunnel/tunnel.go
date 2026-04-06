@@ -346,12 +346,13 @@ type Manager struct {
 }
 
 func (m *Manager) getMuxConfig() *mux.Config {
+	base := 30 + mrand.Intn(61)
 	return &mux.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     512 * 1024 * 1024,
 		MaxStreamBuffer:      4 * 1024 * 1024,
-		KeepAliveInterval:    10 * time.Second,
-		KeepAliveTimeout:     60 * time.Second,
+		KeepAliveInterval:    time.Duration(base) * time.Second,
+		KeepAliveTimeout:     120 * time.Second,
 		MaxConcurrentStreams: 256,
 	}
 }
@@ -650,7 +651,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	start := time.Now()
 
-	targetPoolSize := 4
+	targetPoolSize := 2
 	var connectedPool []*managedConn
 	var poolMu sync.Mutex
 
