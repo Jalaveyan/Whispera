@@ -1455,8 +1455,27 @@ func (m *Manager) selectNewSNI() string {
 	return m.selectNewSNILocked()
 }
 
+var defaultSNIPool = []string{
+	"kion.ru",
+	"rutube.ru",
+	"vk.com",
+	"ok.ru",
+	"dzen.ru",
+	"music.yandex.ru",
+	"cloud.mail.ru",
+	"premier.one",
+	"wink.ru",
+	"ivi.ru",
+	"start.ru",
+	"more.tv",
+}
+
 func (m *Manager) selectNewSNILocked() string {
-	if len(m.russianSNIs) == 0 {
+	pool := m.russianSNIs
+	if len(pool) == 0 {
+		pool = defaultSNIPool
+	}
+	if len(pool) == 0 {
 		m.currentSNI = m.config.PhantomSNI
 		return m.currentSNI
 	}
@@ -1658,6 +1677,11 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		}
 
 		m.Disconnect()
+
+		m.connMu.Lock()
+		m.currentSNI = ""
+		m.connMu.Unlock()
+
 		dialStart := time.Now()
 		usedTransport := m.config.Transport
 		err := m.Connect(ctx)

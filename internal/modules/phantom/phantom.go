@@ -944,6 +944,16 @@ func (h *Handler) initSNIRotation() {
 		"ok.ru",
 		"sberbank.ru",
 		"gosuslugi.ru",
+		"kion.ru",
+		"rutube.ru",
+		"dzen.ru",
+		"music.yandex.ru",
+		"cloud.mail.ru",
+		"premier.one",
+		"wink.ru",
+		"ivi.ru",
+		"start.ru",
+		"more.tv",
 	}
 
 	if len(h.config.ServerNames) > 0 {

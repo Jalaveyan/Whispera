@@ -40,11 +40,8 @@ type ConnectionKey struct {
 
 	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
 
-	// MLServerURL задаёт адрес ml_api_server для ML-режима выбора транспорта.
-	// Если задан, клиент игнорирует Transport из ключа и спрашивает нейросеть.
 	MLServerURL string `json:"ml_server_url,omitempty"`
 
-	// MLToken — API-токен для авторизации запросов к ml_api_server.
 	MLToken string `json:"ml_token,omitempty"`
 }
 
@@ -58,6 +55,36 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 		u, err := url.Parse(key)
 		if err != nil {
 			return nil, fmt.Errorf("invalid URL key format: %w", err)
+		}
+
+		hostPart := u.Host
+		if hostPart != "" {
+			if decoded, err := base64.StdEncoding.DecodeString(hostPart); err == nil {
+				if json.Valid(decoded) {
+					var ck ConnectionKey
+					if err := json.Unmarshal(decoded, &ck); err == nil {
+						if ck.IsExpired() {
+							return nil, fmt.Errorf("connection key expired")
+						}
+						if ck.Transport == "" {
+							ck.Transport = "auto"
+						}
+						if ck.ObfsPreset == "" {
+							ck.ObfsPreset = "default"
+						}
+						if ck.Version == 0 {
+							ck.Version = 1
+						}
+						q := u.Query()
+						if val := q.Get("ml_token"); val != "" {
+							ck.MLToken = val
+						}
+						if val := q.Get("ml"); val != "" && ck.MLServerURL == "" {
+						}
+						return &ck, nil
+					}
+				}
+			}
 		}
 
 		ck := &ConnectionKey{
@@ -227,8 +254,6 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		}
 	}
 
-	// Derive bridge discovery URL from the server address.
-	// Server is "host:port" — bridge list is served by nginx at https://host/api/bridge-list.
 	if srv := ck.GetPrimaryServer(); srv != "" {
 		host, _, err := net.SplitHostPort(srv)
 		if err != nil {
