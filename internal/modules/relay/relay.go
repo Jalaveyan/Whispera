@@ -326,6 +326,8 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
+	conn = mux.NewPaddedConn(conn, 128)
+
 	kaBase := 30 + mrand.Intn(61)
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
