@@ -2681,7 +2681,7 @@ func (m *Manager) stopKeepalive() {
 func (m *Manager) sendKeepalive() {
 	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
 		silentDuration := time.Since(m.lastPong)
-		maxSilence := 60 * time.Second
+		maxSilence := 5 * time.Minute
 		if silentDuration > maxSilence {
 			log.Warn("No data received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
 			go m.Reconnect(m.Context())

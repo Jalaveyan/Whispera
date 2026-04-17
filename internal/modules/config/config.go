@@ -530,7 +530,7 @@ func DefaultServerConfig() *ServerConfig {
 		},
 		Session: SessionConfig{
 			MaxSessions:       10000,
-			SessionTimeout:    Duration(30 * time.Minute),
+			SessionTimeout:    Duration(24 * time.Hour),
 			CleanupInterval:   Duration(1 * time.Minute),
 			KeepaliveInterval: Duration(30 * time.Second),
 			RekeyInterval:     Duration(12 * time.Hour),

@@ -37,7 +37,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		MaxSessions:     10000,
-		SessionTimeout:  30 * time.Minute,
+		SessionTimeout:  24 * time.Hour,
 		CleanupInterval: 1 * time.Minute,
 		EnableMetrics:   true,
 	}
@@ -48,7 +48,7 @@ func (c *Config) Validate() error {
 		c.MaxSessions = 10000
 	}
 	if c.SessionTimeout <= 0 {
-		c.SessionTimeout = 30 * time.Minute
+		c.SessionTimeout = 24 * time.Hour
 	}
 	if c.CleanupInterval <= 0 {
 		c.CleanupInterval = 1 * time.Minute
