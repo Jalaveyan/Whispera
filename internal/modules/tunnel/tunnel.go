@@ -2386,21 +2386,60 @@ func (m *Manager) Send(data []byte) error {
 }
 
 func (m *Manager) monitorDrainingConn(mc *managedConn) {
-	time.Sleep(m.config.DrainingTimeout)
+	const pollInterval = 5 * time.Second
+	const minGrace = 30 * time.Second
 
+	hardDeadline := time.Now().Add(m.config.DrainingTimeout)
+	graceUntil := time.Now().Add(minGrace)
+
+	reason := "Timeout"
+	for {
+		now := time.Now()
+		if now.After(hardDeadline) {
+			break
+		}
+
+		if now.After(graceUntil) {
+			m.connMu.RLock()
+			active := 0
+			for _, c := range m.streamConns {
+				if c == mc {
+					active++
+				}
+			}
+			m.connMu.RUnlock()
+			if active == 0 {
+				reason = "Idle"
+				break
+			}
+		}
+
+		select {
+		case <-mc.closing:
+			reason = "RemoteClose"
+			goto closeNow
+		case <-time.After(pollInterval):
+		}
+	}
+
+closeNow:
 	m.connMu.Lock()
-	defer m.connMu.Unlock()
-
 	for i, c := range m.drainingConns {
 		if c == mc {
 			m.drainingConns = append(m.drainingConns[:i], m.drainingConns[i+1:]...)
 			break
 		}
 	}
+	for sid, c := range m.streamConns {
+		if c == mc {
+			delete(m.streamConns, sid)
+		}
+	}
+	m.connMu.Unlock()
 
 	mc.closeOnce.Do(func() { close(mc.closing) })
 	mc.Close()
-	log.Info("Draining connection closed (Timeout)")
+	log.Info("Draining connection closed (%s)", reason)
 }
 
 func (m *Manager) startRotation() {
