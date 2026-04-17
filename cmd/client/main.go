@@ -356,6 +356,11 @@ func main() {
 			}
 		}
 	}
+	for _, alt := range cfg.ServerAlts {
+		if alt = strings.TrimSpace(alt); alt != "" {
+			srvList = append(srvList, alt)
+		}
+	}
 
 	activeTransport := cfg.Transport
 	if activeTransport == "" {

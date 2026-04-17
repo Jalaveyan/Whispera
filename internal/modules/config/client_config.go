@@ -12,8 +12,9 @@ import (
 )
 
 type ClientConfig struct {
-	Server       string `yaml:"server" json:"server"`
-	ServerTCP    string `yaml:"server_tcp" json:"server_tcp"`
+	Server       string   `yaml:"server" json:"server"`
+	ServerAlts   []string `yaml:"server_alts,omitempty" json:"server_alts,omitempty"`
+	ServerTCP    string   `yaml:"server_tcp" json:"server_tcp"`
 	ServerWS     string `yaml:"server_ws" json:"server_ws"`
 	ServerWS2    string `yaml:"server_ws2" json:"server_ws2"`
 	TUN          string `yaml:"tun" json:"tun"`

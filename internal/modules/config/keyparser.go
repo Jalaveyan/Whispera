@@ -16,8 +16,12 @@ type ConnectionKey struct {
 	KeyID      string `json:"kid,omitempty"`
 	ExpiresAt  int64  `json:"exp,omitempty"`
 	Server     string `json:"server"`
-	ServerTCP  string `json:"server_tcp,omitempty"`
-	ServerWS   string `json:"server_ws,omitempty"`
+	// ServerAlts lists additional "host:port" endpoints that accept the same
+	// key. Used for seamless port migration: operators add the new port to
+	// the list, wait for clients to pick it up, then drop the old entry.
+	ServerAlts []string `json:"server_alts,omitempty"`
+	ServerTCP  string   `json:"server_tcp,omitempty"`
+	ServerWS   string   `json:"server_ws,omitempty"`
 	PSK        string `json:"psk"`
 	ServerPub  string `json:"pub"`
 	ObfsPreset string `json:"obfs"`
@@ -225,6 +229,7 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 	cfg := &ClientConfig{
 		Server:          ck.Server,
+		ServerAlts:      append([]string(nil), ck.ServerAlts...),
 		ServerTCP:       ck.ServerTCP,
 		ServerWS:        ck.ServerWS,
 		PSK:             ck.PSK,
@@ -305,6 +310,7 @@ func GenerateConnectionKey(cfg *ClientConfig, name string) (string, error) {
 		Version:     2,
 		Name:        name,
 		Server:      cfg.Server,
+		ServerAlts:  append([]string(nil), cfg.ServerAlts...),
 		ServerTCP:   cfg.ServerTCP,
 		ServerWS:    cfg.ServerWS,
 		PSK:         cfg.PSK,
