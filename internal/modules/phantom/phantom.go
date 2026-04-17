@@ -84,6 +84,13 @@ type Config struct {
 
 	EnableCoverTraffic bool `yaml:"enable_cover_traffic"`
 
+	// BlockLocalPeers rejects inbound connections whose remote address is a
+	// loopback, link-local, or private RFC1918 range unless it matches
+	// AllowedLocalCIDRs. Defends against on-host malware opening the tunnel
+	// and bypassing egress firewall rules (so-called "localhost attack").
+	BlockLocalPeers   bool     `yaml:"block_local_peers"`
+	AllowedLocalCIDRs []string `yaml:"allowed_local_cidrs"`
+
 	OnAuthenticated func(conn net.Conn, clientID string) `yaml:"-"`
 
 	GetUsers func() []UserEntry `yaml:"-"`
@@ -105,7 +112,57 @@ func DefaultConfig() *Config {
 		Fingerprint:        "chrome",
 		EnableObfuscation:  true,
 		ObfuscationProfile: "vk",
+		BlockLocalPeers:    true,
 	}
+}
+
+func isLocalOrPrivateIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		switch {
+		case v4[0] == 10:
+			return true
+		case v4[0] == 172 && v4[1] >= 16 && v4[1] <= 31:
+			return true
+		case v4[0] == 192 && v4[1] == 168:
+			return true
+		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127: // CGNAT 100.64/10
+			return true
+		}
+	}
+	if ip.To4() == nil && len(ip) == net.IPv6len && ip[0] == 0xfc { // fc00::/7 ULA
+		return true
+	}
+	return false
+}
+
+func (h *Handler) isAddrAllowed(addr net.Addr) bool {
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok {
+		host, _, err := net.SplitHostPort(addr.String())
+		if err != nil {
+			return true
+		}
+		tcp = &net.TCPAddr{IP: net.ParseIP(host)}
+	}
+	if !isLocalOrPrivateIP(tcp.IP) {
+		return true
+	}
+	for _, cidr := range h.config.AllowedLocalCIDRs {
+		_, ipnet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if ipnet.Contains(tcp.IP) {
+			return true
+		}
+	}
+	return false
 }
 
 type Handler struct {
@@ -158,6 +215,7 @@ type Stats struct {
 	AuthenticatedClients  uint64
 	ProxiedConnections    uint64
 	FailedAuthentications uint64
+	BlockedLocalPeers     uint64
 	ActiveConnections     int32
 }
 
@@ -322,6 +380,13 @@ func (h *Handler) acceptLoop() {
 				return
 			}
 			log.Printf("Accept error: %v", err)
+			continue
+		}
+
+		if h.config.BlockLocalPeers && !h.isAddrAllowed(conn.RemoteAddr()) {
+			log.Debug("Rejected local/private peer: %s", conn.RemoteAddr())
+			h.stats.BlockedLocalPeers++
+			conn.Close()
 			continue
 		}
 
