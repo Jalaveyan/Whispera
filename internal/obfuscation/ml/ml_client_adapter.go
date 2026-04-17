@@ -127,16 +127,6 @@ func (a *NativeMLClientEvasionAdapter) ProcessTraffic(data []byte, context *type
 	if cached, ok := a.flowCache.Load(key); ok {
 		fp := cached.(*nativeFlowProfile)
 		if time.Now().Before(fp.expires) {
-			if fp.dpiType > 0 {
-				obf, err := applyNativeObfuscation(data, fp.dpiType, fp.confidence)
-				if err != nil {
-					return data, nil
-				}
-				if fp.confidence > adversarialConfTarget {
-					obf = GetAdversarialEngine().PerturbPacket(obf, adversarialBudgetDefault)
-				}
-				return obf, nil
-			}
 			return data, nil
 		}
 		a.flowCache.Delete(key)
@@ -168,16 +158,13 @@ func (a *NativeMLClientEvasionAdapter) ProcessTraffic(data []byte, context *type
 		if sni := extractTLSSNI(data); sni != "" {
 			a.engine.StoreSNI(sni)
 		}
-		obf, err := applyNativeObfuscation(data, pred.DPIType, pred.Confidence)
-		if err != nil {
-			return data, nil
-		}
-		if pred.Confidence > adversarialConfTarget {
-			obf = GetAdversarialEngine().PerturbPacket(obf, adversarialBudgetDefault)
-		}
-		return obf, nil
 	}
 
+	// Byte-level mimicry (applyNativeObfuscation) intentionally disabled: the
+	// server would prepend HTTP headers but the client has no symmetric unwrap
+	// at the TCP/smux layer, which would break frame parsing once the model
+	// reaches confidence > 0.5. DPI evasion is handled symmetrically at the
+	// transport level (uTLS, phantom, shadowTLS).
 	return data, nil
 }
 
