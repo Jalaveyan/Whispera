@@ -80,6 +80,7 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 							ck.MLToken = val
 						}
 						if val := q.Get("ml"); val != "" && ck.MLServerURL == "" {
+							ck.MLServerURL = val
 						}
 						return &ck, nil
 					}
