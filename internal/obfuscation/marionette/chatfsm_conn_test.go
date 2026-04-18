@@ -2,6 +2,7 @@ package marionette
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"testing"
@@ -10,12 +11,10 @@ import (
 	"whispera/internal/obfuscation/behavioral"
 )
 
-// loopbackPair returns two connected TCP loopback conns. Used instead of
-// net.Pipe because pipe is fully synchronous, which deadlocks against the
-// bidirectional cover loops both peers run.
 func loopbackPair(t *testing.T) (net.Conn, net.Conn) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -31,7 +30,8 @@ func loopbackPair(t *testing.T) (net.Conn, net.Conn) {
 		ch <- accepted{c, err}
 	}()
 
-	a, err := net.Dial("tcp", ln.Addr().String())
+	var d net.Dialer
+	a, err := d.DialContext(context.Background(), "tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}

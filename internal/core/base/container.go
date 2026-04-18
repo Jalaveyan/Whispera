@@ -83,7 +83,7 @@ func NewContainer(mod interfaces.Module, policy RestartPolicy) *Container {
 	}
 }
 
-// Start initialises the module (if it has not been initialised) and runs
+// Start initializes the module (if it has not been initialized) and runs
 // its Start method inside a panic-recovering goroutine. Returns immediately
 // after the first successful Start; supervision continues in the
 // background.

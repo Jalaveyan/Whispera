@@ -15,8 +15,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.MaxConns != 10000 {
 		t.Errorf("expected 10000 max conns, got %d", cfg.MaxConns)
 	}
-	if cfg.BufferSize != 8*1024*1024 {
-		t.Errorf("expected 8MB buffer, got %d", cfg.BufferSize)
+	if cfg.BufferSize != 32*1024*1024 {
+		t.Errorf("expected 32MB buffer, got %d", cfg.BufferSize)
 	}
 	if cfg.ReadTimeout != 30*time.Second {
 		t.Errorf("expected 30s read timeout, got %v", cfg.ReadTimeout)

@@ -34,7 +34,7 @@ func (s *Server) handleKeyLimitsList(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleKeyLimitsGet(w http.ResponseWriter, r *http.Request) {
 	if s.keyLimits == nil {
-		s.jsonError(w, http.StatusServiceUnavailable, "key limits not initialised")
+		s.jsonError(w, http.StatusServiceUnavailable, "key limits not initialized")
 		return
 	}
 	id := r.PathValue("id")
@@ -47,7 +47,7 @@ func (s *Server) handleKeyLimitsGet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleKeyLimitsSet(w http.ResponseWriter, r *http.Request) {
 	if s.keyLimits == nil {
-		s.jsonError(w, http.StatusServiceUnavailable, "key limits not initialised")
+		s.jsonError(w, http.StatusServiceUnavailable, "key limits not initialized")
 		return
 	}
 	id := r.PathValue("id")
@@ -66,7 +66,7 @@ func (s *Server) handleKeyLimitsSet(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleKeyLimitsClear(w http.ResponseWriter, r *http.Request) {
 	if s.keyLimits == nil {
-		s.jsonError(w, http.StatusServiceUnavailable, "key limits not initialised")
+		s.jsonError(w, http.StatusServiceUnavailable, "key limits not initialized")
 		return
 	}
 	id := r.PathValue("id")
@@ -91,7 +91,7 @@ func (s *Server) handleKeyLimitsDefaults(w http.ResponseWriter, r *http.Request)
 
 func (s *Server) handleKeyLimitsSetDefaults(w http.ResponseWriter, r *http.Request) {
 	if s.keyLimits == nil {
-		s.jsonError(w, http.StatusServiceUnavailable, "key limits not initialised")
+		s.jsonError(w, http.StatusServiceUnavailable, "key limits not initialized")
 		return
 	}
 	var req keyLimitsRequest
