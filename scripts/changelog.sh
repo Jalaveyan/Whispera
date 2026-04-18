@@ -69,6 +69,10 @@ emit "$tmp/other"    "Other"
 
 has_any=0
 for cat in breaking feat fix perf security refactor docs test ci chore other; do
-  [ -s "$tmp/$cat" ] && has_any=1
+  if [ -s "$tmp/$cat" ]; then
+    has_any=1
+  fi
 done
-[ "$has_any" = 0 ] && printf 'No notable changes.\n'
+if [ "$has_any" = 0 ]; then
+  printf 'No notable changes.\n'
+fi
