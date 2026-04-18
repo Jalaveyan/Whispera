@@ -34,9 +34,43 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Compute version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      build_time: ${{ steps.v.outputs.build_time }}
+      git_commit: ${{ steps.v.outputs.git_commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: v
+        run: |
+          git fetch --tags --force 2>/dev/null || true
+          if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            BASE="v1.0.0"
+            LAST_TAG=$(git tag -l "${BASE}.*" | sort -V | tail -n1)
+            if [ -z "$LAST_TAG" ]; then
+              VERSION="${BASE}.1"
+            else
+              LAST_PATCH=$(echo "$LAST_TAG" | awk -F. '{print $NF}')
+              VERSION="${BASE}.$((LAST_PATCH + 1))"
+            fi
+          fi
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_time=$BUILD_TIME" >> "$GITHUB_OUTPUT"
+          echo "git_commit=$GIT_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "Computed: version=$VERSION build_time=$BUILD_TIME commit=$GIT_COMMIT"
+
   build-server:
     name: Build Server (${{ matrix.goarch }})
     runs-on: ubuntu-latest
+    needs: prepare
     strategy:
       matrix:
         include:
@@ -61,8 +95,11 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
+          GIT_COMMIT: ${{ needs.prepare.outputs.git_commit }}
         run: |
-          go build -ldflags "-s -w -X main.Version=${{ github.ref_name }}" -o whispera-server ./cmd/server
+          go build -ldflags "-s -w -X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME -X main.GitCommit=$GIT_COMMIT" -o whispera-server ./cmd/server
 
       - name: Archive Server
         run: tar -czvf ${{ matrix.asset_name }}.tar.gz whispera-server
@@ -77,6 +114,7 @@ jobs:
   build-go-client:
     name: Build Go Client (${{ matrix.triple }})
     runs-on: ubuntu-latest
+    needs: prepare
     strategy:
       matrix:
         include:
@@ -114,8 +152,9 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          go build -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+          go build -ldflags "-s -w -X main.Version=$VERSION" \
             -o whispera-go-client-${{ matrix.triple }}${{ matrix.ext }} ./cmd/client
 
       - name: Upload
@@ -128,6 +167,7 @@ jobs:
   build-go-client-android:
     name: Build Go Client (Android ARM64)
     runs-on: ubuntu-latest
+    needs: prepare
     steps:
       - uses: actions/checkout@v4
         with:
@@ -142,8 +182,9 @@ jobs:
           GOOS: android
           GOARCH: arm64
           CGO_ENABLED: 0
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          go build -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+          go build -ldflags "-s -w -X main.Version=$VERSION" \
             -o whispera-go-client-aarch64-linux-android ./cmd/client
 
       - name: Upload
@@ -156,6 +197,7 @@ jobs:
   build-ml-server:
     name: Build ML Server (${{ matrix.triple }})
     runs-on: ubuntu-latest
+    needs: prepare
     strategy:
       matrix:
         include:
@@ -193,8 +235,9 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          go build -ldflags "-s -w -X main.Version=${{ github.ref_name }}" \
+          go build -ldflags "-s -w -X main.Version=$VERSION" \
             -o whispera-ml-server-${{ matrix.triple }}${{ matrix.ext }} ./cmd/mlserver
 
       - name: Upload
@@ -240,7 +283,7 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [build-server, build-panel, build-go-client, build-go-client-android, build-ml-server]
+    needs: [prepare, build-server, build-panel, build-go-client, build-go-client-android, build-ml-server]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test' || startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
@@ -261,23 +304,6 @@ jobs:
           echo "Release files:"
           ls -la release-files/
 
-      - name: Calculate Next Version
-        id: next_ver
-        if: github.ref == 'refs/heads/main'
-        run: |
-          git fetch --tags
-          BASE="v1.0.0"
-          LAST_TAG=$(git tag -l "${BASE}.*" | sort -V | tail -n1)
-          if [ -z "$LAST_TAG" ]; then
-             NEW_TAG="${BASE}.1"
-          else
-             LAST_PATCH=$(echo "$LAST_TAG" | awk -F. '{print $NF}')
-             NEW_PATCH=$((LAST_PATCH + 1))
-             NEW_TAG="${BASE}.${NEW_PATCH}"
-          fi
-          echo "Calculated new version: $NEW_TAG"
-          echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-
       - name: Generate Release Notes
         id: notes
         run: |
@@ -287,7 +313,7 @@ jobs:
             PREV=$(git tag -l 'v*' --sort=-v:refname | awk -v cur="$CURRENT" '$0 != cur { print; exit }')
             HEAD_REF="$CURRENT"
           else
-            CURRENT="${{ steps.next_ver.outputs.new_tag }}"
+            CURRENT="${{ needs.prepare.outputs.version }}"
             PREV=$(git tag -l 'v*' --sort=-v:refname | head -n1)
             HEAD_REF="HEAD"
           fi
@@ -322,9 +348,9 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.next_ver.outputs.new_tag }}
+          tag_name: ${{ needs.prepare.outputs.version }}
           target_commitish: ${{ github.sha }}
-          name: Whispera-Core ${{ steps.next_ver.outputs.new_tag }}
+          name: Whispera-Core ${{ needs.prepare.outputs.version }}
           body: ${{ steps.notes.outputs.body }}
           prerelease: false
           files: release-files/*
@@ -338,4 +364,4 @@ jobs:
           token: ${{ secrets.WHISP_DISPATCH_TOKEN }}
           repository: Jalaveyan/Whisp
           event-type: upstream-release
-          client-payload: '{"version": "${{ steps.next_ver.outputs.new_tag }}"}'
+          client-payload: '{"version": "${{ needs.prepare.outputs.version }}"}'

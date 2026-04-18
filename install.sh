@@ -67,13 +67,33 @@ gen_password() {
 }
 
 check_os() {
-    if [[ -f /etc/os-release ]]; then
-        source /etc/os-release
-        RELEASE=$ID
-    else
-        log_err "Failed to check OS"
+    if [[ ! -f /etc/os-release ]]; then
+        log_err "Failed to check OS (missing /etc/os-release)"
         exit 1
     fi
+    source /etc/os-release
+    RELEASE="${ID:-}"
+
+    case "$RELEASE" in
+        ubuntu|debian|centos|fedora|almalinux|rocky|alpine|arch|manjaro|opensuse*|sles|mageia) ;;
+        *)
+            for like in ${ID_LIKE:-}; do
+                case "$like" in
+                    debian|ubuntu)          RELEASE="debian";   break ;;
+                    rhel|fedora|centos)     RELEASE="rocky";    break ;;
+                    suse|opensuse)          RELEASE="opensuse"; break ;;
+                    arch)                   RELEASE="arch";     break ;;
+                esac
+            done
+            ;;
+    esac
+
+    case "$RELEASE" in
+        ubuntu|debian|centos|fedora|almalinux|rocky|alpine|arch|manjaro|opensuse*|sles|mageia)
+            log_info "Detected OS: $RELEASE" ;;
+        *)
+            log_warn "Unrecognised OS '${ID:-unknown}' (ID_LIKE='${ID_LIKE:-}') — falling back to apt-get" ;;
+    esac
 }
 
 
@@ -82,7 +102,7 @@ install_dependencies() {
     
     case $RELEASE in
         centos|fedora|almalinux|rocky)
-            yum install -y curl git wget tar unzip openssl >/dev/null 2>&1
+            yum install -y curl git wget tar unzip openssl nodejs >/dev/null 2>&1
             ;;
         ubuntu|debian)
             apt-get update
@@ -94,7 +114,16 @@ install_dependencies() {
             apt-get install -y nodejs
             ;;
         alpine)
-            apk add curl git wget tar unzip openssl >/dev/null 2>&1
+            apk add curl git wget tar unzip openssl nodejs >/dev/null 2>&1
+            ;;
+        arch|manjaro)
+            pacman -Sy --noconfirm curl git wget tar unzip openssl nodejs npm jq bc net-tools >/dev/null 2>&1
+            ;;
+        opensuse*|sles)
+            zypper --non-interactive install -y curl git wget tar unzip openssl nodejs20 jq bc >/dev/null 2>&1
+            ;;
+        mageia)
+            urpmi --auto curl git wget tar unzip openssl nodejs jq >/dev/null 2>&1
             ;;
         *)
             log_warn "Unknown OS: $RELEASE - trying apt-get"
