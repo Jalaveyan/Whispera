@@ -10,8 +10,10 @@ for cat in feat fix perf security refactor docs test ci build chore other breaki
   : > "$tmp/$cat"
 done
 
+commits=$(git log --no-merges --pretty=format:'%h%x09%s' "$RANGE" 2>/dev/null || true)
+
 while IFS=$'\t' read -r sha subject; do
-  [ -n "$subject" ] || continue
+  [ -n "${subject:-}" ] || continue
 
   breaking=0
   lower=$(printf '%s' "$subject" | tr '[:upper:]' '[:lower:]')
@@ -34,13 +36,15 @@ while IFS=$'\t' read -r sha subject; do
     ci)                 cat=ci ;;
     build|chore)        cat=chore ;;
   esac
-  [ -z "$rest" ] && rest="$subject"
+  if [ -z "$rest" ]; then
+    rest="$subject"
+  fi
 
   printf -- '- %s (%s)\n' "$rest" "$sha" >> "$tmp/$cat"
   if [ "$breaking" = 1 ]; then
     printf -- '- %s (%s)\n' "$rest" "$sha" >> "$tmp/breaking"
   fi
-done < <(git log --no-merges --pretty=format:'%h%x09%s' "$RANGE")
+done <<< "$commits"
 
 emit() {
   local file="$1" title="$2"

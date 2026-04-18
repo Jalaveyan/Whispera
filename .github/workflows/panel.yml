@@ -100,9 +100,23 @@ jobs:
           cd /work/panel
           PORT=3000 HOST=127.0.0.1 node bundle/index.js &
           pid=$!
+          check() {
+            node -e '
+              const http = require("http");
+              const paths = ["/api/health", "/login", "/"];
+              let i = 0;
+              const next = () => {
+                if (i >= paths.length) process.exit(1);
+                http.get("http://127.0.0.1:3000" + paths[i++], (r) => {
+                  if (r.statusCode < 500) process.exit(0);
+                  next();
+                }).on("error", next);
+              };
+              next();
+            ' 2>/dev/null
+          }
           for i in $(seq 1 30); do
-            if wget -q -O /dev/null http://127.0.0.1:3000/ 2>/dev/null \
-               || wget -q -O /dev/null http://127.0.0.1:3000/api 2>/dev/null; then
+            if check; then
               echo "panel responding on ${{ matrix.distro }} (${{ matrix.libc }})"
               kill $pid 2>/dev/null || true
               exit 0
