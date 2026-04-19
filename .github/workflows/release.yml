@@ -254,17 +254,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
+          cache-dependency-path: panel/package-lock.json
 
       - name: Install & Build Panel
         working-directory: ./panel
-        env:
-          npm_config_registry: https://registry.npmjs.org
         run: |
-          rm -rf node_modules
-          npm install --legacy-peer-deps --include=dev
+          npm ci --legacy-peer-deps
           chmod -R +x node_modules/.bin/
           npm run build
           npm run bundle
