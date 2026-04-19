@@ -221,6 +221,10 @@ jobs:
             goarch: arm64
             triple: aarch64-apple-darwin
             ext: ""
+          - goos: android
+            goarch: arm64
+            triple: aarch64-linux-android
+            ext: ""
     steps:
       - uses: actions/checkout@v4
         with:
