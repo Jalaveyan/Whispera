@@ -22,14 +22,25 @@ type Config struct {
 	MaxConcurrentStreams int
 }
 
+// DefaultConfig — консервативные значения, чтобы один клиент не съедал
+// всю пропускную способность сервера за счёт сотен голодных stream'ов.
+//
+// Раньше было: 4096 streams × 64MB stream buffer → один шумный клиент
+// мог заголодать остальных и удерживать всю receive-window 256MB. После
+// отжатых параметров max совокупная буферизация = 64 × 4MB = 256MB,
+// то же самое глобально, но без HOL для медленных stream'ов через
+// пропорциональное окно.
+//
+// Цифры подобраны для desktop/server. Если в проде нужен другой профиль
+// (например, мобильный клиент с 64MB RAM) — пробрасывайте Config явно.
 func DefaultConfig() *Config {
 	return &Config{
 		MaxFrameSize:         65536,
-		MaxReceiveBuffer:     268435456,
-		MaxStreamBuffer:      67108864,
+		MaxReceiveBuffer:     268435456, // 256 MB глобальный потолок (без изменений)
+		MaxStreamBuffer:      4194304,   // 4 MB на stream (было 64 MB)
 		KeepAliveInterval:    5 * time.Second,
 		KeepAliveTimeout:     30 * time.Second,
-		MaxConcurrentStreams: 4096,
+		MaxConcurrentStreams: 64, // было 4096 — мультиплексирование без сюрпризов
 	}
 }
 
