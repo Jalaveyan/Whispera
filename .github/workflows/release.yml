@@ -308,7 +308,15 @@ jobs:
         working-directory: ./mobile-aar
         run: |
           export PATH="$PATH:$(go env GOPATH)/bin"
-          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk-bundle"
+          # Находим установленную версию NDK (на GA runners лежит в ndk/<ver>/).
+          if [ -d "$ANDROID_HOME/ndk-bundle" ]; then
+            export ANDROID_NDK_HOME="$ANDROID_HOME/ndk-bundle"
+          else
+            NDK_DIR=$(ls -1d "$ANDROID_HOME/ndk/"*/ 2>/dev/null | head -n1 | sed 's:/$::')
+            if [ -z "$NDK_DIR" ]; then echo "NDK not found in $ANDROID_HOME"; ls "$ANDROID_HOME"; exit 1; fi
+            export ANDROID_NDK_HOME="$NDK_DIR"
+          fi
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
           go mod tidy || true
           gomobile bind -target=android/arm64 -androidapi=24 -o mihomo.aar . 2>&1 | tee bind.log || true
           ls -la mihomo.aar 2>/dev/null || (echo "AAR build failed:"; tail -100 bind.log; exit 1)
