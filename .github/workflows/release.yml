@@ -284,15 +284,13 @@ jobs:
 
 
   build-mihomo-aar:
-    name: Build mihomo.aar (Android library)
+    name: Build mihomo.aar (via ClashMetaForAndroid/core)
     runs-on: ubuntu-latest
     needs: prepare
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-go@v4
-        with:
-          go-version: '1.25.x'
+        with: { go-version: '1.25.x' }
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -304,29 +302,33 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           export PATH="$PATH:$(go env GOPATH)/bin"
           gomobile init
-      - name: gomobile bind mihomo
-        working-directory: ./mobile-aar
+      - name: Clone ClashMetaForAndroid
+        run: |
+          git clone --depth 1 https://github.com/MetaCubeX/ClashMetaForAndroid.git cmfa
+          ls cmfa cmfa/core
+      - name: Build core AAR
+        working-directory: cmfa
         run: |
           export PATH="$PATH:$(go env GOPATH)/bin"
-          # Находим установленную версию NDK (на GA runners лежит в ndk/<ver>/).
-          if [ -d "$ANDROID_HOME/ndk-bundle" ]; then
-            export ANDROID_NDK_HOME="$ANDROID_HOME/ndk-bundle"
-          else
-            NDK_DIR=$(ls -1d "$ANDROID_HOME/ndk/"*/ 2>/dev/null | head -n1 | sed 's:/$::')
-            if [ -z "$NDK_DIR" ]; then echo "NDK not found in $ANDROID_HOME"; ls "$ANDROID_HOME"; exit 1; fi
-            export ANDROID_NDK_HOME="$NDK_DIR"
-          fi
+          NDK_DIR=$(ls -1d "$ANDROID_HOME/ndk/"*/ 2>/dev/null | head -n1 | sed 's:/$::')
+          export ANDROID_NDK_HOME="$NDK_DIR"
+          export ANDROID_NDK_ROOT="$NDK_DIR"
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-          # gomobile bind ищет golang.org/x/mobile/bind в go.sum модуля.
-          go get golang.org/x/mobile/bind || true
-          go mod tidy || true
-          gomobile bind -target=android/arm64 -androidapi=24 -o mihomo.aar . 2>&1 | tee bind.log || true
-          ls -la mihomo.aar 2>/dev/null || (echo "AAR build failed:"; tail -100 bind.log; exit 1)
-      - name: Upload mihomo.aar
+          # CMFA core/Makefile имеет target 'core' который запускает gomobile bind.
+          if [ -f core/Makefile ]; then
+            (cd core && make core 2>&1 | tee build.log)
+          else
+            # Fallback: gradle build core module.
+            chmod +x gradlew
+            ./gradlew :core:assembleRelease 2>&1 | tee build.log
+          fi
+          echo "=== AARs found ==="
+          find . -name "*.aar" -type f
+      - name: Upload AAR
         uses: actions/upload-artifact@v4
         with:
           name: mihomo-aar
-          path: mobile-aar/mihomo.aar
+          path: cmfa/**/*.aar
           if-no-files-found: warn
 
   release:
