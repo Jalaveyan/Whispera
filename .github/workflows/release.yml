@@ -343,10 +343,13 @@ jobs:
           if [ -f core/Makefile ]; then
             (cd core && make core 2>&1 | tee build.log)
           else
-            # Fallback: gradle build core module.
             chmod +x gradlew
-            ./gradlew :core:assembleRelease 2>&1 | tee build.log
+            ./gradlew :core:assembleRelease --info --stacktrace 2>&1 | tee build.log
           fi
+          # Если упало — печатаем cmake-output (он закопан где-то в build/)
+          echo "=== cmake configure logs ==="
+          find core/build/intermediates/cxx -name "configure_*.log" -exec sh -c 'echo "---- $1 ----"; cat "$1"' _ {} \; 2>/dev/null | head -300 || true
+          find core/.cxx -name "*.log" -exec sh -c 'echo "---- $1 ----"; cat "$1"' _ {} \; 2>/dev/null | head -300 || true
           echo "=== AARs found ==="
           find . -name "*.aar" -type f
       - name: Upload AAR
