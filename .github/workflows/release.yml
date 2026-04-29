@@ -317,6 +317,8 @@ jobs:
             export ANDROID_NDK_HOME="$NDK_DIR"
           fi
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          # gomobile bind ищет golang.org/x/mobile/bind в go.sum модуля.
+          go get golang.org/x/mobile/bind || true
           go mod tidy || true
           gomobile bind -target=android/arm64 -androidapi=24 -o mihomo.aar . 2>&1 | tee bind.log || true
           ls -la mihomo.aar 2>/dev/null || (echo "AAR build failed:"; tail -100 bind.log; exit 1)
