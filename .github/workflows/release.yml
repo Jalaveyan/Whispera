@@ -283,86 +283,10 @@ jobs:
           retention-days: 5
 
 
-  build-mihomo-aar:
-    name: Build mihomo.aar (via ClashMetaForAndroid/core)
-    runs-on: ubuntu-latest
-    needs: prepare
-    continue-on-error: true
-    steps:
-      - uses: actions/setup-go@v4
-        with: { go-version: '1.25.x' }
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-      - uses: android-actions/setup-android@v3
-      - name: Install NDK 25 + remove others (CMFA picks highest)
-        run: |
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653" >/dev/null
-          # Удаляем все остальные NDK чтобы Gradle не выбрал NDK 29.
-          for d in "$ANDROID_HOME/ndk/"*/; do
-            v=$(basename "$d")
-            if [ "$v" != "25.2.9519653" ]; then
-              echo "removing $d"
-              rm -rf "$d"
-            fi
-          done
-          ls "$ANDROID_HOME/ndk/"
-      - name: Install gomobile
-        run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          gomobile init
-      - name: Clone ClashMetaForAndroid (with submodules)
-        run: |
-          # CMFA держит mihomo как git submodule в core/src/foss/golang/clash —
-          # без --recurse-submodules clash/go.mod отсутствует и сборка падает.
-          git clone --depth 1 --recurse-submodules --shallow-submodules \
-            https://github.com/MetaCubeX/ClashMetaForAndroid.git cmfa
-          ls cmfa cmfa/core/src/foss/golang/clash | head
-      - name: Build core AAR
-        working-directory: cmfa
-        run: |
-          export PATH="$PATH:$(go env GOPATH)/bin"
-          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/25.2.9519653"
-          export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
-          # local.properties — Gradle берёт sdk.dir/ndk.dir отсюда независимо от ENV.
-          cat > local.properties <<EOF
-          sdk.dir=$ANDROID_HOME
-          ndk.dir=$ANDROID_NDK_HOME
-          EOF
-          # Перезаписываем ndkVersion во всех build.gradle.kts
-          find . -name "build.gradle.kts" -exec sed -i \
-            's/ndkVersion = "[^"]*"/ndkVersion = "25.2.9519653"/g' {} +
-          echo "=== local.properties ==="
-          cat local.properties
-          echo "=== ndkVersion in gradle files ==="
-          grep -rn "ndkVersion" --include="build.gradle.kts" . || true
-          # CMFA core/Makefile имеет target 'core' который запускает gomobile bind.
-          if [ -f core/Makefile ]; then
-            (cd core && make core 2>&1 | tee build.log)
-          else
-            chmod +x gradlew
-            ./gradlew :core:assembleRelease --info --stacktrace 2>&1 | tee build.log
-          fi
-          # Если упало — печатаем cmake-output (он закопан где-то в build/)
-          echo "=== cmake configure logs ==="
-          find core/build/intermediates/cxx -name "configure_*.log" -exec sh -c 'echo "---- $1 ----"; cat "$1"' _ {} \; 2>/dev/null | head -300 || true
-          find core/.cxx -name "*.log" -exec sh -c 'echo "---- $1 ----"; cat "$1"' _ {} \; 2>/dev/null | head -300 || true
-          echo "=== AARs found ==="
-          find . -name "*.aar" -type f
-      - name: Upload AAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: mihomo-aar
-          path: cmfa/**/*.aar
-          if-no-files-found: warn
-
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [prepare, build-server, build-panel, build-go-client, build-go-client-android, build-ml-server, build-mihomo-aar]
+    needs: [prepare, build-server, build-panel, build-go-client, build-go-client-android, build-ml-server]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test' || startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
@@ -380,15 +304,6 @@ jobs:
           find artifacts -type f -name '*.tar.gz' -exec cp {} release-files/ \;
           find artifacts -type f -name 'whispera-go-client-*' -exec cp {} release-files/ \;
           find artifacts -type f -name 'whispera-ml-server-*' -exec cp {} release-files/ \;
-          # mihomo.aar (от ClashMetaForAndroid/core, build-mihomo-aar). Может
-          # называться libclash.aar — переименуем в whispera-mihomo-android.aar.
-          AAR=$(find artifacts -type f -name '*.aar' | head -n1)
-          if [ -n "$AAR" ]; then
-            cp "$AAR" release-files/whispera-mihomo-android.aar
-            echo "AAR included: $AAR"
-          else
-            echo "no AAR found — Android VPN integration will not work"
-          fi
           echo "Release files:"
           ls -la release-files/
 
