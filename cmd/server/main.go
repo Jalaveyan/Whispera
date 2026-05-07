@@ -119,10 +119,10 @@ var globalP2PRelay *relay.P2PRelay
 var globalBridgePool *bridgepool.Registry
 var globalWiraidEngine *wiraid.Engine
 var globalKeyLimits = keylimits.New(keylimits.Limits{
-	MaxActiveSessions: 10,
+	MaxActiveSessions: 20,
 	SoftIPCap:         50,
 	BurstPerMinute:    30,
-	SessionTTL:        30 * time.Minute,
+	SessionTTL:        7 * time.Minute,
 })
 
 var (
