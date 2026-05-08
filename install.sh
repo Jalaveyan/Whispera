@@ -1316,11 +1316,11 @@ transport:
     enabled: true
     listen_addr: ":8443"
   tcp:
-    enabled: false
-    listen_addr: ":8443"
+    enabled: true
+    listen_addr: ":443"
   websocket:
     enabled: false
-    listen_addr: ":8080"
+    listen_addr: ":443"
 
 phantom:
   enabled: true
