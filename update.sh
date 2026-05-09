@@ -1217,7 +1217,7 @@ ENVEOF
         systemctl daemon-reload
     fi
     _enable_ml_in_config
-    _enable_tcp443_in_config
+    _enable_tcp8443_in_config
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then
         local MTD
