@@ -333,6 +333,10 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/fingerprints", s.handleGetFingerprints)
 	s.Handle("POST /api/fingerprints/set", s.handleSetFingerprint)
 	s.Handle("GET /api/failover/status", s.handleFailoverStatus)
+
+	s.Handle("GET /api/v1/speed/ping", s.handleSpeedPing)
+	s.Handle("GET /api/v1/speed/download", s.handleSpeedDownload)
+	s.Handle("POST /api/v1/speed/upload", s.handleSpeedUpload)
 }
 
 func (s *Server) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
@@ -700,6 +704,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			r.URL.Path == "/api/keys/check" ||
 			r.URL.Path == "/api/wiraid/public/list" ||
 			r.URL.Path == "/install-bridge.sh" ||
+			r.URL.Path == "/api/v1/speed/ping" ||
 			strings.HasSuffix(r.URL.Path, "/health") {
 			next.ServeHTTP(w, r)
 			return

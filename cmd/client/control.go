@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	stdlog "log"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/modules/config"
 	"whispera/internal/modules/dnsmodule"
 	"whispera/internal/modules/mitm"
 	"whispera/internal/modules/proxyagent"
@@ -55,6 +57,8 @@ type TransportEntry struct {
 
 	BehavioralProfile string `json:"behavioral_profile,omitempty"`
 
+	NoSNI bool `json:"no_sni"`
+
 	mgr    *tunnel.Manager
 	cancel context.CancelFunc
 	mu     sync.Mutex
@@ -93,6 +97,42 @@ var globalP2P = &p2pState{}
 var globalDNS *dnsmodule.Resolver
 var globalMITM *mitm.Proxy
 var globalMultiRouter *socks5.MultiRouter
+var globalSubscriptionMgr *config.SubscriptionManager
+
+// globalLogBuf holds recent log lines in memory; nil when logging to file.
+var globalLogBuf *ringLogBuffer
+
+// ringLogBuffer is a fixed-capacity in-memory log ring. When full, the oldest
+// line is evicted. Nothing is ever written to disk.
+type ringLogBuffer struct {
+	mu   sync.Mutex
+	buf  []string
+	cap_ int
+}
+
+func newRingLogBuffer(capacity int) *ringLogBuffer {
+	return &ringLogBuffer{buf: make([]string, 0, capacity), cap_: capacity}
+}
+
+func (r *ringLogBuffer) Write(p []byte) (int, error) {
+	line := strings.TrimRight(string(p), "\n")
+	r.mu.Lock()
+	if len(r.buf) >= r.cap_ {
+		r.buf = r.buf[1:]
+	}
+	r.buf = append(r.buf, line)
+	r.mu.Unlock()
+	return len(p), nil
+}
+
+// Lines returns a copy of all buffered lines (oldest first).
+func (r *ringLogBuffer) Lines() []string {
+	r.mu.Lock()
+	out := make([]string, len(r.buf))
+	copy(out, r.buf)
+	r.mu.Unlock()
+	return out
+}
 
 var socksUser string
 var socksPass string
@@ -178,14 +218,22 @@ type entryView struct {
 	EncapsulatedIn    string     `json:"encapsulated_in,omitempty"`
 	ForceObfuscation  bool       `json:"force_obfuscation"`
 	BehavioralProfile string     `json:"behavioral_profile,omitempty"`
+	NoSNI             bool       `json:"no_sni"`
+	QualityRTTMs      int64      `json:"quality_rtt_ms,omitempty"`
+	QualityMissedKAs  int        `json:"quality_missed_kas,omitempty"`
 }
 
 func toView(e *TransportEntry) entryView {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	var qualityRTT int64
+	var missedKAs int
 	if e.mgr != nil {
 		e.BytesUp, e.BytesDown = e.mgr.Stats()
 		e.ForceObfuscation = e.mgr.IsForceObfuscation()
+		rtt, missed := e.mgr.GetQualityMetrics()
+		qualityRTT = rtt.Milliseconds()
+		missedKAs = missed
 	}
 	return entryView{
 		ID: e.ID, Transport: e.Transport, Server: e.Server,
@@ -196,6 +244,9 @@ func toView(e *TransportEntry) entryView {
 		EncapsulatedIn:    e.EncapsulatedIn,
 		ForceObfuscation:  e.ForceObfuscation,
 		BehavioralProfile: e.BehavioralProfile,
+		NoSNI:             e.NoSNI,
+		QualityRTTMs:      qualityRTT,
+		QualityMissedKAs:  missedKAs,
 	}
 }
 
@@ -332,6 +383,24 @@ func startControlServer(ctx context.Context) {
 			json.NewDecoder(r.Body).Decode(&body)
 			entry.mu.Lock()
 			entry.SNI = body.SNI
+			entry.NoSNI = false
+			entry.Status = connStatusConnecting
+			entry.mu.Unlock()
+			if reconnectEntry != nil {
+				go reconnectEntry(entry)
+			}
+			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+
+		case "no_sni":
+			var body struct {
+				Enabled bool `json:"enabled"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			entry.mu.Lock()
+			entry.NoSNI = body.Enabled
+			if body.Enabled {
+				entry.SNI = ""
+			}
 			entry.Status = connStatusConnecting
 			entry.mu.Unlock()
 			if reconnectEntry != nil {
@@ -694,6 +763,32 @@ func startControlServer(ctx context.Context) {
 		json.NewEncoder(w).Encode(map[string]interface{}{"running": running, "addr": addr})
 	})
 
+	mux.HandleFunc("/subscription", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if globalSubscriptionMgr == nil {
+			http.Error(w, `{"error":"no subscription configured"}`, http.StatusNotFound)
+			return
+		}
+		if r.Method == http.MethodPost {
+			keys, err := globalSubscriptionMgr.ForceRefresh()
+			if err != nil {
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			names := make([]string, 0, len(keys))
+			for _, k := range keys {
+				if k.Name != "" {
+					names = append(names, k.Name)
+				} else {
+					names = append(names, k.Server)
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{"keys": names, "count": len(keys)})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"active": globalSubscriptionMgr != nil})
+	})
+
 	mux.HandleFunc("/dns", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if globalDNS == nil {
@@ -759,6 +854,55 @@ func startControlServer(ctx context.Context) {
 		}
 		globalMultiRouter.RemoveBridge(id)
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+	})
+
+	// /speedtest — measures VPN tunnel throughput via local SOCKS5 proxy.
+	// POST {"target":"https://host:8081","token":"...","download_mb":10,"upload_mb":5}
+	mux.HandleFunc("/speedtest", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"POST only"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Target     string `json:"target"`
+			Token      string `json:"token"`
+			DownloadMB int    `json:"download_mb"`
+			UploadMB   int    `json:"upload_mb"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Target == "" || req.Token == "" {
+			http.Error(w, `{"error":"target and token required"}`, http.StatusBadRequest)
+			return
+		}
+		if req.DownloadMB <= 0 {
+			req.DownloadMB = 10
+		}
+		if req.UploadMB <= 0 {
+			req.UploadMB = 5
+		}
+
+		result := runSpeedTest(r.Context(), *socksAddr, req.Target, req.Token, req.DownloadMB, req.UploadMB)
+		json.NewEncoder(w).Encode(result)
+	})
+
+	// /logs — returns recent in-memory log lines (JSON array or plain text).
+	// When logging to a file the response explains that.
+	mux.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
+		if globalLogBuf == nil {
+			http.Error(w, "logging to file — use tail on the log file instead", http.StatusNotFound)
+			return
+		}
+		lines := globalLogBuf.Lines()
+		accept := r.Header.Get("Accept")
+		if strings.Contains(accept, "application/json") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(lines)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		for _, l := range lines {
+			io.WriteString(w, l+"\n")
+		}
 	})
 
 	srv := &http.Server{Addr: controlAddr, Handler: mux}
