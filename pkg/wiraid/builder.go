@@ -279,6 +279,9 @@ func DownloadBinary(url, destDir string) (string, error) {
 	return tmpPath, nil
 }
 
+// extractAndFind unpacks archive into binDir and returns the path of the
+// discovered executable. If the archive contains a module.json it is copied
+// to filepath.Dir(binDir) so the caller can load it as the module manifest.
 func extractAndFind(archive, binDir, tool string, flags ...string) (string, error) {
 	extractDir := filepath.Join(binDir, "_extract")
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {
@@ -295,6 +298,12 @@ func extractAndFind(archive, binDir, tool string, flags ...string) (string, erro
 		return "", fmt.Errorf("%s extract failed: %s", tool, string(out))
 	}
 	_ = os.Remove(archive)
+
+	// Propagate bundled module.json up to the module directory.
+	if mj := findFileRecursive(extractDir, "module.json"); mj != "" {
+		_ = copyFile(mj, filepath.Join(filepath.Dir(binDir), "module.json"))
+	}
+
 	found := findExecutableRecursive(extractDir)
 	if found == "" {
 		return "", fmt.Errorf("no executable found in archive")
@@ -308,6 +317,18 @@ func extractAndFind(archive, binDir, tool string, flags ...string) (string, erro
 	}
 	_ = os.RemoveAll(extractDir)
 	return dest, nil
+}
+
+func findFileRecursive(dir, name string) string {
+	var found string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() && info.Name() == name {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
 }
 
 func findExecutableRecursive(dir string) string {

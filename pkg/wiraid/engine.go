@@ -77,9 +77,15 @@ func (e *Engine) InstallFromURL(url string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		manifest := ScaffoldManifest(name, LangBinary)
-		if err := SaveManifest(moduleDir, manifest); err != nil {
-			return "", err
+		// Prefer a module.json bundled inside the archive over a generated scaffold.
+		manifest, loadErr := LoadManifest(moduleDir)
+		if loadErr != nil {
+			manifest = ScaffoldManifest(name, LangBinary)
+			if err := SaveManifest(moduleDir, manifest); err != nil {
+				return "", err
+			}
+		} else if manifest.Module.Name == "" {
+			manifest.Module.Name = name
 		}
 		im := &InstalledModule{
 			Manifest: manifest,
@@ -153,6 +159,32 @@ func (e *Engine) Uninstall(name string) error {
 	}
 	_ = os.RemoveAll(dir)
 	return nil
+}
+
+// UpdateBinary replaces the binary of an installed module by downloading a new
+// one from url. The module is stopped before the update and restarted if it was
+// running. All other registry state (manifest, params) is preserved.
+func (e *Engine) UpdateBinary(name, url string) error {
+	m, ok := e.Registry.Get(name)
+	if !ok {
+		return fmt.Errorf("module %q not found", name)
+	}
+	wasRunning := e.IsRunning(name)
+	if wasRunning {
+		_ = e.Stop(name)
+	}
+	bin, err := DownloadBinary(url, m.Dir)
+	if err != nil {
+		return fmt.Errorf("download binary: %w", err)
+	}
+	m.Binary = bin
+	if err := e.Registry.Save(); err != nil {
+		return err
+	}
+	if wasRunning {
+		_, err = e.Start(name, 0)
+	}
+	return err
 }
 
 func (e *Engine) Rebuild(name string) error {

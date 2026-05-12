@@ -60,6 +60,9 @@ func (e *Engine) RegisterRoutes(handle func(pattern string, handler http.Handler
 	handle("/api/wiraid/stop", e.handleStop)
 	handle("/api/wiraid/rebuild", e.handleRebuild)
 	handle("/api/wiraid/status", e.handleStatus)
+	handle("/api/wiraid/update-binary", e.handleUpdateBinary)
+	handle("/api/wiraid/manifest", e.handleGetManifest)
+	handle("/api/wiraid/update-manifest", e.handleUpdateManifest)
 }
 
 func (e *Engine) handlePairConfig(w http.ResponseWriter, r *http.Request) {
@@ -281,5 +284,98 @@ func (e *Engine) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"port":       e.RunningPort(name),
 		"has_binary": m.Binary != "",
 		"enabled":    m.Enabled,
+	})
+}
+
+// POST /api/wiraid/update-binary {"name":"...","url":"..."}
+// Replaces the binary of an installed module without losing manifest/params.
+// Stops the module if running, downloads the new binary, then restarts.
+func (e *Engine) handleUpdateBinary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+		URL  string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" || req.URL == "" {
+		writeError(w, http.StatusBadRequest, "name and url required")
+		return
+	}
+	if err := e.UpdateBinary(req.Name, req.URL); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	m, _ := e.Registry.Get(req.Name)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"name":    req.Name,
+		"binary":  m.Binary,
+		"running": e.IsRunning(req.Name),
+	})
+}
+
+// GET /api/wiraid/manifest?name=...
+// Returns the raw manifest of an installed module.
+func (e *Engine) handleGetManifest(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name required")
+		return
+	}
+	m, ok := e.Registry.Get(name)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, m.Manifest)
+}
+
+// POST /api/wiraid/update-manifest
+// Body: {"name":"...","manifest":{...}} — replaces the manifest of a module.
+// The module is restarted if it was running.
+func (e *Engine) handleUpdateManifest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	var req struct {
+		Name     string   `json:"name"`
+		Manifest Manifest `json:"manifest"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name and manifest required")
+		return
+	}
+	m, ok := e.Registry.Get(req.Name)
+	if !ok {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	wasRunning := e.IsRunning(req.Name)
+	if wasRunning {
+		_ = e.Stop(req.Name)
+	}
+	req.Manifest.UpgradeToV2()
+	if req.Manifest.Module.Name == "" {
+		req.Manifest.Module.Name = req.Name
+	}
+	m.Manifest = req.Manifest
+	if err := SaveManifest(m.Dir, m.Manifest); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := e.Registry.Save(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if wasRunning {
+		_, _ = e.Start(req.Name, 0)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"name":    req.Name,
+		"running": e.IsRunning(req.Name),
 	})
 }

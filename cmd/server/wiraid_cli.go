@@ -181,6 +181,40 @@ func runWiraidCLI(args []string) {
 		}
 		fmt.Printf("✓ rebuilt: %s\n", args[1])
 
+	case "update-binary":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: whispera wiraid update-binary <name> <url>")
+			os.Exit(1)
+		}
+		if err := eng.UpdateBinary(args[1], args[2]); err != nil {
+			fmt.Fprintf(os.Stderr, "update-binary failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ binary updated: %s\n", args[1])
+
+	case "set-manifest":
+		// Reload manifest from disk (module.json) into the registry entry.
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: whispera wiraid set-manifest <name>")
+			os.Exit(1)
+		}
+		m, ok := eng.Registry.Get(args[1])
+		if !ok {
+			fmt.Fprintf(os.Stderr, "module %q not found\n", args[1])
+			os.Exit(1)
+		}
+		manifest, err := wiraid.LoadManifest(m.Dir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "load manifest failed: %v\n", err)
+			os.Exit(1)
+		}
+		m.Manifest = manifest
+		if err := eng.Registry.Save(); err != nil {
+			fmt.Fprintf(os.Stderr, "save registry failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✓ manifest reloaded from disk: %s v%s\n", manifest.Module.Name, manifest.Module.Version)
+
 	default:
 		printWiraidUsage()
 		os.Exit(1)
@@ -456,6 +490,8 @@ Module management:
   enable <name>                     Enable module (auto-generates params)
   disable <name>                    Disable module
   rebuild <name>                    Rebuild from source
+  update-binary <name> <url>        Replace binary only (keeps manifest/params, restarts if running)
+  set-manifest <name>               Reload module.json from disk into registry
 
 Diagnostics:
   validate <name>                   Dry-run check on installed module
