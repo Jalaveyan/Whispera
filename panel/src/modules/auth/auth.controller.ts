@@ -30,7 +30,7 @@ export class AuthController {
                 httpOnly: true,
                 sameSite: 'strict',
                 maxAge,
-                secure: false,
+                secure: process.env.NODE_ENV === 'production',
             });
             return res.json({
                 success: true,

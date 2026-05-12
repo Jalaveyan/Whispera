@@ -1,8 +1,6 @@
 package apiserver
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -11,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"whispera/internal/auth"
 	"whispera/internal/db"
 )
 
@@ -412,14 +411,14 @@ func (s *Server) handleUserLoginV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token := s.config.AuthToken
-	if !user.IsAdmin {
-		tokenBytes := make([]byte, 32)
-		if _, err := rand.Read(tokenBytes); err != nil {
-			s.jsonError(w, http.StatusInternalServerError, "Token generation failed")
-			return
-		}
-		token = base64.StdEncoding.EncodeToString(tokenBytes)
+	role := auth.RoleUser
+	if user.IsAdmin {
+		role = auth.RoleAdmin
+	}
+	accessToken, _, err := s.jwtManager.IssueTokenPair(user.ID.String(), role, "")
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Token generation failed")
+		return
 	}
 
 	s.jsonOK(w, map[string]interface{}{
@@ -427,6 +426,6 @@ func (s *Server) handleUserLoginV2(w http.ResponseWriter, r *http.Request) {
 		"user_id": user.ID,
 		"email":   user.Email,
 		"plan":    user.PlanName,
-		"token":   token,
+		"token":   accessToken,
 	})
 }

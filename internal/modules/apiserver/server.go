@@ -614,6 +614,10 @@ func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/sub/") {
 			h.Set("Content-Security-Policy", "default-src 'none'")
+		} else {
+			// SPA: allow same-origin scripts/styles/images; block external origins and inline eval.
+			h.Set("Content-Security-Policy",
+				"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'")
 		}
 
 		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
@@ -645,6 +649,23 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 			return true
 		}
 	}
+	return false
+}
+
+// requireAdmin returns true if the request carries admin-level credentials:
+// either the master session token or a JWT with RoleAdmin.
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	authHdr := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHdr, "Bearer ") {
+		token := authHdr[len("Bearer "):]
+		if s.sessionToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) == 1 {
+			return true
+		}
+	}
+	if claims := GetClaims(r); claims != nil && claims.HasRole(auth.RoleAdmin) {
+		return true
+	}
+	http.Error(w, `{"error":"admin access required"}`, http.StatusForbidden)
 	return false
 }
 
@@ -2106,11 +2127,34 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 						if network == "" {
 							network = "tcp"
 						}
-						if matchTransports[network] {
+						portMatch := req.Port > 0 && inbound.Port == req.Port
+						if matchTransports[network] || portMatch {
 							port := fmt.Sprintf("%d", inbound.Port)
 							serverAddr = fmt.Sprintf("%s:%s", serverIP, port)
 							if pk := inbound.StreamSettings.Phantom.PrivateKey; pk != "" {
 								serverPubKey = derivePublicKeyB64(pk)
+							}
+							if sni == "" && len(inbound.StreamSettings.Phantom.ServerNames) > 0 {
+								sni = inbound.StreamSettings.Phantom.ServerNames[0]
+							}
+							// Auto-populate transport-specific params from inbound config.
+							if (network == "ws" || network == "websocket") && inbound.StreamSettings.WS.Path != "" {
+								if req.TransportConfig == nil {
+									req.TransportConfig = make(map[string]interface{})
+								}
+								if _, alreadySet := req.TransportConfig["ws_path"]; !alreadySet {
+									req.TransportConfig["ws_path"] = inbound.StreamSettings.WS.Path
+								}
+							}
+							if network == "grpc" {
+								if req.TransportConfig == nil {
+									req.TransportConfig = make(map[string]interface{})
+								}
+								if svcName, ok := inbound.StreamSettings.Params["grpc_service"].(string); ok && svcName != "" {
+									if _, alreadySet := req.TransportConfig["grpc_service"]; !alreadySet {
+										req.TransportConfig["grpc_service"] = svcName
+									}
+								}
 							}
 							break
 						}

@@ -31,6 +31,9 @@ func readRawJSON(path string) json.RawMessage {
 }
 
 func (s *Server) handleGetBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	backup := map[string]interface{}{
 		"version":   "1",
 		"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -59,6 +62,9 @@ func (s *Server) handleGetBackup(w http.ResponseWriter, r *http.Request) {
 const maxBackupBodySize = 10 << 20
 
 func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBackupBodySize)
 	var payload map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -119,6 +125,9 @@ func dumpPostgres(postgresURL string) ([]byte, error) {
 }
 
 func (s *Server) handleGetBackupFull(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	backup := map[string]interface{}{
 		"version":       "2",
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
@@ -281,6 +290,9 @@ func (s *Server) rotateBackups() {
 }
 
 func (s *Server) handleBackupList(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	entries, err := os.ReadDir(backupStorageDir)
 	if err != nil {
 		s.jsonOK(w, map[string]interface{}{"backups": []string{}})

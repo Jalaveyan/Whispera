@@ -3,12 +3,25 @@ package apiserver
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"whispera/internal/modules/bridgepool"
 )
+
+// isAllowedBinaryURL ensures rollout URLs come only from the official repository.
+func isAllowedBinaryURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+	host := strings.ToLower(u.Host)
+	return host == "github.com" ||
+		strings.HasSuffix(host, ".githubusercontent.com")
+}
 
 func (s *Server) handleBridgeStats(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, s.bridgePool.BridgeStats())
@@ -44,6 +57,10 @@ func (s *Server) handleBridgeRollout(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Version == "" || req.BinaryURL == "" {
 		s.jsonError(w, http.StatusBadRequest, "version and binary_url required")
+		return
+	}
+	if !isAllowedBinaryURL(req.BinaryURL) {
+		s.jsonError(w, http.StatusBadRequest, "binary_url must be an HTTPS URL from github.com or githubusercontent.com")
 		return
 	}
 
