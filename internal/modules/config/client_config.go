@@ -126,6 +126,15 @@ type ClientConfig struct {
 	// MLTokenFile — путь к файлу с API-токеном (альтернатива MLToken).
 	// Если задан, содержимое файла читается при старте и используется как токен.
 	MLTokenFile string `yaml:"ml_token_file,omitempty" json:"ml_token_file,omitempty"`
+
+	// SubscriptionURL points to an endpoint that returns a fresh connection key
+	// or a newline-separated / base64-encoded list of keys. Refreshed periodically.
+	SubscriptionURL string `yaml:"subscription_url,omitempty" json:"subscription_url,omitempty"`
+
+	// ForceSNI overrides the SNI in the TLS ClientHello for all tunnel connections.
+	// Useful for bypassing SNI-based blocking. Example: "www.google.com".
+	// Can also be set at runtime via POST /control/global-sni.
+	ForceSNI string `yaml:"force_sni,omitempty" json:"force_sni,omitempty"`
 }
 
 type ClientRoutingConfig struct {

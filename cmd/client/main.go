@@ -69,6 +69,7 @@ var (
 	adminTokenFlag   = flag.String("admin-token", "", "Admin token required for privileged control endpoints (e.g. /spoof). Empty = no auth")
 	tlsFragSize      = flag.Int("tls-fragment", 0, "TLS ClientHello fragment size in bytes (0=default 40, range 16-200). Smaller = harder for DPI but more RTT")
 	logFilePath      = flag.String("log-file", "", "Write logs to file (default: in-memory only, no disk storage)")
+	forceSNIFlag     = flag.String("sni", "", "Force custom SNI in TLS ClientHello for all connections (e.g. www.google.com). Overrides phantom/asn-bypass SNI")
 	subURL           = flag.String("sub-url", "", "Subscription URL for automatic key refresh (checked every 24h)")
 	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
 )
@@ -437,6 +438,17 @@ func main() {
 		stdlog.Printf("Override: Russian Service masquerading enabled: %s", cfg.RussianService)
 	}
 
+	// ForceSNI: CLI flag takes priority, then config file.
+	activeForceSNI := *forceSNIFlag
+	if activeForceSNI == "" {
+		activeForceSNI = cfg.ForceSNI
+	}
+	if activeForceSNI != "" {
+		phantomSNI = activeForceSNI
+		globalForceSNI.Store(activeForceSNI)
+		stdlog.Printf("SNI override active: all connections will use SNI=%q", activeForceSNI)
+	}
+
 	fallbackTCP := cfg.ServerTCP
 	if fallbackTCP == "" {
 		fallbackTCP = cfg.Server
@@ -499,6 +511,7 @@ func main() {
 			TransportConfig:     cfg.TransportConfig,
 			MLServerURL:         cfg.MLServerURL,
 			MLToken:             resolveMLToken(cfg),
+			ForceSNI:            getGlobalSNI(),
 		})
 		return m
 	}
@@ -515,6 +528,10 @@ func main() {
 		bridgeAddr := e.Bridge
 		rateLimitKB := e.RateLimitKB
 		e.mu.Unlock()
+
+		if customSNI == "" {
+			customSNI = getGlobalSNI()
+		}
 
 		tc := cfg.TransportConfig
 		if customSNI != "" && !noSNI {
@@ -550,6 +567,7 @@ func main() {
 			ForceObfuscation:    force,
 			BehavioralProfile:   profile,
 			CustomSNI:           customSNI,
+			ForceSNI:            getGlobalSNI(),
 			NoSNI:               noSNI,
 			BridgeAddr:          bridgeAddr,
 			RateLimitKB:         rateLimitKB,
@@ -799,6 +817,7 @@ func main() {
 			TransportConfig:     cfg.TransportConfig,
 			MLServerURL:         cfg.MLServerURL,
 			MLToken:             resolveMLToken(cfg),
+			ForceSNI:            getGlobalSNI(),
 		})
 		if err != nil {
 			stdlog.Printf("[multi-bridge] build tunnel %s failed: %v", bridgeID, err)

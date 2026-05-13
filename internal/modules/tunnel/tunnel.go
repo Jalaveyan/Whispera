@@ -32,6 +32,7 @@ import (
 	"whispera/internal/modules/transport"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
 	"whispera/internal/modules/transport/domainfront"
+	grpc_transport "whispera/internal/modules/transport/grpc"
 	h2c_transport "whispera/internal/modules/transport/h2c"
 	"whispera/internal/modules/transport/httpupgrade"
 	"whispera/internal/modules/transport/meek"
@@ -121,6 +122,41 @@ func isConnResetOrBroken(err error) bool {
 		return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset")
 	}
 	return false
+}
+
+// ClassifyConnError returns a concise, human-readable reason for a connection
+// failure — suitable for display in client logs or UI.
+func ClassifyConnError(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "connection refused"):
+		return "сервер недоступен (порт закрыт)"
+	case strings.Contains(s, "no route to host"), strings.Contains(s, "network unreachable"):
+		return "нет маршрута до сервера"
+	case strings.Contains(s, "connection reset"):
+		return "соединение сброшено (DPI или firewall)"
+	case strings.Contains(s, "broken pipe"):
+		return "соединение оборвалось"
+	case strings.Contains(s, "timeout"), strings.Contains(s, "i/o timeout"):
+		return "превышено время ожидания"
+	case strings.Contains(s, "handshake"):
+		return "ошибка TLS-рукопожатия (возможно DPI)"
+	case strings.Contains(s, "certificate"), strings.Contains(s, "x509"):
+		return "ошибка сертификата"
+	case strings.Contains(s, "EOF"):
+		return "соединение закрыто сервером"
+	case strings.Contains(s, "context canceled"):
+		return "отменено"
+	case strings.Contains(s, "context deadline exceeded"):
+		return "превышен дедлайн подключения"
+	case strings.Contains(s, "too many open files"):
+		return "достигнут лимит файловых дескрипторов"
+	default:
+		return s
+	}
 }
 
 type TunnelState int
@@ -220,6 +256,7 @@ type Config struct {
 	MLToken string
 
 	CustomSNI   string
+	NoSNI       bool
 	BridgeAddr  string
 	RateLimitKB int
 
@@ -227,6 +264,17 @@ type Config struct {
 	SpoofSourceIPs []string
 
 	TLSFragmentSize int
+
+	// ForceSNI overrides the SNI sent in the TLS ClientHello for all transports,
+	// regardless of phantom or ASN-bypass settings.
+	// Takes priority over PhantomSNI and DomainFrontHost.
+	ForceSNI string
+
+	// Connection quality failover thresholds.
+	// QualityThresholdRTT: trigger reconnect when EWMA RTT exceeds this (0 = disabled).
+	QualityThresholdRTT time.Duration
+	// QualityMissedKeepalives: trigger reconnect after N consecutive pongs missed (0 = disabled).
+	QualityMissedKeepalives int
 }
 
 func DefaultConfig() *Config {
@@ -298,7 +346,6 @@ type Manager struct {
 	dataPlane interfaces.DataPlane
 	crypto    interfaces.CryptoProvider
 
-	keepaliveTicker *time.Ticker
 	keepaliveCancel context.CancelFunc
 	rotationTicker  *time.Ticker
 	rotationCancel  context.CancelFunc
@@ -349,6 +396,16 @@ type Manager struct {
 	spoofIdx    uint64
 
 	fedSyncOnce sync.Once
+
+	// last-good cache for 0-RTT reconnect fast path
+	lastGoodMu         sync.RWMutex
+	lastGoodSNI        string
+	lastGoodTransport  string
+	lastGoodServerAddr string
+
+	// connection quality metrics
+	qualityRTTEWMA int64 // atomic, nanoseconds; EWMA of ping→pong RTT
+	missedKAs      int32 // atomic; consecutive keepalives with no pong response
 }
 
 func (m *Manager) getMuxConfig() *mux.Config {
@@ -389,12 +446,16 @@ func New(cfg *Config) (*Manager, error) {
 	}
 	close(m.reconnectDone)
 
-	if cfg.EnableASNBypass || cfg.EnablePhantom {
+	if cfg.EnableASNBypass || cfg.EnablePhantom || cfg.ForceSNI != "" {
 		frontDomain := cfg.DomainFrontHost
 		enableSNIMask := false
 
 		if cfg.EnablePhantom && cfg.PhantomSNI != "" {
 			frontDomain = cfg.PhantomSNI
+			enableSNIMask = true
+		}
+		if cfg.ForceSNI != "" {
+			frontDomain = cfg.ForceSNI
 			enableSNIMask = true
 		}
 
@@ -774,9 +835,15 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		err := fmt.Errorf("connection timeout after %v", m.config.ConnectionTimeout)
 		if !isRotation {
 			m.setError(err)
+		} else {
+			// Rotation timed out — old connection is still active; restore state.
+			m.setState(StateConnected)
 		}
 		return err
 	case <-ctx.Done():
+		if isRotation {
+			m.setState(StateConnected)
+		}
 		return ctx.Err()
 	}
 
@@ -823,6 +890,16 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.connectedAt = time.Now()
 		m.lastPong = time.Now()
 		m.setState(StateConnected)
+
+		// Cache last-good params for 0-RTT reconnect fast path.
+		m.connMu.RLock()
+		sniSnapshot := m.currentSNI
+		m.connMu.RUnlock()
+		m.lastGoodMu.Lock()
+		m.lastGoodSNI = sniSnapshot
+		m.lastGoodTransport = m.config.Transport
+		m.lastGoodServerAddr = m.config.ServerAddr
+		m.lastGoodMu.Unlock()
 
 		m.PublishEvent("tunnel.connected", map[string]interface{}{
 			"server":     m.config.ServerAddr,
@@ -1025,6 +1102,9 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		if only("ws") || only("websocket") {
 			cc = append(cc, dialCandidate{"websocket", false, m.dialWebSocket})
 		}
+		if only("grpc") {
+			cc = append(cc, dialCandidate{"grpc", false, m.dialGRPC})
+		}
 		if only("httpupgrade") {
 			cc = append(cc, dialCandidate{"httpupgrade", false, m.dialHTTPUpgrade})
 		}
@@ -1216,6 +1296,8 @@ func (m *Manager) dialASNBypass(ctx context.Context) (net.Conn, error) {
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(20 * time.Second)
 	}
 	return conn, nil
 }
@@ -1225,10 +1307,17 @@ func (m *Manager) dialQUIC(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("quic resolve: %w", err)
 	}
+	sni := m.getRotationSNI()
+	alpn := m.tcfg("quic_alpn")
+	if alpn == "" {
+		alpn = "h3"
+	}
 	qTrans, err := quic_transport.New(&quic_transport.Config{
 		ListenAddr:     ":0",
 		MaxConns:       1,
 		MaxIdleTimeout: m.config.KeepaliveInterval * 3,
+		ALPN:           alpn,
+		ServerName:     sni,
 	})
 	if err != nil {
 		return nil, err
@@ -1265,6 +1354,9 @@ func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
+		// OS-level keepalives keep NAT mappings alive on mobile (15-30 min NAT timeout).
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(20 * time.Second)
 	}
 	if m.config.EnablePhantom && m.phantomAuth != nil {
 		sni := m.getRotationSNI()
@@ -1314,9 +1406,49 @@ func (m *Manager) dialTUIC(ctx context.Context) (net.Conn, error) {
 }
 
 func (m *Manager) dialWebSocket(ctx context.Context) (net.Conn, error) {
+	path := m.tcfg("ws_path")
+	if path == "" {
+		path = "/ws"
+	}
+	host := m.tcfg("ws_host") // optional CDN-fronting Host header
+	subproto := m.tcfg("ws_subprotocol")
+	if subproto == "" {
+		subproto = "" // no subprotocol = harder to fingerprint than "whispera"
+	}
+	useTLS := m.tcfg("ws_tls") == "true" || m.tcfg("ws_tls") == "1"
+
+	target := m.config.ServerAddrTCP
+	if host != "" {
+		// CDN fronting: connect to target (CDN IP) but send Host: host
+		target = m.config.ServerAddrTCP
+	}
+
 	tr, err := ws_transport.New(&ws_transport.Config{
-		ListenAddr: ":0",
-		Path:       "/ws",
+		ListenAddr:  ":0",
+		Path:        path,
+		Subprotocol: subproto,
+		HostOverride: host,
+		UseTLS:      useTLS,
+		ServerName:  m.tcfg("ws_sni"),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return tr.Dial(ctx, target)
+}
+
+func (m *Manager) dialGRPC(ctx context.Context) (net.Conn, error) {
+	serverName := m.tcfg("grpc_sni")
+	if serverName == "" {
+		serverName = m.tcfg("sni")
+	}
+	useTLS := m.tcfg("grpc_tls") != "false" // TLS on by default
+
+	tr, err := grpc_transport.New(&grpc_transport.Config{
+		ListenAddr:  ":0",
+		ServiceName: m.tcfg("grpc_service"),
+		UseTLS:      useTLS,
+		ServerName:  serverName,
 	})
 	if err != nil {
 		return nil, err
@@ -1386,10 +1518,19 @@ func (m *Manager) dialTorSOCKS(ctx context.Context) (net.Conn, error) {
 }
 
 func (m *Manager) dialDomainFront(ctx context.Context) (net.Conn, error) {
+	mode := m.tcfg("front_mode")
+	if mode == "" {
+		mode = "websocket"
+	}
+	wsPath := m.tcfg("front_ws_path")
+	if wsPath == "" {
+		wsPath = "/ws"
+	}
 	tr, err := domainfront.New(&domainfront.Config{
 		FrontDomain:  m.tcfg("front_domain"),
 		TargetDomain: m.tcfg("target_domain"),
-		Path:         "/",
+		Mode:         mode,
+		WSPath:       wsPath,
 	})
 	if err != nil {
 		return nil, err
@@ -1531,11 +1672,11 @@ func (m *Manager) selectNewSNILocked() string {
 		return m.currentSNI
 	}
 
-	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(m.russianSNIs))))
+	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(pool))))
 	if err != nil {
-		m.currentSNI = m.russianSNIs[0]
+		m.currentSNI = pool[0]
 	} else {
-		m.currentSNI = m.russianSNIs[idxBig.Int64()]
+		m.currentSNI = pool[idxBig.Int64()]
 	}
 	m.lastRotation = time.Now()
 
@@ -1546,6 +1687,10 @@ func (m *Manager) selectNewSNILocked() string {
 }
 
 func (m *Manager) getRotationSNI() string {
+	if m.config.NoSNI {
+		return ""
+	}
+
 	m.connMu.RLock()
 	sni := m.currentSNI
 	m.connMu.RUnlock()
@@ -1695,6 +1840,12 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	originalTransport := m.config.Transport
 	transportFallbackActivated := false
 
+	// Snapshot last-good params before the loop modifies config.
+	m.lastGoodMu.RLock()
+	zeroRTTSNI := m.lastGoodSNI
+	zeroRTTTransport := m.lastGoodTransport
+	m.lastGoodMu.RUnlock()
+
 	for {
 		attempts++
 		atomic.StoreUint32(&m.reconnectAttempts, uint32(attempts))
@@ -1730,12 +1881,27 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		m.Disconnect()
 
 		m.connMu.Lock()
-		m.currentSNI = ""
+		if attempts == 1 && zeroRTTSNI != "" {
+			// 0-RTT fast path: reuse last-good SNI and transport, skip ML round-trip.
+			m.currentSNI = zeroRTTSNI
+			if zeroRTTTransport != "" {
+				m.config.Transport = zeroRTTTransport
+			}
+			log.Info("0-RTT reconnect: using last-good SNI=%s transport=%s", zeroRTTSNI, zeroRTTTransport)
+		} else {
+			m.currentSNI = ""
+		}
 		m.connMu.Unlock()
 
 		dialStart := time.Now()
 		usedTransport := m.config.Transport
-		err := m.Connect(ctx)
+		var err error
+		if attempts == 1 && zeroRTTSNI != "" {
+			// Fast path: bypass ML recommendations and server racing.
+			err = m.connectInternal(ctx, false)
+		} else {
+			err = m.Connect(ctx)
+		}
 		dialLatency := float64(time.Since(dialStart).Milliseconds())
 		if err == nil {
 			m.mlSendFeedback(usedTransport, true, dialLatency)
@@ -1748,7 +1914,7 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		}
 
 		m.mlSendFeedback(usedTransport, false, dialLatency)
-		log.Warn("Reconnect attempt %d failed (transport=%s): %v", attempts, m.config.Transport, err)
+		log.Warn("Reconnect attempt %d failed (transport=%s): %s", attempts, m.config.Transport, ClassifyConnError(err))
 		m.circuitBreakerFail()
 		jitter := time.Duration(mrand.Int63n(int64(delay) / 4))
 		select {
@@ -1839,6 +2005,8 @@ func (m *Manager) RotateSNI() {
 		m.currentSNI = oldSNI
 		m.connMu.Unlock()
 		m.config.Transport = oldTransport
+		// connectInternal sets StateRotating before dialing; restore on failure.
+		m.setState(StateConnected)
 
 		if m.config.MLServerURL != "" {
 			go m.mlSendFeedback(m.config.Transport, false, 0)
@@ -2098,8 +2266,14 @@ func (m *Manager) readLoop(mc *managedConn) {
 		}
 
 		if len(frameData) >= 3 && frameData[2] == 0x07 {
-			m.lastPong = time.Now()
-			log.Debug("Received PONG from server")
+			now := time.Now()
+			m.lastPong = now
+			if !m.lastKeepalive.IsZero() {
+				rtt := now.Sub(m.lastKeepalive)
+				m.updateQualityRTT(rtt)
+			}
+			atomic.StoreInt32(&m.missedKAs, 0)
+			log.Debug("Received PONG from server (RTT=%v)", time.Since(m.lastKeepalive))
 			continue
 		}
 
@@ -2762,14 +2936,18 @@ func (m *Manager) startKeepalive() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.keepaliveCancel = cancel
-	m.keepaliveTicker = time.NewTicker(m.config.KeepaliveInterval)
 
 	go func() {
 		for {
+			base := m.config.KeepaliveInterval
+			// ±30% jitter: range [0.7×base, 1.3×base]
+			jitter := time.Duration(mrand.Int63n(int64(base*3/5))) - base*3/10
+			timer := time.NewTimer(base + jitter)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return
-			case <-m.keepaliveTicker.C:
+			case <-timer.C:
 				m.sendKeepalive()
 			}
 		}
@@ -2780,19 +2958,30 @@ func (m *Manager) stopKeepalive() {
 	if m.keepaliveCancel != nil {
 		m.keepaliveCancel()
 	}
-	if m.keepaliveTicker != nil {
-		m.keepaliveTicker.Stop()
-	}
 }
 
 func (m *Manager) sendKeepalive() {
 	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
 		silentDuration := time.Since(m.lastPong)
-		maxSilence := 30 * time.Minute
+		// 3 min: generous enough to avoid false positives on slow networks,
+		// but short enough to detect dead NAT mappings before the user notices.
+		maxSilence := 3 * time.Minute
 		if silentDuration > maxSilence {
 			log.Warn("No data received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
 			go m.Reconnect(m.Context())
 			return
+		}
+
+		// Count consecutive keepalives that got no pong.
+		if !m.lastKeepalive.IsZero() && m.lastPong.Before(m.lastKeepalive) {
+			missed := atomic.AddInt32(&m.missedKAs, 1)
+			threshold := m.config.QualityMissedKeepalives
+			if threshold > 0 && int(missed) >= threshold {
+				log.Warn("Quality failover: %d consecutive keepalives unanswered, reconnecting", missed)
+				atomic.StoreInt32(&m.missedKAs, 0)
+				go m.Reconnect(m.Context())
+				return
+			}
 		}
 	}
 
@@ -2804,6 +2993,32 @@ func (m *Manager) sendKeepalive() {
 	} else {
 		m.lastKeepalive = time.Now()
 	}
+}
+
+// updateQualityRTT updates the EWMA RTT and triggers failover if above threshold.
+func (m *Manager) updateQualityRTT(rtt time.Duration) {
+	const alpha = 0.2 // EWMA smoothing factor — weight of new sample
+	old := atomic.LoadInt64(&m.qualityRTTEWMA)
+	var newEWMA int64
+	if old == 0 {
+		newEWMA = int64(rtt)
+	} else {
+		newEWMA = int64(float64(old)*(1-alpha) + float64(rtt)*alpha)
+	}
+	atomic.StoreInt64(&m.qualityRTTEWMA, newEWMA)
+
+	threshold := m.config.QualityThresholdRTT
+	if threshold > 0 && time.Duration(newEWMA) > threshold {
+		log.Warn("Quality failover: avg RTT=%v > threshold=%v, triggering reconnect",
+			time.Duration(newEWMA), threshold)
+		go m.Reconnect(m.Context())
+	}
+}
+
+// GetQualityMetrics returns current connection quality measurements.
+func (m *Manager) GetQualityMetrics() (avgRTT time.Duration, missedKeepalives int) {
+	return time.Duration(atomic.LoadInt64(&m.qualityRTTEWMA)),
+		int(atomic.LoadInt32(&m.missedKAs))
 }
 
 func (m *Manager) HealthCheck() interfaces.HealthStatus {
@@ -2819,6 +3034,10 @@ func (m *Manager) HealthCheck() interfaces.HealthStatus {
 	m.connMu.RLock()
 	status.Details["draining_conns"] = len(m.drainingConns)
 	m.connMu.RUnlock()
+	if rtt := time.Duration(atomic.LoadInt64(&m.qualityRTTEWMA)); rtt > 0 {
+		status.Details["quality_rtt_ms"] = rtt.Milliseconds()
+		status.Details["quality_missed_kas"] = atomic.LoadInt32(&m.missedKAs)
+	}
 	return status
 }
 

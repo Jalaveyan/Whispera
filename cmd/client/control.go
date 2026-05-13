@@ -72,6 +72,15 @@ type TransportPool struct {
 	counter uint64
 }
 
+var globalForceSNI atomic.Value // stores string
+
+func getGlobalSNI() string {
+	if v := globalForceSNI.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
 var pool = &TransportPool{
 	entries: make(map[string]*TransportEntry),
 }
@@ -883,6 +892,34 @@ func startControlServer(ctx context.Context) {
 
 		result := runSpeedTest(r.Context(), *socksAddr, req.Target, req.Token, req.DownloadMB, req.UploadMB)
 		json.NewEncoder(w).Encode(result)
+	})
+
+	// /global-sni — get or set the global SNI override applied to all tunnel connections.
+	// GET → {"sni":"..."}, POST {"sni":"example.com"} → reconnects all entries without a per-entry SNI.
+	mux.HandleFunc("/global-sni", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			json.NewEncoder(w).Encode(map[string]string{"sni": getGlobalSNI()})
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "GET or POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			SNI string `json:"sni"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		globalForceSNI.Store(body.SNI)
+
+		for _, e := range pool.List() {
+			e.mu.Lock()
+			hasSNI := e.SNI != ""
+			e.mu.Unlock()
+			if !hasSNI && reconnectEntry != nil {
+				go reconnectEntry(e)
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]string{"sni": body.SNI})
 	})
 
 	// /logs — returns recent in-memory log lines (JSON array or plain text).
