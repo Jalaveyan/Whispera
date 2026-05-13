@@ -1,6 +1,9 @@
 package phantom
 
 import (
+	"archive/zip"
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -14,6 +17,9 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -82,7 +88,8 @@ type Config struct {
 
 	EnableSNIRotation bool `yaml:"enable_sni_rotation"`
 
-	SNIRotationInterval int `yaml:"sni_rotation_interval"`
+	SNIRotationInterval int    `yaml:"sni_rotation_interval"`
+	SNICacheDir         string `yaml:"sni_cache_dir"`
 
 	EnableCoverTraffic bool `yaml:"enable_cover_traffic"`
 
@@ -1297,7 +1304,7 @@ var commonSNIPrefixes = []string{
 	"app", "dl", "files", "upload", "www", "edge", "cache",
 }
 
-// sniProberLoop runs subdomain discovery every 6 hours.
+// sniProberLoop runs domain discovery every 6 hours.
 // First probe fires 2 minutes after start (server warm-up).
 func (h *Handler) sniProberLoop() {
 	select {
@@ -1305,6 +1312,7 @@ func (h *Handler) sniProberLoop() {
 		return
 	case <-time.After(2 * time.Minute):
 	}
+	h.probeTrancoDomains()
 	h.probeSubdomains()
 
 	ticker := time.NewTicker(6 * time.Hour)
@@ -1314,6 +1322,7 @@ func (h *Handler) sniProberLoop() {
 		case <-h.sniProbeStop:
 			return
 		case <-ticker.C:
+			h.probeTrancoDomains()
 			h.probeSubdomains()
 		}
 	}
@@ -1393,6 +1402,170 @@ func (h *Handler) probeSubdomains() {
 	} else {
 		log.Printf("[Phantom] SNI prober: no new subdomains found")
 	}
+}
+
+const (
+	trancoURL       = "https://tranco-list.eu/top-1m.csv.zip"
+	trancoCacheTTL  = 24 * time.Hour
+	trancoCacheFile = "tranco_ru.txt"
+)
+
+// probeTrancoDomains downloads the Tranco top-1M list, filters .ru/.рф domains,
+// TLS-probes them, and adds working ones to sniDomains.
+func (h *Handler) probeTrancoDomains() {
+	domains := h.fetchTrancoDomains()
+	if len(domains) == 0 {
+		return
+	}
+
+	h.sniMu.RLock()
+	probed := make(map[string]struct{}, len(h.sniProbed))
+	for k := range h.sniProbed {
+		probed[k] = struct{}{}
+	}
+	h.sniMu.RUnlock()
+
+	var candidates []string
+	for _, d := range domains {
+		if _, known := probed[d]; !known {
+			candidates = append(candidates, d)
+		}
+	}
+
+	if len(candidates) == 0 {
+		log.Printf("[Phantom] Tranco: all %d domains already probed", len(domains))
+		return
+	}
+	log.Printf("[Phantom] Tranco: probing %d new .ru domains", len(candidates))
+
+	sem := make(chan struct{}, 30)
+	var mu sync.Mutex
+	var found []string
+	var wg sync.WaitGroup
+
+	for _, c := range candidates {
+		select {
+		case <-h.sniProbeStop:
+			wg.Wait()
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(domain string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if h.probeSNIDomain(domain) {
+				mu.Lock()
+				found = append(found, domain)
+				mu.Unlock()
+			}
+		}(c)
+	}
+	wg.Wait()
+
+	h.sniMu.Lock()
+	for _, d := range candidates {
+		h.sniProbed[d] = struct{}{}
+	}
+	for _, d := range found {
+		h.sniDomains = append(h.sniDomains, d)
+	}
+	h.sniMu.Unlock()
+
+	log.Printf("[Phantom] Tranco: added %d/%d domains to SNI pool", len(found), len(candidates))
+}
+
+func (h *Handler) fetchTrancoDomains() []string {
+	cacheDir := h.config.SNICacheDir
+	if cacheDir == "" {
+		cacheDir = "./sni_cache"
+	}
+	os.MkdirAll(cacheDir, 0700)
+	cachePath := filepath.Join(cacheDir, trancoCacheFile)
+
+	if info, err := os.Stat(cachePath); err == nil && time.Since(info.ModTime()) < trancoCacheTTL {
+		return h.loadTrancoCache(cachePath)
+	}
+
+	domains, err := h.downloadTrancoRU()
+	if err != nil {
+		log.Printf("[Phantom] Tranco download failed: %v — falling back to cache", err)
+		return h.loadTrancoCache(cachePath)
+	}
+
+	var sb strings.Builder
+	for _, d := range domains {
+		sb.WriteString(d)
+		sb.WriteByte('\n')
+	}
+	if err := os.WriteFile(cachePath, []byte(sb.String()), 0600); err != nil {
+		log.Printf("[Phantom] Tranco: cache write failed: %v", err)
+	}
+	return domains
+}
+
+func (h *Handler) loadTrancoCache(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var domains []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if d := strings.TrimSpace(line); d != "" {
+			domains = append(domains, d)
+		}
+	}
+	log.Printf("[Phantom] Tranco: loaded %d domains from cache", len(domains))
+	return domains
+}
+
+func (h *Handler) downloadTrancoRU() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, trancoURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 25<<20)) // 25 MB cap
+	if err != nil {
+		return nil, err
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		return nil, err
+	}
+	if len(zr.File) == 0 {
+		return nil, errors.New("tranco zip is empty")
+	}
+
+	f, err := zr.File[0].Open()
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var domains []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		parts := strings.SplitN(scanner.Text(), ",", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		d := strings.ToLower(strings.TrimSpace(parts[1]))
+		if strings.HasSuffix(d, ".ru") || strings.HasSuffix(d, ".рф") {
+			domains = append(domains, d)
+		}
+	}
+	log.Printf("[Phantom] Tranco: downloaded %d .ru/.рф domains", len(domains))
+	return domains, scanner.Err()
 }
 
 // probeSNIDomain returns true if a valid TLS handshake succeeds on :443.
