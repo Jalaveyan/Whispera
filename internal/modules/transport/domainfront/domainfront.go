@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -28,14 +30,24 @@ const (
 )
 
 type Config struct {
-	FrontDomain string
+	FrontDomain  string
 	TargetDomain string
-	Path string
+	Path         string
+	// Mode controls how the tunnel is established through the CDN.
+	//   "connect"   — HTTP CONNECT (works with HTTPS forward proxies)
+	//   "websocket" — WebSocket Upgrade with Host: TargetDomain (works with CDNs
+	//                 like Cloudflare that proxy WebSocket by Host header)
+	// Default: "websocket" (works with modern CDNs).
+	Mode string
+	// WSPath is the WebSocket endpoint path when Mode="websocket".
+	WSPath string
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		Path: "/",
+		Path:   "/",
+		Mode:   "websocket",
+		WSPath: "/ws",
 	}
 }
 
@@ -45,6 +57,9 @@ func (c *Config) Validate() error {
 	}
 	if c.TargetDomain == "" {
 		return fmt.Errorf("domainfront: target domain required")
+	}
+	if c.Mode == "" {
+		c.Mode = "websocket"
 	}
 	return nil
 }
@@ -79,19 +94,19 @@ func (t *Transport) Accept() (net.Conn, error) { return nil, fmt.Errorf("domainf
 func (t *Transport) Close() error              { return nil }
 
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
-	frontAddr := net.JoinHostPort(t.config.FrontDomain, "443")
-	d := &net.Dialer{Timeout: 10 * time.Second}
-	rawConn, err := d.DialContext(ctx, "tcp", frontAddr)
-	if err != nil {
-		return nil, fmt.Errorf("domainfront: dial %s: %w", frontAddr, err)
+	switch t.config.Mode {
+	case "websocket":
+		return t.dialWebSocket(ctx)
+	default:
+		return t.dialConnect(ctx, addr)
 	}
+}
 
-	tlsConn := tls.Client(rawConn, &tls.Config{
-		ServerName: t.config.FrontDomain,
-	})
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		rawConn.Close()
-		return nil, fmt.Errorf("domainfront: tls handshake: %w", err)
+// dialConnect uses HTTP CONNECT tunneling — works with HTTPS forward proxies.
+func (t *Transport) dialConnect(ctx context.Context, addr string) (net.Conn, error) {
+	tlsConn, err := t.tlsDial(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	req := fmt.Sprintf(
@@ -108,7 +123,7 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	resp, err := http.ReadResponse(br, nil)
 	if err != nil {
 		tlsConn.Close()
-		return nil, fmt.Errorf("domainfront: read response: %w", err)
+		return nil, fmt.Errorf("domainfront: read CONNECT response: %w", err)
 	}
 	resp.Body.Close()
 	tlsConn.SetDeadline(time.Time{})
@@ -120,9 +135,84 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 
 	atomic.AddUint64(&t.totalConns, 1)
 	atomic.AddInt64(&t.activeConns, 1)
-	log.Info("domainfront: tunneled %s via %s -> %s", addr, t.config.FrontDomain, t.config.TargetDomain)
-
+	log.Info("domainfront: CONNECT %s via %s → %s", addr, t.config.FrontDomain, t.config.TargetDomain)
 	return &frontConn{Conn: tlsConn, t: t}, nil
+}
+
+// dialWebSocket uses a WebSocket Upgrade request with Host: TargetDomain.
+// This is the standard CDN domain-fronting technique:
+//   - TLS SNI = FrontDomain  (visible to DPI — looks like traffic to FrontDomain)
+//   - HTTP Host = TargetDomain (CDN routes by Host to origin)
+//
+// Works with Cloudflare, Fastly, CloudFront in WebSocket proxy mode.
+func (t *Transport) dialWebSocket(ctx context.Context) (net.Conn, error) {
+	tlsConn, err := t.tlsDial(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	wsPath := t.config.WSPath
+	if wsPath == "" {
+		wsPath = "/ws"
+	}
+
+	// Random WebSocket key (RFC 6455).
+	key := make([]byte, 16)
+	rand.Read(key)
+	wsKey := base64.StdEncoding.EncodeToString(key)
+
+	req := fmt.Sprintf(
+		"GET %s HTTP/1.1\r\n"+
+			"Host: %s\r\n"+
+			"Upgrade: websocket\r\n"+
+			"Connection: Upgrade\r\n"+
+			"Sec-WebSocket-Key: %s\r\n"+
+			"Sec-WebSocket-Version: 13\r\n"+
+			"User-Agent: Mozilla/5.0\r\n"+
+			"\r\n",
+		wsPath, t.config.TargetDomain, wsKey,
+	)
+
+	tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := tlsConn.Write([]byte(req)); err != nil {
+		tlsConn.Close()
+		return nil, fmt.Errorf("domainfront ws: write upgrade: %w", err)
+	}
+
+	br := bufio.NewReader(tlsConn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		tlsConn.Close()
+		return nil, fmt.Errorf("domainfront ws: read upgrade response: %w", err)
+	}
+	resp.Body.Close()
+	tlsConn.SetDeadline(time.Time{})
+
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		tlsConn.Close()
+		return nil, fmt.Errorf("domainfront ws: upgrade failed, status=%d", resp.StatusCode)
+	}
+
+	atomic.AddUint64(&t.totalConns, 1)
+	atomic.AddInt64(&t.activeConns, 1)
+	log.Info("domainfront: WebSocket %s → %s (SNI=%s)", wsPath, t.config.TargetDomain, t.config.FrontDomain)
+	return &frontConn{Conn: tlsConn, t: t}, nil
+}
+
+// tlsDial opens a TLS connection to FrontDomain with FrontDomain as SNI.
+func (t *Transport) tlsDial(ctx context.Context) (*tls.Conn, error) {
+	frontAddr := net.JoinHostPort(t.config.FrontDomain, "443")
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	rawConn, err := d.DialContext(ctx, "tcp", frontAddr)
+	if err != nil {
+		return nil, fmt.Errorf("domainfront: dial %s: %w", frontAddr, err)
+	}
+	tlsConn := tls.Client(rawConn, &tls.Config{ServerName: t.config.FrontDomain})
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		rawConn.Close()
+		return nil, fmt.Errorf("domainfront: tls handshake: %w", err)
+	}
+	return tlsConn, nil
 }
 
 func (t *Transport) HealthCheck() interfaces.HealthStatus {
