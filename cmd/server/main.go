@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/net/proxy"
 
 	"whispera/internal/cache"
 	"whispera/internal/core/base"
@@ -1393,6 +1394,10 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			eng.RegisterRoutes(apiServer.Handle)
 			log.Printf("[wiraid] engine ready (base=%s, modules=%d)", wiraidBaseDir, len(eng.Registry.List()))
 			go eng.StartEnabled()
+			if globalRelay != nil {
+				globalRelay.SetProxyDialer(&wiraidProxyDialer{eng: eng})
+				log.Printf("[wiraid] per-module proxy routing active")
+			}
 		}
 
 		globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
@@ -1872,4 +1877,25 @@ func getPublicIP() string {
 		}
 	}
 	return ""
+}
+
+// wiraidProxyDialer implements proxy.Dialer, routing connections through
+// WirAid module SOCKS5 proxies when the destination matches a module's rules.
+type wiraidProxyDialer struct {
+	eng *wiraid.Engine
+}
+
+func (d *wiraidProxyDialer) Dial(network, addr string) (net.Conn, error) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err == nil {
+		var port64 uint64
+		fmt.Sscanf(portStr, "%d", &port64)
+		if socksAddr, ok := d.eng.MatchRoute(host, uint16(port64)); ok {
+			socks, err2 := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
+			if err2 == nil {
+				return socks.Dial(network, addr)
+			}
+		}
+	}
+	return proxy.Direct.Dial(network, addr)
 }

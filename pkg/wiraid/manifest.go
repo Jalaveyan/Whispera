@@ -23,6 +23,16 @@ type Capabilities struct {
 	Filter    bool `json:"filter"`
 	Analyzer  bool `json:"analyzer"`
 	Tool      bool `json:"tool"`
+	Proxy     bool `json:"proxy"`
+}
+
+// ProxyRules declares which traffic the module wants to intercept.
+// When a running module's rules match a connection, that connection is
+// dialled through the module's local SOCKS5 port instead of the normal path.
+type ProxyRules struct {
+	Domains []string `json:"domains,omitempty"` // glob patterns: "*.netflix.com"
+	IPs     []string `json:"ips,omitempty"`     // CIDR: "23.246.0.0/18"
+	Ports   []uint16 `json:"ports,omitempty"`   // exact ports, empty = all
 }
 
 type ModuleInfo struct {
@@ -120,6 +130,7 @@ type Manifest struct {
 	API          ManifestAPI            `json:"api"`
 	Runtime      Runtime                `json:"runtime,omitempty"`
 	ParamsSchema map[string]ParamSchema `json:"params_schema,omitempty"`
+	ProxyRules   *ProxyRules            `json:"proxy_rules,omitempty"`
 }
 
 func (m *Manifest) UpgradeToV2() {

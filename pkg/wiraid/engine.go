@@ -548,6 +548,84 @@ func (e *Engine) RunningPort(name string) int {
 	return 0
 }
 
+// MatchRoute checks if host:port is claimed by any running module's proxy_rules.
+// Returns the module's SOCKS5 address (127.0.0.1:port) and true on match.
+func (e *Engine) MatchRoute(host string, port uint16) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for name, rp := range e.running {
+		m, ok := e.Registry.Get(name)
+		if !ok || m.Manifest.ProxyRules == nil || rp.listenPort == 0 {
+			continue
+		}
+		if matchProxyRules(m.Manifest.ProxyRules, host, port) {
+			return fmt.Sprintf("127.0.0.1:%d", rp.listenPort), true
+		}
+	}
+	return "", false
+}
+
+// ActiveProxyRoutes returns a snapshot of all active per-module routing rules.
+func (e *Engine) ActiveProxyRoutes() []map[string]interface{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []map[string]interface{}
+	for name, rp := range e.running {
+		m, ok := e.Registry.Get(name)
+		if !ok || m.Manifest.ProxyRules == nil {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"module": name,
+			"port":   rp.listenPort,
+			"rules":  m.Manifest.ProxyRules,
+		})
+	}
+	return out
+}
+
+func matchProxyRules(r *ProxyRules, host string, port uint16) bool {
+	if len(r.Ports) > 0 {
+		found := false
+		for _, p := range r.Ports {
+			if p == port {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for _, cidr := range r.IPs {
+		ip := net.ParseIP(host)
+		if ip == nil {
+			continue
+		}
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	for _, pattern := range r.Domains {
+		if matchGlob(pattern, host) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchGlob(pattern, s string) bool {
+	if pattern == "*" {
+		return true
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := pattern[1:] // ".example.com"
+		return s == pattern[2:] || strings.HasSuffix(s, suffix)
+	}
+	return pattern == s
+}
+
 func (e *Engine) detectOrCreateManifest(dir, name string) (Manifest, error) {
 	if _, err := os.Stat(filepath.Join(dir, "module.json")); err == nil {
 		return LoadManifest(dir)

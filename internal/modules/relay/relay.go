@@ -167,6 +167,14 @@ func (s *Server) SetOutboundDial(fn func(ctx context.Context, tag, network, addr
 	s.mu.Unlock()
 }
 
+// SetProxyDialer replaces the default direct dialer used for untagged connections.
+// Use this to inject per-module routing (e.g. WirAid proxy rules).
+func (s *Server) SetProxyDialer(d proxy.Dialer) {
+	s.mu.Lock()
+	s.proxyDialer = d
+	s.mu.Unlock()
+}
+
 func (s *Server) RegisterSessionWriter(sessionID uint32, writer ResponseWriter) {
 	s.sessionWritersMu.Lock()
 	defer s.sessionWritersMu.Unlock()

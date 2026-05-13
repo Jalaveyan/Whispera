@@ -63,6 +63,7 @@ func (e *Engine) RegisterRoutes(handle func(pattern string, handler http.Handler
 	handle("/api/wiraid/update-binary", e.handleUpdateBinary)
 	handle("/api/wiraid/manifest", e.handleGetManifest)
 	handle("/api/wiraid/update-manifest", e.handleUpdateManifest)
+	handle("/api/wiraid/proxy-routes", e.handleProxyRoutes)
 }
 
 func (e *Engine) handlePairConfig(w http.ResponseWriter, r *http.Request) {
@@ -378,4 +379,13 @@ func (e *Engine) handleUpdateManifest(w http.ResponseWriter, r *http.Request) {
 		"name":    req.Name,
 		"running": e.IsRunning(req.Name),
 	})
+}
+
+// GET /api/wiraid/proxy-routes — list active per-module proxy routing rules.
+func (e *Engine) handleProxyRoutes(w http.ResponseWriter, r *http.Request) {
+	routes := e.ActiveProxyRoutes()
+	if routes == nil {
+		routes = []map[string]interface{}{}
+	}
+	writeJSON(w, http.StatusOK, routes)
 }
