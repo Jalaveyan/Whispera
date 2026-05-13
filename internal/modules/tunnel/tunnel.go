@@ -2969,9 +2969,9 @@ func (m *Manager) stopKeepalive() {
 func (m *Manager) sendKeepalive() {
 	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
 		silentDuration := time.Since(m.lastPong)
-		// 3 min: generous enough to avoid false positives on slow networks,
-		// but short enough to detect dead NAT mappings before the user notices.
-		maxSilence := 3 * time.Minute
+		// 90s: enough for a slow network burst, short enough to detect dead NAT
+		// mappings before the user notices prolonged outage.
+		maxSilence := 90 * time.Second
 		if silentDuration > maxSilence {
 			log.Warn("No data received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
 			go m.Reconnect(m.Context())

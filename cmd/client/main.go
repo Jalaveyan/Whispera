@@ -168,26 +168,31 @@ func main() {
 		mlpkg.SetMLServerURL(*mlServerURL, *mlTokenFlag)
 	}
 
-	// Silence stdout/stderr — all output goes through our log writer.
-	if null, errNull := os.OpenFile(os.DevNull, os.O_WRONLY, 0666); errNull == nil {
-		os.Stdout = null
-		os.Stderr = null
-	}
+	// Detect systemd: JOURNAL_STREAM or INVOCATION_ID means we are a unit.
+	// In that case write to stdout so journald captures us; skip /dev/null redirect.
+	underSystemd := os.Getenv("JOURNAL_STREAM") != "" || os.Getenv("INVOCATION_ID") != ""
 
 	var logWriter io.Writer
 	if *logFilePath != "" {
 		// Explicit file requested — write there.
 		logFile, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
-			// Fall back to ring buffer if file can't be opened.
 			rb := newRingLogBuffer(2000)
 			globalLogBuf = rb
 			logWriter = rb
 		} else {
 			logWriter = logFile
 		}
+	} else if underSystemd {
+		// Under systemd: let journald capture our stdout. No timestamps —
+		// journald adds them. Redirect stderr too so panics are captured.
+		logWriter = os.Stdout
 	} else {
-		// Default: in-memory ring buffer. Nothing written to disk.
+		// Foreground / non-systemd: silence stdout/stderr, use ring buffer.
+		if null, errNull := os.OpenFile(os.DevNull, os.O_WRONLY, 0666); errNull == nil {
+			os.Stdout = null
+			os.Stderr = null
+		}
 		rb := newRingLogBuffer(2000)
 		globalLogBuf = rb
 		logWriter = rb
@@ -1033,15 +1038,18 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if tunnelMod.IsConnected() {
-					continue
-				}
-
+				// Always check the current manager from the entry, not the
+				// initial tunnelMod — restartEntry replaces e.mgr on reconnect.
 				primaryEntry.mu.Lock()
+				currentMgr := primaryEntry.mgr
 				wasConnected := primaryEntry.Status == connStatusConnected
 				primaryEntry.mu.Unlock()
 
-				isRST := wasConnected && !tunnelMod.IsConnected()
+				if currentMgr != nil && currentMgr.IsConnected() {
+					continue
+				}
+
+				isRST := wasConnected && (currentMgr == nil || !currentMgr.IsConnected())
 				if isRST {
 					primaryEntry.mu.Lock()
 					primaryEntry.Status = connStatusRST
@@ -1058,7 +1066,7 @@ func main() {
 					mgr := e.mgr
 					e.mu.Unlock()
 
-					if status == connStatusConnected && mgr != nil && mgr.IsConnected() && mgr != tunnelMod {
+					if status == connStatusConnected && mgr != nil && mgr.IsConnected() && mgr != currentMgr {
 						socksMod.SetTunnel(mgr)
 						stdlog.Printf("Transport watchdog: switched SOCKS to %s", e.Transport)
 						activated = true

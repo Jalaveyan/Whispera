@@ -2260,6 +2260,8 @@ class WhisperaApp {
             document.getElementById('page-title').dataset.i18n = key;
         }
 
+        if (page !== 'dashboard') this.stopLiveStats();
+
         switch (page) {
             case 'dashboard': this.loadDashboard(); break;
             case 'users': this.loadUsers(); break;
@@ -2277,30 +2279,52 @@ class WhisperaApp {
     }
 
     async loadDashboard() {
+        // Load static server info once (version, IP, OS — doesn't change)
         try {
-            const [stats, info] = await Promise.all([
-                api.getStats().catch(() => ({})),
-                api.getSystemInfo().catch(() => ({})),
-            ]);
-
-            document.getElementById('stat-users').textContent = stats.total_users || 0;
-            document.getElementById('stat-sessions').textContent = stats.active_sessions || 0;
-            document.getElementById('stat-upload').textContent = this.formatBytes(stats.total_upload || 0);
-            document.getElementById('stat-download').textContent = this.formatBytes(stats.total_download || 0);
-
+            const info = await api.getSystemInfo().catch(() => ({}));
             document.getElementById('stat-memory').textContent = info.memory_usage || '-';
             document.getElementById('stat-cpu').textContent = info.cpu_load != null ? info.cpu_load.toFixed(1) + '%' : '-';
-
             document.getElementById('server-version').textContent = info.version || '-';
             document.getElementById('server-ip').textContent = info.server_ip || '-';
             document.getElementById('server-uptime').textContent = this.formatUptime(info.uptime || 0);
             document.getElementById('server-os').textContent = info.os || '-';
             document.getElementById('server-arch').textContent = info.arch || '-';
-
-            this.updateTrafficChart(stats.total_download || 0, stats.total_upload || 0);
-
         } catch (error) {
             console.error('Dashboard load error:', error);
+        }
+
+        this.startLiveStats();
+    }
+
+    startLiveStats() {
+        this.stopLiveStats();
+        const base = (typeof api !== 'undefined' && api.baseURL) ? api.baseURL.replace(/\/$/, '') : '';
+        const token = (typeof api !== 'undefined' && api.token) ? encodeURIComponent(api.token) : '';
+        const url = base + '/api/stats/live' + (token ? '?token=' + token : '');
+        this._liveStatsESrc = new EventSource(url);
+        this._liveStatsESrc.onmessage = (e) => {
+            try {
+                const d = JSON.parse(e.data);
+                const el = (id) => document.getElementById(id);
+                if (el('stat-users')) el('stat-users').textContent = d.total_users ?? 0;
+                if (el('stat-sessions')) el('stat-sessions').textContent = d.active_sessions ?? 0;
+                if (el('stat-upload')) el('stat-upload').textContent = this.formatBytes(d.total_upload ?? 0);
+                if (el('stat-download')) el('stat-download').textContent = this.formatBytes(d.total_download ?? 0);
+                if (el('stat-memory')) el('stat-memory').textContent = d.memory_usage || '-';
+                if (el('stat-cpu')) el('stat-cpu').textContent = d.cpu_load != null ? d.cpu_load.toFixed(1) + '%' : '-';
+                if (el('server-uptime')) el('server-uptime').textContent = this.formatUptime(d.uptime ?? 0);
+                this.updateTrafficChart(d.total_download ?? 0, d.total_upload ?? 0);
+            } catch (_) {}
+        };
+        this._liveStatsESrc.onerror = () => {
+            // EventSource reconnects automatically; no extra handling needed
+        };
+    }
+
+    stopLiveStats() {
+        if (this._liveStatsESrc) {
+            this._liveStatsESrc.close();
+            this._liveStatsESrc = null;
         }
     }
 

@@ -292,6 +292,7 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/sessions", s.handleGetSessionsAPI)
 	s.Handle("POST /api/sessions/{id}/kill", s.handleKillSessionAPI)
 	s.Handle("GET /api/stats", s.handleGetStatsAPI)
+	s.Handle("GET /api/stats/live", s.handleStatsLive)
 	s.Handle("GET /api/stats/traffic", s.handleTrafficStatsAPI)
 	s.Handle("GET /api/stats/user/{id}", s.handleGetUserTrafficAPI)
 
@@ -710,19 +711,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// EventSource/WebSocket can't set headers — accept ?token= query param.
+		var token string
 		auth := r.Header.Get("Authorization")
-		if auth == "" {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-
 		const prefix = "Bearer "
-		if !strings.HasPrefix(auth, prefix) {
+		if strings.HasPrefix(auth, prefix) {
+			token = auth[len(prefix):]
+		} else if qt := r.URL.Query().Get("token"); qt != "" {
+			token = qt
+		} else {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
-
-		token := auth[len(prefix):]
 
 		if s.sessionToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) == 1 {
 			next.ServeHTTP(w, r)
@@ -2424,6 +2424,58 @@ func (s *Server) handleGetStatsAPI(w http.ResponseWriter, r *http.Request) {
 			"download": globalStats.TotalBytesRx,
 		},
 	})
+}
+
+func (s *Server) handleStatsLive(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		s.jsonError(w, http.StatusInternalServerError, "streaming not supported")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	var memStats runtime.MemStats
+	send := func() {
+		g := stats.GetGlobalStats()
+		userStoreMu.RLock()
+		totalUsers := len(userStore)
+		userStoreMu.RUnlock()
+		runtime.ReadMemStats(&memStats)
+		memMiB := memStats.Sys / 1024 / 1024
+
+		payload := map[string]interface{}{
+			"total_users":     totalUsers,
+			"active_sessions": g.ActiveUsers,
+			"total_upload":    g.TotalBytesTx,
+			"total_download":  g.TotalBytesRx,
+			"memory_usage":    fmt.Sprintf("%d MiB", memMiB),
+			"cpu_load":        func() float64 { s.cpuMu.Lock(); v := s.cpuLoad; s.cpuMu.Unlock(); return v }(),
+			"uptime":          g.UptimeSeconds,
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return
+		}
+		fmt.Fprintf(w, "data: %s\n\n", data)
+		flusher.Flush()
+	}
+
+	send() // send immediately on connect
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			send()
+		}
+	}
 }
 
 func (s *Server) handleTrafficStatsAPI(w http.ResponseWriter, r *http.Request) {
