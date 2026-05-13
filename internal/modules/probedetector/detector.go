@@ -39,6 +39,12 @@ type Config struct {
 	ReflectionBurstSize int
 	ReflectionDelay     time.Duration
 	MaxReflectionConns  int
+
+	// TarpitMode keeps blocked connections alive for TarpitMin..TarpitMax before
+	// closing, consuming scanner goroutines and rate-limit slots.
+	TarpitMode    bool
+	TarpitMinDuration time.Duration
+	TarpitMaxDuration time.Duration
 }
 
 func DefaultConfig() Config {
@@ -57,6 +63,10 @@ func DefaultConfig() Config {
 		MaxBanEscalation: 5,
 		BurstThreshold:   10,
 		BurstWindow:      30 * time.Second,
+
+		TarpitMode:        true,
+		TarpitMinDuration: 30 * time.Second,
+		TarpitMaxDuration: 120 * time.Second,
 	}
 }
 
@@ -664,6 +674,29 @@ func (d *Detector) ReflectionStats() map[string]interface{} {
 		"total_reflected": atomic.LoadUint64(&d.reflectedTotal),
 		"active_conns":   atomic.LoadInt32(&d.activeReflect),
 		"history_size":   historySize,
+	}
+}
+
+// TarpitConn holds a blocked connection open for a random duration in
+// [TarpitMinDuration, TarpitMaxDuration], draining any incoming bytes.
+// This wastes scanner goroutines and connection-rate budget without revealing
+// that the host runs a VPN.
+func (d *Detector) TarpitConn(conn net.Conn) {
+	if !d.cfg.TarpitMode {
+		return
+	}
+	dur := d.cfg.TarpitMinDuration
+	spread := d.cfg.TarpitMaxDuration - d.cfg.TarpitMinDuration
+	if spread > 0 {
+		n, _ := rand.Int(rand.Reader, big.NewInt(int64(spread)))
+		dur += time.Duration(n.Int64())
+	}
+	conn.SetDeadline(time.Now().Add(dur))
+	buf := make([]byte, 512)
+	for {
+		if _, err := conn.Read(buf); err != nil {
+			return
+		}
 	}
 }
 
