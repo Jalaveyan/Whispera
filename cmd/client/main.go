@@ -333,9 +333,7 @@ func main() {
 		VPNServerAddr: cfg.Server,
 		MTU:           cfg.MTU,
 		// Route Russian services directly so they resolve to Russian IPs.
-		BypassFunc: func(addr string, _ uint16) bool {
-			return stm.ShouldBypassByHostname(addr)
-		},
+		BypassFunc: stm.ShouldBypass,
 		// Drop BitTorrent connections — they reveal the real IP via DHT/PEX
 		// and unnecessarily consume VPN bandwidth.
 		BlockTorrents: true,
@@ -348,7 +346,7 @@ func main() {
 	dnsMod, _ := dnsmodule.New(&dnsmodule.Config{
 		Upstream:     dnsUpstreamAddr,
 		CacheEnabled: true,
-		BypassFunc:   stm.ShouldBypassByHostname,
+		BypassFunc:   stm.ShouldBypassByHostname, // DNS bypass uses hostname only (pre-resolution)
 	})
 	lc.Register(dnsMod)
 
