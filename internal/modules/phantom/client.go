@@ -222,12 +222,14 @@ func buildChromeClientHello(clientRandom, sessionID []byte, sni string) []byte {
 
 	exts = append(exts, buildExtension(g2, []byte{0x00})...)
 
-	sniBytes := []byte(sni)
-	sniPayload := appendU16(nil, uint16(3+len(sniBytes)))
-	sniPayload = append(sniPayload, 0x00)
-	sniPayload = appendU16(sniPayload, uint16(len(sniBytes)))
-	sniPayload = append(sniPayload, sniBytes...)
-	exts = append(exts, buildExtension(0x0000, sniPayload)...)
+	if sni != "" {
+		sniBytes := []byte(sni)
+		sniPayload := appendU16(nil, uint16(3+len(sniBytes)))
+		sniPayload = append(sniPayload, 0x00)
+		sniPayload = appendU16(sniPayload, uint16(len(sniBytes)))
+		sniPayload = append(sniPayload, sniBytes...)
+		exts = append(exts, buildExtension(0x0000, sniPayload)...)
+	}
 
 	exts = append(exts, buildExtension(0x0017, nil)...)
 

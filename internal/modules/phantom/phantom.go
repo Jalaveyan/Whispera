@@ -16,6 +16,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -94,6 +95,11 @@ type Config struct {
 	// and bypassing egress firewall rules (so-called "localhost attack").
 	BlockLocalPeers   bool     `yaml:"block_local_peers"`
 	AllowedLocalCIDRs []string `yaml:"allowed_local_cidrs"`
+
+	// MaxActiveConns is the server-wide cap on simultaneous authenticated
+	// connections. 0 = unlimited. New connections are rejected with a brief
+	// wait when the cap is reached, so legitimate clients retry automatically.
+	MaxActiveConns int `yaml:"max_active_conns"`
 
 	OnAuthenticated func(conn net.Conn, clientID string) `yaml:"-"`
 
@@ -408,6 +414,14 @@ func (h *Handler) acceptLoop() {
 			}
 		}
 
+		if h.config.MaxActiveConns > 0 {
+			if int(atomic.LoadInt32(&h.stats.ActiveConnections)) >= h.config.MaxActiveConns {
+				log.Warn("Global connection limit %d reached, dropping %s", h.config.MaxActiveConns, conn.RemoteAddr())
+				conn.Close()
+				continue
+			}
+		}
+
 		h.stats.TotalConnections++
 		go h.HandleConnection(conn)
 	}
@@ -444,7 +458,11 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 			log.Debug("[probe] blocked %s (blocklist): %s", remoteAddr, reason)
 			h.stats.ProxiedConnections++
 			releaseConnGuard()
-			h.handleHTTPFallback(conn)
+			if tp, ok := h.probeDetector.(interface{ TarpitConn(net.Conn) }); ok {
+				tp.TarpitConn(conn)
+			} else {
+				h.handleHTTPFallback(conn)
+			}
 			return
 		}
 
@@ -792,11 +810,28 @@ func (h *Handler) isReplay(clientRandomHex string) bool {
 func (h *Handler) markAsSeen(clientRandomHex string) {
 	h.replayMu.Lock()
 	defer h.replayMu.Unlock()
+	if len(h.replayCache) >= replayCacheMaxSize {
+		// Evict all entries immediately — better to re-accept a stale token
+		// once than to let the cache grow unbounded under a replay flood.
+		log.Printf("[Phantom] replay cache full (%d), forcing eviction", len(h.replayCache))
+		h.replayCache = make(map[string]time.Time, replayCacheMaxSize/2)
+	}
 	h.replayCache[clientRandomHex] = time.Now()
 }
 
+const replayCacheMaxSize = 50_000
+
 func (h *Handler) replayCacheCleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
+	// Run cleanup at half the maxTimeDiff so entries never survive more than
+	// one extra interval past expiry. Clamp to [30s, 2.5min].
+	interval := h.maxTimeDiff / 2
+	if interval < 30*time.Second {
+		interval = 30 * time.Second
+	}
+	if interval > 150*time.Second {
+		interval = 150 * time.Second
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -804,8 +839,9 @@ func (h *Handler) replayCacheCleanupLoop() {
 		case <-h.replayCacheCleanupStop:
 			return
 		case <-ticker.C:
+			// Evict entries older than maxTimeDiff + 10s safety buffer.
+			cutoff := time.Now().Add(-(h.maxTimeDiff + 10*time.Second))
 			h.replayMu.Lock()
-			cutoff := time.Now().Add(-10 * time.Minute)
 			for k, t := range h.replayCache {
 				if t.Before(cutoff) {
 					delete(h.replayCache, k)
@@ -1004,14 +1040,9 @@ func (h *Handler) writeAdmissionError(conn net.Conn, reason string) {
 
 func (h *Handler) WrapWithObfuscation(conn net.Conn) net.Conn {
 	wrapped := conn
-	if h.config.EnableObfuscation && h.integrationMgr != nil {
-		log.Printf("Applying Marionette messenger obfuscation to connection")
-		wrapped = &ObfuscatedConn{
-			Conn: wrapped,
-			mgr:  h.integrationMgr,
-		}
-	}
 	if h.config.EnableChatFSM {
+		// ChatFSM is the authoritative framing layer; skip legacy ObfuscatedConn
+		// to avoid double-wrapping (client side only applies ChatFSM, not both).
 		interval := h.config.ChatFSMCoverInterval
 		if interval <= 0 {
 			interval = 8 * time.Second
@@ -1020,6 +1051,14 @@ func (h *Handler) WrapWithObfuscation(conn net.Conn) net.Conn {
 		_, _ = rand.Read(chatID[:])
 		wrapped = marionette.NewChatFSMConn(wrapped, binary.BigEndian.Uint32(chatID[:]), interval)
 		log.Printf("Applying chat-FSM framing (cover interval %s)", interval)
+		return wrapped
+	}
+	if h.config.EnableObfuscation && h.integrationMgr != nil {
+		log.Printf("Applying Marionette messenger obfuscation to connection")
+		wrapped = &ObfuscatedConn{
+			Conn: wrapped,
+			mgr:  h.integrationMgr,
+		}
 	}
 	return wrapped
 }
