@@ -232,7 +232,7 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 // directDial connects to addr:port without the VPN tunnel (used for bypass).
 func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	upstream, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	upstream, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("direct dial %s: %w", addr, err)
 	}

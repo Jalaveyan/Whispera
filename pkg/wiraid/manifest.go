@@ -28,7 +28,7 @@ type Capabilities struct {
 
 // ProxyRules declares which traffic the module wants to intercept.
 // When a running module's rules match a connection, that connection is
-// dialled through the module's local SOCKS5 port instead of the normal path.
+// dialed through the module's local SOCKS5 port instead of the normal path.
 type ProxyRules struct {
 	Domains []string `json:"domains,omitempty"` // glob patterns: "*.netflix.com"
 	IPs     []string `json:"ips,omitempty"`     // CIDR: "23.246.0.0/18"

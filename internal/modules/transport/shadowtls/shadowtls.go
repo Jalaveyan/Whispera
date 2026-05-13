@@ -126,7 +126,7 @@ func (t *Transport) Type() interfaces.TransportType { return interfaces.Transpor
 // --------------------------------------------------------------------------
 
 func (t *Transport) Listen(addr string) error {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("shadowtls: listen %s: %w", addr, err)
 	}
@@ -172,7 +172,7 @@ func (t *Transport) shadowAccept(clientConn net.Conn) (net.Conn, error) {
 		}
 	}()
 
-	shadowConn, err := net.DialTimeout("tcp", t.config.ShadowServer, 10*time.Second)
+	shadowConn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", t.config.ShadowServer)
 	if err != nil {
 		clientConn.Close()
 		return nil, fmt.Errorf("shadowtls: dial shadow %s: %w", t.config.ShadowServer, err)

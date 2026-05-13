@@ -951,7 +951,9 @@ func (s *MLServer) aggregateModelDelta(remote *ml.ModelState) {
 	aggPath := filepath.Join(s.fedDir, "aggregated_model.json")
 	var agg ml.ModelState
 	if data, err := os.ReadFile(aggPath); err == nil {
-		json.Unmarshal(data, &agg)
+		if err := json.Unmarshal(data, &agg); err != nil {
+			agg = ml.ModelState{}
+		}
 	}
 	if len(agg.TrafficLayers) == 0 {
 		agg = *remote

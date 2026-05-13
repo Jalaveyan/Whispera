@@ -961,7 +961,7 @@ func startControlServer(ctx context.Context) {
 				defer wg.Done()
 				best := time.Duration(1<<62 - 1)
 				for _, srv := range servers {
-					conn, err := net.DialTimeout("tcp", srv, 500*time.Millisecond)
+					conn, err := (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext(context.Background(), "tcp", srv)
 					if err != nil {
 						continue
 					}
