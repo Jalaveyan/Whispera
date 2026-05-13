@@ -57,6 +57,7 @@ import (
 	"whispera/internal/mux"
 	"whispera/internal/obfuscation/core/evasion"
 	"whispera/internal/obfuscation/marionette"
+	mlpkg "whispera/internal/obfuscation/ml"
 	"whispera/internal/obfuscation/russian"
 )
 
@@ -261,8 +262,11 @@ type Config struct {
 
 	MLToken string
 
-	CustomSNI   string
-	NoSNI       bool
+	// SNIModelDir — путь для сохранения rl_sni_policy.json. Пустая строка = не сохранять.
+	SNIModelDir string
+
+	CustomSNI string
+	NoSNI     bool
 	BridgeAddr  string
 	RateLimitKB int
 
@@ -384,7 +388,8 @@ type Manager struct {
 	russianSNIs   []string
 	russianSNIsMu sync.RWMutex
 	currentSNI    string
-	lastRotation time.Time
+	lastRotation  time.Time
+	sniAgent      *mlpkg.RLSNIAgent
 
 	russianTunneler *russian.RussianTunneler
 
@@ -558,6 +563,14 @@ func New(cfg *Config) (*Manager, error) {
 	if len(m.russianSNIs) > 0 {
 		log.Info("Initialized %d Russian SNIs for rotation", len(m.russianSNIs))
 	}
+
+	// RL SNI агент — учится какие домены работают лучше в данном регионе/ISP.
+	sniPool := m.russianSNIs
+	if len(sniPool) == 0 {
+		sniPool = defaultSNIPool
+	}
+	m.sniAgent = mlpkg.NewRLSNIAgent(cfg.SNIModelDir, sniPool)
+	log.Info("RL SNI agent initialized (pool=%d, eps=%.2f)", len(sniPool), m.sniAgent.Epsilon())
 
 	if cfg.CustomSNI != "" {
 		if cfg.TransportConfig == nil {
@@ -1678,6 +1691,21 @@ func (m *Manager) selectNewSNILocked() string {
 		return m.currentSNI
 	}
 
+	if m.sniAgent != nil {
+		// Строим состояние: без реального RTT на этом этапе используем нули,
+		// агент всё равно учится на реальных результатах через RecordOutcome.
+		state := m.sniAgent.EncodeState(0, 0, 0, false, 0)
+		domain, _ := m.sniAgent.Select(state)
+		if domain != "" {
+			m.currentSNI = domain
+			m.lastRotation = time.Now()
+			log.Info("[ROTATION EVENT] RL SNI agent selected: %s (eps=%.2f, next=%s)",
+				m.currentSNI, m.sniAgent.Epsilon(), m.getSNIRotationInterval(m.currentSNI))
+			return m.currentSNI
+		}
+	}
+
+	// Fallback: crypto/rand (если агент не инициализирован)
 	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(pool))))
 	if err != nil {
 		m.currentSNI = pool[0]
@@ -1685,10 +1713,7 @@ func (m *Manager) selectNewSNILocked() string {
 		m.currentSNI = pool[idxBig.Int64()]
 	}
 	m.lastRotation = time.Now()
-
-	nextInterval := m.getSNIRotationInterval(m.currentSNI)
-	log.Info("[ROTATION EVENT] Selected new SNI: %s (Next rotation in %s)", m.currentSNI, nextInterval)
-
+	log.Info("[ROTATION EVENT] Selected new SNI: %s (Next rotation in %s)", m.currentSNI, m.getSNIRotationInterval(m.currentSNI))
 	return m.currentSNI
 }
 
@@ -1911,6 +1936,9 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		dialLatency := float64(time.Since(dialStart).Milliseconds())
 		if err == nil {
 			m.mlSendFeedback(usedTransport, true, dialLatency)
+			if m.sniAgent != nil {
+				m.sniAgent.RecordOutcome(true, dialLatency)
+			}
 			m.circuitBreakerSuccess()
 			if transportFallbackActivated {
 				m.config.Transport = originalTransport
@@ -1920,6 +1948,9 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		}
 
 		m.mlSendFeedback(usedTransport, false, dialLatency)
+		if m.sniAgent != nil {
+			m.sniAgent.RecordOutcome(false, dialLatency)
+		}
 		log.Warn("Reconnect attempt %d failed (transport=%s): %s", attempts, m.config.Transport, ClassifyConnError(err))
 		m.circuitBreakerFail()
 		jitter := time.Duration(mrand.Int63n(int64(delay) / 4))
