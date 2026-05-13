@@ -381,14 +381,6 @@ func (a *RLSNIAgent) netBackprop(net *gnet.GorgoniaNet, acts [][]float64, dOut [
 	}
 }
 
-// fullForward / fullBackprop оставлены как алиасы для обратной совместимости.
-func (a *RLSNIAgent) fullForward(input []float64) [][]float64 {
-	return a.netForward(a.qNet, input)
-}
-
-func (a *RLSNIAgent) fullBackprop(acts [][]float64, dOut []float64, lr float64) {
-	a.netBackprop(a.qNet, acts, dOut, lr)
-}
 
 func (a *RLSNIAgent) load(pool []string) {
 	if a.modelDir == "" {
