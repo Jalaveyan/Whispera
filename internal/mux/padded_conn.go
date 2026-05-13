@@ -66,7 +66,7 @@ func (pc *PaddedConn) Write(p []byte) (int, error) {
 }
 
 func (pc *PaddedConn) writeFrame(data []byte) error {
-	padLen := rand.Intn(pc.maxPad + 1)
+	padLen := pc.computePad(len(data))
 	totalLen := 2 + len(data) + padLen // 2 for real-data-len header
 
 	// Frame: [2: totalLen][2: dataLen][data][padding]
@@ -75,16 +75,46 @@ func (pc *PaddedConn) writeFrame(data []byte) error {
 	binary.BigEndian.PutUint16(frame[2:4], uint16(len(data)))
 	copy(frame[4:], data)
 
-	// Fill padding with random bytes
 	if padLen > 0 {
-		pad := frame[4+len(data):]
-		if _, err := crand.Read(pad); err != nil {
-			// fallback: just leave zeros, still adds size variation
+		if _, err := crand.Read(frame[4+len(data):]); err != nil {
+			// zeros are fine — size variation is what matters
 		}
 	}
 
 	_, err := pc.Conn.Write(frame)
 	return err
+}
+
+// computePad returns padding bytes so the on-wire frame lands in a size bucket,
+// making DPI packet-size fingerprinting ineffective.
+// Buckets: ≤256 → 256, ≤512 → 512, ≤1024 → 1024, larger → random up to maxPad.
+func (pc *PaddedConn) computePad(dataLen int) int {
+	wireBase := 4 + dataLen // 2-byte outer len + 2-byte inner len + data
+
+	var bucket int
+	switch {
+	case wireBase <= 256:
+		bucket = 256
+	case wireBase <= 512:
+		bucket = 512
+	case wireBase <= 1024:
+		bucket = 1024
+	default:
+		return rand.Intn(pc.maxPad + 1)
+	}
+
+	remainder := wireBase % bucket
+	padNeeded := 0
+	if remainder != 0 {
+		padNeeded = bucket - remainder
+	}
+	// Small random overshoot (0..31 bytes) so equal-sized payloads differ
+	overshoot := rand.Intn(32)
+	total := padNeeded + overshoot
+	if total > 65000-dataLen {
+		total = padNeeded
+	}
+	return total
 }
 
 func (pc *PaddedConn) Read(p []byte) (int, error) {
