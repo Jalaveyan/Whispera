@@ -1092,25 +1092,69 @@ func (h *Handler) initSNIRotation() {
 	h.sniMu.Lock()
 	defer h.sniMu.Unlock()
 	h.sniDomains = []string{
+		// VK
 		"vk.com",
 		"api.vk.com",
 		"oauth.vk.com",
+		"userapi.com",
+		"vk-cdn.net",
+		"st.vk.com",
+		"vkuservideo.net",
+		"vkvideo.ru",
+		// Яндекс
 		"yandex.ru",
 		"api.yandex.ru",
-		"mail.ru",
-		"ok.ru",
-		"sberbank.ru",
-		"gosuslugi.ru",
-		"kion.ru",
-		"rutube.ru",
-		"dzen.ru",
 		"music.yandex.ru",
+		"disk.yandex.ru",
+		"maps.yandex.ru",
+		"market.yandex.ru",
+		"messenger.yandex.ru",
+		"dzen.ru",
+		// Мейл
+		"mail.ru",
 		"cloud.mail.ru",
+		"video.mail.ru",
+		"ok.ru",
+		"tamtam.chat",
+		// Стриминг
+		"rutube.ru",
+		"smotrim.ru",
+		"kion.ru",
 		"premier.one",
 		"wink.ru",
 		"ivi.ru",
+		"okko.tv",
+		"kinopoisk.ru",
 		"start.ru",
 		"more.tv",
+		"ntv.ru",
+		"1tv.ru",
+		// Банки
+		"sberbank.ru",
+		"online.sberbank.ru",
+		"tinkoff.ru",
+		"vtb.ru",
+		"alfabank.ru",
+		"raiffeisen.ru",
+		// Госуслуги
+		"gosuslugi.ru",
+		"mos.ru",
+		// Ритейл
+		"ozon.ru",
+		"wildberries.ru",
+		"avito.ru",
+		"citilink.ru",
+		"mvideo.ru",
+		"dns-shop.ru",
+		// Телеком
+		"mts.ru",
+		"beeline.ru",
+		"megafon.ru",
+		"tele2.ru",
+		// Медиа
+		"rbc.ru",
+		"lenta.ru",
+		"2gis.ru",
 	}
 
 	if len(h.config.ServerNames) > 0 {
