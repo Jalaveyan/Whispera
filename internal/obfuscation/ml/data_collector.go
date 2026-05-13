@@ -411,6 +411,7 @@ func (dc *DataCollector) SetMLServer(url, token string) {
 	if url != "" {
 		uploadHTTPClient = buildUploadHTTPClient(url)
 		go dc.backgroundUploadLoop()
+		go dc.backgroundDownloadLoop()
 	}
 }
 
@@ -445,20 +446,27 @@ func (dc *DataCollector) UploadToMLServer() error {
 	copy(batch, dc.samples)
 	dc.mu.RUnlock()
 
+	// Include NN weights so the aggregation server can run FedAvg across clients.
+	var weights *ModelState
+	if nativeEngine != nil {
+		weights = nativeEngine.ExportModelState()
+	}
+
 	payload, err := json.Marshal(map[string]interface{}{
-		"samples":    batch,
+		"samples":     batch,
 		"uploaded_at": time.Now().UTC(),
-		"count":      len(batch),
+		"count":       len(batch),
+		"weights":     weights,
 	})
 	if err != nil {
 		return err
 	}
 
-	url := dc.mlServerURL
-	if url[len(url)-1] != '/' {
-		url += "/"
+	baseURL := dc.mlServerURL
+	if baseURL[len(baseURL)-1] != '/' {
+		baseURL += "/"
 	}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url+"federated/upload", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"federated/upload", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
@@ -476,7 +484,45 @@ func (dc *DataCollector) UploadToMLServer() error {
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
 		atomic.AddUint64(&dc.uploadedCount, uint64(len(batch)))
 		dc.lastUpload = time.Now()
-		log.Info("Uploaded %d samples to ML server (%d total)", len(batch), atomic.LoadUint64(&dc.uploadedCount))
+		log.Info("Uploaded %d samples + weights to ML server (%d total)", len(batch), atomic.LoadUint64(&dc.uploadedCount))
+	}
+	return nil
+}
+
+// downloadAggregatedModel fetches the server-side FedAvg model and blends it
+// into the local engine weights (alpha=0.7 trusts local data more).
+func (dc *DataCollector) downloadAggregatedModel() error {
+	if dc.mlServerURL == "" {
+		return nil
+	}
+	baseURL := dc.mlServerURL
+	if baseURL[len(baseURL)-1] != '/' {
+		baseURL += "/"
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"federated/download", nil)
+	if err != nil {
+		return err
+	}
+	if dc.mlToken != "" {
+		req.Header.Set("Authorization", "Bearer "+dc.mlToken)
+	}
+	resp, err := uploadHTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil // server may not have aggregated model yet — not an error
+	}
+	var result struct {
+		Weights *ModelState `json:"weights"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return err
+	}
+	if result.Weights != nil && nativeEngine != nil {
+		nativeEngine.ImportModelState(result.Weights, 0.7)
+		log.Info("Applied aggregated ML model weights from server (FedAvg α=0.7)")
 	}
 	return nil
 }
@@ -487,6 +533,21 @@ func (dc *DataCollector) backgroundUploadLoop() {
 	for range ticker.C {
 		if err := dc.UploadToMLServer(); err != nil {
 			log.Warn("ML upload error: %v", err)
+		}
+	}
+}
+
+func (dc *DataCollector) backgroundDownloadLoop() {
+	// First download after 2 minutes (give server time to aggregate).
+	time.Sleep(2 * time.Minute)
+	if err := dc.downloadAggregatedModel(); err != nil {
+		log.Warn("ML model download error: %v", err)
+	}
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := dc.downloadAggregatedModel(); err != nil {
+			log.Warn("ML model download error: %v", err)
 		}
 	}
 }

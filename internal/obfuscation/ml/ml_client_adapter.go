@@ -15,16 +15,22 @@ import (
 )
 
 var nativeEngine *NativeMLEngine
+var globalDataCollector *DataCollector
 
 var overrideMLServerURL string
 var overrideMu sync.RWMutex
 
-func SetMLServerURL(url, _ string) {
+func SetMLServerURL(url, token string) {
 	overrideMu.Lock()
 	overrideMLServerURL = url
 	overrideMu.Unlock()
 	if url != "" {
 		os.Setenv("WHISPERA_ML_SERVER", url)
+		// Wire upload/download loops to the global DataCollector so that
+		// samples and NN weights are exchanged with the ML server.
+		if globalDataCollector != nil {
+			globalDataCollector.SetMLServer(url, token)
+		}
 	}
 }
 
@@ -43,6 +49,12 @@ func init() {
 		modelDir = "./ml_models"
 	}
 	nativeEngine = NewNativeMLEngine(modelDir)
+
+	dataDir := os.Getenv("WHISPERA_ML_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "./ml_data"
+	}
+	globalDataCollector = NewDataCollector(10000, dataDir)
 
 	evasion.NewPythonMLClientLocal = func() evasion.PythonMLClient {
 		mode := strings.ToLower(os.Getenv("WHISPERA_ML_MODE"))
