@@ -59,7 +59,7 @@ import (
 	obfs4_transport "whispera/internal/modules/transport/obfs4"
 	_ "whispera/internal/modules/transport/okwebrtc"
 	shadowsocks_transport "whispera/internal/modules/transport/shadowsocks"
-	_ "whispera/internal/modules/transport/shadowtls"
+	shadowtls_transport "whispera/internal/modules/transport/shadowtls"
 	_ "whispera/internal/modules/transport/snowflake"
 	_ "whispera/internal/modules/transport/splithttp"
 	"whispera/internal/modules/transport/tcp"
@@ -233,9 +233,21 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 
 	log.Printf("🚀 [Dynamic] Starting inbound %s (%s) on %s", inbound.Tag, network, listenAddr)
 
-	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", listenAddr)
-	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
+	if network == "udp" {
+		log.Printf("ℹ [Dynamic] Inbound %s (udp): served by global UDP transport, skipping", inbound.Tag)
+		return nil
+	}
+
+	selfManaged := network == "ws" || network == "h2c" || network == "shadowsocks" ||
+		network == "obfs4" || network == "shadowtls"
+
+	var listener net.Listener
+	if !selfManaged {
+		var err error
+		listener, err = (&net.ListenConfig{}).Listen(context.Background(), "tcp", listenAddr)
+		if err != nil {
+			return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
+		}
 	}
 
 	var hsHandler *handshake.Handler
@@ -349,7 +361,9 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		var err error
 		phantomHandler, err = phantom.New(pCfg)
 		if err != nil {
-			listener.Close()
+			if listener != nil {
+				listener.Close()
+			}
 			return fmt.Errorf("failed to create phantom handler: %w", err)
 		}
 		if globalProbeDetector != nil {
@@ -371,7 +385,9 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		if privKey != "" {
 			hsHandler = createHandshakeHandler(privKey, serverConfig)
 			if hsHandler == nil {
-				listener.Close()
+				if listener != nil {
+					listener.Close()
+				}
 				return fmt.Errorf("failed to create handshake handler for %s", inbound.Tag)
 			}
 		}
@@ -396,10 +412,14 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		wsCfg.Path = path
 		wsTrans, err := ws_transport.New(wsCfg)
 		if err != nil {
-			listener.Close()
+			if listener != nil {
+				listener.Close()
+			}
 			return fmt.Errorf("failed to create websocket transport: %w", err)
 		}
-		listener.Close()
+		if listener != nil {
+			listener.Close()
+		}
 		if err := wsTrans.Listen(listenAddr); err != nil {
 			return fmt.Errorf("failed to listen ws on %s: %w", listenAddr, err)
 		}
@@ -429,7 +449,9 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 	if network == "shadowsocks" {
 		password := paramStr("password", "")
 		if password == "" {
-			listener.Close()
+			if listener != nil {
+				listener.Close()
+			}
 			return fmt.Errorf("shadowsocks inbound %s: 'password' required in params", inbound.Tag)
 		}
 		method := shadowsocks_transport.Method(paramStr("method", "aes-256-gcm"))
@@ -439,10 +461,14 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		}
 		ssTrans, err := shadowsocks_transport.New(ssCfg)
 		if err != nil {
-			listener.Close()
+			if listener != nil {
+				listener.Close()
+			}
 			return fmt.Errorf("failed to create shadowsocks transport: %w", err)
 		}
-		listener.Close()
+		if listener != nil {
+			listener.Close()
+		}
 		if err := ssTrans.Listen(listenAddr); err != nil {
 			return fmt.Errorf("failed to listen shadowsocks on %s: %w", listenAddr, err)
 		}
@@ -478,10 +504,14 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		}
 		obfsTrans, err := obfs4_transport.New(obfsCfg)
 		if err != nil {
-			listener.Close()
+			if listener != nil {
+				listener.Close()
+			}
 			return fmt.Errorf("failed to create obfs4 transport: %w", err)
 		}
-		listener.Close()
+		if listener != nil {
+			listener.Close()
+		}
 		if err := obfsTrans.Listen(listenAddr); err != nil {
 			return fmt.Errorf("failed to listen obfs4 on %s: %w", listenAddr, err)
 		}
@@ -517,11 +547,15 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 
 		h2cTrans, err := h2c_transport.New(h2cConfig)
 		if err != nil {
-			listener.Close()
+			if listener != nil {
+				listener.Close()
+			}
 			return fmt.Errorf("failed to create h2c transport: %w", err)
 		}
 
-		listener.Close()
+		if listener != nil {
+			listener.Close()
+		}
 
 		if err := h2cTrans.Listen(listenAddr); err != nil {
 			return fmt.Errorf("failed to listen h2c on %s: %w", listenAddr, err)
@@ -539,6 +573,50 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				conn, err := h2cTrans.Accept()
 				if err != nil {
 					log.Printf("⚠ [Dynamic] H2C Accept error on %s: %v", inbound.Tag, err)
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				if globalRelay != nil {
+					go globalRelay.ServeTunnel(conn, false)
+				} else {
+					conn.Close()
+				}
+			}
+		}()
+		return nil
+	}
+
+	if network == "shadowtls" {
+		password := paramStr("password", "")
+		if password == "" {
+			return fmt.Errorf("shadowtls inbound %s: 'password' required in params", inbound.Tag)
+		}
+		shadowHost := paramStr("shadow_server", "www.apple.com:443")
+		sni := paramStr("sni", "")
+		stCfg := &shadowtls_transport.Config{
+			Password:     password,
+			ShadowServer: shadowHost,
+			SNI:          sni,
+			ServerMode:   true,
+			Version:      3,
+		}
+		stTrans, err := shadowtls_transport.New(stCfg)
+		if err != nil {
+			return fmt.Errorf("failed to create shadowtls transport: %w", err)
+		}
+		if err := stTrans.Listen(listenAddr); err != nil {
+			return fmt.Errorf("failed to listen shadowtls on %s: %w", listenAddr, err)
+		}
+		log.Printf("✅ [Dynamic] Inbound %s listening on %s (ShadowTLS)", inbound.Tag, listenAddr)
+		go func() {
+			defer func() {
+				stTrans.Close()
+				log.Printf("⏹ [Dynamic] Stopped inbound %s (ShadowTLS)", inbound.Tag)
+			}()
+			for {
+				conn, err := stTrans.Accept()
+				if err != nil {
+					log.Printf("⚠ [Dynamic] ShadowTLS Accept error on %s: %v", inbound.Tag, err)
 					time.Sleep(100 * time.Millisecond)
 					continue
 				}
