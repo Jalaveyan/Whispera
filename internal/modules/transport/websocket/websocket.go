@@ -38,6 +38,9 @@ type Config struct {
 	ServerName         string
 	Fingerprint        string
 	InsecureSkipVerify bool
+	// HostOverride sets the HTTP Host header (useful for CDN fronting).
+	// When non-empty, the WebSocket Origin is derived from it too.
+	HostOverride string
 }
 
 func DefaultConfig() *Config {
@@ -208,26 +211,47 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 }
 
 func (t *Transport) DialWithFingerprint(ctx context.Context, addr string, fingerprint string) (net.Conn, error) {
-	var scheme, origin string
+	_ = fingerprint
+
+	var scheme, originScheme string
 	if t.config.UseTLS {
 		scheme = "wss://"
-		origin = "https://"
+		originScheme = "https://"
 	} else {
 		scheme = "ws://"
-		origin = "http://"
+		originScheme = "http://"
 	}
 
-	config, err := websocket.NewConfig(scheme+addr+t.config.Path, origin+addr)
+	// HostOverride allows CDN fronting: the URL uses the real server addr but
+	// the HTTP Host header (and Origin) are set to the front domain.
+	host := addr
+	if t.config.HostOverride != "" {
+		host = t.config.HostOverride
+	}
+
+	wsURL := scheme + host + t.config.Path
+	origin := originScheme + host
+
+	wsCfg, err := websocket.NewConfig(wsURL, origin)
 	if err != nil {
 		return nil, err
 	}
-	config.Protocol = []string{t.config.Subprotocol}
+	if t.config.Subprotocol != "" {
+		wsCfg.Protocol = []string{t.config.Subprotocol}
+	}
+
+	// When HostOverride is set, dial the real addr but send Host: override.
+	// golang.org/x/net/websocket resolves the URL host for dialing, so we
+	// need to set the location to the real addr for the TCP connection.
+	if t.config.HostOverride != "" {
+		loc, err2 := wsCfg.Location.Parse(scheme + addr + t.config.Path)
+		if err2 == nil {
+			wsCfg.Location = loc
+		}
+	}
 
 	var ws *websocket.Conn
-
-	_ = fingerprint
-
-	ws, err = websocket.DialConfig(config)
+	ws, err = websocket.DialConfig(wsCfg)
 	if err != nil {
 		return nil, err
 	}
