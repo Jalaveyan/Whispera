@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -35,6 +36,13 @@ type Config struct {
 	MaxConns            int
 	EnableEarlyData     bool
 	InitialStreamWindow uint64
+	// ALPN is the TLS application-layer protocol name used in the QUIC handshake.
+	// Default: "h3" — indistinguishable from HTTP/3 traffic.
+	ALPN       string
+	// ServerName sets the SNI in the ClientHello (client-side only).
+	ServerName string
+	// CertDomains are included as SANs in the auto-generated server certificate.
+	CertDomains []string
 }
 
 func DefaultConfig() *Config {
@@ -47,6 +55,7 @@ func DefaultConfig() *Config {
 		MaxConns:            10000,
 		EnableEarlyData:     true,
 		InitialStreamWindow: 32 * 1024 * 1024,
+		ALPN:                "h3",
 	}
 }
 
@@ -101,7 +110,7 @@ func New(cfg *Config) (*Transport, error) {
 		return nil, err
 	}
 
-	tlsConfig, err := generateTLSConfig()
+	tlsConfig, err := generateTLSConfig(cfg.ALPN, cfg.CertDomains)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate TLS config: %w", err)
 	}
@@ -115,16 +124,31 @@ func New(cfg *Config) (*Transport, error) {
 	return t, nil
 }
 
-func generateTLSConfig() (*tls.Config, error) {
+func generateTLSConfig(alpn string, domains []string) (*tls.Config, error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, err
 	}
 
+	serialN, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+
+	// Use a plausible validity window: start ~90 days ago, valid for 2 years.
+	notBefore := time.Now().Add(-90 * 24 * time.Hour)
+	notAfter := notBefore.Add(2 * 365 * 24 * time.Hour)
+
+	var dnsNames []string
+	cn := "localhost"
+	if len(domains) > 0 {
+		cn = domains[0]
+		dnsNames = domains
+	}
+
 	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(365 * 24 * time.Hour),
+		SerialNumber: serialN,
+		Subject:      pkix.Name{CommonName: cn},
+		DNSNames:     dnsNames,
+		NotBefore:    notBefore,
+		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -142,9 +166,13 @@ func generateTLSConfig() (*tls.Config, error) {
 		return nil, err
 	}
 
+	if alpn == "" {
+		alpn = "h3"
+	}
+
 	return &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},
-		NextProtos:   []string{"whispera"},
+		NextProtos:   []string{alpn},
 		MinVersion:   tls.VersionTLS13,
 		MaxVersion:   tls.VersionTLS13,
 	}, nil
@@ -229,9 +257,14 @@ func (t *Transport) Listen(addr string) error {
 }
 
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
+	alpn := t.config.ALPN
+	if alpn == "" {
+		alpn = "h3"
+	}
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: true,
-		NextProtos:         []string{"whispera"},
+		NextProtos:         []string{alpn},
+		ServerName:         t.config.ServerName,
 		MinVersion:         tls.VersionTLS13,
 		MaxVersion:         tls.VersionTLS13,
 		ClientSessionCache: tls.NewLRUClientSessionCache(100),
