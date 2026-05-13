@@ -1,8 +1,6 @@
-
-class ThreeCity {
+﻿class ThreeCity {
     constructor(canvasId) {
-        this.canvas = document.getElementById(canvasId);
-        if (!this.canvas) return;
+        return; // removed — WebGL replaced with CSS background
 
         const EffectComposer = THREE.EffectComposer || window.EffectComposer;
         const RenderPass = THREE.RenderPass || window.RenderPass;
@@ -590,10 +588,6 @@ class ThreeCity {
 
 class WhisperaApp {
     constructor() {
-        this.threeCity = new ThreeCity('city-canvas');
-
-
-
 
 
         this.currentPage = 'dashboard';
@@ -1151,8 +1145,6 @@ class WhisperaApp {
 
         this.bindEvents();
         this.initBackgroundEffects();
-        this.animateLoginEntrance();
-        this.initUIAnimations();
         this.initCustomSelects();
 
         const savedLang = localStorage.getItem('whispera_lang') || 'ru';
@@ -1167,360 +1159,6 @@ class WhisperaApp {
                 this.navigateTo(savedPage);
             }
         }
-    }
-
-    initBackgroundEffects() {
-        const mesh = document.querySelector('.bg-mesh');
-        if (!mesh) return;
-
-        gsap.to('.blob-1', {
-            duration: 20,
-            x: 'random(-200, 300)',
-            y: 'random(-100, 400)',
-            scale: 'random(0.9, 1.2)',
-            repeat: -1,
-            yoyo: true,
-            ease: "sine.inOut"
-        });
-
-        gsap.to('.blob-2', {
-            duration: 25,
-            x: 'random(-400, 100)',
-            y: 'random(-400, 100)',
-            scale: 'random(0.8, 1.1)',
-            repeat: -1,
-            yoyo: true,
-            ease: "sine.inOut"
-        });
-
-        gsap.to('.blob-3', {
-            duration: 15,
-            x: 'random(-100, 100)',
-            y: 'random(-100, 100)',
-            opacity: 'random(0.1, 0.3)',
-            repeat: -1,
-            yoyo: true,
-            ease: "none"
-        });
-
-        window.addEventListener('mousemove', (e) => {
-            const { clientX, clientY } = e;
-            const xPos = (clientX / window.innerWidth - 0.5) * 60;
-            const yPos = (clientY / window.innerHeight - 0.5) * 60;
-
-            gsap.to('.bg-mesh', {
-                duration: 2.5,
-                x: xPos,
-                y: yPos,
-                ease: "power2.out"
-            });
-
-            gsap.to('.bg-grid-animated', {
-                duration: 4,
-                x: xPos * 0.4,
-                y: yPos * 0.4,
-                ease: "power2.out"
-            });
-        });
-
-        this.createDataParticles();
-        this.initRainSystem();
-        this.initCircuitFlow();
-        this.initUIGlitches();
-
-        setTimeout(() => {
-            try {
-                this.threeCity = new ThreeCity('city-canvas');
-
-                setInterval(() => {
-                    if (this.threeCity && Math.random() > 0.7) {
-                        this.threeCity.triggerLightning();
-                    }
-                }, 10000);
-            } catch (e) { console.warn("ThreeCity error:", e); }
-        }, 500);
-    }
-
-    initDataBurst() {
-        setInterval(() => {
-            if (Math.random() > 0.7) {
-                const burst = document.createElement('div');
-                burst.className = 'bg-data-burst';
-                document.querySelector('.bg-effects').appendChild(burst);
-
-                gsap.to(burst, {
-                    opacity: 0.3,
-                    duration: 0.05,
-                    repeat: 5,
-                    yoyo: true,
-                    onComplete: () => burst.remove()
-                });
-            }
-        }, 15000);
-    }
-
-
-
-    initUIGlitches() {
-        setInterval(() => {
-            const targets = document.querySelectorAll('.cyber-card, .btn-cyber, .cyber-logo-text');
-            const target = targets[Math.floor(Math.random() * targets.length)];
-
-            if (target && !target.classList.contains('ui-glitch-active')) {
-                if (!target.hasAttribute('data-text')) {
-                    target.setAttribute('data-text', target.innerText || 'SYSTEM');
-                }
-
-                target.classList.add('ui-glitch-active');
-                setTimeout(() => {
-                    target.classList.remove('ui-glitch-active');
-                }, gsap.utils.random(200, 800));
-            }
-        }, 8000);
-
-        document.querySelectorAll('.btn-cyber, .nav-item').forEach(el => {
-            el.addEventListener('mouseenter', () => {
-                if (Math.random() > 0.5) {
-                    el.classList.add('flicker-fast');
-                    setTimeout(() => el.classList.remove('flicker-fast'), 200);
-                }
-            });
-        });
-    }
-
-    initCircuitFlow() {
-        const paths = document.querySelectorAll('.circuit-path');
-        paths.forEach((path, i) => {
-            const length = path.getTotalLength();
-            gsap.set(path, { strokeDasharray: length, strokeDashoffset: length });
-
-            const pulse = () => {
-                const tl = gsap.timeline({
-                    onComplete: () => {
-                        path.classList.remove('active');
-                        setTimeout(pulse, gsap.utils.random(2000, 8000));
-                    }
-                });
-
-                tl.to(path, {
-                    onStart: () => path.classList.add('active'),
-                    strokeDashoffset: 0,
-                    duration: gsap.utils.random(1.5, 4),
-                    ease: "sine.inOut"
-                }).to(path, {
-                    opacity: 0.15,
-                    duration: 1
-                }, "-=1");
-            };
-            setTimeout(pulse, i * 800);
-        });
-    }
-
-    initNeonSigns() {
-        const signs = document.querySelectorAll('.neon-sign');
-        signs.forEach(sign => {
-            gsap.to(sign, {
-                opacity: "random(0.05, 0.2)",
-                duration: 0.1,
-                repeat: -1,
-                yoyo: true,
-                ease: "none"
-            });
-
-            const glitch = () => {
-                gsap.to(sign, {
-                    opacity: 0,
-                    duration: 0.05,
-                    repeat: 3,
-                    yoyo: true,
-                    onComplete: () => {
-                        setTimeout(glitch, gsap.utils.random(5000, 15000));
-                    }
-                });
-            };
-            glitch();
-        });
-    }
-
-    animateCityLights() {
-        gsap.to('.city-glow', {
-            duration: 'random(10, 20)',
-            x: 'random(-100, 100)',
-            y: 'random(-100, 100)',
-            scale: 'random(0.8, 1.2)',
-            opacity: 'random(0.2, 0.5)',
-            repeat: -1,
-            yoyo: true,
-            stagger: 2,
-            ease: "sine.inOut"
-        });
-
-        setInterval(() => {
-            const glow = document.querySelectorAll('.city-glow')[Math.floor(Math.random() * 3)];
-            if (glow) {
-                gsap.to(glow, { duration: 0.1, opacity: 0.1, repeat: 3, yoyo: true });
-            }
-        }, 5000);
-    }
-
-    initRainSystem() {
-        const rainContainer = document.querySelector('.bg-rain');
-        if (!rainContainer) return;
-
-        for (let i = 0; i < 60; i++) {
-            this.createRainDrop(rainContainer, true);
-        }
-    }
-
-    createRainDrop(container, initial = false) {
-        const drop = document.createElement('div');
-        drop.className = 'rain-drop';
-        container.appendChild(drop);
-
-        const x = Math.random() * window.innerWidth;
-        const delay = initial ? Math.random() * -5 : 0;
-        const duration = 0.5 + Math.random() * 0.5;
-
-        gsap.set(drop, { x, y: initial ? Math.random() * window.innerHeight : -100, opacity: 0.2 + Math.random() * 0.5 });
-
-        gsap.to(drop, {
-            y: window.innerHeight + 100,
-            duration: duration,
-            delay: delay,
-            ease: "none",
-            onComplete: () => {
-                drop.remove();
-                this.createRainDrop(container);
-            }
-        });
-    }
-
-    createDataParticles() {
-        const effects = document.querySelector('.bg-effects');
-        if (!effects) return;
-
-        for (let i = 0; i < 30; i++) {
-            const particle = document.createElement('div');
-            particle.className = 'particle';
-            effects.appendChild(particle);
-
-            this.animateParticle(particle);
-        }
-    }
-
-    animateParticle(p) {
-        gsap.set(p, {
-            x: Math.random() * window.innerWidth,
-            y: Math.random() * window.innerHeight,
-            opacity: Math.random() * 0.5,
-            scale: Math.random() * 2
-        });
-
-        gsap.to(p, {
-            duration: 'random(10, 30)',
-            x: `+= ${Math.random() * 400 - 200} `,
-            y: `+= ${Math.random() * 400 - 200} `,
-            opacity: 0,
-            repeat: -1,
-            yoyo: true,
-            ease: "sine.inOut"
-        });
-    }
-
-    animateLoginEntrance() {
-        const loginContainer = document.querySelector('.login-container');
-        if (!loginContainer) return;
-
-        gsap.from(loginContainer, {
-            duration: 1.2,
-            y: 50,
-            opacity: 0,
-            ease: "expo.out"
-        });
-
-        gsap.from('.login-header .cyber-logo-text', {
-            duration: 1.5,
-            scale: 0.8,
-            delay: 0.2,
-            opacity: 0,
-            ease: "elastic.out(1, 0.5)"
-        });
-
-        gsap.from('.form-group', {
-            duration: 1,
-            x: -20,
-            opacity: 0,
-            stagger: 0.1,
-            delay: 0.5,
-            ease: "power3.out"
-        });
-    }
-
-    initUIAnimations() {
-        document.querySelectorAll('.card, .stat-card, .cyber-card').forEach(card => {
-            card.addEventListener('mouseenter', () => {
-                gsap.to(card, {
-                    duration: 0.3,
-                    y: -5,
-                    boxShadow: '0 15px 45px rgba(0, 229, 255, 0.2)',
-                    borderColor: 'rgba(0, 229, 255, 0.6)',
-                    ease: "back.out(1.7)"
-                });
-
-                const flash = document.createElement('div');
-                flash.style.cssText = "position:absolute; inset:0; background:rgba(0,229,255,0.1); pointer-events:none; z-index:10;";
-                card.appendChild(flash);
-                gsap.to(flash, { opacity: 0, duration: 0.5, onComplete: () => flash.remove() });
-            });
-            card.addEventListener('mouseleave', () => {
-                gsap.to(card, {
-                    duration: 0.3,
-                    y: 0,
-                    boxShadow: 'var(--md-sys-elevation-1)',
-                    borderColor: 'rgba(255, 255, 255, 0.1)',
-                    ease: "power2.out"
-                });
-            });
-        });
-
-        const logo = document.querySelector('.cyber-logo-text');
-        if (logo) {
-            logo.addEventListener('mouseenter', () => {
-                const tl = gsap.timeline();
-                tl.to(logo, { duration: 0.05, x: 2, skewX: 5, color: '#ff00c1' })
-                    .to(logo, { duration: 0.05, x: -2, skewX: -5, color: '#00f2ff' })
-                    .to(logo, { duration: 0.05, x: 1, skewX: 2, color: '#ffffff' })
-                    .to(logo, { duration: 0.05, x: 0, skewX: 0 });
-            });
-        }
-
-        document.querySelectorAll('.btn-primary, .btn-cyber').forEach(btn => {
-            btn.addEventListener('mousemove', (e) => {
-                const rect = btn.getBoundingClientRect();
-                const x = (e.clientX - rect.left - rect.width / 2) * 0.4;
-                const y = (e.clientY - rect.top - rect.height / 2) * 0.4;
-
-                gsap.to(btn, {
-                    duration: 0.2,
-                    x: x,
-                    y: y,
-                    rotateX: -y * 0.1,
-                    rotateY: x * 0.1,
-                    ease: "power1.out"
-                });
-            });
-
-            btn.addEventListener('mouseleave', () => {
-                gsap.to(btn, {
-                    duration: 0.6,
-                    x: 0,
-                    y: 0,
-                    rotateX: 0,
-                    rotateY: 0,
-                    ease: "elastic.out(1, 0.3)"
-                });
-            });
-        });
     }
 
     initCustomSelects() {
@@ -1708,7 +1346,7 @@ class WhisperaApp {
             }
         } catch (error) {
             this.showNotification('Access Denied: ' + error.message, 'error');
-            const card = document.querySelector('.cyber-card');
+            const card = document.querySelector('.login-card');
             if (card) {
                 card.classList.add('shake');
                 setTimeout(() => card.classList.remove('shake'), 500);
@@ -1765,7 +1403,7 @@ class WhisperaApp {
             btn.addEventListener('click', () => this.closeModals());
         });
 
-        document.getElementById('reload-config-btn')?.addEventListener('click', async () => {
+        document.getElementById('force-reload-btn')?.addEventListener('click', async () => {
             try {
                 await api.reloadConfig();
                 this.showNotification('Конфигурация перезагружена', 'success');
@@ -2534,34 +2172,7 @@ class WhisperaApp {
 
     handleThemeChange(theme) {
         localStorage.setItem('whispera_theme', theme);
-        const root = document.documentElement;
-
-        if (theme === 'midnight') {
-            root.style.setProperty('--md-sys-color-background', '#0f172a');
-            root.style.setProperty('--md-sys-color-surface', 'rgba(30, 41, 59, 0.7)');
-            root.style.setProperty('--md-sys-color-surface-container-low', 'rgba(30, 41, 59, 0.6)');
-            root.style.setProperty('--md-sys-color-surface-container', 'rgba(51, 65, 85, 0.6)');
-            root.style.setProperty('--md-sys-color-primary', '#38bdf8');
-            root.style.setProperty('--md-sys-color-secondary-container', 'rgba(56, 189, 248, 0.15)');
-        } else if (theme === 'amoled') {
-            root.style.setProperty('--md-sys-color-background', '#000000');
-            root.style.setProperty('--md-sys-color-surface', '#000000');
-            root.style.setProperty('--md-sys-color-surface-container-low', '#0a0a0a');
-            root.style.setProperty('--md-sys-color-surface-container', '#121212');
-            root.style.setProperty('--md-sys-color-primary', '#ffffff');
-            root.style.setProperty('--md-sys-color-secondary-container', '#333333');
-            root.style.setProperty('--glass-blur-lg', 'none');
-            root.style.setProperty('--glass-blur-md', 'none');
-        } else {
-            root.style.removeProperty('--md-sys-color-background');
-            root.style.removeProperty('--md-sys-color-surface');
-            root.style.removeProperty('--md-sys-color-surface-container-low');
-            root.style.removeProperty('--md-sys-color-surface-container');
-            root.style.removeProperty('--md-sys-color-primary');
-            root.style.removeProperty('--md-sys-color-secondary-container');
-            root.style.removeProperty('--glass-blur-lg');
-            root.style.removeProperty('--glass-blur-md');
-        }
+        document.documentElement.setAttribute('data-theme', theme || 'dark');
         this.showNotification('Тема обновлена', 'success');
     }
 
@@ -2617,10 +2228,6 @@ class WhisperaApp {
 
     navigateTo(page) {
         localStorage.setItem('whispera_page', page);
-        if (this.threeCity) {
-            try { this.threeCity.onNavigate(page); } catch (e) {}
-        }
-
         if (page !== 'bridges') this._stopBridgeAutoRefresh();
 
         document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
@@ -3860,47 +3467,26 @@ class WhisperaApp {
     }
 
     closeModals() {
-        document.querySelectorAll('.modal').forEach(m => m.classList.remove('active'));
+        document.querySelectorAll('.modal-backdrop.active').forEach(m => m.classList.remove('active'));
+        document.querySelectorAll('.modal.active').forEach(m => m.remove());
     }
 
     showNotification(message, type = 'info') {
-        let container = document.getElementById('notification-container');
-        if (!container) {
-            container = document.createElement('div');
-            container.id = 'notification-container';
-            document.body.appendChild(container);
-        }
+        const container = document.getElementById('toast-container') || document.body;
 
         const toast = document.createElement('div');
-        toast.className = `toast ${type} `;
-
-        const icons = {
-            success: 'check-circle',
-            error: 'exclamation-circle',
-            info: 'info-circle',
-            warning: 'exclamation-triangle'
-        };
-        const iconName = icons[type] || 'info-circle';
-
-        toast.innerHTML = `
-    <div class="toast-icon"><i class="fas fa-${iconName}"></i></div>
-            <div class="toast-content">${message}</div>
-            <button class="toast-close" onclick="this.parentElement.remove()"><i class="fas fa-times"></i></button>
-`;
+        toast.className = `toast ${type}`;
+        toast.innerHTML = `<span>${message}</span>`;
 
         const close = () => {
-            if (toast.parentElement) {
-                toast.classList.add('hiding');
-                toast.addEventListener('animationend', () => {
-                    if (toast.parentElement) toast.remove();
-                });
-            }
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(20px)';
+            toast.style.transition = 'opacity .2s, transform .2s';
+            setTimeout(() => toast.remove(), 220);
         };
 
-        toast.querySelector('.toast-close').onclick = close;
-
+        toast.addEventListener('click', close);
         setTimeout(close, 5000);
-
         container.appendChild(toast);
     }
 
