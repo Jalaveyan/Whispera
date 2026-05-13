@@ -135,6 +135,15 @@ type ClientConfig struct {
 	// Useful for bypassing SNI-based blocking. Example: "www.google.com".
 	// Can also be set at runtime via POST /control/global-sni.
 	ForceSNI string `yaml:"force_sni,omitempty" json:"force_sni,omitempty"`
+
+	// Regions maps region codes to lists of server addresses.
+	// Example: {"ru": ["1.2.3.4:8443"], "eu": ["5.6.7.8:8443"], "us": [...], "cn": [...]}
+	// Use with PreferredRegion or --region flag.
+	Regions map[string][]string `yaml:"regions,omitempty" json:"regions,omitempty"`
+
+	// PreferredRegion sets the default region. "auto" picks the fastest globally.
+	// Can be overridden at runtime via POST /control/region.
+	PreferredRegion string `yaml:"region,omitempty" json:"region,omitempty"`
 }
 
 type ClientRoutingConfig struct {

@@ -240,6 +240,12 @@ type Config struct {
 
 	ServerList []string
 
+	// Regions maps region codes (ru/eu/us/cn) to server address lists.
+	// When PreferredRegion is set (non-empty, non-"auto"), only that region's
+	// servers are considered during latency probing.
+	Regions         map[string][]string
+	PreferredRegion string
+
 	RekeyInterval time.Duration
 
 	TransportConfig map[string]interface{}
@@ -3303,7 +3309,8 @@ func probeLatency(ctx context.Context, addr string, timeout time.Duration) (time
 }
 
 func (m *Manager) pickFastestServer(ctx context.Context) string {
-	if len(m.config.ServerList) == 0 {
+	candidates := m.regionCandidates()
+	if len(candidates) == 0 {
 		return ""
 	}
 
@@ -3312,9 +3319,8 @@ func (m *Manager) pickFastestServer(ctx context.Context) string {
 		latency time.Duration
 	}
 
-	ch := make(chan result, len(m.config.ServerList))
-
-	for _, addr := range m.config.ServerList {
+	ch := make(chan result, len(candidates))
+	for _, addr := range candidates {
 		addr := addr
 		go func() {
 			lat, err := probeLatency(ctx, addr, 200*time.Millisecond)
@@ -3330,7 +3336,7 @@ func (m *Manager) pickFastestServer(ctx context.Context) string {
 
 	var best result
 	best.latency = 1<<62 - 1
-	for range m.config.ServerList {
+	for range candidates {
 		r := <-ch
 		if r.latency < best.latency {
 			best = r
@@ -3344,6 +3350,42 @@ func (m *Manager) pickFastestServer(ctx context.Context) string {
 
 	log.Info("[LATENCY] Fastest server: %s (RTT=%v)", best.addr, best.latency)
 	return best.addr
+}
+
+// regionCandidates returns the servers to probe based on PreferredRegion.
+// "auto" or "" → all servers from ServerList + all regions.
+// specific region → that region's servers only (falls back to ServerList if empty).
+func (m *Manager) regionCandidates() []string {
+	region := m.config.PreferredRegion
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(s string) {
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+
+	if region != "" && region != "auto" {
+		if servers, ok := m.config.Regions[region]; ok && len(servers) > 0 {
+			for _, s := range servers {
+				add(s)
+			}
+			return out
+		}
+		log.Warn("[LATENCY] Region %q has no servers, falling back to all", region)
+	}
+
+	// auto or unknown region: use all known servers
+	for _, s := range m.config.ServerList {
+		add(s)
+	}
+	for _, servers := range m.config.Regions {
+		for _, s := range servers {
+			add(s)
+		}
+	}
+	return out
 }
 
 const FrameTypeRekey = 0x08

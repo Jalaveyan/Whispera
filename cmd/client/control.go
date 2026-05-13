@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	stdlog "log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -80,6 +81,18 @@ func getGlobalSNI() string {
 	}
 	return ""
 }
+
+var globalRegion atomic.Value // stores string ("auto"|"ru"|"eu"|"us"|"cn"|...)
+
+func getGlobalRegion() string {
+	if v := globalRegion.Load(); v != nil {
+		return v.(string)
+	}
+	return "auto"
+}
+
+// cfgRegions is set from ClientConfig.Regions at startup.
+var cfgRegions map[string][]string
 
 var pool = &TransportPool{
 	entries: make(map[string]*TransportEntry),
@@ -892,6 +905,89 @@ func startControlServer(ctx context.Context) {
 
 		result := runSpeedTest(r.Context(), *socksAddr, req.Target, req.Token, req.DownloadMB, req.UploadMB)
 		json.NewEncoder(w).Encode(result)
+	})
+
+	// /region — get or set the preferred region for server selection.
+	// GET → {"region":"auto"}, POST {"region":"eu"} → reconnects all entries.
+	mux.HandleFunc("/region", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			json.NewEncoder(w).Encode(map[string]string{"region": getGlobalRegion()})
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "GET or POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			Region string `json:"region"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Region == "" {
+			body.Region = "auto"
+		}
+		globalRegion.Store(body.Region)
+		for _, e := range pool.List() {
+			if reconnectEntry != nil {
+				go reconnectEntry(e)
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]string{"region": body.Region})
+	})
+
+	// /regions — list configured regions and probe latency to each region's servers.
+	mux.HandleFunc("/regions", func(w http.ResponseWriter, r *http.Request) {
+		if cfgRegions == nil || len(cfgRegions) == 0 {
+			writeJSON := func(v interface{}) {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(v)
+			}
+			writeJSON(map[string]interface{}{"region": getGlobalRegion(), "regions": map[string]interface{}{}})
+			return
+		}
+		type regionInfo struct {
+			Servers   []string `json:"servers"`
+			LatencyMs float64  `json:"latency_ms,omitempty"`
+			Error     string   `json:"error,omitempty"`
+		}
+		result := make(map[string]*regionInfo, len(cfgRegions))
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for code, servers := range cfgRegions {
+			code, servers := code, servers
+			ri := &regionInfo{Servers: servers}
+			result[code] = ri
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				best := time.Duration(1<<62 - 1)
+				for _, srv := range servers {
+					conn, err := net.DialTimeout("tcp", srv, 500*time.Millisecond)
+					if err != nil {
+						continue
+					}
+					// simple TCP RTT approximation
+					t := time.Now()
+					conn.Close()
+					lat := time.Since(t)
+					if lat < best {
+						best = lat
+					}
+				}
+				mu.Lock()
+				if best < time.Duration(1<<62-1) {
+					ri.LatencyMs = float64(best.Milliseconds())
+				} else {
+					ri.Error = "unreachable"
+				}
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"region":  getGlobalRegion(),
+			"regions": result,
+		})
 	})
 
 	// /global-sni — get or set the global SNI override applied to all tunnel connections.

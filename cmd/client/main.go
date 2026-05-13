@@ -70,6 +70,7 @@ var (
 	tlsFragSize      = flag.Int("tls-fragment", 0, "TLS ClientHello fragment size in bytes (0=default 40, range 16-200). Smaller = harder for DPI but more RTT")
 	logFilePath      = flag.String("log-file", "", "Write logs to file (default: in-memory only, no disk storage)")
 	forceSNIFlag     = flag.String("sni", "", "Force custom SNI in TLS ClientHello for all connections (e.g. www.google.com). Overrides phantom/asn-bypass SNI")
+	regionFlag       = flag.String("region", "", "Preferred server region: auto|ru|eu|us|cn (overrides config)")
 	subURL           = flag.String("sub-url", "", "Subscription URL for automatic key refresh (checked every 24h)")
 	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
 )
@@ -449,6 +450,22 @@ func main() {
 		stdlog.Printf("SNI override active: all connections will use SNI=%q", activeForceSNI)
 	}
 
+	// Region selection: CLI > config file > "auto"
+	activeRegion := *regionFlag
+	if activeRegion == "" {
+		activeRegion = cfg.PreferredRegion
+	}
+	if activeRegion == "" {
+		activeRegion = "auto"
+	}
+	globalRegion.Store(activeRegion)
+	if len(cfg.Regions) > 0 {
+		cfgRegions = cfg.Regions
+	}
+	if activeRegion != "auto" {
+		stdlog.Printf("Region: %s", activeRegion)
+	}
+
 	fallbackTCP := cfg.ServerTCP
 	if fallbackTCP == "" {
 		fallbackTCP = cfg.Server
@@ -512,6 +529,8 @@ func main() {
 			MLServerURL:         cfg.MLServerURL,
 			MLToken:             resolveMLToken(cfg),
 			ForceSNI:            getGlobalSNI(),
+			Regions:             cfgRegions,
+			PreferredRegion:     getGlobalRegion(),
 		})
 		return m
 	}
@@ -569,6 +588,8 @@ func main() {
 			CustomSNI:           customSNI,
 			ForceSNI:            getGlobalSNI(),
 			NoSNI:               noSNI,
+			Regions:             cfgRegions,
+			PreferredRegion:     getGlobalRegion(),
 			BridgeAddr:          bridgeAddr,
 			RateLimitKB:         rateLimitKB,
 			EnableIPSpoof:       len(spoofList) > 0,
@@ -818,6 +839,8 @@ func main() {
 			MLServerURL:         cfg.MLServerURL,
 			MLToken:             resolveMLToken(cfg),
 			ForceSNI:            getGlobalSNI(),
+			Regions:             cfgRegions,
+			PreferredRegion:     getGlobalRegion(),
 		})
 		if err != nil {
 			stdlog.Printf("[multi-bridge] build tunnel %s failed: %v", bridgeID, err)
