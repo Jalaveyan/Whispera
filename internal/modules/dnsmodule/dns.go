@@ -38,6 +38,12 @@ type Config struct {
 	// domain is resolved via the OS resolver (system DNS) regardless of Upstream.
 	// Use this to integrate split-tunnel hostname bypass.
 	BypassFunc func(hostname string) bool
+
+	// BypassResolver, if set, is used instead of net.DefaultResolver when
+	// resolving bypass-listed domains. Set this to a resolver that always dials
+	// directly (never through the VPN tunnel) so that system DNS changes after
+	// VPN connects do not affect bypass-domain resolution.
+	BypassResolver *net.Resolver
 }
 
 func DefaultConfig() *Config {
@@ -161,11 +167,16 @@ func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error)
 		return nil, fmt.Errorf("domain blocked: %s", domain)
 	}
 
-	// Bypass check: domains on the split-tunnel whitelist are resolved via the
-	// OS resolver (system DNS) so they get their real regional IPs and are not
-	// affected by VPN upstream DNS.
+	// Bypass check: domains on the split-tunnel whitelist are resolved via a
+	// fixed direct resolver (BypassResolver or net.DefaultResolver) so they
+	// always get their real regional IPs even after the VPN tunnel changes
+	// the system DNS upstream.
 	if r.config.BypassFunc != nil && r.config.BypassFunc(domain) {
-		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, domain)
+		resolver := r.config.BypassResolver
+		if resolver == nil {
+			resolver = net.DefaultResolver
+		}
+		addrs, err := resolver.LookupIPAddr(ctx, domain)
 		if err != nil {
 			return nil, err
 		}

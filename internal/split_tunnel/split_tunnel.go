@@ -1,11 +1,13 @@
 package split_tunnel
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"whispera/internal/app_detection"
@@ -31,6 +33,7 @@ type SplitTunnelConfig struct {
 }
 
 type SplitTunnelManager struct {
+	mu          sync.RWMutex
 	config      *SplitTunnelConfig
 	rules       []SplitTunnelRule
 	appDetector *app_detection.AppDetector
@@ -92,10 +95,14 @@ func (stm *SplitTunnelManager) SaveConfig(filename string) error {
 func (stm *SplitTunnelManager) AddRule(rule *SplitTunnelRule) {
 	rule.Created = time.Now().Unix()
 	rule.Modified = time.Now().Unix()
+	stm.mu.Lock()
 	stm.rules = append(stm.rules, *rule)
+	stm.mu.Unlock()
 }
 
 func (stm *SplitTunnelManager) RemoveRule(index int) bool {
+	stm.mu.Lock()
+	defer stm.mu.Unlock()
 	if index < 0 || index >= len(stm.rules) {
 		return false
 	}
@@ -104,6 +111,8 @@ func (stm *SplitTunnelManager) RemoveRule(index int) bool {
 }
 
 func (stm *SplitTunnelManager) UpdateRule(index int, rule *SplitTunnelRule) bool {
+	stm.mu.Lock()
+	defer stm.mu.Unlock()
 	if index < 0 || index >= len(stm.rules) {
 		return false
 	}
@@ -113,7 +122,11 @@ func (stm *SplitTunnelManager) UpdateRule(index int, rule *SplitTunnelRule) bool
 }
 
 func (stm *SplitTunnelManager) GetRules() []SplitTunnelRule {
-	return stm.rules
+	stm.mu.RLock()
+	out := make([]SplitTunnelRule, len(stm.rules))
+	copy(out, stm.rules)
+	stm.mu.RUnlock()
+	return out
 }
 
 func (stm *SplitTunnelManager) SetMode(mode string) {
@@ -129,11 +142,14 @@ func (stm *SplitTunnelManager) ShouldTunnel(destIP, destPort, appName string) bo
 		return true
 	}
 
-	for _, rule := range stm.rules {
+	stm.mu.RLock()
+	rules := stm.rules
+	stm.mu.RUnlock()
+
+	for _, rule := range rules {
 		if !rule.Enabled {
 			continue
 		}
-
 		if stm.matchesRule(&rule, destIP, destPort, appName) {
 			return rule.Action == "tunnel"
 		}
@@ -176,7 +192,10 @@ func (stm *SplitTunnelManager) ShouldBypassByIP(ipStr string) bool {
 	if !stm.config.Enabled {
 		return false
 	}
-	for _, rule := range stm.rules {
+	stm.mu.RLock()
+	rules := stm.rules
+	stm.mu.RUnlock()
+	for _, rule := range rules {
 		if !rule.Enabled || rule.Type != "ip" {
 			continue
 		}
@@ -195,7 +214,10 @@ func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
 		return false
 	}
 	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
-	for _, rule := range stm.rules {
+	stm.mu.RLock()
+	rules := stm.rules
+	stm.mu.RUnlock()
+	for _, rule := range rules {
 		if !rule.Enabled || rule.Type != "domain" {
 			continue
 		}
@@ -251,8 +273,53 @@ func (stm *SplitTunnelManager) matchesApp(ruleValue, appName string) bool {
 }
 
 func (stm *SplitTunnelManager) GetConfig() *SplitTunnelConfig {
-	stm.config.Rules = stm.rules
+	stm.mu.RLock()
+	stm.config.Rules = make([]SplitTunnelRule, len(stm.rules))
+	copy(stm.config.Rules, stm.rules)
+	stm.mu.RUnlock()
 	return stm.config
+}
+
+// PreResolveAndCacheIPs resolves all bypass-listed domains using the provided
+// resolver and adds their IPs as /32 direct rules. Call this at startup before
+// VPN connects so that apps which pre-resolve a hostname (and send the bare IP
+// to SOCKS5) are still routed directly — hostname bypass alone would miss them.
+func (stm *SplitTunnelManager) PreResolveAndCacheIPs(ctx context.Context, resolver *net.Resolver) int {
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
+
+	var newRules []SplitTunnelRule
+	now := time.Now().Unix()
+
+	for _, domain := range russianBypassDomains {
+		addrs, err := resolver.LookupIPAddr(ctx, domain)
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			newRules = append(newRules, SplitTunnelRule{
+				Type:        "ip",
+				Value:       a.IP.String() + "/32",
+				Action:      "direct",
+				Description: "auto:" + domain,
+				Enabled:     true,
+				Priority:    89,
+				Created:     now,
+				Modified:    now,
+			})
+		}
+	}
+
+	if len(newRules) == 0 {
+		return 0
+	}
+
+	stm.mu.Lock()
+	stm.rules = append(stm.rules, newRules...)
+	stm.mu.Unlock()
+
+	return len(newRules)
 }
 
 // russianBypassDomains is the built-in list of Russian services that should

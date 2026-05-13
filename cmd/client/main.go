@@ -304,6 +304,23 @@ func main() {
 			dnsUpstreamAddr = *dnsUpstream
 		}
 	}
+	// bypassDNS is a resolver that always dials Yandex DNS (77.88.8.8) directly,
+	// never through the VPN tunnel. Yandex DNS is geo-aware for RU services and
+	// returns correct regional IPs. We use it for two purposes:
+	//   1. DNS module bypass path — so VPN tunnel DNS changes don't affect
+	//      Russian domains that must resolve locally.
+	//   2. Pre-resolve startup — capture IPs of bypass domains so that apps
+	//      that pre-resolve and send a bare IP to SOCKS5 are still routed direct.
+	bypassDNS := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 5 * time.Second}
+			// Try primary (Yandex), fallback to secondary on error is handled by
+			// the Go resolver automatically when the UDP exchange times out.
+			return d.DialContext(ctx, "udp", "77.88.8.8:53")
+		},
+	}
+
 	// Build split-tunnel manager first — needed by both SOCKS5 bypass and DNS.
 	// Russian whitelist is always pre-loaded so that services like YaDisk /
 	// Gosuslugi resolve via system DNS and connect directly, keeping their
@@ -327,6 +344,16 @@ func main() {
 		stm.SetEnabled(true)
 	}
 
+	// Pre-resolve Russian bypass domains into /32 IP rules so that native apps
+	// which resolve DNS themselves (and hand a bare IP to SOCKS5) are still
+	// routed directly. Runs in the background so startup is not blocked.
+	go func() {
+		resolveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		n := stm.PreResolveAndCacheIPs(resolveCtx, bypassDNS)
+		stdlog.Printf("[split-tunnel] pre-resolved %d Russian bypass IPs", n)
+	}()
+
 	socksMod, _ := socks5.New(&socks5.Config{
 		ListenAddr:    *socksAddr,
 		Debug:         true,
@@ -344,9 +371,10 @@ func main() {
 	lc.Register(socksMod)
 
 	dnsMod, _ := dnsmodule.New(&dnsmodule.Config{
-		Upstream:     dnsUpstreamAddr,
-		CacheEnabled: true,
-		BypassFunc:   stm.ShouldBypassByHostname, // DNS bypass uses hostname only (pre-resolution)
+		Upstream:       dnsUpstreamAddr,
+		CacheEnabled:   true,
+		BypassFunc:     stm.ShouldBypassByHostname,
+		BypassResolver: bypassDNS, // fixed Russian DNS, never goes through VPN tunnel
 	})
 	lc.Register(dnsMod)
 
