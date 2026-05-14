@@ -137,6 +137,16 @@ func isHandshakeError(err error) bool {
 		strings.Contains(s, "x509")
 }
 
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "timeout") ||
+		strings.Contains(s, "deadline exceeded") ||
+		strings.Contains(s, "i/o timeout")
+}
+
 // ClassifyConnError returns a concise, human-readable reason for a connection
 // failure — suitable for display in client logs or UI.
 func ClassifyConnError(err error) string {
@@ -2018,8 +2028,36 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 				go m.RotateSNI()
 			}
 		}
-		if m.tspuDetector != nil && err != nil && strings.Contains(err.Error(), "reset") {
-			m.tspuDetector.RecordRST(m.currentSNI, time.Duration(dialLatency)*time.Millisecond)
+		if m.tspuDetector != nil && err != nil {
+			errStr := err.Error()
+			dialDur := time.Duration(dialLatency) * time.Millisecond
+			if strings.Contains(errStr, "reset") {
+				m.tspuDetector.RecordRST(m.currentSNI, dialDur)
+			} else if isTimeoutError(err) {
+				// Timeout after a full dial attempt — probe TCP to check for zombie-TCP.
+				// Run async so we don't add latency to the retry loop.
+				sni := m.currentSNI
+				addr := m.config.ServerAddr
+				detector := m.tspuDetector
+				go func() {
+					tcpStart := time.Now()
+					c, tcpErr := net.DialTimeout("tcp", addr, 2*time.Second)
+					tcpDur := time.Since(tcpStart)
+					if tcpErr == nil {
+						c.Close()
+						// TCP succeeded → DPI passes L4 but drops TLS payload → zombie-TCP.
+						detector.RecordZombieTCP(sni, tcpDur, dialDur)
+					}
+				}()
+			}
+			// After recording, check if we should switch transport based on TSPU pattern.
+			if dpiType, conf := m.tspuDetector.DetectTSPU(); dpiType != mlpkg.DPITypeNone && conf >= 0.65 {
+				if cm := mlpkg.TSPUCountermeasure(dpiType); cm != "" && cm != m.config.Transport {
+					log.Warn("[TSPU] %s detected (conf=%.2f) → switching transport: %s → %s",
+						mlpkg.DPITypeName(dpiType), conf, m.config.Transport, cm)
+					m.config.Transport = cm
+				}
+			}
 		}
 		failCount := atomic.AddInt32(&m.boFailCount, 1)
 		if m.boAgent != nil {

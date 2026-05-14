@@ -789,7 +789,7 @@ func (e *NativeMLEngine) Predict(data []byte, protocol, direction string) *types
 	dpiConf := dpiProbs[dpiType]
 	dpiName := ""
 	if dpiConf > 0.6 && dpiType > 0 {
-		dpiName = dpiTypeName(dpiType)
+		dpiName = DPITypeName(dpiType)
 	} else {
 		dpiType = 0
 	}
@@ -799,7 +799,7 @@ func (e *NativeMLEngine) Predict(data []byte, protocol, direction string) *types
 		if tspuType != DPITypeNone && tspuConf > dpiConf {
 			dpiType = tspuType
 			_ = tspuConf
-			dpiName = dpiTypeName(tspuType)
+			dpiName = DPITypeName(tspuType)
 		}
 	}
 
@@ -954,7 +954,7 @@ func (e *NativeMLEngine) DetectDPI(data []byte, protocol, direction string) *typ
 	return &types.MLPredictionResponse{
 		Predictions: []types.PredictionResult{{
 			ClassID: dpiType, Confidence: confidence, Protocol: protocol,
-			Direction: direction, DPIType: dpiType, DPIName: dpiTypeName(dpiType),
+			Direction: direction, DPIType: dpiType, DPIName: DPITypeName(dpiType),
 		}},
 		ModelUsed: "gorgonia_mlp_go_dpi", Confidence: confidence, Timestamp: time.Now(),
 	}

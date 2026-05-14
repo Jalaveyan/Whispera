@@ -18,23 +18,28 @@ import (
 // 4. SNI-based blocking — immediate connection drop based on SNI field
 // 5. Protocol fingerprinting — blocking non-standard TLS fingerprints (JA3)
 // 6. Active probing — TSPU connects to suspected proxy servers
+// 7. Zombie-TCP — TCP handshake succeeds, TLS payload silently dropped (no RST)
 
 const (
 	// DPI type IDs for TSPU-specific detections.
-	DPITypeNone              = 0
-	DPITypeHTTPInspection    = 1
-	DPITypeTLSInspection     = 2
-	DPITypeDeepPacket        = 3
-	DPITypeProtocolFP        = 4
-	DPITypeOKRuFP            = 5
-	DPITypeTSPURST           = 6 // RST injection after ClientHello
-	DPITypeTSPUThrottle      = 7 // bandwidth throttling
-	DPITypeTSPUReplay        = 8 // TLS handshake replay/active probe
+	DPITypeNone           = 0
+	DPITypeHTTPInspection = 1
+	DPITypeTLSInspection  = 2
+	DPITypeDeepPacket     = 3
+	DPITypeProtocolFP     = 4
+	DPITypeOKRuFP         = 5
+	DPITypeTSPURST        = 6 // RST injection after ClientHello
+	DPITypeTSPUThrottle   = 7 // bandwidth throttling
+	DPITypeTSPUReplay     = 8 // TLS handshake replay/active probe
+	DPITypeZombieTCP      = 9 // TCP passes, TLS payload silently dropped
 
-	TSPUHistoryWindow       = 100 // connection events to keep
-	TSPURSTThresholdMs      = 10  // RST within this time = suspicious
-	TSPUThrottleBWKbps      = 200 // bandwidth below this = throttling
-	TSPUReplayWindowSec     = 60  // replay detection window
+	TSPUHistoryWindow    = 100 // connection events to keep
+	TSPURSTThresholdMs   = 10  // RST within this time = suspicious
+	TSPUThrottleBWKbps   = 200 // bandwidth below this = throttling
+	TSPUReplayWindowSec  = 60  // replay detection window
+	ZombieHistoryWindow  = 20  // zombie events to track
+	ZombieTCPThresholdMs = 200 // TCP connect below this = fast (DPI passes L4)
+	ZombieTLSMinMs       = 3000 // TLS stall above this after fast TCP = zombie
 )
 
 // TSPUDetector tracks connection-level events to identify TSPU blocking patterns.
@@ -42,24 +47,38 @@ type TSPUDetector struct {
 	mu sync.Mutex
 
 	// RST injection tracking.
-	rstEvents     []rstEvent
-	rstIdx        int
-	rstFull       bool
+	rstEvents []rstEvent
+	rstIdx    int
+	rstFull   bool
 
 	// Throttle detection.
-	bwSamples     []bwSample
-	bwIdx         int
-	bwFull        bool
+	bwSamples []bwSample
+	bwIdx     int
+	bwFull    bool
 
 	// TLS replay detection (TSPU sends back recorded ClientHellos).
-	seenHellos    map[uint64]time.Time // hash → first seen
-	helloCleanup  time.Time
+	seenHellos   map[uint64]time.Time // hash → first seen
+	helloCleanup time.Time
+
+	// Zombie-TCP: TCP passes, TLS payload silently dropped.
+	zombieEvents []zombieEvent
+	zombieIdx    int
+	zombieFull   bool
 
 	// Counters.
 	rstDetections      int64
 	throttleDetections int64
 	replayDetections   int64
+	zombieDetections   int64
 	totalChecks        int64
+}
+
+type zombieEvent struct {
+	SNI       string
+	TCPDur    time.Duration
+	TLSDur    time.Duration // time until timeout/give-up; 0 = unknown
+	Timestamp time.Time
+	Confirmed bool // TCP succeeded, TLS timed out → zombie confirmed
 }
 
 type rstEvent struct {
@@ -78,10 +97,40 @@ type bwSample struct {
 // NewTSPUDetector creates a new TSPU-aware DPI detector.
 func NewTSPUDetector() *TSPUDetector {
 	return &TSPUDetector{
-		rstEvents:  make([]rstEvent, TSPUHistoryWindow),
-		bwSamples:  make([]bwSample, TSPUHistoryWindow),
-		seenHellos: make(map[uint64]time.Time),
+		rstEvents:    make([]rstEvent, TSPUHistoryWindow),
+		bwSamples:    make([]bwSample, TSPUHistoryWindow),
+		seenHellos:   make(map[uint64]time.Time),
+		zombieEvents: make([]zombieEvent, ZombieHistoryWindow),
 	}
+}
+
+// RecordZombieTCP records a zombie-TCP probe result.
+// tcpDur is how long the raw TCP connect took; tlsDur is how long the TLS
+// attempt ran before it was aborted (typically the dial timeout).
+// A fast TCP + long TLS stall with no RST = zombie-TCP confirmed.
+func (d *TSPUDetector) RecordZombieTCP(sni string, tcpDur, tlsDur time.Duration) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	confirmed := tcpDur < ZombieTCPThresholdMs*time.Millisecond &&
+		tlsDur >= ZombieTLSMinMs*time.Millisecond
+
+	d.zombieEvents[d.zombieIdx] = zombieEvent{
+		SNI:       sni,
+		TCPDur:    tcpDur,
+		TLSDur:    tlsDur,
+		Timestamp: time.Now(),
+		Confirmed: confirmed,
+	}
+	d.zombieIdx = (d.zombieIdx + 1) % ZombieHistoryWindow
+	if d.zombieIdx == 0 {
+		d.zombieFull = true
+	}
+
+	if confirmed {
+		atomic.AddInt64(&d.zombieDetections, 1)
+	}
+	atomic.AddInt64(&d.totalChecks, 1)
 }
 
 // RecordRST records a TCP RST event for TSPU RST injection detection.
@@ -220,6 +269,28 @@ func (d *TSPUDetector) DetectTSPU() (dpiType int, confidence float64) {
 		return DPITypeTSPUReplay, conf
 	}
 
+	// 4. Check for zombie-TCP (TCP passes, TLS payload silently dropped).
+	zombieConfirmed := 0
+	zombieTotal := 0
+	zSize := d.zombieIdx
+	if d.zombieFull {
+		zSize = ZombieHistoryWindow
+	}
+	for i := 0; i < zSize; i++ {
+		ev := d.zombieEvents[i]
+		if now.Sub(ev.Timestamp) > window {
+			continue
+		}
+		zombieTotal++
+		if ev.Confirmed {
+			zombieConfirmed++
+		}
+	}
+	if zombieTotal >= 2 && float64(zombieConfirmed)/float64(zombieTotal) > 0.5 {
+		conf := math.Min(0.6+float64(zombieConfirmed)*0.08, 0.95)
+		return DPITypeZombieTCP, conf
+	}
+
 	return DPITypeNone, 0
 }
 
@@ -298,16 +369,51 @@ func (d *TSPUDetector) GetTSPUFeatures() []float64 {
 	// Feature 5: Overall TSPU suspicion score.
 	features[5] = math.Min(features[0]*0.4+features[2]*0.3+features[4]*0.3, 1.0)
 
+	// Features 6-7: Zombie-TCP.
+	zombieConfirmed, zombieTotal := 0, 0
+	zSize := d.zombieIdx
+	if d.zombieFull {
+		zSize = ZombieHistoryWindow
+	}
+	for i := 0; i < zSize; i++ {
+		if now.Sub(d.zombieEvents[i].Timestamp) <= window {
+			zombieTotal++
+			if d.zombieEvents[i].Confirmed {
+				zombieConfirmed++
+			}
+		}
+	}
+	features = append(features, 0, 0)
+	if zombieTotal > 0 {
+		features[6] = float64(zombieConfirmed) / float64(zombieTotal)
+	}
+	// Feature 7: avg TCP speed in zombie events (fast TCP = DPI passes L4).
+	if zombieConfirmed > 0 {
+		var avgTCP float64
+		n := 0
+		for i := 0; i < zSize; i++ {
+			ev := d.zombieEvents[i]
+			if ev.Confirmed && now.Sub(ev.Timestamp) <= window {
+				avgTCP += float64(ev.TCPDur.Milliseconds())
+				n++
+			}
+		}
+		if n > 0 {
+			features[7] = 1.0 - math.Min(avgTCP/float64(n)/float64(ZombieTCPThresholdMs), 1.0)
+		}
+	}
+
 	return features
 }
 
 // Stats returns TSPU detection statistics.
 func (d *TSPUDetector) Stats() map[string]interface{} {
 	return map[string]interface{}{
-		"rst_detections":      atomic.LoadInt64(&d.rstDetections),
+		"rst_detections":     atomic.LoadInt64(&d.rstDetections),
 		"throttle_detections": atomic.LoadInt64(&d.throttleDetections),
-		"replay_detections":   atomic.LoadInt64(&d.replayDetections),
-		"total_checks":        atomic.LoadInt64(&d.totalChecks),
+		"replay_detections":  atomic.LoadInt64(&d.replayDetections),
+		"zombie_detections":  atomic.LoadInt64(&d.zombieDetections),
+		"total_checks":       atomic.LoadInt64(&d.totalChecks),
 	}
 }
 
@@ -323,13 +429,16 @@ func TSPUCountermeasure(dpiType int) string {
 	case DPITypeTSPUReplay:
 		// Active probing: use protocols resistant to replay (reality, shadowtls).
 		return "reality"
+	case DPITypeZombieTCP:
+		// Zombie-TCP: block is by dest IP, not SNI. CDN-fronting changes the effective dest IP.
+		return "meek"
 	default:
 		return ""
 	}
 }
 
-// dpiTypeName returns a human-readable name for a DPI type ID.
-func dpiTypeName(dpiType int) string {
+// DPITypeName returns a human-readable name for a DPI type ID.
+func DPITypeName(dpiType int) string {
 	switch dpiType {
 	case DPITypeHTTPInspection:
 		return "http_inspection"
@@ -347,6 +456,8 @@ func dpiTypeName(dpiType int) string {
 		return "tspu_throttling"
 	case DPITypeTSPUReplay:
 		return "tspu_replay_probe"
+	case DPITypeZombieTCP:
+		return "zombie_tcp"
 	default:
 		return ""
 	}
