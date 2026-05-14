@@ -109,7 +109,12 @@ func transportHash(name string) float64 {
 }
 
 // Decide возвращает строку TLS fingerprint профиля (пустая = go default).
+// Пока не накоплено 30 шагов — не вмешивается (возвращает "").
 func (a *RLTLSAgent) Decide(v TLSView) string {
+	if atomic.LoadInt64(&a.stepCount) < 30 {
+		return "" // warmup: не менять TLS fingerprint
+	}
+
 	state := a.encodeState(v)
 	a.mu.Lock()
 	defer a.mu.Unlock()

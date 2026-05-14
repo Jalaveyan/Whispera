@@ -93,10 +93,14 @@ func (a *RLServerAgent) encodeState(probes []ServerProbe) []float64 {
 }
 
 // Decide выбирает индекс сервера из отсортированного по RTT списка probes.
-// Возвращает "" если список пуст.
+// Возвращает "" если список пуст или агент не набрал минимальный опыт.
+// В режиме warmup tunnel использует pickFastestServer (чистый latency probe).
 func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	if len(probes) == 0 {
 		return ""
+	}
+	if atomic.LoadInt64(&a.stepCount) < 30 {
+		return "" // warmup: fallback на fastest-ping
 	}
 
 	// Сортируем по RTT (недостижимые — в конец).

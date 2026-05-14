@@ -90,7 +90,12 @@ func (a *RLKeepaliveAgent) encodeState(v KeepaliveView) []float64 {
 }
 
 // Decide выбирает интервал keepalive.
+// Пока не накоплено 30 шагов — возвращает безопасный дефолт (15s) не вмешиваясь.
 func (a *RLKeepaliveAgent) Decide(v KeepaliveView) time.Duration {
+	if atomic.LoadInt64(&a.stepCount) < 30 {
+		return KeepaliveIntervals[2] // 15s — безопасный дефолт
+	}
+
 	state := a.encodeState(v)
 	a.mu.Lock()
 	defer a.mu.Unlock()

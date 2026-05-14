@@ -89,7 +89,12 @@ func (a *RLJitterAgent) encodeState(v JitterView) []float64 {
 
 // Decide возвращает долю джиттера (0.10–0.70).
 // Применяется как: jitter = rand(-frac*base, +frac*base).
+// Пока не накоплено 30 шагов — возвращает ±30% (исходное поведение системы).
 func (a *RLJitterAgent) Decide(v JitterView) float64 {
+	if atomic.LoadInt64(&a.stepCount) < 30 {
+		return JitterFractions[2] // 0.40 ≈ ±40% — поведение по умолчанию
+	}
+
 	state := a.encodeState(v)
 	a.mu.Lock()
 	defer a.mu.Unlock()

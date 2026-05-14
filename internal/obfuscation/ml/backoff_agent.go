@@ -100,7 +100,12 @@ func (a *RLBackoffAgent) encodeState(v BackoffView) []float64 {
 }
 
 // Decide возвращает задержку перед следующей попыткой переподключения.
+// Пока не накоплено 30 шагов — возвращает 3s (близко к дефолтному ReconnectInterval).
 func (a *RLBackoffAgent) Decide(v BackoffView) time.Duration {
+	if atomic.LoadInt64(&a.stepCount) < 30 {
+		return BackoffDelays[1] // 3s — безопасный дефолт
+	}
+
 	state := a.encodeState(v)
 	a.mu.Lock()
 	defer a.mu.Unlock()

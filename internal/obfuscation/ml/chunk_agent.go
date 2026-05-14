@@ -87,7 +87,12 @@ func (a *RLChunkAgent) encodeState(v ChunkView) []float64 {
 }
 
 // Decide возвращает оптимальный размер фрейма (байт).
+// Пока не накоплено 30 шагов — возвращает 65535 (текущий дефолт mux).
 func (a *RLChunkAgent) Decide(v ChunkView) int {
+	if atomic.LoadInt64(&a.stepCount) < 30 {
+		return ChunkSizes[3] // 65535 — дефолт
+	}
+
 	state := a.encodeState(v)
 	a.mu.Lock()
 	defer a.mu.Unlock()
