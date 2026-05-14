@@ -3605,50 +3605,6 @@ func (m *Manager) pickServer(ctx context.Context) string {
 	return best.Addr
 }
 
-func (m *Manager) pickFastestServer(ctx context.Context) string {
-	candidates := m.regionCandidates()
-	if len(candidates) == 0 {
-		return ""
-	}
-
-	type result struct {
-		addr    string
-		latency time.Duration
-	}
-
-	ch := make(chan result, len(candidates))
-	for _, addr := range candidates {
-		addr := addr
-		go func() {
-			lat, err := probeLatency(ctx, addr, 200*time.Millisecond)
-			if err != nil {
-				log.Debug("[LATENCY] %s unreachable: %v", addr, err)
-				ch <- result{addr: addr, latency: 1<<62 - 1}
-				return
-			}
-			log.Info("[LATENCY] %s RTT=%v", addr, lat)
-			ch <- result{addr: addr, latency: lat}
-		}()
-	}
-
-	var best result
-	best.latency = 1<<62 - 1
-	for range candidates {
-		r := <-ch
-		if r.latency < best.latency {
-			best = r
-		}
-	}
-
-	if best.latency == 1<<62-1 {
-		log.Warn("[LATENCY] All servers unreachable during probe, using configured default")
-		return ""
-	}
-
-	log.Info("[LATENCY] Fastest server: %s (RTT=%v)", best.addr, best.latency)
-	return best.addr
-}
-
 // regionCandidates returns the servers to probe based on PreferredRegion.
 // "auto" or "" → all servers from ServerList + all regions.
 // specific region → that region's servers only (falls back to ServerList if empty).
