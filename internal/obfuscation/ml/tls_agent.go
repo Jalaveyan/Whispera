@@ -29,14 +29,14 @@ const (
 	tlsHidden1      = 10
 	tlsHidden2      = 6
 	tlsNumActions   = 5 // len(TLSProfiles)
-	tlsBufferSize   = 400
-	tlsBatchSize    = 8
+	tlsBufferSize   = 150
+	tlsBatchSize    = 4
 	tlsGamma        = 0.95
 	tlsEpsilonStart = 0.50
 	tlsEpsilonMin   = 0.05
 	tlsEpsilonDecay = 0.97
-	tlsTargetSync   = 20
-	tlsTrainEvery   = 4
+	tlsTargetSync   = 8
+	tlsTrainEvery   = 1
 )
 
 // TLSView — контекст для выбора TLS fingerprint.
@@ -111,7 +111,7 @@ func transportHash(name string) float64 {
 // Decide возвращает строку TLS fingerprint профиля (пустая = go default).
 // Пока не накоплено 30 шагов — не вмешивается (возвращает "").
 func (a *RLTLSAgent) Decide(v TLSView) string {
-	if atomic.LoadInt64(&a.stepCount) < 30 {
+	if atomic.LoadInt64(&a.stepCount) < 10 {
 		return "" // warmup: не менять TLS fingerprint
 	}
 
@@ -196,7 +196,7 @@ func (a *RLTLSAgent) trainStep() {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	dqnTrainBatch(a.qNet, a.target, batch, tlsNumActions, tlsGamma, 0.001)
+	dqnTrainBatch(a.qNet, a.target, batch, tlsNumActions, tlsGamma, 0.005)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	if cnt%10 == 0 {
 		tlsLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))

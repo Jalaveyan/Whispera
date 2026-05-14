@@ -27,13 +27,13 @@ const (
 	kaHidden1      = 12
 	kaHidden2      = 8
 	kaNumActions   = 5 // len(KeepaliveIntervals)
-	kaBufferSize   = 400
+	kaBufferSize   = 600
 	kaBatchSize    = 8
 	kaGamma        = 0.95
 	kaEpsilonStart = 0.40
 	kaEpsilonMin   = 0.05
-	kaEpsilonDecay = 0.98
-	kaTargetSync   = 20
+	kaEpsilonDecay = 0.999
+	kaTargetSync   = 100
 	kaTrainEvery   = 4
 )
 

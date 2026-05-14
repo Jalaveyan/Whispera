@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -618,6 +619,7 @@ func main() {
 			TransportConfig:     tc,
 			MLServerURL:         cfg.MLServerURL,
 			MLToken:             resolveMLToken(cfg),
+			SNIModelDir:         sniModelDir(),
 			ForceObfuscation:    force,
 			BehavioralProfile:   profile,
 			CustomSNI:           customSNI,
@@ -1220,4 +1222,9 @@ func main() {
 
 	log.Println("Client running. Press Ctrl+C to stop.")
 	<-ctx.Done()
+}
+
+// sniModelDir возвращает путь для хранения rl_sni_policy.json.
+func sniModelDir() string {
+	return filepath.Join(mlDefaultDataDir(), "sni_model")
 }

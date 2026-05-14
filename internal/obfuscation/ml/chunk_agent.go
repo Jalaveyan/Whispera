@@ -21,13 +21,13 @@ const (
 	chunkHidden1      = 10
 	chunkHidden2      = 6
 	chunkNumActions   = 4 // len(ChunkSizes)
-	chunkBufferSize   = 400
+	chunkBufferSize   = 600
 	chunkBatchSize    = 8
 	chunkGamma        = 0.95
 	chunkEpsilonStart = 0.40
 	chunkEpsilonMin   = 0.05
-	chunkEpsilonDecay = 0.98
-	chunkTargetSync   = 20
+	chunkEpsilonDecay = 0.999
+	chunkTargetSync   = 100
 	chunkTrainEvery   = 4
 )
 

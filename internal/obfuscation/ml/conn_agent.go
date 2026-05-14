@@ -46,8 +46,8 @@ const (
 	connGamma        = 0.95
 	connEpsilonStart = 0.30
 	connEpsilonMin   = 0.05
-	connEpsilonDecay = 0.985
-	connTargetSync   = 20
+	connEpsilonDecay = 0.999
+	connTargetSync   = 100
 	connTrainEvery   = 4
 	connMaxPoolSize  = 5 // нормировочная константа для pool_size_norm
 )

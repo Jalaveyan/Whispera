@@ -20,14 +20,14 @@ const (
 	srvHidden1     = 16
 	srvHidden2     = 8
 	srvNumActions  = srvMaxServers
-	srvBufferSize  = 400
-	srvBatchSize   = 8
+	srvBufferSize  = 150
+	srvBatchSize   = 4
 	srvGamma       = 0.95
 	srvEpsilonStart = 0.50
 	srvEpsilonMin  = 0.05
 	srvEpsilonDecay = 0.97
-	srvTargetSync  = 20
-	srvTrainEvery  = 4
+	srvTargetSync  = 8
+	srvTrainEvery  = 1
 )
 
 // ServerProbe — результат одного измерения задержки до сервера.
@@ -99,7 +99,7 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	if len(probes) == 0 {
 		return ""
 	}
-	if atomic.LoadInt64(&a.stepCount) < 30 {
+	if atomic.LoadInt64(&a.stepCount) < 10 {
 		return "" // warmup: fallback на fastest-ping
 	}
 
@@ -198,7 +198,7 @@ func (a *RLServerAgent) trainStep() {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	dqnTrainBatch(a.qNet, a.target, batch, srvNumActions, srvGamma, 0.001)
+	dqnTrainBatch(a.qNet, a.target, batch, srvNumActions, srvGamma, 0.005)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	if cnt%10 == 0 {
 		srvLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))

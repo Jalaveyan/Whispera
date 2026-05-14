@@ -22,13 +22,13 @@ const (
 	jHidden1      = 10
 	jHidden2      = 6
 	jNumActions   = 4 // len(JitterFractions)
-	jBufferSize   = 400
+	jBufferSize   = 600
 	jBatchSize    = 8
 	jGamma        = 0.95
 	jEpsilonStart = 0.40
 	jEpsilonMin   = 0.05
-	jEpsilonDecay = 0.98
-	jTargetSync   = 20
+	jEpsilonDecay = 0.999
+	jTargetSync   = 100
 	jTrainEvery   = 4
 )
 

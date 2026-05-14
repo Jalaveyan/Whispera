@@ -21,14 +21,14 @@ const (
 	sniStateSize    = 7
 	sniHidden1      = 32
 	sniHidden2      = 16
-	sniBufferSize   = 1000
-	sniBatchSize    = 16
+	sniBufferSize   = 200
+	sniBatchSize    = 4
 	sniGamma        = 0.95
 	sniEpsilonStart = 0.40
 	sniEpsilonMin   = 0.05
-	sniEpsilonDecay = 0.990
-	sniTargetSync   = 30
-	sniTrainEvery   = 5
+	sniEpsilonDecay = 0.97
+	sniTargetSync   = 8
+	sniTrainEvery   = 1
 
 	// Веса при комбинировании Q-сети и world model в режиме exploit.
 	// Q-сеть учится на долгосрочной ценности (Bellman),
@@ -160,6 +160,13 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 	if len(pool) == 0 {
 		return "", -1
 	}
+	if atomic.LoadInt64(&a.stepCount) < 10 {
+		a.pendingState = nil
+		a.pendingAction = -1
+		idx := mrand.Intn(len(pool))
+		sniLog.Info("warmup → %s (pool=%d)", pool[idx], len(pool))
+		return pool[idx], idx
+	}
 
 	var idx int
 	var mode string
@@ -275,7 +282,7 @@ func (a *RLSNIAgent) trainStep() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	const lr = 0.001
+	const lr = 0.005
 	for _, exp := range batch {
 		outSize := len(a.qNet.Layers[len(a.qNet.Layers)-1].B)
 		if exp.Action >= outSize {

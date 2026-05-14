@@ -37,14 +37,14 @@ const (
 	boHidden1      = 12
 	boHidden2      = 8
 	boNumActions   = 5 // len(BackoffDelays)
-	boBufferSize   = 400
-	boBatchSize    = 8
+	boBufferSize   = 150
+	boBatchSize    = 4
 	boGamma        = 0.95
 	boEpsilonStart = 0.40
 	boEpsilonMin   = 0.05
-	boEpsilonDecay = 0.98
-	boTargetSync   = 20
-	boTrainEvery   = 4
+	boEpsilonDecay = 0.97
+	boTargetSync   = 8
+	boTrainEvery   = 1
 )
 
 // BackoffView — контекст для выбора задержки переподключения.
@@ -102,7 +102,7 @@ func (a *RLBackoffAgent) encodeState(v BackoffView) []float64 {
 // Decide возвращает задержку перед следующей попыткой переподключения.
 // Пока не накоплено 30 шагов — возвращает 3s (близко к дефолтному ReconnectInterval).
 func (a *RLBackoffAgent) Decide(v BackoffView) time.Duration {
-	if atomic.LoadInt64(&a.stepCount) < 30 {
+	if atomic.LoadInt64(&a.stepCount) < 10 {
 		return BackoffDelays[1] // 3s — безопасный дефолт
 	}
 
@@ -209,7 +209,7 @@ func (a *RLBackoffAgent) trainStep() {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	dqnTrainBatch(a.qNet, a.target, batch, boNumActions, boGamma, 0.001)
+	dqnTrainBatch(a.qNet, a.target, batch, boNumActions, boGamma, 0.005)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	if cnt%10 == 0 {
 		boLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))

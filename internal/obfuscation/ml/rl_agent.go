@@ -21,14 +21,14 @@ const (
 	RLActionSize   = 28
 	RLHidden1      = 64
 	RLHidden2      = 32
-	RLBufferSize   = 2000
-	RLBatchSize    = 16
+	RLBufferSize   = 200
+	RLBatchSize    = 4
 	RLGamma        = 0.95
 	RLEpsilonStart = 0.3
 	RLEpsilonMin   = 0.05
-	RLEpsilonDecay = 0.995
-	RLTargetSync   = 50
-	RLTrainEvery   = 10
+	RLEpsilonDecay = 0.97
+	RLTargetSync   = 8
+	RLTrainEvery   = 1
 )
 
 type Experience struct {
@@ -118,7 +118,7 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 	if len(pool) == 0 {
 		return "", -1
 	}
-	if atomic.LoadInt64(&a.stepCount) < 20 {
+	if atomic.LoadInt64(&a.stepCount) < 10 {
 		return "", -1
 	}
 
@@ -323,7 +323,7 @@ func (a *RLTransportAgent) trainStep() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	lr := 0.001
+	lr := 0.005
 
 	for _, exp := range batch {
 		layerOutputs := a.fullForward(exp.State)

@@ -27,10 +27,9 @@ export class StatsController {
         try {
             const token = auth?.replace('Bearer ', '');
             const users = await this.statsService.getUserTraffic(token);
-            return res.json({ success: true, users });
+            return res.json(users);
         } catch (err: any) {
-            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
-            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch user traffic' });
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json([]);
         }
     }
 
@@ -43,10 +42,9 @@ export class StatsController {
         try {
             const token = auth?.replace('Bearer ', '');
             const data = await this.statsService.getChartData(token, period || '24h');
-            return res.json({ success: true, ...data });
+            return res.json(data);
         } catch (err: any) {
-            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
-            return res.status(status).json({ success: false, error: err?.response?.data?.error || err?.message || 'Failed to fetch chart data' });
+            return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json([]);
         }
     }
 }
