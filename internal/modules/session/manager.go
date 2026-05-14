@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -222,11 +223,13 @@ func (m *Manager) GetSessionByAddr(addr net.Addr) (interfaces.Session, bool) {
 
 func (m *Manager) CreateSession(params interfaces.SessionParams) (interfaces.Session, error) {
 	total := m.countSessions()
-	if total >= m.config.MaxSessions {
-		m.cleanupOldest()
-		if m.countSessions() >= m.config.MaxSessions {
-			return nil, fmt.Errorf("max sessions reached (%d)", m.config.MaxSessions)
-		}
+	threshold := m.config.MaxSessions * 4 / 5 // 80%
+	if total >= threshold {
+		evict := (total - threshold) + 10
+		m.evictOldest(evict)
+	}
+	if m.countSessions() >= m.config.MaxSessions {
+		return nil, fmt.Errorf("max sessions reached (%d)", m.config.MaxSessions)
 	}
 
 	id, err := m.generateSessionID()
@@ -432,32 +435,51 @@ func (m *Manager) cleanupExpired() {
 	}
 }
 
+type sessionAge struct {
+	id           uint32
+	lastActivity time.Time
+	shard        *sessionShard
+}
+
+// cleanupOldest evicts the n oldest idle sessions to free capacity.
 func (m *Manager) cleanupOldest() {
-	var oldestID uint32
-	var oldestTime time.Time
-	var oldestShard *sessionShard
+	m.evictOldest(10)
+}
+
+func (m *Manager) evictOldest(n int) {
+	type candidate struct {
+		id    uint32
+		t     time.Time
+		shard *sessionShard
+	}
+	candidates := make([]candidate, 0, 64)
 
 	for i := 0; i < numShards; i++ {
 		shard := m.shards[i]
 		shard.mu.RLock()
-		for id, session := range shard.sessions {
-			session.mu.RLock()
-			lastActivity := session.lastActivity
-			session.mu.RUnlock()
-
-			if oldestID == 0 || lastActivity.Before(oldestTime) {
-				oldestID = id
-				oldestTime = lastActivity
-				oldestShard = shard
-			}
+		for id, s := range shard.sessions {
+			s.mu.RLock()
+			last := s.lastActivity
+			s.mu.RUnlock()
+			candidates = append(candidates, candidate{id, last, shard})
 		}
 		shard.mu.RUnlock()
 	}
 
-	if oldestID != 0 && oldestShard != nil {
-		oldestShard.mu.Lock()
-		m.removeSessionFromShard(oldestShard, oldestID)
-		oldestShard.mu.Unlock()
+	// sort oldest first (simple selection, n is small)
+	for i := 0; i < n && i < len(candidates); i++ {
+		minIdx := i
+		for j := i + 1; j < len(candidates); j++ {
+			if candidates[j].t.Before(candidates[minIdx].t) {
+				minIdx = j
+			}
+		}
+		candidates[i], candidates[minIdx] = candidates[minIdx], candidates[i]
+		c := candidates[i]
+		c.shard.mu.Lock()
+		m.removeSessionFromShard(c.shard, c.id)
+		c.shard.mu.Unlock()
+		log.Printf("session evicted (idle since %s): %d", time.Since(c.t).Round(time.Second), c.id)
 	}
 }
 
