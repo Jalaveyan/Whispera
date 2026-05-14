@@ -276,6 +276,8 @@ type Config struct {
 
 	// SNIModelDir — путь для сохранения rl_sni_policy.json. Пустая строка = не сохранять.
 	SNIModelDir string
+	// SNIDomainsURL — URL plain-text списка доменов (один на строку) для авто-обновления SNI-пула каждые 24ч.
+	SNIDomainsURL string
 
 	CustomSNI string
 	NoSNI     bool
@@ -411,6 +413,7 @@ type Manager struct {
 	serverAgent        *mlpkg.RLServerAgent
 	chunkAgent         *mlpkg.RLChunkAgent
 	tlsAgent           *mlpkg.RLTLSAgent
+	tspuDetector       *mlpkg.TSPUDetector
 
 	// для backoff-агента
 	boFailCount     int32 // atomic: consecutive reconnect failures
@@ -612,6 +615,10 @@ func New(cfg *Config) (*Manager, error) {
 	}
 	m.sniAgent = mlpkg.NewRLSNIAgent(cfg.SNIModelDir, sniPool)
 	log.Info("RL SNI agent initialized (pool=%d, eps=%.2f)", len(sniPool), m.sniAgent.Epsilon())
+	if cfg.SNIDomainsURL != "" {
+		m.sniAgent.StartAutoFetch(cfg.SNIDomainsURL)
+		log.Info("RL SNI agent auto-fetch started: %s", cfg.SNIDomainsURL)
+	}
 
 	m.connAgent = mlpkg.NewRLConnAgent()
 	log.Info("RL Conn agent initialized")
@@ -625,7 +632,8 @@ func New(cfg *Config) (*Manager, error) {
 	m.serverAgent = mlpkg.NewRLServerAgent()
 	m.chunkAgent = mlpkg.NewRLChunkAgent()
 	m.tlsAgent = mlpkg.NewRLTLSAgent()
-	log.Info("RL agents initialized: keepalive, backoff, jitter, server, chunk, tls")
+	m.tspuDetector = mlpkg.NewTSPUDetector()
+	log.Info("RL agents initialized: keepalive, backoff, jitter, server, chunk, tls, tspu")
 
 	// Периодически экспортируем веса в глобальный снапшот.
 	// Сервер отдаёт его через /api/ml/weights; клиент тянет при первом подключении.
@@ -2009,6 +2017,9 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			if m.sniAgent.ShouldRotate() {
 				go m.RotateSNI()
 			}
+		}
+		if m.tspuDetector != nil && err != nil && strings.Contains(err.Error(), "reset") {
+			m.tspuDetector.RecordRST(m.currentSNI, time.Duration(dialLatency)*time.Millisecond)
 		}
 		failCount := atomic.AddInt32(&m.boFailCount, 1)
 		if m.boAgent != nil {
