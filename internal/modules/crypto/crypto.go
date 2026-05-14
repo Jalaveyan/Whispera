@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
@@ -75,9 +76,9 @@ type Provider struct {
 
 	mu              sync.RWMutex
 	keysGenerated   uint64
-	encryptOps      uint64
-	decryptOps      uint64
-	decryptFailures uint64
+	encryptOps      atomic.Uint64
+	decryptOps      atomic.Uint64
+	decryptFailures atomic.Uint64
 }
 
 func New(cfg *Config) (*Provider, error) {
@@ -267,11 +268,11 @@ func (p *Provider) HealthCheck() interfaces.HealthStatus {
 
 	p.mu.RLock()
 	status.Details["keys_generated"] = p.keysGenerated
-	status.Details["encrypt_ops"] = p.encryptOps
-	status.Details["decrypt_ops"] = p.decryptOps
-	status.Details["decrypt_failures"] = p.decryptFailures
 	status.Details["key_pool_size"] = len(p.keyPool)
 	p.mu.RUnlock()
+	status.Details["encrypt_ops"] = p.encryptOps.Load()
+	status.Details["decrypt_ops"] = p.decryptOps.Load()
+	status.Details["decrypt_failures"] = p.decryptFailures.Load()
 
 	status.Details["cipher"] = string(p.config.DefaultCipher)
 
@@ -284,30 +285,18 @@ type aeadWrapper struct {
 	nonceBuf []byte
 }
 
-var outputPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 0, 65536+16)
-	},
-}
 func (a *aeadWrapper) Encrypt(seq uint32, aad, plaintext []byte) ([]byte, error) {
 	for i := range a.nonceBuf {
 		a.nonceBuf[i] = 0
 	}
 	binary.BigEndian.PutUint32(a.nonceBuf[len(a.nonceBuf)-4:], seq)
 
-	outBuf := outputPool.Get().([]byte)
-	outBuf = outBuf[:0]
-	ciphertext := a.aead.Seal(outBuf, a.nonceBuf, plaintext, aad)
+	// Pre-size so Seal appends without allocating.
+	dst := make([]byte, 0, len(plaintext)+a.aead.Overhead())
+	ciphertext := a.aead.Seal(dst, a.nonceBuf, plaintext, aad)
 
-	result := make([]byte, len(ciphertext))
-	copy(result, ciphertext)
-	outputPool.Put(outBuf[:0])
-
-	a.provider.mu.Lock()
-	a.provider.encryptOps++
-	a.provider.mu.Unlock()
-
-	return result, nil
+	a.provider.encryptOps.Add(1)
+	return ciphertext, nil
 }
 
 func (a *aeadWrapper) Decrypt(seq uint32, aad, ciphertext []byte) ([]byte, error) {
@@ -316,26 +305,16 @@ func (a *aeadWrapper) Decrypt(seq uint32, aad, ciphertext []byte) ([]byte, error
 	}
 	binary.BigEndian.PutUint32(a.nonceBuf[len(a.nonceBuf)-4:], seq)
 
-	outBuf := outputPool.Get().([]byte)
-	outBuf = outBuf[:0]
-	plaintext, err := a.aead.Open(outBuf, a.nonceBuf, ciphertext, aad)
+	// Pre-size so Open appends without allocating.
+	dst := make([]byte, 0, len(ciphertext))
+	plaintext, err := a.aead.Open(dst, a.nonceBuf, ciphertext, aad)
 	if err != nil {
-		outputPool.Put(outBuf[:0])
-		a.provider.mu.Lock()
-		a.provider.decryptFailures++
-		a.provider.mu.Unlock()
+		a.provider.decryptFailures.Add(1)
 		return nil, fmt.Errorf("decryption failed: %w", err)
 	}
 
-	result := make([]byte, len(plaintext))
-	copy(result, plaintext)
-	outputPool.Put(outBuf[:0])
-
-	a.provider.mu.Lock()
-	a.provider.decryptOps++
-	a.provider.mu.Unlock()
-
-	return result, nil
+	a.provider.decryptOps.Add(1)
+	return plaintext, nil
 }
 
 func (a *aeadWrapper) NonceSize() int {

@@ -21,6 +21,14 @@ var packetPool = sync.Pool{
 	},
 }
 
+// streamReadBufPool holds buffers for readFromTarget goroutines (HeaderSize+65536).
+var streamReadBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, HeaderSize+65536)
+		return &buf
+	},
+}
+
 var (
 	dnsCache   = make(map[string]dnsCacheEntry)
 	dnsCacheMu sync.RWMutex
@@ -519,7 +527,9 @@ func (s *Stream) readFromTarget() {
 		s.Close()
 	}()
 
-	buf := make([]byte, HeaderSize+65536)
+	bufp := streamReadBufPool.Get().(*[]byte)
+	buf := *bufp
+	defer streamReadBufPool.Put(bufp)
 	s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 	for {

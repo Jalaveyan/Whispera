@@ -11,6 +11,16 @@ import (
 	"time"
 )
 
+// frameBufPool holds scratch buffers for PaddedConn read/write frames.
+// Max frame: 2-byte outer len + 2-byte inner len + 65000 data + 128 pad = 65132 bytes.
+// We allocate 66008 to have headroom and cover the read side (up to 66000).
+var frameBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 66008)
+		return &buf
+	},
+}
+
 // PaddedConn wraps a net.Conn and adds random-length padding to every write,
 // making the on-wire frame sizes unpredictable.  This defeats DPI that
 // fingerprints yamux by its fixed 12-byte headers / frame structure.
@@ -68,13 +78,15 @@ func (pc *PaddedConn) Write(p []byte) (int, error) {
 func (pc *PaddedConn) writeFrame(data []byte) error {
 	padLen := pc.computePad(len(data))
 	totalLen := 2 + len(data) + padLen // 2 for real-data-len header
+	frameSize := 2 + totalLen
+
+	bufp := frameBufPool.Get().(*[]byte)
+	frame := (*bufp)[:frameSize]
 
 	// Frame: [2: totalLen][2: dataLen][data][padding]
-	frame := make([]byte, 2+totalLen)
 	binary.BigEndian.PutUint16(frame[0:2], uint16(totalLen))
 	binary.BigEndian.PutUint16(frame[2:4], uint16(len(data)))
 	copy(frame[4:], data)
-
 	if padLen > 0 {
 		if _, err := crand.Read(frame[4+len(data):]); err != nil {
 			// zeros are fine — size variation is what matters
@@ -82,6 +94,7 @@ func (pc *PaddedConn) writeFrame(data []byte) error {
 	}
 
 	_, err := pc.Conn.Write(frame)
+	frameBufPool.Put(bufp)
 	return err
 }
 
@@ -138,13 +151,17 @@ func (pc *PaddedConn) Read(p []byte) (int, error) {
 	}
 
 	// Read the full frame
-	frameBuf := make([]byte, totalLen)
-	if _, err := io.ReadFull(pc.Conn, frameBuf); err != nil {
+	bufp := frameBufPool.Get().(*[]byte)
+	frameBuf := (*bufp)[:totalLen]
+	_, err := io.ReadFull(pc.Conn, frameBuf)
+	if err != nil {
+		frameBufPool.Put(bufp)
 		return 0, err
 	}
 
 	dataLen := int(binary.BigEndian.Uint16(frameBuf[:2]))
 	if dataLen > totalLen-2 {
+		frameBufPool.Put(bufp)
 		return 0, fmt.Errorf("padded_conn: data length %d exceeds frame %d", dataLen, totalLen)
 	}
 
@@ -154,6 +171,7 @@ func (pc *PaddedConn) Read(p []byte) (int, error) {
 		// Buffer the rest for next Read call
 		pc.readBuf = append(pc.readBuf[:0], realData[n:]...)
 	}
+	frameBufPool.Put(bufp)
 	return n, nil
 }
 

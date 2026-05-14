@@ -22,6 +22,13 @@ import (
 	"whispera/internal/logger"
 )
 
+var mirageHandshakeBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 8192)
+		return &buf
+	},
+}
+
 func init() {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
 }
@@ -382,7 +389,9 @@ func (t *Transport) proxyTLSHandshake(client, target net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 8192)
+		bufp := mirageHandshakeBufPool.Get().(*[]byte)
+		buf := *bufp
+		defer mirageHandshakeBufPool.Put(bufp)
 		for {
 			select {
 			case <-done:
@@ -405,7 +414,9 @@ func (t *Transport) proxyTLSHandshake(client, target net.Conn) {
 
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 8192)
+		bufp := mirageHandshakeBufPool.Get().(*[]byte)
+		buf := *bufp
+		defer mirageHandshakeBufPool.Put(bufp)
 		for {
 			select {
 			case <-done:

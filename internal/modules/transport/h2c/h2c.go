@@ -27,6 +27,13 @@ func init() {
 
 var log = logger.Module("h2c")
 
+var h2cCopyBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 1024*1024)
+		return &buf
+	},
+}
+
 const (
 	ModuleName    = "transport.h2c"
 	ModuleVersion = "1.0.0"
@@ -223,8 +230,9 @@ func (t *Transport) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	buf := make([]byte, 1024*1024)
-	io.CopyBuffer(w, pr, buf)
+	bufp := h2cCopyBufPool.Get().(*[]byte)
+	io.CopyBuffer(w, pr, *bufp)
+	h2cCopyBufPool.Put(bufp)
 }
 
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
