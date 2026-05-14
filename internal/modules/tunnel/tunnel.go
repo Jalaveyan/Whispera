@@ -126,6 +126,17 @@ func isConnResetOrBroken(err error) bool {
 	return false
 }
 
+func isHandshakeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "handshake") ||
+		strings.Contains(s, "tls") ||
+		strings.Contains(s, "certificate") ||
+		strings.Contains(s, "x509")
+}
+
 // ClassifyConnError returns a concise, human-readable reason for a connection
 // failure — suitable for display in client logs or UI.
 func ClassifyConnError(err error) string {
@@ -390,10 +401,23 @@ type Manager struct {
 	russianSNIsMu sync.RWMutex
 	currentSNI    string
 	lastRotation  time.Time
-	sniAgent      *mlpkg.RLSNIAgent
+	sniAgent           *mlpkg.RLSNIAgent
 	connAgent          *mlpkg.RLConnAgent
 	connAgentStop      chan struct{}
 	transportAgent     *mlpkg.RLTransportAgent
+	kaAgent            *mlpkg.RLKeepaliveAgent
+	boAgent            *mlpkg.RLBackoffAgent
+	jitterAgent        *mlpkg.RLJitterAgent
+	serverAgent        *mlpkg.RLServerAgent
+	chunkAgent         *mlpkg.RLChunkAgent
+	tlsAgent           *mlpkg.RLTLSAgent
+
+	// для backoff-агента
+	boFailCount     int32 // atomic: consecutive reconnect failures
+	boLastSuccessAt int64 // atomic: unix seconds of last successful connect
+	boLastErrType   int32 // atomic: BackoffErrType
+	// для tls-агента
+	tlsErrStreak int32 // atomic: consecutive TLS handshake failures
 
 	russianTunneler *russian.RussianTunneler
 
@@ -425,8 +449,21 @@ type Manager struct {
 
 func (m *Manager) getMuxConfig() *mux.Config {
 	base := 30 + mrand.Intn(61)
+
+	frameSize := 65535
+	if m.chunkAgent != nil {
+		rttMs := float64(atomic.LoadInt64(&m.qualityRTTEWMA)) / 1e6
+		upBytes := float64(atomic.LoadUint64(&m.bytesUp))
+		dnBytes := float64(atomic.LoadUint64(&m.bytesDown))
+		frameSize = m.chunkAgent.Decide(mlpkg.ChunkView{
+			RTTMs:      rttMs,
+			BytesUpSec: upBytes / 60.0, // грубая оценка: всего байт / 60с
+			BytesDnSec: dnBytes / 60.0,
+		})
+	}
+
 	return &mux.Config{
-		MaxFrameSize:         65535,
+		MaxFrameSize:         frameSize,
 		MaxReceiveBuffer:     512 * 1024 * 1024,
 		MaxStreamBuffer:      4 * 1024 * 1024,
 		KeepAliveInterval:    time.Duration(base) * time.Second,
@@ -582,6 +619,14 @@ func New(cfg *Config) (*Manager, error) {
 	m.transportAgent = mlpkg.NewRLTransportAgent(cfg.SNIModelDir, nil)
 	log.Info("RL Transport agent initialized (eps=%.2f)", m.transportAgent.Epsilon())
 
+	m.kaAgent = mlpkg.NewRLKeepaliveAgent()
+	m.boAgent = mlpkg.NewRLBackoffAgent()
+	m.jitterAgent = mlpkg.NewRLJitterAgent()
+	m.serverAgent = mlpkg.NewRLServerAgent()
+	m.chunkAgent = mlpkg.NewRLChunkAgent()
+	m.tlsAgent = mlpkg.NewRLTLSAgent()
+	log.Info("RL agents initialized: keepalive, backoff, jitter, server, chunk, tls")
+
 	if cfg.CustomSNI != "" {
 		if cfg.TransportConfig == nil {
 			cfg.TransportConfig = make(map[string]interface{})
@@ -715,7 +760,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 	m.Disconnect()
 
 	if len(m.config.ServerList) > 0 {
-		if best := m.pickFastestServer(ctx); best != "" {
+		if best := m.pickServer(ctx); best != "" {
 			m.config.ServerAddrTCP = best
 			m.config.ServerAddr = best
 		}
@@ -912,8 +957,25 @@ func (m *Manager) spoofDialer() *net.Dialer {
 // dialManagedConn набирает одно полностью готовое соединение (dial → desync → handshake → mux)
 // и возвращает готовый *managedConn. Используется как в connectInternal, так и в openPoolConn.
 func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn, error) {
+	// TLS-агент выбирает fingerprint профиль до dial.
+	if m.tlsAgent != nil && m.asnBypassDialer != nil {
+		tlsErrors := int(atomic.LoadInt32(&m.tlsErrStreak))
+		profile := m.tlsAgent.Decide(mlpkg.TLSView{
+			ConsecutiveTLSErrors: tlsErrors,
+			TransportName:        m.config.Transport,
+			IsPhantom:            m.config.EnablePhantom,
+		})
+		if profile != "" {
+			m.config.TLSFingerprint = profile
+		}
+	}
+
 	conn, err := m.dial(ctx)
 	if err != nil {
+		if m.tlsAgent != nil && isHandshakeError(err) {
+			atomic.AddInt32(&m.tlsErrStreak, 1)
+			m.tlsAgent.RecordOutcome(false)
+		}
 		return nil, err
 	}
 
@@ -923,6 +985,10 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		sess, err := m.handshake.InitiateHandshake(ctx, conn, conn.RemoteAddr())
 		if err != nil {
 			conn.Close()
+			if m.tlsAgent != nil {
+				atomic.AddInt32(&m.tlsErrStreak, 1)
+				m.tlsAgent.RecordOutcome(false)
+			}
 			return nil, fmt.Errorf("handshake: %w", err)
 		}
 		if sess != nil {
@@ -930,6 +996,12 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		}
 	} else if m.config.EnablePhantom {
 		atomic.StoreUint32(&m.sessionID, uint32(time.Now().Unix()&0xFFFFFFFF))
+	}
+
+	// Handshake прошёл успешно — сбрасываем счётчик TLS ошибок.
+	if m.tlsAgent != nil {
+		atomic.StoreInt32(&m.tlsErrStreak, 0)
+		m.tlsAgent.RecordOutcome(true)
 	}
 
 	paddedConn := mux.NewPaddedConn(conn, 128)
@@ -1911,6 +1983,14 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			if m.sniAgent != nil {
 				m.sniAgent.RecordOutcome(true, dialLatency)
 			}
+			if m.boAgent != nil {
+				m.boAgent.RecordOutcome(true)
+			}
+			if m.serverAgent != nil {
+				m.serverAgent.RecordOutcome(true, dialLatency)
+			}
+			atomic.StoreInt32(&m.boFailCount, 0)
+			atomic.StoreInt64(&m.boLastSuccessAt, time.Now().Unix())
 			m.circuitBreakerSuccess()
 			if transportFallbackActivated {
 				m.config.Transport = originalTransport
@@ -1926,20 +2006,48 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 				go m.RotateSNI()
 			}
 		}
+		failCount := atomic.AddInt32(&m.boFailCount, 1)
+		if m.boAgent != nil {
+			m.boAgent.RecordOutcome(false)
+		}
+		if m.serverAgent != nil {
+			m.serverAgent.RecordOutcome(false, dialLatency)
+		}
 		log.Warn("Reconnect attempt %d failed (transport=%s): %s", attempts, m.config.Transport, ClassifyConnError(err))
 		m.circuitBreakerFail()
-		jitter := time.Duration(mrand.Int63n(int64(delay) / 4))
+
+		// Backoff-агент выбирает задержку; fallback на exponential backoff если агент не готов.
+		var backoffDelay time.Duration
+		if m.boAgent != nil {
+			errStr := ""
+			if err != nil {
+				errStr = err.Error()
+			}
+			lastSuc := atomic.LoadInt64(&m.boLastSuccessAt)
+			secSince := 0.0
+			if lastSuc > 0 {
+				secSince = float64(time.Now().Unix() - lastSuc)
+			}
+			backoffDelay = m.boAgent.Decide(mlpkg.BackoffView{
+				ConsecutiveFails:    int(failCount),
+				LastErrType:         mlpkg.ClassifyBackoffErr(errStr),
+				TimeSinceSuccessSec: secSince,
+			})
+		} else {
+			backoffDelay = delay
+			delay = time.Duration(float64(delay) * 2)
+			if delay > m.config.ReconnectMaxDelay {
+				delay = m.config.ReconnectMaxDelay
+			}
+		}
+
 		select {
 		case <-ctx.Done():
 			if transportFallbackActivated {
 				m.config.Transport = originalTransport
 			}
 			return ctx.Err()
-		case <-time.After(delay + jitter):
-		}
-		delay = time.Duration(float64(delay) * 2)
-		if delay > m.config.ReconnectMaxDelay {
-			delay = m.config.ReconnectMaxDelay
+		case <-time.After(backoffDelay):
 		}
 	}
 }
@@ -2280,12 +2388,24 @@ func (m *Manager) readLoop(mc *managedConn) {
 		if len(frameData) >= 3 && frameData[2] == 0x07 {
 			now := time.Now()
 			m.lastPong = now
+			var rttMs float64
 			if !m.lastKeepalive.IsZero() {
 				rtt := now.Sub(m.lastKeepalive)
 				m.updateQualityRTT(rtt)
+				rttMs = float64(rtt.Milliseconds())
 			}
 			atomic.StoreInt32(&m.missedKAs, 0)
 			log.Debug("Received PONG from server (RTT=%v)", time.Since(m.lastKeepalive))
+			// Положительный сигнал агентам keepalive и jitter.
+			if m.kaAgent != nil || m.jitterAgent != nil {
+				quality := math.Max(0, 1.0-rttMs/500.0)
+				if m.kaAgent != nil {
+					m.kaAgent.RecordOutcome(quality)
+				}
+				if m.jitterAgent != nil {
+					m.jitterAgent.RecordOutcome(quality)
+				}
+			}
 			continue
 		}
 
@@ -2825,7 +2945,18 @@ func (m *Manager) connQuality() float64 {
 	missed := float64(atomic.LoadInt32(&m.missedKAs))
 	kaScore := 1.0 - math.Min(missed/5.0, 1.0)
 
-	return (rttScore + kaScore) / 2.0
+	quality := (rttScore + kaScore) / 2.0
+
+	// chunk-агент получает обратную связь с каждым тиком connAgentTick.
+	if m.chunkAgent != nil {
+		upBytes := float64(atomic.LoadUint64(&m.bytesUp))
+		dnBytes := float64(atomic.LoadUint64(&m.bytesDown))
+		m.chunkAgent.RecordOutcome(quality)
+		_ = upBytes
+		_ = dnBytes
+	}
+
+	return quality
 }
 
 // openPoolConn устанавливает одно дополнительное соединение и добавляет его в activePool.
@@ -3098,9 +3229,23 @@ func (m *Manager) startKeepalive() {
 
 	go func() {
 		for {
+			rttMs := float64(atomic.LoadInt64(&m.qualityRTTEWMA)) / 1e6
+			missed := int(atomic.LoadInt32(&m.missedKAs))
+			kaView := mlpkg.KeepaliveView{RTTMs: rttMs, MissedKAs: missed}
+
 			base := m.config.KeepaliveInterval
-			// ±30% jitter: range [0.7×base, 1.3×base]
-			jitter := time.Duration(mrand.Int63n(int64(base*3/5))) - base*3/10
+			if m.kaAgent != nil {
+				base = m.kaAgent.Decide(kaView)
+			}
+
+			jitterFrac := 0.30 // default ±30%
+			if m.jitterAgent != nil {
+				jitterFrac = m.jitterAgent.Decide(mlpkg.JitterView{
+					RTTMs: rttMs, MissedKAs: missed,
+				})
+			}
+
+			jitter := time.Duration(float64(base)*jitterFrac*(2*mrand.Float64()-1))
 			timer := time.NewTimer(base + jitter)
 			select {
 			case <-ctx.Done():
@@ -3134,6 +3279,13 @@ func (m *Manager) sendKeepalive() {
 		// Count consecutive keepalives that got no pong.
 		if !m.lastKeepalive.IsZero() && m.lastPong.Before(m.lastKeepalive) {
 			missed := atomic.AddInt32(&m.missedKAs, 1)
+			// Отрицательный сигнал агентам keepalive и jitter.
+			if m.kaAgent != nil {
+				m.kaAgent.RecordOutcome(0)
+			}
+			if m.jitterAgent != nil {
+				m.jitterAgent.RecordOutcome(0)
+			}
 			threshold := m.config.QualityMissedKeepalives
 			if threshold > 0 && int(missed) >= threshold {
 				log.Warn("Quality failover: %d consecutive keepalives unanswered, reconnecting", missed)
@@ -3397,6 +3549,60 @@ func probeLatency(ctx context.Context, addr string, timeout time.Duration) (time
 	}
 	conn.Close()
 	return time.Since(start), nil
+}
+
+// pickServer использует serverAgent для выбора сервера если доступно,
+// иначе fallback на pickFastestServer (чистый latency probe).
+func (m *Manager) pickServer(ctx context.Context) string {
+	candidates := m.regionCandidates()
+	if len(candidates) == 0 {
+		return ""
+	}
+
+	// Зондируем все серверы параллельно.
+	type probeResult struct {
+		addr    string
+		latency time.Duration
+	}
+	ch := make(chan probeResult, len(candidates))
+	for _, addr := range candidates {
+		addr := addr
+		go func() {
+			lat, err := probeLatency(ctx, addr, 200*time.Millisecond)
+			if err != nil {
+				ch <- probeResult{addr: addr, latency: math.MaxInt64}
+				return
+			}
+			log.Info("[LATENCY] %s RTT=%v", addr, lat)
+			ch <- probeResult{addr: addr, latency: lat}
+		}()
+	}
+	probes := make([]mlpkg.ServerProbe, len(candidates))
+	for i := range candidates {
+		r := <-ch
+		probes[i] = mlpkg.ServerProbe{Addr: r.addr, Latency: r.latency}
+	}
+
+	// serverAgent выбирает сервер с учётом исторических данных.
+	if m.serverAgent != nil {
+		if chosen := m.serverAgent.Decide(probes); chosen != "" {
+			return chosen
+		}
+	}
+
+	// Fallback: возвращаем сервер с минимальным RTT.
+	best := probes[0]
+	for _, p := range probes[1:] {
+		if p.Latency < best.Latency {
+			best = p
+		}
+	}
+	if best.Latency == math.MaxInt64 {
+		log.Warn("[LATENCY] All servers unreachable during probe, using configured default")
+		return ""
+	}
+	log.Info("[LATENCY] Fastest server: %s (RTT=%v)", best.Addr, best.Latency)
+	return best.Addr
 }
 
 func (m *Manager) pickFastestServer(ctx context.Context) string {
