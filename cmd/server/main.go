@@ -161,7 +161,7 @@ var globalWiraidEngine *wiraid.Engine
 var globalKeyLimits = keylimits.New(keylimits.Limits{
 	MaxActiveSessions: 200,
 	SoftIPCap:         50,
-	BurstPerMinute:    120,
+	BurstPerMinute:    0, // disabled: connection pools reconnect at high frequency
 	SessionTTL:        2 * time.Minute,
 })
 
