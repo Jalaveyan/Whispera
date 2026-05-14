@@ -162,8 +162,8 @@ var globalKeyLimits = keylimits.New(keylimits.Limits{
 	MaxActiveSessions: 10,    // per-user
 	GlobalCap:         10000, // server-wide
 	SoftIPCap:         50,
-	BurstPerMinute:    0, // disabled: connection pools reconnect at high frequency
-	SessionTTL:        2 * time.Minute,
+	BurstPerMinute:    0,  // disabled: connection pools reconnect at high frequency
+	SessionTTL:        30 * time.Minute, // safety net for leaked sessions; live sessions are cleaned by Release()
 })
 
 var (
@@ -378,6 +378,11 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			},
 			OnConnReady: func(clientID, sessionID string, conn net.Conn) {
 				globalKeyLimits.RegisterCloser(clientID, sessionID, func() { conn.Close() })
+				if tc, ok := conn.(*stats.TrafficConn); ok {
+					tc.SetTouchFunc(func() {
+						globalKeyLimits.Touch(clientID, sessionID)
+					})
+				}
 			},
 			OnAuthenticated: func(conn net.Conn, clientID string) {
 				log.Printf("[Dynamic-Phantom] Authenticated: %s on inbound %s", clientID, inbound.Tag)
