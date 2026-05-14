@@ -307,14 +307,3 @@ func entropy(probs []float64) float64 {
 	return h
 }
 
-// dqnArgmax returns the action index with the highest Q-value.
-func dqnArgmax(q *gnet.GorgoniaNet, state []float64, n int) int {
-	qvals := q.Forward(state)
-	best := 0
-	for i := 1; i < n; i++ {
-		if i < len(qvals) && qvals[i] > qvals[best] {
-			best = i
-		}
-	}
-	return best
-}

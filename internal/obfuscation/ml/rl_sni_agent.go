@@ -3,6 +3,7 @@ package ml
 import (
 	"encoding/json"
 	"fmt"
+	"context"
 	"io"
 	"math"
 	mrand "math/rand"
@@ -166,7 +167,12 @@ func (a *RLSNIAgent) StartAutoFetch(domainsURL string) {
 
 func (a *RLSNIAgent) fetchAndUpdatePool(url string) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		sniLog.Warn("auto-fetch domains: bad URL: %v", err)
+		return
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		sniLog.Warn("auto-fetch domains failed: %v", err)
 		return
