@@ -398,6 +398,7 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		if streamObf {
 			proxyConn = transport.WrapStreamTLS(stream)
 		}
+		s.log.Info("accepted proxy stream from %s", clientID)
 		go s.handleProxyStream(proxyConn)
 	}
 }
