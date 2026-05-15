@@ -1285,6 +1285,7 @@ ENVEOF
         "$BIN_PATH/whispera" update-checksum "$CONF_PATH/config.yaml" && log_info "Config checksum updated"
     fi
 
+    setup_nginx_proxy
     log_info "Starting service..."
     systemctl start whispera
 
