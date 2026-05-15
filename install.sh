@@ -1541,6 +1541,7 @@ StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
+Type=notify
 User=whispera
 Group=whispera
 WorkingDirectory=$WORK_DIR
@@ -1549,7 +1550,7 @@ ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080
 Restart=always
 RestartSec=5
 WatchdogSec=30
-TimeoutStopSec=30
+TimeoutStopSec=90
 LimitNOFILE=65535
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
