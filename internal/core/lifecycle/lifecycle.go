@@ -184,7 +184,7 @@ func (m *Manager) Run() error {
 	}
 
 	// Notify systemd: service is ready. No-op outside systemd.
-	sddaemon.SdNotify(false, sddaemon.SdNotifyReady)
+	_, _ = sddaemon.SdNotify(false, sddaemon.SdNotifyReady)
 
 	// Send WATCHDOG=1 heartbeats if systemd watchdog is enabled.
 	if interval, err := sddaemon.SdWatchdogEnabled(false); err == nil && interval > 0 {
@@ -195,7 +195,7 @@ func (m *Manager) Run() error {
 				if !m.IsRunning() {
 					return
 				}
-				sddaemon.SdNotify(false, sddaemon.SdNotifyWatchdog)
+				_, _ = sddaemon.SdNotify(false, sddaemon.SdNotifyWatchdog)
 			}
 		}()
 	}
