@@ -1629,7 +1629,9 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			},
 			OnConn: func(conn net.Conn, userID string) {
 				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, true)
+					// Chameleon provides its own encryption (ChaCha20-AEAD) and
+					// obfuscation (shapedConn); WrapStreamTLS is not needed here.
+					go globalRelay.ServeTunnel(conn, false)
 				} else {
 					conn.Close()
 				}
