@@ -65,7 +65,9 @@ func (ws *WindowScheduler) windowDuration(i int) time.Duration {
 	info := fmt.Sprintf("chameleon-window-dur-v1-%d", i)
 	r := hkdf.New(sha256.New, ws.behaviorKey, ws.sessionID, []byte(info))
 	var b [4]byte
-	io.ReadFull(r, b[:])
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		panic("chameleon window dur: " + err.Error())
+	}
 	secs := minWindowSec + int(binary.BigEndian.Uint32(b[:])%uint32(maxWindowSec-minWindowSec+1))
 	return time.Duration(secs) * time.Second
 }

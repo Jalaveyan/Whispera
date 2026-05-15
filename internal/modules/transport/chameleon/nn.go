@@ -111,7 +111,9 @@ func newTrafficGRU(behaviorKey []byte, window int64, sessionID []byte) *trafficG
 
 	// Seed LCG from first 8 bytes of remaining HKDF output.
 	var lcgSeed [8]byte
-	io.ReadFull(r, lcgSeed[:])
+	if _, err := io.ReadFull(r, lcgSeed[:]); err != nil {
+		panic("chameleon gru lcg seed: " + err.Error())
+	}
 	g.rng.state = binary.BigEndian.Uint64(lcgSeed[:])
 
 	return g
