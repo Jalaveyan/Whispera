@@ -264,14 +264,27 @@ jobs:
           cache: 'npm'
           cache-dependency-path: panel/package-lock.json
 
-      - name: Install & Build Panel
+      - name: Build Frontend (Vite + React)
+        working-directory: ./panel/web
+        run: |
+          npm ci
+          npm run build
+          echo "Frontend build complete: $(du -sh ../public/web | cut -f1)"
+
+      - name: Install & Build Panel Backend
         working-directory: ./panel
         run: |
           npm ci --legacy-peer-deps
           chmod -R +x node_modules/.bin/
           npm run build
           npm run bundle
-          echo "bundle size: $(du -sh bundle | cut -f1)"
+          BUNDLE_SIZE=$(wc -c < bundle/index.js)
+          echo "bundle size: $(du -sh bundle/index.js | cut -f1) (${BUNDLE_SIZE} bytes)"
+          if [[ "$BUNDLE_SIZE" -lt 1048576 ]]; then
+            echo "ERROR: bundle/index.js is ${BUNDLE_SIZE} bytes — expected at least 1 MB. Build may be incomplete."
+            exit 1
+          fi
+          sha256sum bundle/index.js > bundle/index.js.sha256
           tar -czvf ../whispera-panel.tar.gz bundle public package.json .env.example
           echo "whispera-panel.tar.gz: $(du -sh ../whispera-panel.tar.gz | cut -f1)"
 
@@ -306,6 +319,13 @@ jobs:
           find artifacts -type f -name 'whispera-ml-server-*' -exec cp {} release-files/ \;
           echo "Release files:"
           ls -la release-files/
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd release-files
+          sha256sum * > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
 
       - name: Generate Release Notes
         id: notes

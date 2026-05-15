@@ -329,6 +329,15 @@ maxretry  = 10
 findtime  = 1m
 bantime   = 1h
 filter    = whispera-panel
+
+[nginx-auth]
+enabled  = true
+backend  = auto
+filter   = nginx-auth
+logpath  = /var/log/nginx/access.log
+maxretry = 5
+findtime = 1m
+bantime  = 1h
 EOF
 
     mkdir -p /etc/fail2ban/filter.d
@@ -346,6 +355,12 @@ EOF
 failregex = .*401.*<HOST>
             .*403.*<HOST>
             .*login failed.*<HOST>
+ignoreregex =
+EOF
+
+    cat > /etc/fail2ban/filter.d/nginx-auth.conf <<'EOF'
+[Definition]
+failregex = ^<HOST> - \S+ \[.*\] ".*" 401 .*$
 ignoreregex =
 EOF
 
@@ -1440,11 +1455,25 @@ generate_panel_cert() {
     fi
 }
 
+_build_htpasswd() {
+    local htfile="$CONF_PATH/panel.htpasswd"
+    local pass
+    pass=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
+    [[ -z "$pass" ]] && return
+    if command -v openssl &>/dev/null; then
+        local hash
+        hash=$(openssl passwd -apr1 "$pass" 2>/dev/null)
+        printf 'admin:%s\n' "$hash" > "$htfile"
+        chmod 640 "$htfile"
+    fi
+}
+
 setup_nginx_proxy() {
     local SERVER_IP
     SERVER_IP=$(get_public_ip)
     local CERT="$CONF_PATH/panel.crt"
     local KEY="$CONF_PATH/panel.key"
+    local HTPASSWD="$CONF_PATH/panel.htpasswd"
 
     if ! command -v nginx &>/dev/null; then
         log_info "Installing nginx..."
@@ -1458,9 +1487,25 @@ setup_nginx_proxy() {
         fi
     fi
 
+    _build_htpasswd
+
+    # Rate-limit zone: max 10 req/min per IP on protected endpoints
+    mkdir -p /etc/nginx/conf.d
+    cat > /etc/nginx/conf.d/whispera-ratelimit.conf <<'RLCONF'
+limit_req_zone $binary_remote_addr zone=panel_auth:10m rate=10r/m;
+limit_req_status 429;
+RLCONF
+
     if ! grep -q "whispera-ui" /etc/hosts; then
         echo "127.0.0.1 whispera-ui" >> /etc/hosts
         log_info "Added whispera-ui to /etc/hosts"
+    fi
+
+    local AUTH_BLOCK=""
+    if [[ -f "$HTPASSWD" ]]; then
+        AUTH_BLOCK="
+        auth_basic           \"Whispera\";
+        auth_basic_user_file ${HTPASSWD};"
     fi
 
     cat > /etc/nginx/sites-available/whispera-ui <<NGINX
@@ -1479,6 +1524,10 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
+    # Prevent downgrade attacks — browser will enforce HTTPS for 1 year
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # /sub/ is public — VPN clients need subscription URLs without auth
     location /sub/ {
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
@@ -1488,14 +1537,16 @@ server {
     }
 
     location /api/ {
+        limit_req  zone=panel_auth burst=20 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$remote_addr;
         proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
+        proxy_http_version 1.1;${AUTH_BLOCK}
     }
 
     location / {
+        limit_req  zone=panel_auth burst=20 nodelay;
         proxy_pass         http://127.0.0.1:3000;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$remote_addr;
@@ -1503,7 +1554,7 @@ server {
         proxy_set_header   X-Forwarded-Proto https;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Connection "upgrade";${AUTH_BLOCK}
     }
 }
 NGINX
@@ -1521,7 +1572,7 @@ NGINX
     if nginx -t 2>/dev/null; then
         systemctl enable nginx >/dev/null 2>&1
         systemctl restart nginx
-        log_success "Nginx reverse proxy configured: https://whispera-ui/"
+        log_success "Nginx reverse proxy configured (panel protected by Basic Auth)"
     else
         log_warn "Nginx config test failed — check /etc/nginx/sites-available/whispera-ui"
     fi

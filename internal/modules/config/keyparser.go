@@ -42,6 +42,9 @@ type ConnectionKey struct {
 	PhantomShortID string `json:"phantom_sid,omitempty"`
 	RussianService string `json:"russian_service,omitempty"`
 
+	ChameleonAddr string `json:"chameleon_addr,omitempty"`
+	ChameleonSNI  string `json:"chameleon_sni,omitempty"`
+
 	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
 
 	MLServerURL string `json:"ml_server_url,omitempty"`
@@ -264,6 +267,8 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		Transport:       ck.Transport,
 		MLServerURL:     ck.MLServerURL,
 		MLToken:         ck.MLToken,
+		ChameleonAddr:   ck.ChameleonAddr,
+		ChameleonSNI:    ck.ChameleonSNI,
 	}
 
 	switch ck.Transport {
@@ -330,13 +335,15 @@ func (ck *ConnectionKey) GetPrimaryServer() string {
 
 func GenerateConnectionKey(cfg *ClientConfig, name string) (string, error) {
 	ck := ConnectionKey{
-		Version:     2,
-		Name:        name,
-		Server:      cfg.Server,
-		ServerAlts:  append([]string(nil), cfg.ServerAlts...),
-		ServerTCP:   cfg.ServerTCP,
-		ServerWS:    cfg.ServerWS,
-		PSK:         cfg.PSK,
+		Version:       2,
+		Name:          name,
+		Server:        cfg.Server,
+		ServerAlts:    append([]string(nil), cfg.ServerAlts...),
+		ServerTCP:     cfg.ServerTCP,
+		ServerWS:      cfg.ServerWS,
+		ChameleonAddr: cfg.ChameleonAddr,
+		ChameleonSNI:  cfg.ChameleonSNI,
+		PSK:           cfg.PSK,
 		ServerPub:   cfg.ServerPub,
 		ObfsPreset:  cfg.ObfsPreset,
 		ObfsProfile: "vk",

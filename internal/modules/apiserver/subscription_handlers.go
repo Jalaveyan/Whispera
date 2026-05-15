@@ -418,6 +418,20 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 		servers = append(servers, entry)
 	}
 
+	if cfg.Chameleon.Enabled && cfg.Chameleon.ListenAddr != "" && (len(transportSet) == 0 || transportSet["chameleon"]) {
+		_, port, _ := splitHostPort(cfg.Chameleon.ListenAddr)
+		cEntry := map[string]interface{}{
+			"name":      "chameleon",
+			"address":   serverIP,
+			"port":      port,
+			"transport": "chameleon",
+		}
+		if cfg.Chameleon.Domain != "" {
+			cEntry["sni"] = cfg.Chameleon.Domain
+		}
+		servers = append(servers, cEntry)
+	}
+
 	if cfg.Transport.UDP.Enabled && (len(transportSet) == 0 || transportSet["udp"]) {
 		_, port, _ := splitHostPort(cfg.Transport.UDP.ListenAddr)
 		servers = append(servers, map[string]interface{}{

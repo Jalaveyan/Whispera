@@ -88,9 +88,22 @@ func DefaultConfig() *Config {
 	}
 }
 
+var weakPasswords = map[string]struct{}{
+	"admin": {}, "password": {}, "12345678": {}, "qwerty": {},
+	"whispera": {}, "changeme": {}, "secret": {}, "letmein": {},
+}
+
 func (c *Config) Validate() error {
 	if c.ListenAddr == "" {
 		c.ListenAddr = ":8081"
+	}
+	if p := c.AdminPassword; p != "" {
+		if len(p) < 12 {
+			return fmt.Errorf("admin_password is too short (minimum 12 characters) — generate one with: openssl rand -base64 16")
+		}
+		if _, weak := weakPasswords[strings.ToLower(p)]; weak {
+			return fmt.Errorf("admin_password %q is a known default — change it in config.yaml", p)
+		}
 	}
 	return nil
 }
@@ -1490,6 +1503,18 @@ func loadOrCreateSigningSecret() []byte {
 	return secret
 }
 
+// rotateSigningSecret generates a new signing secret, persists it, and replaces
+// the in-memory JWT manager so all previously issued tokens become invalid.
+func (s *Server) rotateSigningSecret() {
+	secret := make([]byte, 32)
+	rand.Read(secret)
+	os.WriteFile(signingSecretFile, secret, 0600)
+	s.mu.Lock()
+	s.signingSecret = secret
+	s.jwtManager = auth.NewJWTManager(secret)
+	s.mu.Unlock()
+}
+
 func (s *Server) issueTimedToken(username string) string {
 	expiry := time.Now().Add(tokenTTL).Unix()
 	nonce := make([]byte, 8)
@@ -2233,6 +2258,23 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
+	chameleonAddr, chameleonSNI := "", ""
+	if s.registry != nil {
+		if mod, ok := s.registry.Get("config.provider"); ok {
+			type cfgProvider interface{ GetConfig() *config.ServerConfig }
+			if p, ok := mod.(cfgProvider); ok && p.GetConfig() != nil {
+				chmCfg := p.GetConfig().Chameleon
+				if chmCfg.Enabled && chmCfg.ListenAddr != "" {
+					_, chmPort, _ := net.SplitHostPort(chmCfg.ListenAddr)
+					if chmPort != "" {
+						chameleonAddr = net.JoinHostPort(serverIP, chmPort)
+					}
+					chameleonSNI = chmCfg.Domain
+				}
+			}
+		}
+	}
+
 	ck := config.ConnectionKey{
 		Version:         2,
 		KeyID:           keyID,
@@ -2252,6 +2294,8 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		TransportConfig: req.TransportConfig,
 		MLServerURL:     mlURL,
 		MLToken:         mlToken,
+		ChameleonAddr:   chameleonAddr,
+		ChameleonSNI:    chameleonSNI,
 	}
 	ckData, err := json.Marshal(ck)
 	if err != nil {
@@ -2935,6 +2979,16 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, http.StatusBadRequest, "username required")
 		return
 	}
+	if req.Password != "" {
+		if len(req.Password) < 12 {
+			s.jsonError(w, http.StatusBadRequest, "password must be at least 12 characters")
+			return
+		}
+		if _, weak := weakPasswords[strings.ToLower(req.Password)]; weak {
+			s.jsonError(w, http.StatusBadRequest, "password is too common, choose a stronger one")
+			return
+		}
+	}
 
 	module, ok := s.registry.Get("config.provider")
 	if !ok {
@@ -2946,6 +3000,8 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, http.StatusInternalServerError, "invalid config provider")
 		return
 	}
+
+	passwordChanged := req.Password != "" && req.Password != s.config.AdminPassword
 
 	if err := cfgProvider.Update(func(cfg *config.ServerConfig) {
 		cfg.API.AdminUsername = req.Username
@@ -2960,6 +3016,18 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	s.config.AdminUsername = req.Username
 	if req.Password != "" {
 		s.config.AdminPassword = req.Password
+	}
+
+	clientIP := r.Header.Get("X-Forwarded-For")
+	if clientIP == "" {
+		clientIP, _, _ = net.SplitHostPort(r.RemoteAddr)
+	}
+
+	if passwordChanged {
+		// Invalidate all existing sessions — forces re-login for everyone including attacker
+		s.rotateSigningSecret()
+		log.Warn("admin password changed from %s — all sessions invalidated", clientIP)
+		AppendEvent(EventSecurity, SeverityWarn, "admin password changed", map[string]string{"ip": clientIP})
 	}
 
 	s.jsonOK(w, map[string]interface{}{"success": true})

@@ -14,6 +14,7 @@ const (
 	EventUser         EventKind = "user"
 	EventSystem       EventKind = "system"
 	EventML           EventKind = "ml"
+	EventSecurity     EventKind = "security"
 )
 
 type EventSeverity string

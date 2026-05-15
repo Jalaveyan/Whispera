@@ -289,6 +289,15 @@ maxretry  = 10
 findtime  = 1m
 bantime   = 1h
 filter    = whispera-panel
+
+[nginx-auth]
+enabled  = true
+backend  = auto
+filter   = nginx-auth
+logpath  = /var/log/nginx/access.log
+maxretry = 5
+findtime = 1m
+bantime  = 1h
 EOF
 
     mkdir -p /etc/fail2ban/filter.d
@@ -306,6 +315,12 @@ EOF
 failregex = .*401.*<HOST>
             .*403.*<HOST>
             .*login failed.*<HOST>
+ignoreregex =
+EOF
+
+    cat > /etc/fail2ban/filter.d/nginx-auth.conf <<'EOF'
+[Definition]
+failregex = ^<HOST> - \S+ \[.*\] ".*" 401 .*$
 ignoreregex =
 EOF
 
@@ -570,11 +585,25 @@ generate_panel_cert() {
     fi
 }
 
+_build_htpasswd() {
+    local htfile="$CONF_PATH/panel.htpasswd"
+    local pass
+    pass=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
+    [[ -z "$pass" ]] && return
+    if command -v openssl &>/dev/null; then
+        local hash
+        hash=$(openssl passwd -apr1 "$pass" 2>/dev/null)
+        printf 'admin:%s\n' "$hash" > "$htfile"
+        chmod 640 "$htfile"
+    fi
+}
+
 setup_nginx_proxy() {
     local SERVER_IP
     SERVER_IP=$(get_public_ip)
     local CERT="$CONF_PATH/panel.crt"
     local KEY="$CONF_PATH/panel.key"
+    local HTPASSWD="$CONF_PATH/panel.htpasswd"
 
     if ! command -v nginx &>/dev/null; then
         log_info "Installing nginx..."
@@ -588,9 +617,25 @@ setup_nginx_proxy() {
         fi
     fi
 
+    _build_htpasswd
+
+    # Rate-limit zone: max 10 req/min per IP on protected endpoints
+    mkdir -p /etc/nginx/conf.d
+    cat > /etc/nginx/conf.d/whispera-ratelimit.conf <<'RLCONF'
+limit_req_zone $binary_remote_addr zone=panel_auth:10m rate=10r/m;
+limit_req_status 429;
+RLCONF
+
     if ! grep -q "whispera-ui" /etc/hosts; then
         echo "127.0.0.1 whispera-ui" >> /etc/hosts
         log_info "Added whispera-ui to /etc/hosts"
+    fi
+
+    local AUTH_BLOCK=""
+    if [[ -f "$HTPASSWD" ]]; then
+        AUTH_BLOCK="
+        auth_basic           \"Whispera\";
+        auth_basic_user_file ${HTPASSWD};"
     fi
 
     cat > /etc/nginx/sites-available/whispera-ui <<NGINX
@@ -603,6 +648,10 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
+    # Prevent downgrade attacks — browser will enforce HTTPS for 1 year
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # /sub/ is public — VPN clients need subscription URLs without auth
     location /sub/ {
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
@@ -612,14 +661,16 @@ server {
     }
 
     location /api/ {
+        limit_req  zone=panel_auth burst=20 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$remote_addr;
         proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
+        proxy_http_version 1.1;${AUTH_BLOCK}
     }
 
     location / {
+        limit_req  zone=panel_auth burst=20 nodelay;
         proxy_pass         http://127.0.0.1:3000;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$remote_addr;
@@ -627,7 +678,7 @@ server {
         proxy_set_header   X-Forwarded-Proto https;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
+        proxy_set_header   Connection "upgrade";${AUTH_BLOCK}
     }
 }
 NGINX
@@ -880,6 +931,8 @@ show_extras_menu() {
         _row " 20.  Add bridge manually (enter IP + token)"
         _row " 21.  List registered bridges"
         _row " 22.  SSH OTP       - One-time SSH key for bridge admin (1h)"
+        _row " 23.  Panel Password  - Change panel Basic Auth password"
+        _row " 24.  Panel Integrity - Verify panel bundle has not been tampered"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
         _row "  1.  BBR           - Faster TCP (recommended)"
@@ -963,6 +1016,23 @@ show_extras_menu() {
             22)
                 gen_bridge_ssh_otp 3600
                 ;;
+            23)
+                read -rp "  New password (leave empty to generate): " NEW_PASS
+                if [[ -z "$NEW_PASS" ]]; then
+                    NEW_PASS=$(gen_password 20)
+                    echo -e "  Generated password: ${BLUE}${NEW_PASS}${PLAIN}"
+                fi
+                echo "$NEW_PASS" > "$CONF_PATH/admin.pass"
+                chmod 600 "$CONF_PATH/admin.pass"
+                _build_htpasswd
+                nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
+                log_success "Panel password updated. User: admin / Password: ${NEW_PASS}"
+                ;;
+            24)
+                _check_panel_integrity
+                echo ""
+                _verify_panel_bundle "$DAT_PATH/panel"
+                ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
         esac
@@ -974,6 +1044,88 @@ show_extras_menu() {
     done
 }
 
+
+# Minimum acceptable size for bundle/index.js in bytes (1 MB)
+PANEL_BUNDLE_MIN_BYTES=1048576
+
+_verify_panel_archive() {
+    local archive="$1"       # path to panel-release.tar.gz
+    local sums_url="$2"      # URL to SHA256SUMS
+
+    # Size check — reject anything under 500 KB
+    local bytes
+    bytes=$(stat -c%s "$archive" 2>/dev/null || stat -f%z "$archive" 2>/dev/null || echo 0)
+    if [[ "$bytes" -lt 524288 ]]; then
+        log_err "Panel archive is suspiciously small (${bytes} bytes < 512 KB) — refusing to install"
+        return 1
+    fi
+
+    # SHA256 verification against release checksums
+    if [[ -n "$sums_url" ]]; then
+        local sums_file
+        sums_file=$(mktemp)
+        if curl -sL -o "$sums_file" "$sums_url" && [[ -s "$sums_file" ]]; then
+            local expected_hash
+            expected_hash=$(grep "whispera-panel.tar.gz" "$sums_file" | awk '{print $1}')
+            if [[ -n "$expected_hash" ]]; then
+                local actual_hash
+                actual_hash=$(sha256sum "$archive" | awk '{print $1}')
+                if [[ "$actual_hash" != "$expected_hash" ]]; then
+                    log_err "Panel archive SHA256 mismatch!"
+                    log_err "  Expected: $expected_hash"
+                    log_err "  Actual:   $actual_hash"
+                    rm -f "$sums_file"
+                    return 1
+                fi
+                log_info "Panel archive SHA256 verified ✓"
+            else
+                log_warn "No entry for whispera-panel.tar.gz in SHA256SUMS — skipping hash check"
+            fi
+        else
+            log_warn "Could not download SHA256SUMS — skipping hash verification"
+        fi
+        rm -f "$sums_file"
+    fi
+    return 0
+}
+
+_verify_panel_bundle() {
+    local panel_dir="${1:-$DAT_PATH/panel}"
+    local bundle="$panel_dir/bundle/index.js"
+    [[ -f "$bundle" ]] || { log_err "Panel bundle missing: $bundle"; return 1; }
+
+    local bytes
+    bytes=$(stat -c%s "$bundle" 2>/dev/null || stat -f%z "$bundle" 2>/dev/null || echo 0)
+    if [[ "$bytes" -lt "$PANEL_BUNDLE_MIN_BYTES" ]]; then
+        log_err "Panel bundle is suspiciously small (${bytes} bytes < 1 MB) — possible tampering!"
+        return 1
+    fi
+
+    # Record hash for future integrity checks
+    sha256sum "$bundle" > "$CONF_PATH/panel-bundle.sha256" 2>/dev/null
+    log_info "Panel bundle OK ($(( bytes / 1024 )) KB), hash recorded"
+    return 0
+}
+
+_check_panel_integrity() {
+    local panel_dir="${1:-$DAT_PATH/panel}"
+    local bundle="$panel_dir/bundle/index.js"
+    local stored="$CONF_PATH/panel-bundle.sha256"
+
+    if [[ ! -f "$stored" ]]; then
+        log_warn "No stored panel hash — run update to establish baseline"
+        return 0
+    fi
+    if ! sha256sum --check "$stored" --status 2>/dev/null; then
+        log_err "Panel bundle hash MISMATCH — file may have been tampered with!"
+        sha256sum "$bundle" 2>/dev/null
+        echo "Expected:"
+        cat "$stored"
+        return 1
+    fi
+    log_success "Panel integrity OK"
+    return 0
+}
 
 _repair_panel_bundle() {
     local panel_dir="${1:-$DAT_PATH/panel}"
@@ -1104,10 +1256,15 @@ do_update() {
     fi
 
     local PANEL_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "whispera-panel.tar.gz" | head -n 1 | cut -d '"' -f 4)
-    
+    local SUMS_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "SHA256SUMS" | head -n 1 | cut -d '"' -f 4)
+
     if [[ -n "$PANEL_URL" ]]; then
         log_info "Updating panel from release..."
         if curl -L -o panel-release.tar.gz "$PANEL_URL"; then
+            if ! _verify_panel_archive "panel-release.tar.gz" "$SUMS_URL"; then
+                rm -f panel-release.tar.gz
+                log_err "Panel update aborted due to integrity check failure"
+            else
             mkdir -p /tmp/panel-update
             tar -xzf panel-release.tar.gz -C /tmp/panel-update
             rm -f panel-release.tar.gz
@@ -1174,11 +1331,13 @@ ENVEOF
             systemctl daemon-reload
 
             _repair_panel_bundle "$PANEL_DEST"
+            _verify_panel_bundle "$PANEL_DEST" || log_warn "Post-install bundle check failed — review manually"
             systemctl daemon-reload
             systemctl restart whispera-panel 2>/dev/null || log_warn "Panel service not configured"
 
             setup_nginx_proxy
             log_success "Panel updated from release"
+            fi  # end integrity check
         else
             log_warn "Panel download failed"
         fi

@@ -74,6 +74,8 @@ coverage.html
 # Node.js
 node_modules/
 panel/dist/
+panel/bundle/
+panel/public/web/
 
 # Go
 vendor/
