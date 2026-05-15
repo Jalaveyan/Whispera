@@ -1011,7 +1011,7 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 
 	conn = evasion.NewDesyncConn(conn, m.config.DesyncConfig)
 
-	if m.handshake != nil && !m.config.EnablePhantom {
+	if m.handshake != nil && !m.config.EnablePhantom && !m.config.EnableChameleon {
 		sess, err := m.handshake.InitiateHandshake(ctx, conn, conn.RemoteAddr())
 		if err != nil {
 			conn.Close()
