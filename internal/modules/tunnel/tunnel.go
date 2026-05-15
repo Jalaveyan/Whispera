@@ -1035,17 +1035,20 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	}
 
 	paddedConn := mux.NewPaddedConn(conn, 128)
+	log.Warn("[dialManagedConn:%s] mux.Client starting", id)
 	muxSess, err := mux.Client(paddedConn, m.getMuxConfig())
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("mux: %w", err)
 	}
+	log.Warn("[dialManagedConn:%s] mux.Client OK, opening control stream", id)
 
 	stream, err := muxSess.OpenStream()
 	if err != nil {
 		muxSess.Close()
 		return nil, fmt.Errorf("open stream: %w", err)
 	}
+	log.Warn("[dialManagedConn:%s] control stream opened, managedConn ready", id)
 
 	var controlStream net.Conn = stream
 	if m.config.EnablePhantom {
@@ -2588,6 +2591,7 @@ func (m *Manager) Recycle(buf []byte) {
 }
 
 func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
+	log.Warn("[OpenStream] called: %s:%d (proto=0x%02x)", addr, port, proto)
 	for {
 		m.connMu.RLock()
 		pool := m.activePool
@@ -3109,6 +3113,7 @@ func (m *Manager) OnStateChange(callback func(TunnelState)) {
 }
 
 func (m *Manager) setState(state TunnelState) {
+	log.Warn("[setState] %v", state)
 	m.stateMu.Lock()
 	oldState := m.state
 	m.state = state
