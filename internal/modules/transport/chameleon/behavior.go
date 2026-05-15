@@ -187,7 +187,6 @@ func (s *shapedConn) refreshGRU() {
 
 func (s *shapedConn) Write(p []byte) (int, error) {
 	s.refreshGRU()
-	bp := DeriveBehaviorParams(s.sched.behaviorKey, s.lastIndex, s.sched.sessionID)
 	written := 0
 
 	for len(p) > 0 {
@@ -200,15 +199,7 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 			chunkSize = 1
 		}
 
-		padSize := bp.PaddingMin + int(s.gru.rng.next()*float32(bp.PaddingMax-bp.PaddingMin))
-		if padSize < 0 {
-			padSize = 0
-		}
-
-		chunk := make([]byte, chunkSize+padSize)
-		copy(chunk, p[:chunkSize])
-
-		if _, err := s.Conn.Write(chunk); err != nil {
+		if _, err := s.Conn.Write(p[:chunkSize]); err != nil {
 			return written, err
 		}
 		written += chunkSize

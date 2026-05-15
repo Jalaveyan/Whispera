@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
+	"golang.org/x/net/http2"
 	"whispera/internal/logger"
 )
 
@@ -106,10 +107,17 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 			}
 			if tcpConn, ok := tc.(*net.TCPConn); ok {
 				tcpConn.SetKeepAlive(true)
-				tcpConn.SetKeepAlivePeriod(30 * time.Second)
+				tcpConn.SetKeepAlivePeriod(4 * time.Second)
 			}
 			return tc, nil
 		},
+	}
+	// HTTP/2 application-level PINGs keep NAT mappings alive on mobile networks.
+	// ReadIdleTimeout triggers a PING after this much silence; if no PONG arrives
+	// within PingTimeout the transport considers the connection dead and closes it.
+	if h2t, err := http2.ConfigureTransports(transport); err == nil {
+		h2t.ReadIdleTimeout = 5 * time.Second
+		h2t.PingTimeout = 4 * time.Second
 	}
 
 	pr, pw := io.Pipe()
