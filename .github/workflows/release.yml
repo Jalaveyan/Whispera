@@ -262,16 +262,7 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-          cache-dependency-path: |
-            panel/package-lock.json
-            panel/web/package-lock.json
-
-      - name: Build Frontend (Vite + React)
-        working-directory: ./panel/web
-        run: |
-          npm ci
-          npm run build
-          echo "Frontend build complete: $(du -sh ../public/web | cut -f1)"
+          cache-dependency-path: panel/package-lock.json
 
       - name: Install & Build Panel Backend
         working-directory: ./panel
