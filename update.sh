@@ -585,6 +585,22 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
+    location /sub/ {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+
+    location /api/ {
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+
     location / {
         proxy_pass         http://127.0.0.1:3000;
         proxy_set_header   Host \$host;
