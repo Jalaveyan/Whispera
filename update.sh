@@ -1210,24 +1210,18 @@ ENVEOF
             sed -i 's| /run/ufw\.lock||g' "$SVC"
             RELOAD=true
         fi
-        # Remove watchdog settings that cause spurious 'timeout' failures
-        if grep -q "^Type=notify" "$SVC"; then
-            sed -i '/^Type=notify/d' "$SVC"
+        # Remove all timeout/watchdog settings that cause spurious failures
+        for directive in Type=notify WatchdogSec TimeoutStopSec TimeoutStartSec; do
+            if grep -q "^${directive}" "$SVC"; then
+                sed -i "/^${directive}/d" "$SVC"
+                RELOAD=true
+                log_info "Removed $directive from whispera.service"
+            fi
+        done
+        # Ensure LimitNOFILE=infinity (like xray/sing-box)
+        if grep -q "^LimitNOFILE=" "$SVC"; then
+            sed -i 's/^LimitNOFILE=.*/LimitNOFILE=infinity/' "$SVC"
             RELOAD=true
-            log_info "Removed Type=notify from whispera.service"
-        fi
-        if grep -q "^WatchdogSec=" "$SVC"; then
-            sed -i '/^WatchdogSec=/d' "$SVC"
-            RELOAD=true
-            log_info "Removed WatchdogSec from whispera.service"
-        fi
-        if grep -q "^TimeoutStopSec=" "$SVC"; then
-            sed -i 's/^TimeoutStopSec=.*/TimeoutStopSec=90/' "$SVC"
-            RELOAD=true
-        else
-            sed -i '/^RestartSec=/a TimeoutStopSec=90' "$SVC"
-            RELOAD=true
-            log_info "Added TimeoutStopSec=90 to whispera.service"
         fi
         if [[ "$RELOAD" == true ]]; then
             systemctl daemon-reload

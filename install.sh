@@ -1548,8 +1548,7 @@ Environment=WHISPERA_MASK_LOGS=true
 ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080
 Restart=always
 RestartSec=5
-TimeoutStopSec=90
-LimitNOFILE=65535
+LimitNOFILE=infinity
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=true
