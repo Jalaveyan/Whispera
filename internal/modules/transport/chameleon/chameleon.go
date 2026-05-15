@@ -96,7 +96,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	token := AuthToken(keys.Auth, anchor.Unix()/30, sessionID)
 
 	transport := &http.Transport{
-		TLSClientConfig:   &tls.Config{ServerName: cfg.ServerName, NextProtos: []string{"h2"}},
+		TLSClientConfig:   &tls.Config{ServerName: cfg.ServerName, NextProtos: []string{"h2"}, InsecureSkipVerify: true},
 		ForceAttemptHTTP2: true,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			d := &net.Dialer{Timeout: 10 * time.Second}
