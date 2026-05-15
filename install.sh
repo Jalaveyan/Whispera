@@ -1760,6 +1760,7 @@ setup_firewall() {
         ufw allow 8443/tcp >/dev/null 2>&1 || true
         ufw allow 8443/udp >/dev/null 2>&1 || true
         ufw allow 8080/tcp >/dev/null 2>&1 || true
+        ufw allow 9443/tcp >/dev/null 2>&1 || true
         ufw allow 80/tcp >/dev/null 2>&1 || true
         ufw allow 443/tcp >/dev/null 2>&1 || true
 
@@ -1773,6 +1774,7 @@ setup_firewall() {
         firewall-cmd --permanent --add-port=8443/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=8443/udp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=9443/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="127.0.0.1" port protocol="tcp" port="3000" accept' >/dev/null 2>&1 || true
