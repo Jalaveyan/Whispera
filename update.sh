@@ -54,6 +54,24 @@ _enable_tcp8443_in_config() {
     fi
 }
 
+_enable_chameleon_in_config() {
+    local cfg="${CONF_PATH}/config.yaml"
+    [[ -f "$cfg" ]] || return
+    if grep -q "^chameleon:" "$cfg"; then
+        # Already present — just ensure enabled: true
+        sed -i '/^chameleon:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
+    else
+        # Detect existing TLS cert from nginx config
+        local cert="" key=""
+        cert=$(grep -h "ssl_certificate " /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
+        key=$(grep -h "ssl_certificate_key " /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
+        printf '\nchameleon:\n  enabled: true\n  listen_addr: ":8443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
+            "${cert}" "${key}" >> "$cfg"
+    fi
+    refresh_config "$cfg"
+    log_success "Chameleon enabled in config.yaml"
+}
+
 _enable_ml_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
@@ -1259,6 +1277,7 @@ ENVEOF
     fi
     _enable_ml_in_config
     _enable_tcp8443_in_config
+    _enable_chameleon_in_config
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then
         local MTD
