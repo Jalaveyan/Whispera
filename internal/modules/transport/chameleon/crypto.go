@@ -77,18 +77,19 @@ func NewFrameConn(conn net.Conn, sendKey, recvKey []byte) (*FrameConn, error) {
 	return &FrameConn{Conn: conn, sendAEAD: sa, recvAEAD: ra}, nil
 }
 
-func counterNonce(seq uint64) []byte {
-	n := make([]byte, 12)
-	binary.LittleEndian.PutUint64(n, seq)
+func counterNonce(seq uint64) [12]byte {
+	var n [12]byte
+	binary.LittleEndian.PutUint64(n[:], seq)
 	return n
 }
 
 func (fc *FrameConn) Write(p []byte) (int, error) {
-	ct := fc.sendAEAD.Seal(nil, counterNonce(fc.sendSeq), p, nil)
+	overhead := fc.sendAEAD.Overhead()
+	frame := make([]byte, 4+len(p)+overhead)
+	binary.BigEndian.PutUint32(frame, uint32(len(p)+overhead))
+	nonce := counterNonce(fc.sendSeq)
+	fc.sendAEAD.Seal(frame[4:4], nonce[:], p, nil)
 	fc.sendSeq++
-	frame := make([]byte, 4+len(ct))
-	binary.BigEndian.PutUint32(frame, uint32(len(ct)))
-	copy(frame[4:], ct)
 	if _, err := fc.Conn.Write(frame); err != nil {
 		return 0, err
 	}
@@ -116,7 +117,8 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 		return 0, err
 	}
 
-	pt, err := fc.recvAEAD.Open(nil, counterNonce(fc.recvSeq), ct, nil)
+	recvNonce := counterNonce(fc.recvSeq)
+	pt, err := fc.recvAEAD.Open(nil, recvNonce[:], ct, nil)
 	if err != nil {
 		return 0, fmt.Errorf("chameleon: decrypt: %w", err)
 	}
