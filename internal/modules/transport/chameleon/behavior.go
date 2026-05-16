@@ -229,7 +229,7 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 
 	// Delay tiers:
 	//   ≤ 8 KB — control frames and interactive/game traffic: no delay.
-	//            PaddedConn.writeMu already serialises writes; adding per-write
+	//            PaddedConn.writeMu already serializes writes; adding per-write
 	//            sleep here causes burst packets to queue and adds N×delay ms
 	//            of accumulated latency for burst traffic.
 	//   > 8 KB — bulk/streaming writes only: GRU delay for DPI shaping.
