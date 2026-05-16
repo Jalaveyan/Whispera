@@ -8,6 +8,7 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -442,7 +443,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		rtr := s.router
 		s.routerMu.RUnlock()
 		if rtr != nil {
-			dstAddr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", addr, port))
+			dstAddr, _ := net.ResolveTCPAddr("tcp", net.JoinHostPort(addr, strconv.Itoa(int(port))))
 			pkt := &interfaces.Packet{DstAddr: dstAddr}
 			if dest, err := rtr.Route(context.Background(), pkt); err == nil {
 				switch dest.Type {
@@ -461,7 +462,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		}
 	}
 
-	targetAddr := fmt.Sprintf("%s:%d", addr, port)
+	targetAddr := net.JoinHostPort(addr, strconv.Itoa(int(port)))
 	var target net.Conn
 	var err error
 	if outboundTag != "" {

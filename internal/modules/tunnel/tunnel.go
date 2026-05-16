@@ -1063,8 +1063,8 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	if m.config.EnableChameleon {
 		// Time-based rotation: each H2 POST lives 45-120s (looks like a finite browser request).
 		maxAge = time.Duration(45+mrand.Intn(76)) * time.Second
-		// Volume-based rotation: each POST body limited to 256KB-2MB upload.
-		maxUploadB = int64(256*1024) + int64(mrand.Intn(1792*1024))
+		// Volume-based rotation: each POST body limited to 20MB-100MB upload.
+		maxUploadB = int64(20*1024*1024) + int64(mrand.Intn(80*1024*1024))
 	}
 
 	return &managedConn{
