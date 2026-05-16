@@ -149,7 +149,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	// http.Transport's TLSNextProto mechanism casts to *tls.Conn which would panic;
 	// http2.Transport accepts any net.Conn that exposes ConnectionState().
 	h2Transport := &http2.Transport{
-		// 30-90s idle before PING — closer to real browser behaviour.
+		// 30-90s idle before PING — closer to real browser behavior.
 		ReadIdleTimeout: time.Duration(30+mrand.Intn(61)) * time.Second,
 		PingTimeout:     time.Duration(10+mrand.Intn(11)) * time.Second,
 		// Chrome's SETTINGS frame values (from Wireshark captures of Chrome 120-133):
@@ -231,7 +231,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	// Decoy GET goroutine: periodically opens short-lived H2 streams on the same
 	// TCP connection for static resource fetches (favicon, JS, CSS, etc.).
 	// DPI sees a mix of one long POST stream + occasional short GET streams —
-	// matching browser behaviour (background API pings, resource pre-fetches).
+	// matching browser behavior (background API pings, resource pre-fetches).
 	// Exponential inter-arrival (mean 25s) mimics a Poisson request process.
 	go func() {
 		for {

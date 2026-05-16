@@ -65,7 +65,7 @@ func DeriveKeys(sharedSecret []byte, isClient bool) *Keys {
 //   frameTypePad  (0x00) — download padding, decrypted and silently discarded.
 //
 // Nonce = little-endian counter — not transmitted, both sides track independently.
-// wmu serialises writes so the download-padding goroutine and the data path don't race.
+// wmu serializes writes so the download-padding goroutine and the data path don't race.
 type FrameConn struct {
 	net.Conn
 	sendAEAD cipher.AEAD
