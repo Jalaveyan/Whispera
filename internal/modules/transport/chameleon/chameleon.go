@@ -338,11 +338,11 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 
 	go func() { <-ctx.Done(); srv.Close() }()
 
-	tcpLn, err := net.Listen("tcp", listenAddr)
+	rawLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("chameleon: listen: %w", err)
 	}
-	tlsLn := tls.NewListener(&noDelayListener{tcpLn.(*net.TCPListener)}, tlsCfg)
+	tlsLn := tls.NewListener(&noDelayListener{rawLn.(*net.TCPListener)}, tlsCfg)
 	log.Printf("Chameleon listening on %s", listenAddr)
 	return srv.Serve(tlsLn)
 }
