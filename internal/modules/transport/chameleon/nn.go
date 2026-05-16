@@ -232,23 +232,23 @@ func (g *trafficGRU) Next() (chunkSize int, delayMs float64) {
 	var delay float64
 	switch {
 	case phaseSignal > 0.65:
-		// Burst phase: fast, pipelined — minimal inter-frame gap.
-		delay = -math.Log(1-u) * 1.5
-		if delay > 8 {
-			delay = 8
+		// Burst phase: pipelined GETs — tight inter-frame gap.
+		delay = -math.Log(1-u) * 1.0
+		if delay > 4 {
+			delay = 4
 		}
 	case phaseSignal < 0.30:
-		// Think-time phase: user paused — longer gap, but capped at 80ms so
-		// yamux keepalive and app-level timeouts are never triggered.
-		delay = -math.Log(1-u) * 15.0
-		if delay > 80 {
-			delay = 80
+		// Think-time phase: brief buffer pause between segments.
+		// Real CDN H2 streams don't pause >20ms mid-stream; 80ms was unrealistic.
+		delay = -math.Log(1-u) * 4.0
+		if delay > 20 {
+			delay = 20
 		}
 	default:
-		// Normal streaming: moderate inter-frame gap.
-		delay = -math.Log(1-u) * 5.0
-		if delay > 25 {
-			delay = 25
+		// Normal streaming.
+		delay = -math.Log(1-u) * 2.0
+		if delay > 10 {
+			delay = 10
 		}
 	}
 

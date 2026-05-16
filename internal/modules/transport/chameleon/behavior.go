@@ -228,15 +228,12 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 	s.lastWrite = time.Now()
 
 	// Delay tiers:
-	//   < 512 B  — yamux control frames (SYN/FIN/WINDOW_UPDATE): no delay
-	//   512 B – 8 KB — interactive/game traffic (UDP packets, small TCP segments):
-	//                   cap at 5 ms so latency stays playable; realistic for H2
-	//                   multiplexed requests alongside a video stream.
-	//   > 8 KB  — bulk / streaming writes: full GRU delay for DPI shaping.
-	if written >= 512 && !returningFromIdle && delayMs > 0.5 {
-		if written <= 8192 && delayMs > 5 {
-			delayMs = 5
-		}
+	//   ≤ 8 KB — control frames and interactive/game traffic: no delay.
+	//            PaddedConn.writeMu already serialises writes; adding per-write
+	//            sleep here causes burst packets to queue and adds N×delay ms
+	//            of accumulated latency for burst traffic.
+	//   > 8 KB — bulk/streaming writes only: GRU delay for DPI shaping.
+	if written > 8192 && !returningFromIdle && delayMs > 0.5 {
 		time.Sleep(time.Duration(delayMs * float64(time.Millisecond)))
 	}
 
