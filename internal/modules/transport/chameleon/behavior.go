@@ -227,9 +227,16 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 
 	s.lastWrite = time.Now()
 
-	// Bypass delay for yamux control frames (SYN=12B, SETTINGS=12B, WINDOW_UPDATE=16B)
-	// and for idle resumption. Only data writes (≥512B) get an inter-frame delay.
+	// Delay tiers:
+	//   < 512 B  — yamux control frames (SYN/FIN/WINDOW_UPDATE): no delay
+	//   512 B – 8 KB — interactive/game traffic (UDP packets, small TCP segments):
+	//                   cap at 5 ms so latency stays playable; realistic for H2
+	//                   multiplexed requests alongside a video stream.
+	//   > 8 KB  — bulk / streaming writes: full GRU delay for DPI shaping.
 	if written >= 512 && !returningFromIdle && delayMs > 0.5 {
+		if written <= 8192 && delayMs > 5 {
+			delayMs = 5
+		}
 		time.Sleep(time.Duration(delayMs * float64(time.Millisecond)))
 	}
 
