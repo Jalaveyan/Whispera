@@ -189,8 +189,12 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 	s.refreshGRU()
 	written := 0
 
+	// Apply one inter-frame delay per Write call (models pauses between H2 frames,
+	// not between bytes within a frame — intra-frame delays destroy throughput).
+	_, delayMs := s.gru.Next()
+
 	for len(p) > 0 {
-		chunkSize, delayMs := s.gru.Next()
+		chunkSize, _ := s.gru.Next()
 
 		if chunkSize > len(p) {
 			chunkSize = len(p)
@@ -204,10 +208,10 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 		}
 		written += chunkSize
 		p = p[chunkSize:]
+	}
 
-		if len(p) > 0 && delayMs > 0.5 {
-			time.Sleep(time.Duration(delayMs * float64(time.Millisecond)))
-		}
+	if delayMs > 0.5 {
+		time.Sleep(time.Duration(delayMs * float64(time.Millisecond)))
 	}
 	return written, nil
 }
