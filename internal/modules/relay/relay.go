@@ -353,7 +353,7 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     256 * 1024 * 1024,
-		MaxStreamBuffer:      256 * 1024,
+		MaxStreamBuffer:      2 * 1024 * 1024,
 		KeepAliveInterval:    time.Duration(kaBase) * time.Second,
 		KeepAliveTimeout:     120 * time.Second,
 		MaxConcurrentStreams: 1024,
