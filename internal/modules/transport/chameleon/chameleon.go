@@ -2,12 +2,13 @@ package chameleon
 
 import (
 	"context"
-	"crypto/rand"
+	crand "crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"io"
+	mrand "math/rand"
 	"net"
 	"net/http"
 	"time"
@@ -50,7 +51,13 @@ type Config struct {
 
 	// Client-side
 	ServerAddr string // host:port
-	ServerName string // SNI / Host header
+	ServerName string // SNI / Host header (primary)
+
+	// ServerNames — optional pool of SNI aliases for the same server.
+	// Each new connection picks one at random to vary the TLS fingerprint.
+	// All names must resolve to ServerAddr and share the same TLS certificate.
+	// If empty, ServerName is used for every connection.
+	ServerNames []string
 
 	// SharedSecret — single 32-byte secret (client mode, or single-user server).
 	// Derived by caller as HKDF(psk, "chameleon-v1").
@@ -80,10 +87,18 @@ func decodeSession(s string) (sessionID []byte, anchor time.Time, err error) {
 	return
 }
 
+// pickSNI returns a random SNI name from the pool, falling back to ServerName.
+func pickSNI(cfg *Config) string {
+	if len(cfg.ServerNames) > 0 {
+		return cfg.ServerNames[mrand.Intn(len(cfg.ServerNames))]
+	}
+	return cfg.ServerName
+}
+
 // Client dials the Chameleon server and returns a net.Conn tunnel.
 func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	sessionID := make([]byte, 16)
-	if _, err := rand.Read(sessionID); err != nil {
+	if _, err := crand.Read(sessionID); err != nil {
 		return nil, fmt.Errorf("chameleon: session id: %w", err)
 	}
 	anchor := time.Now().UTC().Truncate(time.Second)
@@ -96,8 +111,11 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	path := GeneratePath(bp.PathSeed, windowIdx)
 	token := AuthToken(keys.Auth, anchor.Unix()/30, sessionID)
 
+	sni := pickSNI(cfg)
+	origin := "https://" + sni
+
 	transport := &http.Transport{
-		TLSClientConfig:   &tls.Config{ServerName: cfg.ServerName, NextProtos: []string{"h2"}, InsecureSkipVerify: true},
+		TLSClientConfig:   &tls.Config{ServerName: sni, NextProtos: []string{"h2"}, InsecureSkipVerify: true},
 		ForceAttemptHTTP2: true,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			d := &net.Dialer{Timeout: 10 * time.Second}
@@ -107,7 +125,9 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 			}
 			if tcpConn, ok := tc.(*net.TCPConn); ok {
 				tcpConn.SetKeepAlive(true)
-				tcpConn.SetKeepAlivePeriod(4 * time.Second)
+				// 30-90s keepalive — matches Chrome's OS-default range on Android.
+				// 4s was too aggressive and created a distinct TCP fingerprint.
+				tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 			}
 			return tc, nil
 		},
@@ -116,8 +136,10 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	// ReadIdleTimeout triggers a PING after this much silence; if no PONG arrives
 	// within PingTimeout the transport considers the connection dead and closes it.
 	if h2t, err := http2.ConfigureTransports(transport); err == nil {
-		h2t.ReadIdleTimeout = 5 * time.Second
-		h2t.PingTimeout = 4 * time.Second
+		// 30-90s idle before PING — closer to real browser behaviour.
+		// 5s was too aggressive and created a distinctive H2 PING pattern.
+		h2t.ReadIdleTimeout = time.Duration(30+mrand.Intn(61)) * time.Second
+		h2t.PingTimeout = time.Duration(10+mrand.Intn(11)) * time.Second
 	}
 
 	pr, pw := io.Pipe()
@@ -136,10 +158,11 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 		pr.Close(); pw.Close()
 		return nil, fmt.Errorf("chameleon: build request: %w", err)
 	}
-	req.Header.Set("Host", cfg.ServerName)
+	req.Header.Set("Host", sni)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set(headerToken, "Bearer "+token)
 	req.Header.Set(headerSession, encodeSession(sessionID, anchor))
+	applyBrowserHeaders(req, origin)
 
 	client := &http.Client{Transport: transport}
 	resp, err := client.Do(req)

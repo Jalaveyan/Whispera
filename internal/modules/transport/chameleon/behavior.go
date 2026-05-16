@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	mrand "math/rand"
 	"net"
 	"sync"
 	"time"
@@ -164,17 +165,39 @@ func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte)
 // shapedConn wraps net.Conn with GRU-based traffic shaping.
 // It tracks window switches via WindowScheduler and rotates the GRU when the
 // window changes, so the traffic fingerprint shifts at random intervals.
+//
+// Session-level burst/idle model:
+//   - Each "burst" is capped at a random 32–256 KB.
+//   - After the burst threshold is crossed, a longer inter-burst pause (50–500 ms)
+//     is injected, mimicking the browser finishing a page load and pausing for
+//     the next user action.
+//   - If no data has been written for >5 s (user was reading / idle), the next
+//     Write skips the inter-frame delay so resumption latency stays minimal.
 type shapedConn struct {
 	net.Conn
 	sched     *WindowScheduler
 	gru       *trafficGRU
 	lastIndex int
+
+	burstBytes int
+	burstMax   int
+	lastWrite  time.Time
+}
+
+func newBurstMax() int {
+	return 32*1024 + mrand.Intn(224*1024)
 }
 
 func newShapedConn(inner net.Conn, sched *WindowScheduler) *shapedConn {
 	idx := sched.CurrentIndex()
 	gru := newTrafficGRU(sched.behaviorKey, int64(idx), sched.sessionID)
-	return &shapedConn{Conn: inner, sched: sched, gru: gru, lastIndex: idx}
+	return &shapedConn{
+		Conn:      inner,
+		sched:     sched,
+		gru:       gru,
+		lastIndex: idx,
+		burstMax:  newBurstMax(),
+	}
 }
 
 func (s *shapedConn) refreshGRU() {
@@ -187,22 +210,20 @@ func (s *shapedConn) refreshGRU() {
 
 func (s *shapedConn) Write(p []byte) (int, error) {
 	s.refreshGRU()
-	written := 0
 
-	// Apply one inter-frame delay per Write call (models pauses between H2 frames,
-	// not between bytes within a frame — intra-frame delays destroy throughput).
+	returningFromIdle := !s.lastWrite.IsZero() && time.Since(s.lastWrite) > 5*time.Second
+
 	_, delayMs := s.gru.Next()
 
+	written := 0
 	for len(p) > 0 {
 		chunkSize, _ := s.gru.Next()
-
 		if chunkSize > len(p) {
 			chunkSize = len(p)
 		}
 		if chunkSize < 1 {
 			chunkSize = 1
 		}
-
 		if _, err := s.Conn.Write(p[:chunkSize]); err != nil {
 			return written, err
 		}
@@ -210,8 +231,21 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 		p = p[chunkSize:]
 	}
 
-	if delayMs > 0.5 {
+	s.burstBytes += written
+	s.lastWrite = time.Now()
+
+	if s.burstBytes >= s.burstMax {
+		// Burst complete — inject inter-burst pause (exponential, mean 150ms, cap 500ms).
+		pauseMs := -math.Log(1-math.Min(mrand.Float64(), 0.999)) * 150
+		if pauseMs > 500 {
+			pauseMs = 500
+		}
+		time.Sleep(time.Duration(pauseMs * float64(time.Millisecond)))
+		s.burstBytes = 0
+		s.burstMax = newBurstMax()
+	} else if !returningFromIdle && delayMs > 0.5 {
 		time.Sleep(time.Duration(delayMs * float64(time.Millisecond)))
 	}
+
 	return written, nil
 }

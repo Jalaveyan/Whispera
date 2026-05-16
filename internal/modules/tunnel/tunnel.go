@@ -357,11 +357,14 @@ func (c *Config) Validate() error {
 
 type managedConn struct {
 	net.Conn
-	session    *mux.Session
-	id         string
-	createdAt  time.Time
-	closing    chan struct{}
-	closeOnce  sync.Once
+	session      *mux.Session
+	id           string
+	createdAt    time.Time
+	maxAge       time.Duration // rotate after this duration (45-120s for Chameleon)
+	maxUploadB   int64         // rotate after this many bytes uploaded (0 = disabled)
+	uploadBytes  int64         // atomic: bytes written to this connection
+	closing      chan struct{}
+	closeOnce    sync.Once
 }
 
 type Manager struct {
@@ -1055,12 +1058,23 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		controlStream = transport.WrapStreamTLS(stream)
 	}
 
+	var maxAge time.Duration
+	var maxUploadB int64
+	if m.config.EnableChameleon {
+		// Time-based rotation: each H2 POST lives 45-120s (looks like a finite browser request).
+		maxAge = time.Duration(45+mrand.Intn(76)) * time.Second
+		// Volume-based rotation: each POST body limited to 256KB-2MB upload.
+		maxUploadB = int64(256*1024) + int64(mrand.Intn(1792*1024))
+	}
+
 	return &managedConn{
-		Conn:      controlStream,
-		session:   muxSess,
-		id:        id,
-		createdAt: time.Now(),
-		closing:   make(chan struct{}),
+		Conn:        controlStream,
+		session:     muxSess,
+		id:          id,
+		createdAt:   time.Now(),
+		maxAge:      maxAge,
+		maxUploadB:  maxUploadB,
+		closing:     make(chan struct{}),
 	}, nil
 }
 
@@ -2970,10 +2984,34 @@ func (m *Manager) connAgentTick() {
 
 	m.connMu.RLock()
 	poolSize := len(m.activePool)
+	needsRotation := false
+	for _, c := range m.activePool {
+		if c.maxAge > 0 && time.Since(c.createdAt) >= c.maxAge {
+			needsRotation = true
+			break
+		}
+		if c.maxUploadB > 0 {
+			_, _, _, tx := c.session.Stats()
+			if int64(tx) >= c.maxUploadB {
+				needsRotation = true
+				break
+			}
+		}
+	}
 	m.connMu.RUnlock()
 
 	if poolSize == 0 {
 		// Пользователь явно закрыл все соединения — агент не открывает новые.
+		return
+	}
+
+	if needsRotation {
+		log.Info("[connAgent] Chameleon connection reached max age, rotating")
+		ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
+		defer cancel()
+		if err := m.connectInternal(ctx, true); err != nil {
+			log.Warn("[connAgent] Rotation failed: %v", err)
+		}
 		return
 	}
 

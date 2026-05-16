@@ -18,8 +18,14 @@ import (
 // Parameter count: ~1250 float32 ≈ 5 KB per session (stack-allocated).
 //
 // Output mapping (sigmoid → realistic HTTP/2 ranges):
-//   size  ∈ [64, 4096] bytes  — bimodal via output nonlinearity
-//   delay ∈ [0, 80] ms        — exponentially distributed via -ln(1-y)
+//   size  ∈ [64, 8192] bytes  — log-normal scale; geometric weight toward small frames
+//   delay ∈ [0, 500] ms       — 3-component hyperexponential (heavy-tailed):
+//                                burst (mean 2ms) / normal (mean 8ms) / think-time (mean 60ms)
+//
+// Session-level state: phaseEMA tracks a smoothed delay-norm signal across calls.
+// When phaseEMA is high the GRU stays in "burst" mode (small delays, large chunks);
+// when low it drifts toward "think-time" (large delays, variable chunks).
+// This produces autocorrelated traffic matching real browser session profiles.
 const (
 	gruH = 16 // hidden size
 	gruI = 8  // noise input size
@@ -40,8 +46,9 @@ type trafficGRU struct {
 	Wo [2][gruH]float32
 	Bo [2]float32
 
-	h   [gruH]float32 // hidden state (evolves each call)
-	rng lcg            // fast in-session noise source
+	h        [gruH]float32 // hidden state (evolves each call)
+	rng      lcg           // fast in-session noise source
+	phaseEMA float32       // exponential moving average of delay_norm — tracks burst vs idle phase
 }
 
 // lcg is a 64-bit linear congruential PRNG — deterministic, no allocations.
@@ -51,6 +58,19 @@ func (l *lcg) next() float32 {
 	l.state = l.state*6364136223846793005 + 1442695040888963407
 	// map to [-1, 1]
 	return float32(int32(l.state>>33))/float32(1<<31) * 0.3
+}
+
+// uniform01 returns a value in [ε, 1-ε] — safe for log transforms.
+func (l *lcg) uniform01() float64 {
+	l.state = l.state*6364136223846793005 + 1442695040888963407
+	u := float64(l.state>>11) / float64(1<<53)
+	if u < 1e-9 {
+		u = 1e-9
+	}
+	if u > 1-1e-9 {
+		u = 1 - 1e-9
+	}
+	return u
 }
 
 // newTrafficGRU builds a GRU whose weights are derived from behaviorKey + window + sessionID.
@@ -69,7 +89,7 @@ func newTrafficGRU(behaviorKey []byte, window int64, sessionID []byte) *trafficG
 		panic("chameleon gru derive: " + err.Error())
 	}
 
-	g := &trafficGRU{}
+	g := &trafficGRU{phaseEMA: 0.5}
 	off := 0
 
 	readF := func() float32 {
@@ -182,24 +202,50 @@ func (g *trafficGRU) Next() (chunkSize int, delayMs float64) {
 		out[i] = sigmoid(s)
 	}
 
-	// Map sigmoid outputs to realistic HTTP/2 traffic ranges:
-	//   out[0] → size: bimodal — small frames (headers ~64-256B) or data frames (512-4096B)
-	//   out[1] → delay: exponential via -ln(1-y)*mean; clipped at 80ms
 	sizeNorm := float64(out[0])
 	delayNorm := float64(out[1])
 
-	// Bimodal size: below 0.3 → small frame (64-512), above → data frame (256-4096)
-	var size float64
-	if sizeNorm < 0.3 {
-		size = 64 + sizeNorm/0.3*448 // 64..512
-	} else {
-		size = 256 + (sizeNorm-0.3)/0.7*3840 // 256..4096
-	}
+	// Update session-level phase tracker (EMA α=0.15 — slow drift, autocorrelated).
+	// phaseEMA → 1.0: burst phase (fast packets, large chunks)
+	// phaseEMA → 0.0: think-time phase (long pauses, variable chunks)
+	g.phaseEMA = 0.85*g.phaseEMA + 0.15*float32(delayNorm)
 
-	// Exponential delay with mean 8ms, clipped at 80ms
-	delay := -math.Log(1-math.Min(delayNorm, 0.999)) * 8.0
-	if delay > 80 {
-		delay = 80
+	// Size: log-scale interpolation between 64 and 8192 bytes.
+	// Geometric weighting gives more probability mass to small frames (header/ACK dominated)
+	// while still reaching large data frames, matching real H2 frame size distributions.
+	// Phase modulation: burst mode boosts toward larger chunks.
+	boostedSize := math.Min(sizeNorm+float64(g.phaseEMA)*0.3, 1.0)
+	size := math.Exp(math.Log(64) + boostedSize*(math.Log(8192)-math.Log(64)))
+
+	// Delay: 3-component hyperexponential — heavy-tailed, matches real browser IAT profiles.
+	//
+	// Component selection driven by the blended signal (GRU output + phase EMA):
+	//   phaseSignal > 0.65 → "burst"      mean=2ms,  cap=15ms   (e.g. pipelined GETs)
+	//   phaseSignal < 0.30 → "think-time" mean=60ms, cap=500ms  (e.g. user reads page)
+	//   otherwise          → "normal"     mean=8ms,  cap=80ms
+	//
+	// Using a fresh LCG draw (not the GRU output) for the exponential variate so
+	// size and delay are not perfectly correlated.
+	u := g.rng.uniform01()
+	phaseSignal := 0.6*delayNorm + 0.4*float64(g.phaseEMA)
+
+	var delay float64
+	switch {
+	case phaseSignal > 0.65:
+		delay = -math.Log(1-u) * 2.0
+		if delay > 15 {
+			delay = 15
+		}
+	case phaseSignal < 0.30:
+		delay = -math.Log(1-u) * 60.0
+		if delay > 500 {
+			delay = 500
+		}
+	default:
+		delay = -math.Log(1-u) * 8.0
+		if delay > 80 {
+			delay = 80
+		}
 	}
 
 	return int(size), delay
