@@ -8,9 +8,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -24,6 +26,21 @@ var log = logger.Module("chameleon")
 // chromeHelloPool — набор современных Chrome TLS-fingerprint-ов.
 // Выбирается случайно per-connection, чтобы JA3 hash варьировался.
 // Версии 120+ с post-quantum соответствуют реальным Chrome 120-133 на Android.
+// decoyPaths — browser-like static resource URLs used by the client's background
+// GET goroutine to simulate concurrent resource fetching on the same H2 connection.
+var decoyPaths = []string{
+	"/favicon.ico",
+	"/robots.txt",
+	"/manifest.json",
+	"/static/app.js",
+	"/static/vendor.js",
+	"/assets/main.css",
+	"/static/icons/192.png",
+	"/api/v1/health",
+	"/api/v1/config",
+	"/cdn/fonts/roboto.woff2",
+}
+
 var chromeHelloPool = []utls.ClientHelloID{
 	utls.HelloChrome_120_PQ,
 	utls.HelloChrome_131,
@@ -211,6 +228,41 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 		return nil, fmt.Errorf("chameleon: frame conn: %w", err)
 	}
 
+	// Decoy GET goroutine: periodically opens short-lived H2 streams on the same
+	// TCP connection for static resource fetches (favicon, JS, CSS, etc.).
+	// DPI sees a mix of one long POST stream + occasional short GET streams —
+	// matching browser behaviour (background API pings, resource pre-fetches).
+	// Exponential inter-arrival (mean 25s) mimics a Poisson request process.
+	go func() {
+		for {
+			u := mrand.Float64()
+			if u < 1e-9 {
+				u = 1e-9
+			}
+			delay := time.Duration(-math.Log(u) * 25 * float64(time.Second))
+			if delay > 120*time.Second {
+				delay = 120 * time.Second
+			}
+			select {
+			case <-tunnelCtx.Done():
+				return
+			case <-time.After(delay):
+			}
+			p := decoyPaths[mrand.Intn(len(decoyPaths))]
+			dReq, err := http.NewRequestWithContext(tunnelCtx, http.MethodGet,
+				fmt.Sprintf("https://%s%s", cfg.ServerAddr, p), nil)
+			if err != nil {
+				continue
+			}
+			dReq.Host = sni
+			applyBrowserHeaders(dReq, origin)
+			if r, err := client.Do(dReq); err == nil {
+				io.Copy(io.Discard, r.Body)
+				r.Body.Close()
+			}
+		}
+	}()
+
 	return newShapedConn(fc, sched), nil
 }
 
@@ -338,15 +390,24 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	// Download-padding goroutine: sends encrypted frameTypePad frames that the client
 	// discards silently. Inflates server→client bytes so the upload/download ratio
 	// shifts from ~50/50 toward browser-like ~20/80, defeating NetFlow ML classifiers.
+	// Exponential inter-arrival (mean 150ms) produces a Poisson process — no detectable
+	// fixed period, unlike uniform random which creates a predictable ~250ms heartbeat.
 	go func() {
 		for {
-			delay := time.Duration(100+mrand.Intn(300)) * time.Millisecond
+			u := mrand.Float64()
+			if u < 1e-9 {
+				u = 1e-9
+			}
+			delay := time.Duration(-math.Log(u) * 150 * float64(time.Millisecond))
+			if delay > 1500*time.Millisecond {
+				delay = 1500 * time.Millisecond
+			}
 			select {
 			case <-done:
 				return
 			case <-time.After(delay):
 			}
-			if err := fc.WritePadding(1024 + mrand.Intn(7168)); err != nil {
+			if err := fc.WritePadding(512 + mrand.Intn(7680)); err != nil {
 				return
 			}
 		}
@@ -390,13 +451,56 @@ func resolveSecret(cfg *Config, token string, sessionID []byte) ([]byte, string)
 }
 
 func serveDecoy(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Server", "nginx/1.24.0")
-	w.Header().Set("Cache-Control", "max-age=3600")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	path := r.URL.Path
+	var ct, body string
+	switch {
+	case strings.HasSuffix(path, ".js"):
+		ct, body = "application/javascript; charset=utf-8", "(function(){'use strict';})();\n"
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
+	case strings.HasSuffix(path, ".css"):
+		ct, body = "text/css; charset=utf-8", "*{box-sizing:border-box}body{margin:0}\n"
+		w.Header().Set("Cache-Control", "public, max-age=31536000")
+	case strings.HasSuffix(path, ".json") ||
+		strings.HasSuffix(path, "health") ||
+		strings.HasSuffix(path, "config"):
+		ct, body = "application/json; charset=utf-8", `{"status":"ok","version":"1.0.0"}`+"\n"
+		w.Header().Set("Cache-Control", "no-cache")
+	case strings.HasSuffix(path, ".png") ||
+		strings.HasSuffix(path, ".ico") ||
+		strings.HasSuffix(path, ".woff2"):
+		// Binary formats — return correct Content-Type with empty body.
+		// Client discards the body; DPI sees the correct content-type fingerprint.
+		switch {
+		case strings.HasSuffix(path, ".ico"):
+			ct = "image/x-icon"
+		case strings.HasSuffix(path, ".png"):
+			ct = "image/png"
+		case strings.HasSuffix(path, ".woff2"):
+			ct = "font/woff2"
+		}
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	case path == "/robots.txt":
+		ct, body = "text/plain; charset=utf-8", "User-agent: *\nDisallow: /api/\n"
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+	case path == "/manifest.json":
+		ct = "application/json; charset=utf-8"
+		body = `{"name":"","short_name":"","start_url":"/","display":"standalone","icons":[]}` + "\n"
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+	default:
+		ct, body = "text/html; charset=utf-8", "<!DOCTYPE html><html><head><title></title></head><body></body></html>\n"
+		w.Header().Set("Cache-Control", "max-age=3600")
+	}
+
+	w.Header().Set("Content-Type", ct)
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	io.WriteString(w, "<!DOCTYPE html><html><head><title></title></head><body></body></html>\n")
+	if body != "" {
+		io.WriteString(w, body)
+	}
 }
