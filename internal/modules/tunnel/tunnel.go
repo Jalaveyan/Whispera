@@ -1051,7 +1051,7 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	log.Warn("[dialManagedConn:%s] control stream opened, managedConn ready", id)
 
 	var controlStream net.Conn = stream
-	if m.config.EnablePhantom {
+	if m.config.EnablePhantom && !m.config.EnableChameleon {
 		controlStream = transport.WrapStreamTLS(stream)
 	}
 
@@ -2631,7 +2631,7 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 	m.lastPong = time.Now()
 
 	var proxyStream net.Conn = stream
-	if m.config.EnablePhantom {
+	if m.config.EnablePhantom && !m.config.EnableChameleon {
 		proxyStream = transport.WrapStreamTLS(stream)
 	}
 
