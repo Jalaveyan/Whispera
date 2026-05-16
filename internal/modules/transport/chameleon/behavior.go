@@ -200,28 +200,5 @@ func (s *shapedConn) refreshGRU() {
 
 func (s *shapedConn) Write(p []byte) (int, error) {
 	s.refreshGRU()
-
-	// Interactive/control writes (≤8KB): pass through without chunking.
-	if len(p) <= 8192 {
-		return s.Conn.Write(p)
-	}
-
-	// Bulk writes (>8KB): GRU chunking for H2 frame size variation under TLS.
-	written := 0
-	for len(p) > 0 {
-		chunkSize, _ := s.gru.Next()
-		if chunkSize > len(p) {
-			chunkSize = len(p)
-		}
-		if chunkSize < 1 {
-			chunkSize = 1
-		}
-		if _, err := s.Conn.Write(p[:chunkSize]); err != nil {
-			return written, err
-		}
-		written += chunkSize
-		p = p[chunkSize:]
-	}
-
-	return written, nil
+	return s.Conn.Write(p)
 }

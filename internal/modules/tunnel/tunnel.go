@@ -2693,7 +2693,7 @@ func (m *Manager) Send(data []byte) error {
 		frameType = data[2]
 	}
 
-	if m.obfuscator != nil && atomic.LoadInt32(&m.transportSecureOverride) == 0 {
+	if m.obfuscator != nil && atomic.LoadInt32(&m.transportSecureOverride) == 0 && frameType != FrameTypeData {
 		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err != nil {
 			return fmt.Errorf("outbound obfuscation failed: %w", err)
@@ -2701,7 +2701,7 @@ func (m *Manager) Send(data []byte) error {
 		if obfuscated != nil {
 			data = obfuscated
 		}
-		if delay > 0 && frameType != FrameTypeData {
+		if delay > 0 {
 			time.Sleep(delay)
 		}
 	}
