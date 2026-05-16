@@ -387,32 +387,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	// Download-padding goroutine: sends encrypted frameTypePad frames that the client
-	// discards silently. Inflates server→client bytes so the upload/download ratio
-	// shifts from ~50/50 toward browser-like ~20/80, defeating NetFlow ML classifiers.
-	// Exponential inter-arrival (mean 150ms) produces a Poisson process — no detectable
-	// fixed period, unlike uniform random which creates a predictable ~250ms heartbeat.
-	go func() {
-		for {
-			u := mrand.Float64()
-			if u < 1e-9 {
-				u = 1e-9
-			}
-			delay := time.Duration(-math.Log(u) * 150 * float64(time.Millisecond))
-			if delay > 1500*time.Millisecond {
-				delay = 1500 * time.Millisecond
-			}
-			select {
-			case <-done:
-				return
-			case <-time.After(delay):
-			}
-			if err := fc.WritePadding(512 + mrand.Intn(7680)); err != nil {
-				return
-			}
-		}
-	}()
-
 	shaped := newShapedConn(fc, sched)
 
 	if cfg.OnConn != nil {
