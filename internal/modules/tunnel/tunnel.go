@@ -2989,11 +2989,13 @@ func (m *Manager) connAgentTick() {
 		return
 	}
 
+	const preWarmBefore = 90 * time.Second
+
 	m.connMu.RLock()
 	poolSize := len(m.activePool)
 	needsRotation := false
 	for _, c := range m.activePool {
-		if c.maxAge > 0 && time.Since(c.createdAt) >= c.maxAge {
+		if c.maxAge > 0 && time.Since(c.createdAt) >= c.maxAge-preWarmBefore {
 			needsRotation = true
 			break
 		}
