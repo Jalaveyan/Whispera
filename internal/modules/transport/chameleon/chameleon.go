@@ -243,6 +243,20 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 		tlsCfg = m.TLSConfig()
 		tlsCfg.NextProtos = []string{"h2", "http/1.1"}
 		tlsCfg.MinVersion = tls.VersionTLS12
+		// Fallback: clients that connect by IP and don't send SNI (older Whispera
+		// subscription keys issued before Chameleon.Domain was set) should still
+		// receive the domain cert instead of "missing server name". Treat empty
+		// or non-matching SNI as if the client requested our configured domain.
+		domain := cfg.Domain
+		origGet := tlsCfg.GetCertificate
+		tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if hello.ServerName == "" || hello.ServerName != domain {
+				patched := *hello
+				patched.ServerName = domain
+				return origGet(&patched)
+			}
+			return origGet(hello)
+		}
 		log.Printf("Chameleon: autocert for %s (cache: %s)", cfg.Domain, cacheDir)
 	} else {
 		return fmt.Errorf("chameleon: neither TLSCert nor Domain configured")
