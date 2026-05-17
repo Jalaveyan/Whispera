@@ -1610,11 +1610,12 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 
 	if serverConfig.Chameleon.Enabled && (serverConfig.Chameleon.TLSCert != "" || serverConfig.Chameleon.Domain != "") {
 		cCfg := &chameleon.Config{
-			ListenAddr: serverConfig.Chameleon.ListenAddr,
-			TLSCert:    serverConfig.Chameleon.TLSCert,
-			TLSKey:     serverConfig.Chameleon.TLSKey,
-			Domain:     serverConfig.Chameleon.Domain,
-			ACMEDir:    serverConfig.Chameleon.ACMEDir,
+			ListenAddr:  serverConfig.Chameleon.ListenAddr,
+			TLSCert:     serverConfig.Chameleon.TLSCert,
+			TLSKey:      serverConfig.Chameleon.TLSKey,
+			Domain:      serverConfig.Chameleon.Domain,
+			ACMEDir:     serverConfig.Chameleon.ACMEDir,
+			DecoyOrigin: serverConfig.Chameleon.DecoyOrigin,
 			GetUsers: func() []chameleon.UserEntry {
 				registered := apiserver.GetRegisteredUsers()
 				entries := make([]chameleon.UserEntry, 0, len(registered))

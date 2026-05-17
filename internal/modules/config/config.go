@@ -384,6 +384,9 @@ type ChameleonConfig struct {
 	// Autocert (Let's Encrypt) — used when TLSCert is empty.
 	Domain  string `yaml:"domain" json:"domain"`    // e.g. "vpn.example.com"
 	ACMEDir string `yaml:"acme_dir" json:"acme_dir"` // cert cache dir
+	// DecoyOrigin: upstream that serves non-VPN traffic on the same port (e.g. http://127.0.0.1:80
+	// pointing at nginx loopback). Non-POST or unauthenticated requests are reverse-proxied here.
+	DecoyOrigin string `yaml:"decoy_origin" json:"decoy_origin"`
 }
 
 type ServerSettings struct {
