@@ -829,6 +829,9 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	start := time.Now()
 
 	targetPoolSize := 2
+	if m.config.EnableChameleon {
+		targetPoolSize = 1
+	}
 	var connectedPool []*managedConn
 	var poolMu sync.Mutex
 
