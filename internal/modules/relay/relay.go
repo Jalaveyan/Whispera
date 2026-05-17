@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	mrand "math/rand"
@@ -455,6 +456,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	port := binary.BigEndian.Uint16(rest[addrLen:])
 
 	s.log.Info("proxy stream: %s:%d", addr, port)
+	streamStart := time.Now()
 
 	network := "tcp"
 	if proto == 0x11 {
@@ -490,6 +492,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 
 	targetAddr := net.JoinHostPort(addr, strconv.Itoa(int(port)))
+	dialStart := time.Now()
 	var target net.Conn
 	var err error
 	if outboundTag != "" {
@@ -504,15 +507,24 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	} else {
 		target, err = dialer.Dial(network, targetAddr)
 	}
+	dialDur := time.Since(dialStart)
 	if err != nil {
 		stream.Write([]byte{0x01})
-		s.log.Info("Dial %s:%d failed: %v", addr, port, err)
+		s.log.Info("Dial %s:%d failed in %s: %v", addr, port, dialDur, err)
 		return
 	}
 	defer target.Close()
+	if dialDur > 500*time.Millisecond {
+		s.log.Info("slow dial %s:%d took %s", addr, port, dialDur)
+	}
 
+	ackStart := time.Now()
 	if _, err := stream.Write([]byte{0x00}); err != nil {
+		s.log.Info("ack write failed for %s:%d after %s: %v", addr, port, time.Since(ackStart), err)
 		return
+	}
+	if d := time.Since(ackStart); d > 200*time.Millisecond {
+		s.log.Info("slow ack write %s:%d took %s", addr, port, d)
 	}
 
 	if tcpTarget, ok := target.(*net.TCPConn); ok {
@@ -521,7 +533,12 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		tcpTarget.SetWriteBuffer(4 * 1024 * 1024)
 	}
 
-	errCh := make(chan error, 2)
+	type copyResult struct {
+		n   int64
+		err error
+		dir string
+	}
+	resCh := make(chan copyResult, 2)
 
 	if network == "udp" {
 		go func() {
@@ -530,65 +547,89 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 			buf := *bufp
 			hdr := buf[:2]
 			data := buf[2:]
+			var n int64
 			for {
 				if _, err := io.ReadFull(stream, hdr); err != nil {
-					errCh <- err
+					resCh <- copyResult{n, err, "up"}
 					return
 				}
 				sz := int(binary.BigEndian.Uint16(hdr))
 				if sz == 0 || sz > len(data) {
-					errCh <- fmt.Errorf("invalid UDP frame size %d", sz)
+					resCh <- copyResult{n, fmt.Errorf("invalid UDP frame size %d", sz), "up"}
 					return
 				}
 				if _, err := io.ReadFull(stream, data[:sz]); err != nil {
-					errCh <- err
+					resCh <- copyResult{n, err, "up"}
 					return
 				}
 				if _, err := target.Write(data[:sz]); err != nil {
-					errCh <- err
+					resCh <- copyResult{n, err, "up"}
 					return
 				}
+				n += int64(sz)
 			}
 		}()
 		go func() {
 			bufp := udpCopyBufPool.Get().(*[]byte)
 			defer udpCopyBufPool.Put(bufp)
 			buf := *bufp
+			var n int64
 			for {
-				n, err := target.Read(buf[2:])
+				r, err := target.Read(buf[2:])
 				if err != nil {
-					errCh <- err
+					resCh <- copyResult{n, err, "down"}
 					return
 				}
-				binary.BigEndian.PutUint16(buf[:2], uint16(n))
-				if _, err := stream.Write(buf[:2+n]); err != nil {
-					errCh <- err
+				binary.BigEndian.PutUint16(buf[:2], uint16(r))
+				if _, err := stream.Write(buf[:2+r]); err != nil {
+					resCh <- copyResult{n, err, "down"}
 					return
 				}
+				n += int64(r)
 			}
 		}()
 	} else {
 		go func() {
 			bufp := tcpCopyBufPool.Get().(*[]byte)
 			defer tcpCopyBufPool.Put(bufp)
-			_, err := io.CopyBuffer(target, stream, *bufp)
+			n, err := io.CopyBuffer(target, stream, *bufp)
 			if tc, ok := target.(*net.TCPConn); ok {
 				tc.CloseWrite()
 			}
-			errCh <- err
+			resCh <- copyResult{n, err, "up"}
 		}()
 		go func() {
 			bufp := tcpCopyBufPool.Get().(*[]byte)
 			defer tcpCopyBufPool.Put(bufp)
-			_, err := io.CopyBuffer(stream, target, *bufp)
+			n, err := io.CopyBuffer(stream, target, *bufp)
 			if tc, ok := stream.(*net.TCPConn); ok {
 				tc.CloseWrite()
 			}
-			errCh <- err
+			resCh <- copyResult{n, err, "down"}
 		}()
 	}
-	<-errCh
-	<-errCh
+	r1 := <-resCh
+	r2 := <-resCh
+	var up, down int64
+	var firstErr error
+	var firstDir string
+	for _, r := range [2]copyResult{r1, r2} {
+		if r.dir == "up" {
+			up = r.n
+		} else {
+			down = r.n
+		}
+		if firstErr == nil && r.err != nil && !errors.Is(r.err, io.EOF) {
+			firstErr = r.err
+			firstDir = r.dir
+		}
+	}
+	dur := time.Since(streamStart)
+	if firstErr != nil {
+		s.log.Info("stream done %s:%d up=%d down=%d in %s, %s err: %v", addr, port, up, down, dur, firstDir, firstErr)
+	} else if dur > 5*time.Second || up+down > 0 {
+		s.log.Info("stream done %s:%d up=%d down=%d in %s", addr, port, up, down, dur)
+	}
 }
 
 func Factory(cfg interface{}) (interfaces.Module, error) {
