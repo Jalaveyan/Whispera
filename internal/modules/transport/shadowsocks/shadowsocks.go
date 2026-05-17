@@ -142,9 +142,6 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return ssConn, nil
 }
 
-// DialConn выполняет Shadowsocks handshake поверх уже установленного conn.
-// Позволяет стекировать SS поверх другого транспорта (Meek, Obfs4 и т.д.).
-// Реализует interfaces.DialableTransport.
 func (t *Transport) DialConn(ctx context.Context, conn net.Conn, addr string) (net.Conn, error) {
 	ssConn, err := t.newClientConn(conn, addr)
 	if err != nil {

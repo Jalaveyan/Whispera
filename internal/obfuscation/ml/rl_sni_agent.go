@@ -33,20 +33,12 @@ const (
 	sniEpsilonDecay = 0.97
 	sniTargetSync   = 8
 	sniTrainEvery   = 1
-	maxSNIPoolSize  = 256 // максимальный размер пула доменов
+	maxSNIPoolSize  = 256
 
 	sniQWeight     = 0.6
 	sniWorldWeight = 0.4
 )
 
-// RLSNIAgent выбирает SNI-домены через DQN + world model.
-//
-// State (7 признаков): rtt_norm, success_rate, fail_rate, dpi_flag,
-//
-//	hour_sin, hour_cos, block_risk
-//
-// Actions: индексы в текущем пуле доменов.
-// Сохраняется в <modelDir>/rl_sni_policy.json.
 type RLSNIAgent struct {
 	mu sync.RWMutex
 
@@ -114,8 +106,6 @@ func NewRLSNIAgent(modelDir string, pool []string) *RLSNIAgent {
 	return a
 }
 
-// SetPool обновляет список доменов. Если размер пула изменился — сети пересоздаются.
-// Максимум maxSNIPoolSize доменов.
 func (a *RLSNIAgent) SetPool(pool []string) {
 	if len(pool) == 0 {
 		return
@@ -129,7 +119,6 @@ func (a *RLSNIAgent) SetPool(pool []string) {
 		a.pool = pool
 		return
 	}
-	// Сохраняем веса скрытых слоёв, добавляем нули для новых действий.
 	oldQLayers := a.qNet.Layers
 	oldWLayers := a.worldNet.Layers
 	newQ := gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
@@ -152,8 +141,6 @@ func (a *RLSNIAgent) SetPool(pool []string) {
 	a.worldAdam = NewAdamState(newW)
 }
 
-// StartAutoFetch запускает фоновую горутину, которая каждые 24ч скачивает
-// список доменов (plain-text, один домен на строку) и добавляет их в пул.
 func (a *RLSNIAgent) StartAutoFetch(domainsURL string) {
 	go func() {
 		a.fetchAndUpdatePool(domainsURL)
@@ -213,7 +200,6 @@ func (a *RLSNIAgent) fetchAndUpdatePool(url string) {
 	}
 }
 
-// EncodeState строит вектор состояния из доступных метрик.
 func (a *RLSNIAgent) EncodeState(rttMs float64, successRate, failRate float64, dpiDetected bool, blockRisk float64) []float64 {
 	s := make([]float64, sniStateSize)
 	s[0] = math.Min(rttMs/500.0, 1.0)
@@ -229,7 +215,6 @@ func (a *RLSNIAgent) EncodeState(rttMs float64, successRate, failRate float64, d
 	return s
 }
 
-// Select выбирает SNI-домен.
 func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -260,7 +245,6 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 		qvals := a.qNet.Forward(state)
 		wvals := a.worldNet.Forward(state)
 		if mrand.Float64() < 0.30 {
-			// Thompson restricted to current pool.
 			bestTheta := -1e9
 			idx = 0
 			for i := 0; i < n && i < len(a.thompson.alpha); i++ {
@@ -272,7 +256,6 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 			}
 			mode = "thompson"
 		} else {
-			// Boltzmann over combined Q+W scores.
 			scores := make([]float64, n)
 			for i := 0; i < n && i < len(qvals) && i < len(wvals); i++ {
 				scores[i] = sniQWeight*qvals[i] + sniWorldWeight*wvals[i]
@@ -291,7 +274,6 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 	return pool[idx], idx
 }
 
-// RecordOutcome записывает результат последнего Select и запускает обучение.
 func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 	a.mu.Lock()
 	state := a.pendingState
@@ -344,14 +326,12 @@ func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 }
 
-// Epsilon возвращает текущее значение epsilon.
 func (a *RLSNIAgent) Epsilon() float64 {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.epsilon
 }
 
-// ShouldRotate возвращает true и сбрасывает флаг, если агент решил что нужна ротация SNI.
 func (a *RLSNIAgent) ShouldRotate() bool {
 	return atomic.CompareAndSwapInt32(&a.rotateSignal, 1, 0)
 }
@@ -373,7 +353,6 @@ func (a *RLSNIAgent) trainStep() {
 			continue
 		}
 
-		// Q-сеть: Bellman update с энтропийным бонусом.
 		qActs := a.qNet.ForwardActivations(exp.State)
 		qvals := qActs[len(qActs)-1]
 
@@ -399,7 +378,6 @@ func (a *RLSNIAgent) trainStep() {
 		dQ[exp.Action] = -tdErr
 		dqnBackpropAdam(a.qNet, a.adam, qActs, dQ, lr)
 
-		// World model: прямой MSE на наблюдаемый reward.
 		if exp.Action >= wOutSize {
 			continue
 		}

@@ -6,9 +6,6 @@ import (
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-// WeightSnapshot holds q-net weights from all RL agents for cross-instance transfer.
-// Server accumulates experience from many connections and shares learned weights
-// with clients so they start warm instead of random.
 type WeightSnapshot struct {
 	Version   int64           `json:"v"`
 	Transport []gnet.LayerDef `json:"transport,omitempty"`
@@ -27,18 +24,15 @@ var (
 	globalVersion  atomic.Int64
 )
 
-// SetGlobalSnapshot stores the latest server snapshot for the /api/ml/weights endpoint.
 func SetGlobalSnapshot(snap *WeightSnapshot) {
 	snap.Version = globalVersion.Add(1)
 	globalSnapshot.Store(snap)
 }
 
-// GetGlobalSnapshot returns the latest snapshot (nil if none yet).
 func GetGlobalSnapshot() *WeightSnapshot {
 	return globalSnapshot.Load()
 }
 
-// copyLayers deep-copies a GorgoniaNet's layers for safe serialization.
 func copyLayers(net *gnet.GorgoniaNet) []gnet.LayerDef {
 	if net == nil {
 		return nil
@@ -55,7 +49,6 @@ func copyLayers(net *gnet.GorgoniaNet) []gnet.LayerDef {
 	return out
 }
 
-// ExportWeights returns a deep copy of the q-net weights (safe to serialize).
 func (a *RLTransportAgent) ExportWeights() []gnet.LayerDef {
 	a.mu.RLock()
 	defer a.mu.RUnlock()

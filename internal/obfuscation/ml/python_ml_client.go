@@ -39,20 +39,14 @@ func GetEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-// flowProfile кэшируется на уровне потока: ML классифицирует первый пакет,
-// все следующие пакеты применяют профиль локально без вызова Python.
 type flowProfile struct {
 	dpiType    int
 	confidence float64
 	expires    time.Time
 }
 
-// flowCacheTTL — как долго хранить профиль потока.
-// 30 секунд: достаточно для TCP-сессии, не слишком долго для смены условий сети.
 const flowCacheTTL = 30 * time.Second
 
-// flowSampleEvery — переклассифицировать поток каждые N пакетов
-// (для адаптации если сеть изменилась во время сессии).
 const flowSampleEvery = 200
 
 type PythonMLClient struct {
@@ -64,11 +58,8 @@ type PythonMLClient struct {
 	resultChanPool        sync.Pool
 	errorChanPool         sync.Pool
 
-	// flowCache: ключ = protocol+direction+первые4байта → flowProfile
-	// Классификация делается только для первого пакета потока (и каждые 200).
-	// Все остальные пакеты применяют обфускацию локально в Go — без HTTP round-trip.
 	flowCache    sync.Map
-	flowCounters sync.Map // ключ → uint64 (счётчик пакетов потока)
+	flowCounters sync.Map
 }
 
 type MLPredictionResponsePython struct {
@@ -456,12 +447,6 @@ func (client *PythonMLClient) HealthCheck() error {
 	return nil
 }
 
-// prepareFeatures возвращает сырые байты пакета нормированные в [0,1].
-// Python-сервер восстанавливает байты через int(v*255) и сам вычисляет
-// правильные 100 фич через _build_features() — ту же функцию что используется
-// при обучении. Это гарантирует совпадение признакового пространства.
-//
-// Максимум 1500 байт (MTU) — Python принимает переменную длину.
 func (client *PythonMLClient) prepareFeatures(packetData []byte, _ bool) []float64 {
 	n := len(packetData)
 	if n == 0 {
@@ -578,9 +563,6 @@ func (client *PythonMLClient) fallbackPrediction(packetData []byte, protocol, di
 	}
 }
 
-// flowKey строит ключ кэша для потока: protocol+direction+первые4байта.
-// Первые байты — это magic bytes протокола (TLS 0x16 0x03, DNS и т.д.),
-// поэтому потоки одного типа получат один и тот же ключ — что нам и нужно.
 func flowKey(packetData []byte, protocol, direction string) string {
 	n := len(packetData)
 	if n > 4 {
@@ -589,16 +571,6 @@ func flowKey(packetData []byte, protocol, direction string) string {
 	return protocol + "|" + direction + "|" + string(packetData[:n])
 }
 
-// ProcessTraffic — горячий путь данных.
-//
-// Схема для скорости:
-//   1. Первый пакет потока (или каждый flowSampleEvery-й) → ML классификация
-//      через Python (5 мс таймаут), результат кэшируется в flowCache.
-//   2. Все остальные пакеты → применяем кэшированный профиль локально в Go,
-//      без HTTP round-trip к Python.
-//
-// Это позволяет нейросети работать без влияния на пропускную способность:
-// классификация делается 1 раз на поток, а не 8000 раз в секунду.
 func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.UnifiedTrafficContext) ([]byte, error) {
 	if len(packetData) == 0 {
 		return packetData, fmt.Errorf("empty packet data")
@@ -609,14 +581,12 @@ func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.U
 	if context.IsTLS {
 		context.Protocol = context.TLSMode
 	}
-	// Пакеты < 64 байт не несут достаточно информации для классификации
 	if len(packetData) < 64 {
 		return packetData, nil
 	}
 
 	key := flowKey(packetData, context.Protocol, context.Direction)
 
-	// ── Счётчик пакетов для данного потока ───────────────────────────────────
 	var pktCount uint64
 	if v, loaded := client.flowCounters.LoadOrStore(key, new(uint64)); loaded {
 		pktCount = atomic.AddUint64(v.(*uint64), 1)
@@ -624,13 +594,10 @@ func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.U
 		pktCount = 1
 	}
 
-	// ── Проверяем кэш потока ─────────────────────────────────────────────────
 	needClassify := false
 	if cached, ok := client.flowCache.Load(key); ok {
 		profile := cached.(flowProfile)
 		if time.Now().Before(profile.expires) && pktCount%flowSampleEvery != 0 {
-			// Кэш свежий и не пора переклассифицировать —
-			// применяем профиль локально без вызова Python
 			if profile.dpiType > 0 {
 				pred := types.PredictionResult{
 					DPIType:    profile.dpiType,
@@ -649,7 +616,6 @@ func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.U
 		return packetData, nil
 	}
 
-	// ── ML классификация (только для первого пакета / каждые N) ──────────────
 	resultChan := client.resultChanPool.Get().(chan *types.MLPredictionResponse)
 	errorChan := client.errorChanPool.Get().(chan error)
 
@@ -672,13 +638,11 @@ func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.U
 		client.resultChanPool.Put(resultChan)
 		client.errorChanPool.Put(errorChan)
 	case <-time.After(5 * time.Millisecond):
-		// Python не ответил за 5 мс — не блокируем пакет, просто пропускаем
 		client.resultChanPool.Put(resultChan)
 		client.errorChanPool.Put(errorChan)
 		return packetData, nil
 	}
 
-	// ── Кэшируем профиль потока ───────────────────────────────────────────────
 	profile := flowProfile{expires: time.Now().Add(flowCacheTTL)}
 	if response != nil && len(response.Predictions) > 0 {
 		pred := response.Predictions[0]
@@ -687,7 +651,6 @@ func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.U
 	}
 	client.flowCache.Store(key, profile)
 
-	// ── Применяем обфускацию если DPI обнаружен ───────────────────────────────
 	if profile.dpiType > 0 {
 		pred := types.PredictionResult{
 			DPIType:    profile.dpiType,

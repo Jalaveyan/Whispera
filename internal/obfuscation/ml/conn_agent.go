@@ -14,13 +14,12 @@ import (
 
 var connLog = logger.Module("rl-conn")
 
-// ConnAction — действие агента управления пулом соединений.
 type ConnAction int
 
 const (
-	ConnActionKeep      ConnAction = 0 // ничего не делать
-	ConnActionOpen      ConnAction = 1 // открыть новое соединение
-	ConnActionCloseWorst ConnAction = 2 // закрыть худшее соединение (только если pool > 1)
+	ConnActionKeep      ConnAction = 0
+	ConnActionOpen      ConnAction = 1
+	ConnActionCloseWorst ConnAction = 2
 )
 
 func (a ConnAction) String() string {
@@ -49,25 +48,17 @@ const (
 	connEpsilonDecay = 0.999
 	connTargetSync   = 100
 	connTrainEvery   = 4
-	connMaxPoolSize  = 5 // нормировочная константа для pool_size_norm
+	connMaxPoolSize  = 5
 )
 
-// ConnPoolView — снимок состояния пула соединений, передаётся агенту.
 type ConnPoolView struct {
-	Size       int     // текущий размер пула
-	RTTMs      float64 // средний RTT по пулу (мс)
-	ErrorRate  float64 // доля ошибочных соединений (0-1)
-	MissedKAs  int     // пропущенных keepalive подряд
-	CBFailures int     // сбоев circuit breaker
+	Size       int
+	RTTMs      float64
+	ErrorRate  float64
+	MissedKAs  int
+	CBFailures int
 }
 
-// RLConnAgent управляет пулом соединений через DQN.
-//
-// State (6 признаков):
-//
-//	pool_size_norm, rtt_norm, error_rate, missedka_norm, hour_sin, hour_cos
-//
-// Actions: KEEP(0) / OPEN(1) / CLOSE_WORST(2)
 type RLConnAgent struct {
 	mu sync.RWMutex
 
@@ -106,7 +97,6 @@ func NewRLConnAgent() *RLConnAgent {
 	return a
 }
 
-// EncodeState строит вектор состояния из снимка пула.
 func (a *RLConnAgent) EncodeState(v ConnPoolView) []float64 {
 	s := make([]float64, connStateSize)
 	s[0] = math.Min(float64(v.Size)/connMaxPoolSize, 1.0)
@@ -119,7 +109,6 @@ func (a *RLConnAgent) EncodeState(v ConnPoolView) []float64 {
 	return s
 }
 
-// Decide выбирает действие для пула. poolSize передаётся отдельно для проверки constraint.
 func (a *RLConnAgent) Decide(view ConnPoolView) ConnAction {
 	state := a.EncodeState(view)
 
@@ -145,13 +134,11 @@ func (a *RLConnAgent) Decide(view ConnPoolView) ConnAction {
 
 	action := ConnAction(actionIdx)
 
-	// Constraint: нельзя закрывать последнее соединение.
 	if action == ConnActionCloseWorst && view.Size <= 1 {
 		action = ConnActionKeep
 		mode += " →KEEP(min1)"
 	}
 
-	// Constraint: нет смысла открывать если пул уже максимален.
 	if action == ConnActionOpen && view.Size >= connMaxPoolSize {
 		action = ConnActionKeep
 		mode += " →KEEP(maxpool)"
@@ -166,8 +153,6 @@ func (a *RLConnAgent) Decide(view ConnPoolView) ConnAction {
 	return action
 }
 
-// RecordOutcome записывает результат действия и запускает обучение.
-// quality — оценка качества пула после действия (0-1).
 func (a *RLConnAgent) RecordOutcome(quality float64) {
 	a.mu.Lock()
 	state := a.pendingState

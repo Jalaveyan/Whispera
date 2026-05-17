@@ -13,14 +13,13 @@ import (
 
 var chunkLog = logger.Module("rl-chunk")
 
-// ChunkSizes — дискретный набор размеров фреймов mux (байт).
 var ChunkSizes = []int{8192, 16384, 32768, 65535}
 
 const (
 	chunkStateSize    = 5
 	chunkHidden1      = 10
 	chunkHidden2      = 6
-	chunkNumActions   = 4 // len(ChunkSizes)
+	chunkNumActions   = 4
 	chunkBufferSize   = 5000
 	chunkBatchSize    = 8
 	chunkGamma        = 0.95
@@ -31,18 +30,12 @@ const (
 	chunkTrainEvery   = 4
 )
 
-// ChunkView — метрики пропускной способности для агента размера чанков.
 type ChunkView struct {
 	RTTMs      float64
-	BytesUpSec float64 // байт/сек исходящий трафик
-	BytesDnSec float64 // байт/сек входящий трафик
+	BytesUpSec float64
+	BytesDnSec float64
 }
 
-// RLChunkAgent выбирает оптимальный размер фрейма mux через DQN.
-//
-// State (5): rtt_norm, up_rate_norm, dn_rate_norm, hour_sin, hour_cos
-// Actions: 8KB / 16KB / 32KB / 64KB
-// Reward: пропускная способность / RTT баланс
 type RLChunkAgent struct {
 	mu sync.RWMutex
 
@@ -85,7 +78,7 @@ func NewRLChunkAgent() *RLChunkAgent {
 func (a *RLChunkAgent) encodeState(v ChunkView) []float64 {
 	s := make([]float64, chunkStateSize)
 	s[0] = math.Min(v.RTTMs/500.0, 1.0)
-	s[1] = math.Min(v.BytesUpSec/1e7, 1.0) // 10 MB/s → 1.0
+	s[1] = math.Min(v.BytesUpSec/1e7, 1.0)
 	s[2] = math.Min(v.BytesDnSec/1e7, 1.0)
 	hour := float64(time.Now().Hour()) + float64(time.Now().Minute())/60.0
 	s[3] = math.Sin(2 * math.Pi * hour / 24.0)
@@ -93,10 +86,9 @@ func (a *RLChunkAgent) encodeState(v ChunkView) []float64 {
 	return s
 }
 
-// Decide возвращает оптимальный размер фрейма (байт).
 func (a *RLChunkAgent) Decide(v ChunkView) int {
 	if atomic.LoadInt64(&a.stepCount) < 30 {
-		return ChunkSizes[3] // 65535 — дефолт
+		return ChunkSizes[3]
 	}
 
 	state := a.encodeState(v)
@@ -122,8 +114,6 @@ func (a *RLChunkAgent) Decide(v ChunkView) int {
 	return ChunkSizes[idx]
 }
 
-// RecordOutcome фиксирует результат выбора размера чанка.
-// quality — комбинация пропускной способности и задержки (0-1).
 func (a *RLChunkAgent) RecordOutcome(quality float64) {
 	a.mu.Lock()
 	state := a.pendingState

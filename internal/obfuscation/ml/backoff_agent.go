@@ -13,7 +13,6 @@ import (
 
 var boLog = logger.Module("rl-backoff")
 
-// BackoffDelays — дискретный набор задержек переподключения.
 var BackoffDelays = []time.Duration{
 	1 * time.Second,
 	3 * time.Second,
@@ -22,7 +21,6 @@ var BackoffDelays = []time.Duration{
 	60 * time.Second,
 }
 
-// BackoffErrType классифицирует причину отказа соединения.
 type BackoffErrType int
 
 const (
@@ -36,7 +34,7 @@ const (
 	boStateSize    = 5
 	boHidden1      = 12
 	boHidden2      = 8
-	boNumActions   = 5 // len(BackoffDelays)
+	boNumActions   = 5
 	boBufferSize   = 800
 	boBatchSize    = 4
 	boGamma        = 0.95
@@ -47,18 +45,12 @@ const (
 	boTrainEvery   = 1
 )
 
-// BackoffView — контекст для выбора задержки переподключения.
 type BackoffView struct {
 	ConsecutiveFails    int
 	LastErrType         BackoffErrType
 	TimeSinceSuccessSec float64
 }
 
-// RLBackoffAgent выбирает оптимальную задержку перед повторным соединением через DQN.
-//
-// State (5): fails_norm, err_type_norm, time_since_success_norm, hour_sin, hour_cos
-// Actions: 1s / 3s / 8s / 20s / 60s
-// Reward: +1 при успехе (штраф за длинную задержку), −0.5 при повторном отказе
 type RLBackoffAgent struct {
 	mu sync.RWMutex
 
@@ -109,10 +101,9 @@ func (a *RLBackoffAgent) encodeState(v BackoffView) []float64 {
 	return s
 }
 
-// Decide возвращает задержку перед следующей попыткой переподключения.
 func (a *RLBackoffAgent) Decide(v BackoffView) time.Duration {
 	if atomic.LoadInt64(&a.stepCount) < 10 {
-		return BackoffDelays[1] // 3s — безопасный дефолт
+		return BackoffDelays[1]
 	}
 
 	state := a.encodeState(v)
@@ -138,7 +129,6 @@ func (a *RLBackoffAgent) Decide(v BackoffView) time.Duration {
 	return BackoffDelays[idx]
 }
 
-// RecordOutcome фиксирует результат попытки переподключения.
 func (a *RLBackoffAgent) RecordOutcome(success bool) {
 	a.mu.Lock()
 	state := a.pendingState
@@ -186,7 +176,6 @@ func (a *RLBackoffAgent) RecordOutcome(success bool) {
 	}
 }
 
-// ClassifyBackoffErr переводит текст ошибки в BackoffErrType.
 func ClassifyBackoffErr(errStr string) BackoffErrType {
 	switch {
 	case containsAny(errStr, "timeout", "deadline", "i/o timeout"):

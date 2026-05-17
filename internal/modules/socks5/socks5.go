@@ -31,14 +31,10 @@ type Config struct {
 	VPNServerAddr string
 	MTU           int
 
-	// BypassFunc — return true to dial the target directly (bypass VPN tunnel).
-	// Called with the target hostname/IP and port before tunnel routing.
 	BypassFunc func(addr string, port uint16) bool
 
-	// BlockFunc — return true to silently drop the connection.
 	BlockFunc func(addr string, port uint16) bool
 
-	// BlockTorrents — drop connections to well-known BitTorrent ports (6881-6889, 6969, 51413).
 	BlockTorrents bool
 }
 
@@ -150,10 +146,9 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 }
 
 
-// isTorrentPort returns true for well-known BitTorrent TCP ports.
 func isTorrentPort(port uint16) bool {
 	switch port {
-	case 6969, 51413: // common tracker / client ports
+	case 6969, 51413:
 		return true
 	}
 	return port >= 6881 && port <= 6889
@@ -166,7 +161,6 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 		}
 	}()
 
-	// Block before anything else.
 	if m.config.BlockTorrents && isTorrentPort(targetPort) {
 		stdlog.Printf("[SOCKS5] blocked torrent port %d → %s", targetPort, targetAddr)
 		return nil
@@ -176,7 +170,6 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 		return nil
 	}
 
-	// Bypass: route directly without VPN tunnel.
 	if m.config.BypassFunc != nil && m.config.BypassFunc(targetAddr, targetPort) {
 		stdlog.Printf("[SOCKS5] direct (bypass) → %s:%d", targetAddr, targetPort)
 		return m.directDial(clientConn, targetAddr, targetPort)
@@ -229,7 +222,6 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	return nil
 }
 
-// directDial connects to addr:port without the VPN tunnel (used for bypass).
 func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error {
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	upstream, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", addr)

@@ -12,12 +12,11 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// BehaviorParams holds per-window traffic shaping parameters.
 type BehaviorParams struct {
 	PathSeed     uint64
-	BurstSize    int           // parallel decoy GETs per page-load burst (2–4)
-	ParseDelayMs int           // simulated browser parse/execute time ms (50–150)
-	IdleSec      int           // idle between page loads s (5–30)
+	BurstSize    int
+	ParseDelayMs int
+	IdleSec      int
 }
 
 const (
@@ -25,8 +24,6 @@ const (
 	maxWindowSec = 90
 )
 
-// WindowScheduler derives a deterministic sequence of window durations from the
-// shared key. Both sides compute the same sequence independently.
 type WindowScheduler struct {
 	behaviorKey []byte
 	sessionID   []byte
@@ -99,7 +96,6 @@ func (ws *WindowScheduler) currentIndexLocked(now time.Time) int {
 	}
 }
 
-// DeriveBehaviorParams produces unique params per (key, windowIndex, sessionID).
 func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte) BehaviorParams {
 	info := fmt.Sprintf("chameleon-behavior-v1-%d", windowIndex)
 	r := hkdf.New(sha256.New, behaviorKey, sessionID, []byte(info))
@@ -112,14 +108,12 @@ func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte)
 
 	return BehaviorParams{
 		PathSeed:     binary.BigEndian.Uint64(seed[32:]),
-		BurstSize:    2 + int(u32(0)%3),        // 2–4
-		ParseDelayMs: 50 + int(u32(4)%101),     // 50–150 ms
-		IdleSec:      5 + int(u32(8)%26),       // 5–30 s
+		BurstSize:    2 + int(u32(0)%3),
+		ParseDelayMs: 50 + int(u32(4)%101),
+		IdleSec:      5 + int(u32(8)%26),
 	}
 }
 
-// shapedConn wraps net.Conn and carries the WindowScheduler for per-window
-// BehaviorParams (path generation, decoy timing). Write is a transparent passthrough.
 type shapedConn struct {
 	net.Conn
 	sched *WindowScheduler

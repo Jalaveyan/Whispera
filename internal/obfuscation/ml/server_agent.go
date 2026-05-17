@@ -15,8 +15,8 @@ import (
 var srvLog = logger.Module("rl-server")
 
 const (
-	srvMaxServers   = 8  // максимальный размер пула серверов
-	srvStateSize    = 10 // rtt[0..7]_norm + hour_sin + hour_cos
+	srvMaxServers   = 8
+	srvStateSize    = 10
 	srvHidden1      = 16
 	srvHidden2      = 8
 	srvNumActions   = srvMaxServers
@@ -30,17 +30,11 @@ const (
 	srvTrainEvery   = 1
 )
 
-// ServerProbe — результат одного измерения задержки до сервера.
 type ServerProbe struct {
 	Addr    string
-	Latency time.Duration // math.MaxInt64 если недостижим
+	Latency time.Duration
 }
 
-// RLServerAgent выбирает сервер из пула на основе исторических данных.
-//
-// State (10): нормированные RTT для 8 слотов (0 если слот пуст) + hour_sin + hour_cos
-// Actions: выбор слота 0..7 (ограничено реальным числом серверов)
-// Reward: −rtt_norm (чем быстрее, тем лучше) или −1 при отказе
 type RLServerAgent struct {
 	mu sync.RWMutex
 
@@ -84,11 +78,11 @@ func NewRLServerAgent() *RLServerAgent {
 
 func (a *RLServerAgent) encodeState(probes []ServerProbe) []float64 {
 	s := make([]float64, srvStateSize)
-	const maxRTT = 500.0 // мс
+	const maxRTT = 500.0
 	for i := 0; i < srvMaxServers && i < len(probes); i++ {
 		ms := float64(probes[i].Latency.Milliseconds())
 		if probes[i].Latency == math.MaxInt64 || ms > maxRTT*10 {
-			s[i] = 1.0 // недостижим
+			s[i] = 1.0
 		} else {
 			s[i] = math.Min(ms/maxRTT, 1.0)
 		}
@@ -99,13 +93,12 @@ func (a *RLServerAgent) encodeState(probes []ServerProbe) []float64 {
 	return s
 }
 
-// Decide выбирает индекс сервера из отсортированного по RTT списка probes.
 func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	if len(probes) == 0 {
 		return ""
 	}
 	if atomic.LoadInt64(&a.stepCount) < 10 {
-		return "" // warmup: fallback на fastest-ping
+		return ""
 	}
 
 	sorted := make([]ServerProbe, len(probes))
@@ -149,7 +142,6 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	return chosen.Addr
 }
 
-// RecordOutcome фиксирует результат подключения к выбранному серверу.
 func (a *RLServerAgent) RecordOutcome(success bool, latencyMs float64) {
 	a.mu.Lock()
 	state := a.pendingState

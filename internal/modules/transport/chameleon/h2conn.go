@@ -7,18 +7,9 @@ import (
 	"time"
 )
 
-// h2ServerConn adapts an HTTP/2 handler's request body + response writer
-// into a net.Conn so the rest of the stack (FrameConn, shapedConn) can sit on top.
-//
-// Read  ← request body  (client → server)
-// Write → response body (server → client), flushed after every write
-//
-// A copy goroutine pumps the request body into a net.Pipe so that
-// SetReadDeadline works — without this the readLoop in tunnel.go would block
-// forever on a silent connection and keepalive-based reconnect wouldn't fire.
 type h2ServerConn struct {
-	readConn net.Conn // deadline-capable end (tunnel reads here)
-	readPeer net.Conn // copy goroutine writes here
+	readConn net.Conn
+	readPeer net.Conn
 
 	w       io.Writer
 	flush   func()
@@ -91,10 +82,6 @@ func (c *h2ServerConn) SetDeadline(t time.Time) error      { return c.readConn.S
 func (c *h2ServerConn) SetReadDeadline(t time.Time) error  { return c.readConn.SetReadDeadline(t) }
 func (c *h2ServerConn) SetWriteDeadline(t time.Time) error { return nil }
 
-// bufferedPipeWriter wraps an io.PipeWriter with an async buffer so that
-// Write returns immediately even before the pipe reader goroutine starts.
-// On Android the HTTP/2 request-body goroutine can take 30-44s to schedule;
-// without buffering yamux blocks on the very first SYN frame.
 type bufferedPipeWriter struct {
 	pw   *io.PipeWriter
 	ch   chan []byte
@@ -153,13 +140,6 @@ func (b *bufferedPipeWriter) drain() {
 	}
 }
 
-// pipelinedConn is the client-side H2 tunnel conn.
-// Write path (bpw → POST body) is live immediately; Read path blocks until
-// deliver() is called with the HTTP response body — allowing yamux SETTINGS
-// to be sent before the server's 200 OK arrives, saving one RTT.
-//
-// A copy goroutine pumps the response body into a net.Pipe so that
-// SetReadDeadline works — same reason as h2ServerConn above.
 type pipelinedConn struct {
 	bpw    *bufferedPipeWriter
 	pr     *io.PipeReader
@@ -167,8 +147,8 @@ type pipelinedConn struct {
 	once   sync.Once
 	sig    sync.Once
 
-	readConn net.Conn // deadline-capable end (tunnel reads here)
-	readPeer net.Conn // copy goroutine writes here
+	readConn net.Conn
+	readPeer net.Conn
 
 	localAddr  net.Addr
 	remoteAddr net.Addr
@@ -187,7 +167,6 @@ func newPipelinedConn(pr *io.PipeReader, bpw *bufferedPipeWriter, cancel func(),
 	}
 }
 
-// deliver hands resp.Body to the Read path. Returns false if Close already ran first.
 func (c *pipelinedConn) deliver(body io.ReadCloser) bool {
 	ran := false
 	c.sig.Do(func() {
@@ -226,7 +205,6 @@ func (c *pipelinedConn) SetDeadline(t time.Time) error      { return c.readConn.
 func (c *pipelinedConn) SetReadDeadline(t time.Time) error  { return c.readConn.SetReadDeadline(t) }
 func (c *pipelinedConn) SetWriteDeadline(t time.Time) error { return nil }
 
-// staticAddr is a minimal net.Addr for wrapping host:port strings.
 type staticAddr struct{ network, addr string }
 
 func (a staticAddr) Network() string { return a.network }

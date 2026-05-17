@@ -393,7 +393,7 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 			if streamObf {
 				go io.Copy(io.Discard, transport.WrapStreamTLS(stream))
 			} else {
-				go io.Copy(io.Discard, stream)
+				go s.serveControlStream(stream)
 			}
 			continue
 		}
@@ -403,6 +403,33 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		}
 		s.log.Info("accepted proxy stream from %s", clientID)
 		go s.handleProxyStream(proxyConn)
+	}
+}
+
+func (s *Server) serveControlStream(stream net.Conn) {
+	defer stream.Close()
+	hdr := make([]byte, 8)
+	for {
+		if _, err := io.ReadFull(stream, hdr); err != nil {
+			return
+		}
+		payloadLen := binary.BigEndian.Uint32(hdr[4:8])
+		if payloadLen > 131072 {
+			return
+		}
+		if payloadLen > 0 {
+			if _, err := io.CopyN(io.Discard, stream, int64(payloadLen)); err != nil {
+				return
+			}
+		}
+		if hdr[2] != 0x06 {
+			continue
+		}
+		pong := [8]byte{}
+		pong[2] = 0x07
+		if _, err := stream.Write(pong[:]); err != nil {
+			return
+		}
 	}
 }
 

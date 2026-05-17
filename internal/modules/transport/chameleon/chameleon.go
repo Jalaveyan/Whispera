@@ -23,20 +23,10 @@ import (
 
 var log = logger.Module("chameleon")
 
-// NewSessionCache returns a session cache suitable for Config.SessionCache.
-// Capacity is the maximum number of TLS sessions stored.
 func NewSessionCache(capacity int) any {
 	return utls.NewLRUClientSessionCache(capacity)
 }
 
-// chromeHelloPool — набор современных Chrome TLS-fingerprint-ов.
-// Выбирается случайно per-connection, чтобы JA3 hash варьировался.
-// Версии 120+ с post-quantum соответствуют реальным Chrome 120-133 на Android.
-// decoyGraph mirrors a realistic browser page-load dependency graph.
-// Phase 0 — navigation (1 request): main document / entry API.
-// Phase 1 — critical subresources (parallel): JS bundles + CSS.
-// Phase 2 — deferred resources (parallel): images, fonts, icons.
-// Phase 3 — post-load API calls (sequential): telemetry, config refresh.
 var decoyGraph = [4][]string{
 	{"/api/v1/config", "/cdn/app/index.js", "/assets/main.css"},
 	{"/static/vendor.js", "/static/app.js", "/assets/theme.css", "/cdn/fonts/roboto.woff2"},
@@ -57,61 +47,36 @@ const (
 	contentType   = "application/octet-stream"
 )
 
-// UserEntry is one registered user on the server side.
 type UserEntry struct {
 	UserID string
-	PSK    []byte // 32-byte pre-shared key (same value client has in ConnectionKey.PSK)
+	PSK    []byte
 }
 
-// Config for the Chameleon transport.
 type Config struct {
-	// Server-side
 	ListenAddr string
-	// Manual TLS — takes priority over autocert.
 	TLSCert string
 	TLSKey  string
-	// Autocert (Let's Encrypt) — used when TLSCert is empty.
-	// Domain is the public hostname the server is reachable at.
-	// ACMEDir is the directory for certificate cache (default: /var/lib/whispera/acme).
 	Domain  string
 	ACMEDir string
 
-	// GetUsers returns the list of registered users for per-user auth verification.
-	// If nil, SharedSecret is used (single-secret mode).
 	GetUsers func() []UserEntry
 
-	// Client-side
-	ServerAddr string // host:port
-	ServerName string // SNI / Host header (primary)
+	ServerAddr string
+	ServerName string
 
-	// ServerNames — optional pool of SNI aliases for the same server.
-	// Each new connection picks one at random to vary the TLS fingerprint.
-	// All names must resolve to ServerAddr and share the same TLS certificate.
-	// If empty, ServerName is used for every connection.
 	ServerNames []string
 
-	// SharedSecret — single 32-byte secret (client mode, or single-user server).
-	// Derived by caller as HKDF(psk, "chameleon-v1").
 	SharedSecret []byte
 
-	// SessionCache enables TLS session resumption across reconnects.
-	// Create with NewSessionCache(); shared across all connections to the same server.
-	SessionCache any // holds *utls.LRUClientSessionCache
+	SessionCache any
 
-	// DecoyOrigin — if set, probe requests are reverse-proxied from this URL
-	// (e.g. "https://en.wikipedia.org") so active probers see real content.
 	DecoyOrigin string
 
-	// OnConn is called server-side for each authenticated tunnel connection.
 	OnConn func(conn net.Conn, userID string)
 
-	// internal — initialized by ListenAndServe when DecoyOrigin is set.
 	proxy *decoyProxy
 }
 
-// sessionHeader encodes sessionID (16B) + anchor unix-seconds (8B) as base64.
-// The anchor is the connection start time — both sides use it to synchronize
-// the random window schedule without any additional round-trips.
 func encodeSession(sessionID []byte, anchor time.Time) string {
 	buf := make([]byte, 24)
 	copy(buf, sessionID)
@@ -129,7 +94,6 @@ func decodeSession(s string) (sessionID []byte, anchor time.Time, err error) {
 	return
 }
 
-// pickSNI returns a random SNI name from the pool, falling back to ServerName.
 func pickSNI(cfg *Config) string {
 	if len(cfg.ServerNames) > 0 {
 		return cfg.ServerNames[mrand.Intn(len(cfg.ServerNames))]
@@ -137,7 +101,6 @@ func pickSNI(cfg *Config) string {
 	return cfg.ServerName
 }
 
-// Client dials the Chameleon server and returns a net.Conn tunnel.
 func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	sessionID := make([]byte, 16)
 	if _, err := crand.Read(sessionID); err != nil {
@@ -156,19 +119,10 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	sni := pickSNI(cfg)
 	origin := "https://" + sni
 
-	// Random Chrome fingerprint per connection — JA3 hash varies across sessions.
 	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
 
-	// Use http2.Transport directly so DialTLSContext can return *utls.UConn.
-	// http.Transport's TLSNextProto mechanism casts to *tls.Conn which would panic;
-	// http2.Transport accepts any net.Conn that exposes ConnectionState().
 	h2Transport := &http2.Transport{
-		// H2-level PING disabled — tunnel keepalive + net.Pipe EOF handle detection.
 		ReadIdleTimeout: 0,
-		// Chrome's SETTINGS frame values (from Wireshark captures of Chrome 120-133):
-		//   SETTINGS_HEADER_TABLE_SIZE      = 65536  (Go default: 4096)
-		//   SETTINGS_MAX_HEADER_LIST_SIZE   = 262144 (Go default: 10MB)
-		// SETTINGS_INITIAL_WINDOW_SIZE (6291456) is not settable via public API.
 		MaxDecoderHeaderTableSize: 65536,
 		MaxHeaderListSize:         262144,
 		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
@@ -179,10 +133,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 			}
 			if tcpConn, ok := rawConn.(*net.TCPConn); ok {
 				tcpConn.SetKeepAlive(true)
-				// 30-90s keepalive — matches Chrome's OS-default range on Android.
 				tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
-				// Disable Nagle: yamux WINDOW_UPDATE and control frames are tiny;
-				// Nagle would hold them up to 200ms, stalling flow control.
 				tcpConn.SetNoDelay(true)
 			}
 			uCfg := &utls.Config{
@@ -226,8 +177,6 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 
 	client := &http.Client{Transport: h2Transport}
 
-	// Fire the POST in the background so yamux SETTINGS can be written to the
-	// request body before the server's 200 OK arrives, saving one RTT on start.
 	go func() {
 		resp, err := client.Do(req)
 		if err != nil || resp.StatusCode != http.StatusOK {
@@ -253,9 +202,6 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	return newShapedConn(fc, sched), nil
 }
 
-// ListenAndServe runs the Chameleon HTTPS server.
-// If TLSCert/TLSKey are set, uses manual certificates.
-// Otherwise, if Domain is set, obtains a certificate from Let's Encrypt automatically.
 func ListenAndServe(ctx context.Context, cfg *Config) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -289,7 +235,6 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 			HostPolicy: autocert.HostWhitelist(cfg.Domain),
 			Cache:      autocert.DirCache(cacheDir),
 		}
-		// http-01 challenge listener on :80 (best-effort — may fail if port is taken).
 		go func() {
 			if err := http.ListenAndServe(":80", m.HTTPHandler(nil)); err != nil {
 				log.Printf("chameleon: acme http-01 listener: %v", err)
@@ -309,13 +254,9 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 		TLSConfig: tlsCfg,
 	}
 
-	// Without explicit H2 configuration Go uses the spec-default upload window of
-	// 65535 bytes per stream.  At 20 ms RTT that caps the POST-body throughput at
-	// ~3 MB/s (~26 Mbps) regardless of link capacity.  Set large windows so the
-	// upload path is not the bottleneck for any realistic RTT.
 	if err := http2.ConfigureServer(srv, &http2.Server{
-		MaxUploadBufferPerConnection: 1 << 26, // 64 MB — connection-level receive window
-		MaxUploadBufferPerStream:     1 << 24, // 16 MB — per-stream receive window
+		MaxUploadBufferPerConnection: 1 << 26,
+		MaxUploadBufferPerStream:     1 << 24,
 	}); err != nil {
 		return fmt.Errorf("chameleon: h2 server config: %w", err)
 	}
@@ -335,8 +276,6 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 	return srv.Serve(tlsLn)
 }
 
-// noDelayListener sets TCP_NODELAY (and keepalive) on every accepted connection.
-// This ensures yamux WINDOW_UPDATE frames are sent immediately without Nagle batching.
 type noDelayListener struct{ *net.TCPListener }
 
 func (l *noDelayListener) Accept() (net.Conn, error) {
@@ -373,7 +312,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	// Resolve the shared secret and user ID by trying all registered users.
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
 		log.Printf("chameleon: auth failed from %s (token len=%d, session len=%d)", r.RemoteAddr, len(token), len(sessionHdr))
@@ -418,16 +356,12 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	<-done
 }
 
-// DeriveSecret produces a 32-byte chameleon shared secret from a raw PSK.
 func DeriveSecret(psk []byte) []byte {
 	return DeriveKeys(psk, true).Auth[:32]
 }
 
-// resolveSecret tries cfg.SharedSecret first, then iterates GetUsers until HMAC matches.
-// Returns (secret, userID) on success, or (nil, "") on failure.
 func resolveSecret(cfg *Config, token string, sessionID []byte) ([]byte, string) {
 	if cfg.GetUsers == nil {
-		// Single-secret mode.
 		k := DeriveKeys(cfg.SharedSecret, false)
 		if VerifyAuthToken(k.Auth, token, sessionID) {
 			return cfg.SharedSecret, "default"
@@ -471,8 +405,6 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	case strings.HasSuffix(path, ".png") ||
 		strings.HasSuffix(path, ".ico") ||
 		strings.HasSuffix(path, ".woff2"):
-		// Binary formats — return correct Content-Type with empty body.
-		// Client discards the body; DPI sees the correct content-type fingerprint.
 		switch {
 		case strings.HasSuffix(path, ".ico"):
 			ct = "image/x-icon"
@@ -505,15 +437,6 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 }
 
-// runDecoy simulates a browser page-load cycle on the H2 connection:
-//
-//	Phase 0 — navigation (1 random entry point)
-//	Phase 1 — critical subresources in parallel (JS + CSS)
-//	Phase 2 — deferred resources in parallel (images, fonts)
-//	Phase 3 — post-load API calls (sequential)
-//	Idle     — randomized think-time before next cycle
-//
-// Timing is driven by BehaviorParams so each session has a distinct fingerprint.
 func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams) {
 	get := func(path string) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
@@ -549,14 +472,11 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 			wg.Add(1)
 			p := paths[i]
 			go func() { defer wg.Done(); get(p) }()
-			// stagger requests by 0–20 ms to mimic browser connection scheduler
 			time.Sleep(time.Duration(mrand.Intn(20)) * time.Millisecond)
 		}
 		wg.Wait()
 	}
 
-	// Cover ticker: small API probe every 3–8 s to prevent POST-body silence
-	// during the page-load idle phase.
 	go func() {
 		api := decoyGraph[3]
 		for {
@@ -571,38 +491,31 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 	}()
 
 	for {
-		// Phase 0 — navigation
 		nav := decoyGraph[0]
 		get(nav[mrand.Intn(len(nav))])
 		if !sleep(bp.ParseDelayMs) {
 			return
 		}
 
-		// Phase 1 — critical subresources
 		parallel(decoyGraph[1], bp.BurstSize)
 		if !sleep(20) {
 			return
 		}
 
-		// Phase 2 — deferred resources
 		parallel(decoyGraph[2], 1+mrand.Intn(2))
 		if !sleep(bp.ParseDelayMs/2) {
 			return
 		}
 
-		// Phase 3 — post-load API call
 		api := decoyGraph[3]
 		get(api[mrand.Intn(len(api))])
 
-		// Idle: think-time before next page load
 		if !sleep(bp.IdleSec * 1000) {
 			return
 		}
 	}
 }
 
-// decoyProxy reverse-proxies GET requests to a real upstream so active probers
-// receive genuine content. Responses are cached for 1 hour.
 type decoyProxy struct {
 	origin string
 	client *http.Client

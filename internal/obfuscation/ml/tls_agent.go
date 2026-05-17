@@ -14,10 +14,8 @@ import (
 
 var tlsLog = logger.Module("rl-tls")
 
-// TLSProfiles — набор JA3/TLS fingerprint профилей.
-// Пустая строка = не перекрывать (использовать Go default).
 var TLSProfiles = []string{
-	"",        // go default
+	"",
 	"chrome",
 	"firefox",
 	"safari",
@@ -28,7 +26,7 @@ const (
 	tlsStateSize    = 5
 	tlsHidden1      = 10
 	tlsHidden2      = 6
-	tlsNumActions   = 5 // len(TLSProfiles)
+	tlsNumActions   = 5
 	tlsBufferSize   = 800
 	tlsBatchSize    = 4
 	tlsGamma        = 0.95
@@ -39,18 +37,12 @@ const (
 	tlsTrainEvery   = 1
 )
 
-// TLSView — контекст для выбора TLS fingerprint.
 type TLSView struct {
 	ConsecutiveTLSErrors int
-	TransportName        string // используется для хэш-кодирования
+	TransportName        string
 	IsPhantom            bool
 }
 
-// RLTLSAgent выбирает TLS fingerprint профиль через DQN.
-//
-// State (5): tls_errors_norm, transport_hash_norm, hour_sin, hour_cos, is_phantom
-// Actions: go / chrome / firefox / safari / ios
-// Reward: +1 handshake успешен, −1 провал
 type RLTLSAgent struct {
 	mu sync.RWMutex
 
@@ -103,7 +95,6 @@ func (a *RLTLSAgent) encodeState(v TLSView) []float64 {
 	return s
 }
 
-// transportHash кодирует имя транспорта в [0,1] детерминированно.
 func transportHash(name string) float64 {
 	h := 0
 	for _, c := range strings.ToLower(name) {
@@ -115,10 +106,9 @@ func transportHash(name string) float64 {
 	return float64(h%100) / 100.0
 }
 
-// Decide возвращает строку TLS fingerprint профиля (пустая = go default).
 func (a *RLTLSAgent) Decide(v TLSView) string {
 	if atomic.LoadInt64(&a.stepCount) < 10 {
-		return "" // warmup: не менять TLS fingerprint
+		return ""
 	}
 
 	state := a.encodeState(v)
@@ -148,7 +138,6 @@ func (a *RLTLSAgent) Decide(v TLSView) string {
 	return TLSProfiles[idx]
 }
 
-// RecordOutcome фиксирует результат TLS handshake.
 func (a *RLTLSAgent) RecordOutcome(success bool) {
 	a.mu.Lock()
 	state := a.pendingState

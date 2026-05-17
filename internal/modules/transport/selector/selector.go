@@ -86,10 +86,9 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// mlRecommendResponse mirrors JSON returned by POST /recommend/transport
 type mlRecommendResponse struct {
-	Transport string `json:"transport"`   // имя транспорта
-	DPIRisk   string `json:"dpi_risk"`    // "low"/"medium"/"high"/"critical"
+	Transport string `json:"transport"`
+	DPIRisk   string `json:"dpi_risk"`
 	Options   string `json:"options"`
 }
 
@@ -237,8 +236,6 @@ func (s *Selector) Select(ctx *NetworkContext) (interfaces.Transport, error) {
 	return s.autoSelect(ctx)
 }
 
-// queryMLTransport спрашивает ML-сервер какой транспорт использовать.
-// Возвращает ("", "") при любой ошибке — вызывающий код использует статический скоринг.
 func (s *Selector) queryMLTransport(dest string) (transport string, dpiRisk string) {
 	body, _ := json.Marshal(map[string]interface{}{
 		"server_host": dest,
@@ -261,8 +258,6 @@ func (s *Selector) queryMLTransport(dest string) (transport string, dpiRisk stri
 	return r.Transport, r.DPIRisk
 }
 
-// reportConnectionResult отправляет результат соединения в ML-сервер
-// (fire-and-forget в горутине, не блокирует путь данных).
 func (s *Selector) reportConnectionResult(t interfaces.TransportType, success bool, latency time.Duration) {
 	if !s.mlEnabled {
 		return
@@ -300,10 +295,9 @@ func (s *Selector) autoSelect(ctx *NetworkContext) (interfaces.Transport, error)
 		if rec != "" {
 			mlRecommended = interfaces.TransportType(rec)
 		}
-		// Применяем DPI риск из ML к NetworkContext если он не задан явно
 		if dpiRisk != "" {
 			if score, ok := dpiRiskScore[dpiRisk]; ok && ctx.ThreatLevel == 0 {
-				ctx.ThreatLevel = int(score * 10) // 0.7 → 7, 1.0 → 10
+				ctx.ThreatLevel = int(score * 10)
 			}
 		}
 	}
@@ -324,7 +318,6 @@ func (s *Selector) autoSelect(ctx *NetworkContext) (interfaces.Transport, error)
 
 		score := s.calculateScore(t, metrics, ctx)
 
-		// Буст рекомендованного ML транспорта
 		if t == mlRecommended && s.config.MLWeight > 0 {
 			score += s.config.MLWeight
 		}

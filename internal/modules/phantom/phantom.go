@@ -96,29 +96,15 @@ type Config struct {
 	EnableChatFSM        bool          `yaml:"enable_chat_fsm"`
 	ChatFSMCoverInterval time.Duration `yaml:"chat_fsm_cover_interval"`
 
-	// BlockLocalPeers rejects inbound connections whose remote address is a
-	// loopback, link-local, or private RFC1918 range unless it matches
-	// AllowedLocalCIDRs. Defends against on-host malware opening the tunnel
-	// and bypassing egress firewall rules (so-called "localhost attack").
 	BlockLocalPeers   bool     `yaml:"block_local_peers"`
 	AllowedLocalCIDRs []string `yaml:"allowed_local_cidrs"`
 
-	// MaxActiveConns is the server-wide cap on simultaneous authenticated
-	// connections. 0 = unlimited. New connections are rejected with a brief
-	// wait when the cap is reached, so legitimate clients retry automatically.
 	MaxActiveConns int `yaml:"max_active_conns"`
 
 	OnAuthenticated func(conn net.Conn, clientID string) `yaml:"-"`
 
-	// AdmitSession is consulted right after successful auth. It returns a
-	// short reason string when admission is denied (e.g. per-key session or
-	// IP cap hit); an empty reason means admitted. The release callback MUST
-	// be invoked exactly once when the session ends.
 	AdmitSession func(clientID, sessionID, remoteIP string) (release func(), reason string) `yaml:"-"`
 
-	// OnConnReady is called after admission and connection setup, before the
-	// connection handler goroutine takes over. Use it to register a conn.Close
-	// closer so the connection can be forcibly terminated from outside.
 	OnConnReady func(clientID, sessionID string, conn net.Conn) `yaml:"-"`
 
 	GetUsers func() []UserEntry `yaml:"-"`
@@ -159,11 +145,11 @@ func isLocalOrPrivateIP(ip net.IP) bool {
 			return true
 		case v4[0] == 192 && v4[1] == 168:
 			return true
-		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127: // CGNAT 100.64/10
+		case v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127:
 			return true
 		}
 	}
-	if ip.To4() == nil && len(ip) == net.IPv6len && ip[0] == 0xfc { // fc00::/7 ULA
+	if ip.To4() == nil && len(ip) == net.IPv6len && ip[0] == 0xfc {
 		return true
 	}
 	return false
@@ -837,8 +823,6 @@ func (h *Handler) markAsSeen(clientRandomHex string) {
 	h.replayMu.Lock()
 	defer h.replayMu.Unlock()
 	if len(h.replayCache) >= replayCacheMaxSize {
-		// Evict all entries immediately — better to re-accept a stale token
-		// once than to let the cache grow unbounded under a replay flood.
 		log.Printf("[Phantom] replay cache full (%d), forcing eviction", len(h.replayCache))
 		h.replayCache = make(map[string]time.Time, replayCacheMaxSize/2)
 	}
@@ -848,8 +832,6 @@ func (h *Handler) markAsSeen(clientRandomHex string) {
 const replayCacheMaxSize = 50_000
 
 func (h *Handler) replayCacheCleanupLoop() {
-	// Run cleanup at half the maxTimeDiff so entries never survive more than
-	// one extra interval past expiry. Clamp to [30s, 2.5min].
 	interval := h.maxTimeDiff / 2
 	if interval < 30*time.Second {
 		interval = 30 * time.Second
@@ -865,7 +847,6 @@ func (h *Handler) replayCacheCleanupLoop() {
 		case <-h.replayCacheCleanupStop:
 			return
 		case <-ticker.C:
-			// Evict entries older than maxTimeDiff + 10s safety buffer.
 			cutoff := time.Now().Add(-(h.maxTimeDiff + 10*time.Second))
 			h.replayMu.Lock()
 			for k, t := range h.replayCache {
@@ -1052,10 +1033,6 @@ type ObfuscatedConn struct {
 	mgr *obfuscation.IntegrationManager
 }
 
-// writeAdmissionError sends a short admission-denial marker to the client
-// before closing the conn. The format is a single line prefixed with
-// "WHISPERA-DENIED:" and terminated by '\n' so clients can distinguish it
-// from normal smux garbage and surface the message verbatim.
 func (h *Handler) writeAdmissionError(conn net.Conn, reason string) {
 	_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 	if reason == "" {
@@ -1067,8 +1044,6 @@ func (h *Handler) writeAdmissionError(conn net.Conn, reason string) {
 func (h *Handler) WrapWithObfuscation(conn net.Conn) net.Conn {
 	wrapped := conn
 	if h.config.EnableChatFSM {
-		// ChatFSM is the authoritative framing layer; skip legacy ObfuscatedConn
-		// to avoid double-wrapping (client side only applies ChatFSM, not both).
 		interval := h.config.ChatFSMCoverInterval
 		if interval <= 0 {
 			interval = 8 * time.Second
@@ -1118,7 +1093,6 @@ func (h *Handler) initSNIRotation() {
 	h.sniMu.Lock()
 	defer h.sniMu.Unlock()
 	h.sniDomains = []string{
-		// VK
 		"vk.com",
 		"api.vk.com",
 		"oauth.vk.com",
@@ -1127,7 +1101,6 @@ func (h *Handler) initSNIRotation() {
 		"st.vk.com",
 		"vkuservideo.net",
 		"vkvideo.ru",
-		// Яндекс
 		"yandex.ru",
 		"api.yandex.ru",
 		"music.yandex.ru",
@@ -1136,13 +1109,11 @@ func (h *Handler) initSNIRotation() {
 		"market.yandex.ru",
 		"messenger.yandex.ru",
 		"dzen.ru",
-		// Мейл
 		"mail.ru",
 		"cloud.mail.ru",
 		"video.mail.ru",
 		"ok.ru",
 		"tamtam.chat",
-		// Стриминг
 		"rutube.ru",
 		"smotrim.ru",
 		"kion.ru",
@@ -1155,29 +1126,24 @@ func (h *Handler) initSNIRotation() {
 		"more.tv",
 		"ntv.ru",
 		"1tv.ru",
-		// Банки
 		"sberbank.ru",
 		"online.sberbank.ru",
 		"tinkoff.ru",
 		"vtb.ru",
 		"alfabank.ru",
 		"raiffeisen.ru",
-		// Госуслуги
 		"gosuslugi.ru",
 		"mos.ru",
-		// Ритейл
 		"ozon.ru",
 		"wildberries.ru",
 		"avito.ru",
 		"citilink.ru",
 		"mvideo.ru",
 		"dns-shop.ru",
-		// Телеком
 		"mts.ru",
 		"beeline.ru",
 		"megafon.ru",
 		"tele2.ru",
-		// Медиа
 		"rbc.ru",
 		"lenta.ru",
 		"2gis.ru",
@@ -1310,15 +1276,12 @@ func (p *prependConn) Read(b []byte) (int, error) {
 	return p.Conn.Read(b)
 }
 
-// commonSNIPrefixes are tried against each base domain during subdomain discovery.
 var commonSNIPrefixes = []string{
 	"cdn", "static", "s", "i", "img", "api", "media", "video",
 	"stream", "m", "content", "assets", "live", "play", "web",
 	"app", "dl", "files", "upload", "www", "edge", "cache",
 }
 
-// sniProberLoop runs domain discovery every 6 hours.
-// First probe fires 2 minutes after start (server warm-up).
 func (h *Handler) sniProberLoop() {
 	select {
 	case <-h.sniProbeStop:
@@ -1346,8 +1309,6 @@ func (h *Handler) probeSubdomains() {
 	var bases []string
 	seenBase := make(map[string]struct{})
 	for _, d := range h.sniDomains {
-		// Only expand two-label domains (e.g. vk.com, rutube.ru) to avoid
-		// generating cdn.api.vk.com-style nonsense.
 		if strings.Count(d, ".") == 1 {
 			if _, ok := seenBase[d]; !ok {
 				seenBase[d] = struct{}{}
@@ -1423,8 +1384,6 @@ const (
 	trancoCacheFile = "tranco_ru.txt"
 )
 
-// probeTrancoDomains downloads the Tranco top-1M list, filters .ru/.рф domains,
-// TLS-probes them, and adds working ones to sniDomains.
 func (h *Handler) probeTrancoDomains() {
 	domains := h.fetchTrancoDomains()
 	if len(domains) == 0 {
@@ -1546,7 +1505,7 @@ func (h *Handler) downloadTrancoRU() ([]string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 25<<20)) // 25 MB cap
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 25<<20))
 	if err != nil {
 		return nil, err
 	}
@@ -1581,7 +1540,6 @@ func (h *Handler) downloadTrancoRU() ([]string, error) {
 	return domains, scanner.Err()
 }
 
-// probeSNIDomain returns true if a valid TLS handshake succeeds on :443.
 func (h *Handler) probeSNIDomain(domain string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

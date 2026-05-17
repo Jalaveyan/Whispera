@@ -40,8 +40,6 @@ type Config struct {
 	ReflectionDelay     time.Duration
 	MaxReflectionConns  int
 
-	// TarpitMode keeps blocked connections alive for TarpitMin..TarpitMax before
-	// closing, consuming scanner goroutines and rate-limit slots.
 	TarpitMode    bool
 	TarpitMinDuration time.Duration
 	TarpitMaxDuration time.Duration
@@ -677,10 +675,6 @@ func (d *Detector) ReflectionStats() map[string]interface{} {
 	}
 }
 
-// TarpitConn holds a blocked connection open for a random duration in
-// [TarpitMinDuration, TarpitMaxDuration], draining any incoming bytes.
-// This wastes scanner goroutines and connection-rate budget without revealing
-// that the host runs a VPN.
 func (d *Detector) TarpitConn(conn net.Conn) {
 	if !d.cfg.TarpitMode {
 		return

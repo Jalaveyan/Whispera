@@ -43,7 +43,7 @@ type RLTransportAgent struct {
 
 	qNet      *gnet.GorgoniaNet
 	target    *gnet.GorgoniaNet
-	worldNet  *gnet.GorgoniaNet // world model: прямое предсказание reward
+	worldNet  *gnet.GorgoniaNet
 	adam      *AdamState
 	worldAdam *AdamState
 
@@ -106,7 +106,6 @@ func NewRLTransportAgent(modelDir string, _ []string) *RLTransportAgent {
 	return agent
 }
 
-// SetActivePool ограничивает выбор транспортов реально доступными в данном соединении.
 func (a *RLTransportAgent) SetActivePool(names []string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -117,8 +116,6 @@ func (a *RLTransportAgent) SetActivePool(names []string) {
 	a.activePool = names
 }
 
-// Select выбирает транспорт из activePool.
-// Возвращает ("", -1) если агент ещё не обучен (< 10 шагов).
 func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -135,7 +132,6 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 	var mode string
 
 	if stickyIdx, exploring := a.sticky.Explore(a.epsilon, RLActionSize); exploring {
-		// Проверяем, доступен ли sticky action в пуле.
 		found := false
 		for _, name := range pool {
 			if a.transportIndex[name] == stickyIdx {
@@ -154,7 +150,6 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 		qvals := a.qNet.Forward(state)
 		wvals := a.worldNet.Forward(state)
 		if mrand.Float64() < 0.30 {
-			// Thompson — выбор из пула по максимальному theta.
 			bestTheta := -1e9
 			idx = a.transportIndex[pool[0]]
 			for _, name := range pool {
@@ -170,7 +165,6 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 			}
 			mode = "thompson"
 		} else {
-			// Boltzmann по комбинированному Q+W score в пуле.
 			scores := make([]float64, len(pool))
 			pIdxs := make([]int, len(pool))
 			for j, name := range pool {
@@ -186,7 +180,6 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 		}
 	}
 
-	// Resolve name by index.
 	name := ""
 	for _, n := range pool {
 		if a.transportIndex[n] == idx {
@@ -206,7 +199,6 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 	return name, idx
 }
 
-// RecordOutcome записывает результат последнего Select и обучает сеть.
 func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 	a.mu.Lock()
 	state := a.pendingState
@@ -245,12 +237,10 @@ func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 	a.RecordExperience(state, action, reward, nextState, !success)
 }
 
-// ShouldRotate возвращает true и сбрасывает флаг если нужно сменить транспорт.
 func (a *RLTransportAgent) ShouldRotate() bool {
 	return atomic.CompareAndSwapInt32(&a.rotateSignal, 1, 0)
 }
 
-// Epsilon возвращает текущий epsilon для диагностики.
 func (a *RLTransportAgent) Epsilon() float64 {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -374,7 +364,6 @@ func (a *RLTransportAgent) trainStep() {
 		dOutput[exp.Action] = -tdErr
 		dqnBackpropAdam(a.qNet, a.adam, acts, dOutput, lr)
 
-		// World model: MSE на наблюдаемый reward.
 		if a.worldNet != nil && exp.Action < len(a.worldNet.Layers[len(a.worldNet.Layers)-1].B) {
 			wActs := a.worldNet.ForwardActivations(exp.State)
 			wvals := wActs[len(wActs)-1]

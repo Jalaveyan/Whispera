@@ -22,10 +22,6 @@ type SpeedResult struct {
 	Error       string  `json:"error,omitempty"`
 }
 
-// runSpeedTest measures latency, download and upload speed through the local
-// SOCKS5 proxy (which routes all traffic through the VPN tunnel).
-// target is the base URL of the Whispera API server, e.g. "https://1.2.3.4:8081".
-// token is the Bearer auth token for the download/upload endpoints.
 func runSpeedTest(ctx context.Context, proxyAddr, target, token string, downloadMB, uploadMB int) SpeedResult {
 	res := SpeedResult{DownloadMB: downloadMB, UploadMB: uploadMB}
 
@@ -44,7 +40,6 @@ func runSpeedTest(ctx context.Context, proxyAddr, target, token string, download
 		return res
 	}
 
-	// --- latency (5 samples, take median) ---
 	latencies := make([]time.Duration, 0, 5)
 	for range 5 {
 		start := time.Now()
@@ -62,7 +57,6 @@ func runSpeedTest(ctx context.Context, proxyAddr, target, token string, download
 
 	authHdr := "Bearer " + token
 
-	// --- download ---
 	dlURL := fmt.Sprintf("%s/api/v1/speed/download?mb=%d", target, downloadMB)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
 	req.Header.Set("Authorization", authHdr)
@@ -73,7 +67,6 @@ func runSpeedTest(ctx context.Context, proxyAddr, target, token string, download
 		res.Error = fmt.Sprintf("download: %v", err)
 		return res
 	}
-	// Capture server IP before reading body.
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 		res.ServerIP = resp.TLS.PeerCertificates[0].Subject.CommonName
 	}
@@ -84,7 +77,6 @@ func runSpeedTest(ctx context.Context, proxyAddr, target, token string, download
 		res.DownloadMbps = float64(n) / dlElapsed.Seconds() / (1024 * 1024)
 	}
 
-	// --- upload ---
 	ulBytes := int64(uploadMB) << 20
 	body := io.LimitReader(zeroReader{}, ulBytes)
 	req, _ = http.NewRequestWithContext(ctx, http.MethodPost, target+"/api/v1/speed/upload", body)
@@ -134,7 +126,6 @@ func medianMs(ds []time.Duration) float64 {
 	if len(ds) == 0 {
 		return 0
 	}
-	// Simple selection: pick middle element (already approximately sorted).
 	min := ds[0]
 	for _, d := range ds[1:] {
 		if d < min {
@@ -144,7 +135,6 @@ func medianMs(ds []time.Duration) float64 {
 	return float64(min.Milliseconds())
 }
 
-// zeroReader is an infinite source of zero bytes for upload payload.
 type zeroReader struct{}
 
 func (zeroReader) Read(p []byte) (int, error) {

@@ -13,7 +13,6 @@ import (
 
 var kaLog = logger.Module("rl-ka")
 
-// KeepaliveIntervals — дискретный набор интервалов keepalive (агент выбирает индекс).
 var KeepaliveIntervals = []time.Duration{
 	5 * time.Second,
 	10 * time.Second,
@@ -26,7 +25,7 @@ const (
 	kaStateSize    = 5
 	kaHidden1      = 12
 	kaHidden2      = 8
-	kaNumActions   = 5 // len(KeepaliveIntervals)
+	kaNumActions   = 5
 	kaBufferSize   = 5000
 	kaBatchSize    = 8
 	kaGamma        = 0.95
@@ -37,18 +36,12 @@ const (
 	kaTrainEvery   = 4
 )
 
-// KeepaliveView — снимок состояния для агента keepalive.
 type KeepaliveView struct {
 	RTTMs     float64
 	MissedKAs int
 	ErrorRate float64
 }
 
-// RLKeepaliveAgent выбирает оптимальный интервал keepalive через DQN.
-//
-// State (5): rtt_norm, missed_ka_norm, error_rate, hour_sin, hour_cos
-// Actions: 5s / 10s / 15s / 30s / 60s
-// Reward: качество пинга − штраф за длинный интервал
 type RLKeepaliveAgent struct {
 	mu sync.RWMutex
 
@@ -99,10 +92,9 @@ func (a *RLKeepaliveAgent) encodeState(v KeepaliveView) []float64 {
 	return s
 }
 
-// Decide выбирает интервал keepalive.
 func (a *RLKeepaliveAgent) Decide(v KeepaliveView) time.Duration {
 	if atomic.LoadInt64(&a.stepCount) < 30 {
-		return KeepaliveIntervals[2] // 15s — безопасный дефолт
+		return KeepaliveIntervals[2]
 	}
 
 	state := a.encodeState(v)
@@ -128,7 +120,6 @@ func (a *RLKeepaliveAgent) Decide(v KeepaliveView) time.Duration {
 	return KeepaliveIntervals[idx]
 }
 
-// RecordOutcome фиксирует результат. quality=1 — пинг прошёл успешно, 0 — пропущен.
 func (a *RLKeepaliveAgent) RecordOutcome(quality float64) {
 	a.mu.Lock()
 	state := a.pendingState

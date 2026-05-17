@@ -5,20 +5,13 @@ import (
 	mrand "math/rand"
 )
 
-// ── Sticky Exploration ────────────────────────────────────────────────────────
 
-// StickyExplorer holds a random action for K steps before re-rolling.
-// Critical for slow agents (transport, SNI, TLS) where a single connection
-// attempt takes seconds — without it the reward signal gets diluted across
-// many random actions before any feedback arrives.
 type StickyExplorer struct {
-	K         int // steps to hold the chosen action
+	K         int
 	remaining int
 	held      int
 }
 
-// Explore returns (action, true) if currently in exploration mode.
-// Returns (-1, false) to signal the caller should exploit instead.
 func (s *StickyExplorer) Explore(epsilon float64, n int) (int, bool) {
 	if s.remaining > 0 {
 		s.remaining--
@@ -32,11 +25,7 @@ func (s *StickyExplorer) Explore(epsilon float64, n int) (int, bool) {
 	return -1, false
 }
 
-// ── Thompson Sampling ─────────────────────────────────────────────────────────
 
-// ThompsonSampler maintains Beta(α, β) per action for Bayesian exploration.
-// α accumulates successes, β accumulates failures.
-// Best for binary-outcome decisions (connect success/failure, TLS handshake).
 type ThompsonSampler struct {
 	alpha []float64
 	beta  []float64
@@ -48,13 +37,12 @@ func NewThompsonSampler(n int) *ThompsonSampler {
 		beta:  make([]float64, n),
 	}
 	for i := range s.alpha {
-		s.alpha[i] = 1.0 // uniform Beta(1,1) prior
+		s.alpha[i] = 1.0
 		s.beta[i] = 1.0
 	}
 	return s
 }
 
-// Update adjusts Beta posterior for the given action based on observed reward.
 func (s *ThompsonSampler) Update(action int, reward float64) {
 	if action < 0 || action >= len(s.alpha) {
 		return
@@ -66,7 +54,6 @@ func (s *ThompsonSampler) Update(action int, reward float64) {
 	}
 }
 
-// Sample returns the action with the highest Thompson sample (argmax of Beta samples).
 func (s *ThompsonSampler) Sample(n int) int {
 	if n <= 0 {
 		return 0
@@ -82,7 +69,6 @@ func (s *ThompsonSampler) Sample(n int) int {
 	return best
 }
 
-// betaSample samples from Beta(a, b) via the gamma ratio method.
 func betaSample(a, b float64) float64 {
 	x := gammaRand(a)
 	y := gammaRand(b)
@@ -92,7 +78,6 @@ func betaSample(a, b float64) float64 {
 	return x / (x + y)
 }
 
-// gammaRand samples from Gamma(shape, 1) using Marsaglia–Tsang's method.
 func gammaRand(shape float64) float64 {
 	if shape < 1 {
 		return gammaRand(1+shape) * math.Pow(mrand.Float64()+1e-12, 1/shape)
@@ -117,10 +102,7 @@ func gammaRand(shape float64) float64 {
 	}
 }
 
-// ── Boltzmann (Temperature Scaling) ───────────────────────────────────────────
 
-// boltzmannSample picks an action proportional to exp(Q/temp).
-// temp→0 approaches argmax; temp→∞ approaches uniform random.
 func boltzmannSample(qvals []float64, temp float64) int {
 	n := len(qvals)
 	if n == 0 {
@@ -157,10 +139,7 @@ func boltzmannSample(qvals []float64, temp float64) int {
 	return n - 1
 }
 
-// ── Curriculum Tracker ────────────────────────────────────────────────────────
 
-// CurriculumTracker detects performance regression (e.g. censor tightened)
-// and signals that epsilon should be bumped back up for re-exploration.
 type CurriculumTracker struct {
 	window    []float64
 	idx       int
@@ -175,7 +154,6 @@ func NewCurriculumTracker(windowSize int, threshold float64) CurriculumTracker {
 	}
 }
 
-// Add records a reward. Returns true if a performance regression is detected.
 func (c *CurriculumTracker) Add(reward float64) bool {
 	c.window[c.idx%len(c.window)] = reward
 	c.idx++
@@ -192,10 +170,7 @@ func (c *CurriculumTracker) Add(reward float64) bool {
 	return sum/float64(len(c.window)) < c.threshold
 }
 
-// ── Diversity Tracker ─────────────────────────────────────────────────────────
 
-// DiversityTracker rewards underrepresented actions to prevent the policy
-// from collapsing to a single action prematurely.
 type DiversityTracker struct {
 	counts []int64
 	total  int64
@@ -209,8 +184,6 @@ func NewDiversityTracker(n int, coeff float64) DiversityTracker {
 	}
 }
 
-// Record increments the counter for action and returns a diversity bonus.
-// Rare actions get a larger bonus: -coeff * log(freq).
 func (d *DiversityTracker) Record(action int) float64 {
 	if action < 0 || action >= len(d.counts) {
 		return 0

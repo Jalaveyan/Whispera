@@ -14,12 +14,11 @@ import (
 
 const maxFrameSize = 4 * 1024 * 1024
 
-// Keys holds all subkeys derived from the shared secret.
 type Keys struct {
-	Auth     []byte // HMAC key for HTTP auth token
-	DataSend []byte // ChaCha20-Poly1305 key — outbound frames
-	DataRecv []byte // ChaCha20-Poly1305 key — inbound frames
-	Behavior []byte // base key for BehaviorParams derivation
+	Auth     []byte
+	DataSend []byte
+	DataRecv []byte
+	Behavior []byte
 }
 
 func DeriveKeys(sharedSecret []byte, isClient bool) *Keys {
@@ -50,12 +49,6 @@ func DeriveKeys(sharedSecret []byte, isClient bool) *Keys {
 	}
 }
 
-// FrameConn wraps net.Conn with ChaCha20-Poly1305 authenticated encryption.
-//
-// Wire format per frame: [4B ciphertext_len][ciphertext+tag]
-// Plaintext:             raw data bytes (no framing prefix inside ciphertext)
-//
-// Nonce = little-endian counter — not transmitted, both sides track independently.
 type FrameConn struct {
 	net.Conn
 	sendAEAD cipher.AEAD

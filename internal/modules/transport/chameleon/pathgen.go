@@ -18,8 +18,6 @@ var (
 	pathExts = []string{"", "", "", ".json", ".js", ".css", ".woff2", ".bin"}
 )
 
-// GeneratePath produces a realistic-looking URL path from a seed and sequence number.
-// Same (seed, seq) always returns the same path.
 func GeneratePath(seed uint64, seq int) string {
 	mix := int64(seed>>1) ^ int64(seq)*0x517cc1b727220a95
 	rng := rand.New(rand.NewSource(mix))
@@ -37,8 +35,6 @@ func GeneratePath(seed uint64, seq int) string {
 	return fmt.Sprintf("%s%s%s", prefix, string(b), ext)
 }
 
-// AuthToken produces a time-windowed HMAC token for the initial HTTP request.
-// token = base64url(HMAC-SHA256(authKey, window_bytes || sessionID))
 func AuthToken(authKey []byte, window int64, sessionID []byte) string {
 	mac := hmac.New(sha256.New, authKey)
 	var wb [8]byte
@@ -48,7 +44,6 @@ func AuthToken(authKey []byte, window int64, sessionID []byte) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// VerifyAuthToken checks the token for the given window ±1 (clock skew tolerance).
 func VerifyAuthToken(authKey []byte, token string, sessionID []byte) bool {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil || len(raw) != 32 {

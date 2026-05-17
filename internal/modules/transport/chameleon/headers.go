@@ -5,7 +5,6 @@ import (
 	"net/http"
 )
 
-// mobileUserAgents — pool of real Android Chrome UAs sampled from browser telemetry.
 var mobileUserAgents = []string{
 	"Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
 	"Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Mobile Safari/537.36",
@@ -19,7 +18,6 @@ var mobileUserAgents = []string{
 	"Mozilla/5.0 (Linux; Android 14; CPH2609) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
 }
 
-// acceptLanguages — common Accept-Language values weighted by global usage.
 var acceptLanguages = []string{
 	"en-US,en;q=0.9",
 	"en-GB,en;q=0.9",
@@ -33,14 +31,10 @@ var acceptLanguages = []string{
 	"ar-SA,ar;q=0.9,en;q=0.8",
 }
 
-// applyBrowserHeaders adds realistic Chrome-on-Android request headers.
-// origin is the https://host value used for Origin and Referer.
 func applyBrowserHeaders(req *http.Request, origin string) {
 	ua := mobileUserAgents[rand.Intn(len(mobileUserAgents))]
 	lang := acceptLanguages[rand.Intn(len(acceptLanguages))]
 
-	// Chrome version extracted from UA for Sec-CH-UA.
-	// Keep it in sync with the selected UA.
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", lang)
@@ -48,7 +42,6 @@ func applyBrowserHeaders(req *http.Request, origin string) {
 	req.Header.Set("Cache-Control", "no-cache")
 	req.Header.Set("Pragma", "no-cache")
 
-	// Fetch metadata — mirrors what Chrome sends for cross-origin fetch().
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	req.Header.Set("Sec-Fetch-Mode", "cors")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -56,6 +49,5 @@ func applyBrowserHeaders(req *http.Request, origin string) {
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Referer", origin+"/")
 
-	// Connection — kept alive by HTTP/2 by default, but set for completeness.
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 }

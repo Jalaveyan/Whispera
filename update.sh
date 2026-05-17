@@ -57,19 +57,58 @@ _enable_tcp8443_in_config() {
 _enable_chameleon_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
+
+    # Detect existing TLS cert from nginx config (used in both branches)
+    local cert="" key=""
+    cert=$(grep -h "ssl_certificate " /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
+    key=$(grep -h "ssl_certificate_key " /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
+
     if grep -q "^chameleon:" "$cfg"; then
-        # Already present — just ensure enabled: true
+        # Already present — ensure enabled: true
         sed -i '/^chameleon:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
+        # If tls_cert is empty ("" or absent) and we have an nginx cert, fill it in
+        local cur_cert
+        cur_cert=$(awk '/^chameleon:/{f=1} f && /tls_cert:/{print $2; exit}' "$cfg" | tr -d '"')
+        if [[ -z "$cur_cert" && -n "$cert" ]]; then
+            # Replace tls_cert: "" and tls_key: "" inside the chameleon section
+            python3 - "$cfg" "$cert" "$key" <<'PYEOF'
+import sys, re
+path, cert, key = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    text = f.read()
+# Only patch inside the chameleon: block (lines until next top-level key)
+def patch_block(m):
+    blk = m.group(0)
+    blk = re.sub(r'tls_cert:\s*""', f'tls_cert: "{cert}"', blk)
+    blk = re.sub(r'tls_key:\s*""',  f'tls_key: "{key}"',   blk)
+    return blk
+text = re.sub(r'^chameleon:.*?(?=\n\S|\Z)', patch_block, text, flags=re.S|re.M)
+with open(path, 'w') as f:
+    f.write(text)
+PYEOF
+            log_info "Chameleon: injected TLS cert from nginx into existing config"
+        fi
     else
-        # Detect existing TLS cert from nginx config
-        local cert="" key=""
-        cert=$(grep -h "ssl_certificate " /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
-        key=$(grep -h "ssl_certificate_key " /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
         printf '\nchameleon:\n  enabled: true\n  listen_addr: ":8443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
             "${cert}" "${key}" >> "$cfg"
     fi
+    if command -v ufw &>/dev/null; then
+        ufw allow 8443/tcp >/dev/null 2>&1 || true
+    elif command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --permanent --add-port=8443/tcp >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    fi
     refresh_config "$cfg"
     log_success "Chameleon enabled in config.yaml"
+}
+
+_disable_phantom_in_config() {
+    local cfg="${CONF_PATH}/config.yaml"
+    [[ -f "$cfg" ]] || return
+    grep -q "^phantom:" "$cfg" || return
+    sed -i '/^phantom:/,/^[^ ]/{s/enabled: true/enabled: false/}' "$cfg"
+    refresh_config "$cfg"
+    log_success "Phantom disabled in config.yaml"
 }
 
 _enable_ml_in_config() {
@@ -1437,6 +1476,7 @@ ENVEOF
     _enable_ml_in_config
     _enable_tcp8443_in_config
     _enable_chameleon_in_config
+    _disable_phantom_in_config
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then
         local MTD

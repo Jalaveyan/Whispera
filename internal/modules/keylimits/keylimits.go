@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// DenyReason describes why admission failed. Values are stable and intended
-// to be surfaced to the client as part of a human-readable error.
 type DenyReason string
 
 const (
@@ -21,9 +19,6 @@ const (
 	ReasonRateLimit DenyReason = "rate_limit"
 )
 
-// Limits holds per-key policy. Zero values mean "unlimited".
-// GlobalCap is server-wide: it is always read from the Manager default,
-// never from per-key overrides.
 type Limits struct {
 	MaxActiveSessions int           `json:"max_active_sessions"`
 	GlobalCap         int           `json:"global_cap"`
@@ -59,12 +54,12 @@ type Manager struct {
 	mu            sync.RWMutex
 	defaultLimits Limits
 	keyLimits     map[string]Limits
-	sessions      map[string]map[string]*Session // keyID -> sessionID -> Session
+	sessions      map[string]map[string]*Session
 	burst         map[string]*burstWindow
-	totalSessions atomic.Int64 // server-wide session count (no lock needed)
+	totalSessions atomic.Int64
 
 	closersMu sync.Mutex
-	closers   map[string]map[string]func() // keyID -> sessionID -> conn.Close
+	closers   map[string]map[string]func()
 
 	onSessionsDrop func(keyID, sessionID string)
 }
@@ -106,8 +101,6 @@ func (m *Manager) limitsFor(keyID string) Limits {
 	return m.defaultLimits
 }
 
-// deleteSession removes a session from the map and returns true if it was present.
-// Must be called with m.mu held for writing.
 func (m *Manager) deleteSession(keyID, sessionID string) bool {
 	km, ok := m.sessions[keyID]
 	if !ok {
@@ -123,9 +116,6 @@ func (m *Manager) deleteSession(keyID, sessionID string) bool {
 	return true
 }
 
-// Admit attempts to register a new session. On success returns an admission
-// handle that MUST be closed via Release when the session ends.
-// On denial returns a non-empty DenyReason and a human-readable message.
 func (m *Manager) Admit(keyID, sessionID, remoteIP string) (DenyReason, string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -145,7 +135,6 @@ func (m *Manager) Admit(keyID, sessionID, remoteIP string) (DenyReason, string) 
 		bw.count++
 	}
 
-	// GlobalCap is always the server default — per-key overrides don't affect it.
 	if cap := m.defaultLimits.GlobalCap; cap > 0 {
 		if int(m.totalSessions.Load()) >= cap {
 			return ReasonGlobalCap, fmt.Sprintf(
@@ -217,9 +206,6 @@ func (m *Manager) Release(keyID, sessionID string) {
 	m.closersMu.Unlock()
 }
 
-// RegisterCloser associates a conn.Close function with an admitted session.
-// Called by the connection handler after the connection is fully set up.
-// The closer is called by EvictOldest and gcExpired to forcibly terminate the TCP connection.
 func (m *Manager) RegisterCloser(keyID, sessionID string, fn func()) {
 	m.closersMu.Lock()
 	defer m.closersMu.Unlock()
@@ -231,10 +217,6 @@ func (m *Manager) RegisterCloser(keyID, sessionID string, fn func()) {
 	km[sessionID] = fn
 }
 
-// EvictOldest closes the n oldest sessions for a specific key (client).
-// Only that client's sessions are touched — other clients are unaffected.
-// Sessions are removed from the admission map synchronously so that a retry
-// Admit immediately sees the freed slots.
 func (m *Manager) EvictOldest(keyID string, n int) {
 	type entry struct {
 		keyID     string
@@ -256,7 +238,6 @@ func (m *Manager) EvictOldest(keyID string, n int) {
 		n = len(all)
 	}
 
-	// Remove sessions from the map synchronously so a retry Admit sees freed slots.
 	m.mu.Lock()
 	var deleted int64
 	for i := 0; i < n; i++ {
@@ -293,9 +274,6 @@ func (m *Manager) EvictOldest(keyID string, n int) {
 	}
 }
 
-// EvictOldestGlobal closes the n oldest sessions server-wide (across all keys).
-// Used when the global server cap is reached. Sessions are removed from the
-// admission map synchronously so a retry Admit immediately sees freed slots.
 func (m *Manager) EvictOldestGlobal(n int) {
 	type entry struct {
 		keyID     string
@@ -355,7 +333,6 @@ func (m *Manager) EvictOldestGlobal(n int) {
 	}
 }
 
-// TotalSessions returns the current server-wide active session count.
 func (m *Manager) TotalSessions() int {
 	return int(m.totalSessions.Load())
 }
@@ -418,9 +395,6 @@ func (m *Manager) gcExpired() {
 	type dead struct{ keyID, sessionID string }
 	var expired []dead
 
-	// Snapshot which sessions have an active closer (= live connection).
-	// Sessions with a closer are owned by a live conn and will be released
-	// via Release() when that conn closes — TTL must not evict them.
 	m.closersMu.Lock()
 	hasCloser := make(map[string]map[string]bool, len(m.closers))
 	for kid, km := range m.closers {
@@ -439,7 +413,7 @@ func (m *Manager) gcExpired() {
 		}
 		for sid, s := range km {
 			if hasCloser[keyID][sid] {
-				continue // live connection — never evict by TTL
+				continue
 			}
 			if now.Sub(s.LastSeen) > ttl {
 				delete(km, sid)
@@ -461,7 +435,6 @@ func (m *Manager) gcExpired() {
 		m.totalSessions.Add(-int64(len(expired)))
 	}
 
-	// Close expired connections outside the sessions lock.
 	if len(expired) > 0 {
 		m.closersMu.Lock()
 		fns := make([]func(), 0, len(expired))

@@ -148,8 +148,6 @@ func isTimeoutError(err error) bool {
 		strings.Contains(s, "i/o timeout")
 }
 
-// ClassifyConnError returns a concise, human-readable reason for a connection
-// failure — suitable for display in client logs or UI.
 func ClassifyConnError(err error) string {
 	if err == nil {
 		return ""
@@ -244,12 +242,10 @@ type Config struct {
 	PhantomServerPubKey string
 	PhantomPSK          []byte
 
-	// Chameleon — invisible HTTPS transport with GRU traffic shaping.
-	// Enabled by default when SharedSecret is non-empty and no other transport is forced.
 	EnableChameleon   bool
-	ChameleonAddr     string // host:port of chameleon server (defaults to ServerAddr)
-	ChameleonSNI      string // TLS SNI (defaults to ChameleonAddr host)
-	ChameleonSecret   []byte // 32-byte pre-shared secret derived from user key
+	ChameleonAddr     string
+	ChameleonSNI      string
+	ChameleonSecret   []byte
 
 	EnableChatFSM        bool
 	ChatFSMCoverInterval time.Duration
@@ -271,9 +267,6 @@ type Config struct {
 
 	ServerList []string
 
-	// Regions maps region codes (ru/eu/us/cn) to server address lists.
-	// When PreferredRegion is set (non-empty, non-"auto"), only that region's
-	// servers are considered during latency probing.
 	Regions         map[string][]string
 	PreferredRegion string
 
@@ -292,9 +285,7 @@ type Config struct {
 
 	MLToken string
 
-	// SNIModelDir — путь для сохранения rl_sni_policy.json. Пустая строка = не сохранять.
 	SNIModelDir string
-	// SNIDomainsURL — URL plain-text списка доменов (один на строку) для авто-обновления SNI-пула каждые 24ч.
 	SNIDomainsURL string
 
 	CustomSNI string
@@ -307,15 +298,9 @@ type Config struct {
 
 	TLSFragmentSize int
 
-	// ForceSNI overrides the SNI sent in the TLS ClientHello for all transports,
-	// regardless of phantom or ASN-bypass settings.
-	// Takes priority over PhantomSNI and DomainFrontHost.
 	ForceSNI string
 
-	// Connection quality failover thresholds.
-	// QualityThresholdRTT: trigger reconnect when EWMA RTT exceeds this (0 = disabled).
 	QualityThresholdRTT time.Duration
-	// QualityMissedKeepalives: trigger reconnect after N consecutive pongs missed (0 = disabled).
 	QualityMissedKeepalives int
 }
 
@@ -360,9 +345,9 @@ type managedConn struct {
 	session      *mux.Session
 	id           string
 	createdAt    time.Time
-	maxAge       time.Duration // rotate after this duration (45-120s for Chameleon)
-	maxUploadB   int64         // rotate after this many bytes uploaded (0 = disabled)
-	uploadBytes  int64         // atomic: bytes written to this connection
+	maxAge       time.Duration
+	maxUploadB   int64
+	uploadBytes  int64
 	closing      chan struct{}
 	closeOnce    sync.Once
 }
@@ -436,12 +421,10 @@ type Manager struct {
 	tlsAgent           *mlpkg.RLTLSAgent
 	tspuDetector       *mlpkg.TSPUDetector
 
-	// для backoff-агента
-	boFailCount     int32 // atomic: consecutive reconnect failures
-	boLastSuccessAt int64 // atomic: unix seconds of last successful connect
-	boLastErrType   int32 // atomic: BackoffErrType
-	// для tls-агента
-	tlsErrStreak int32 // atomic: consecutive TLS handshake failures
+	boFailCount     int32
+	boLastSuccessAt int64
+	boLastErrType   int32
+	tlsErrStreak int32
 
 	russianTunneler *russian.RussianTunneler
 
@@ -460,15 +443,13 @@ type Manager struct {
 
 	fedSyncOnce sync.Once
 
-	// last-good cache for 0-RTT reconnect fast path
 	lastGoodMu         sync.RWMutex
 	lastGoodSNI        string
 	lastGoodTransport  string
 	lastGoodServerAddr string
 
-	// connection quality metrics
-	qualityRTTEWMA int64 // atomic, nanoseconds; EWMA of ping→pong RTT
-	missedKAs      int32 // atomic; consecutive keepalives with no pong response
+	qualityRTTEWMA int64
+	missedKAs      int32
 
 	chameleonSessionCache any
 }
@@ -483,7 +464,7 @@ func (m *Manager) getMuxConfig() *mux.Config {
 		dnBytes := float64(atomic.LoadUint64(&m.bytesDown))
 		frameSize = m.chunkAgent.Decide(mlpkg.ChunkView{
 			RTTMs:      rttMs,
-			BytesUpSec: upBytes / 60.0, // грубая оценка: всего байт / 60с
+			BytesUpSec: upBytes / 60.0,
 			BytesDnSec: dnBytes / 60.0,
 		})
 	}
@@ -632,7 +613,6 @@ func New(cfg *Config) (*Manager, error) {
 		log.Info("Initialized %d Russian SNIs for rotation", len(m.russianSNIs))
 	}
 
-	// RL SNI агент — учится какие домены работают лучше в данном регионе/ISP.
 	sniPool := m.russianSNIs
 	if len(sniPool) == 0 {
 		sniPool = defaultSNIPool
@@ -659,8 +639,6 @@ func New(cfg *Config) (*Manager, error) {
 	m.tspuDetector = mlpkg.NewTSPUDetector()
 	log.Info("RL agents initialized: keepalive, backoff, jitter, server, chunk, tls, tspu")
 
-	// Периодически экспортируем веса в глобальный снапшот.
-	// Сервер отдаёт его через /api/ml/weights; клиент тянет при первом подключении.
 	go m.runWeightSnapshotLoop()
 
 	if cfg.CustomSNI != "" {
@@ -854,7 +832,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		poolMu.Lock()
 		isFirst := len(connectedPool) == 0
 		if isFirst && m.handshake != nil {
-			// sessionID уже установлен внутри dialManagedConn при handshake
 		}
 		connectedPool = append(connectedPool, mc)
 		poolMu.Unlock()
@@ -885,7 +862,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		if !isRotation {
 			m.setError(err)
 		} else {
-			// Rotation timed out — old connection is still active; restore state.
 			m.setState(StateConnected)
 		}
 		return err
@@ -941,7 +917,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.lastPong = time.Now()
 		m.setState(StateConnected)
 
-		// Cache last-good params for 0-RTT reconnect fast path.
 		m.connMu.RLock()
 		sniSnapshot := m.currentSNI
 		m.connMu.RUnlock()
@@ -993,10 +968,7 @@ func (m *Manager) spoofDialer() *net.Dialer {
 	}
 }
 
-// dialManagedConn набирает одно полностью готовое соединение (dial → desync → handshake → mux)
-// и возвращает готовый *managedConn. Используется как в connectInternal, так и в openPoolConn.
 func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn, error) {
-	// TLS-агент выбирает fingerprint профиль до dial.
 	if m.tlsAgent != nil && m.asnBypassDialer != nil {
 		tlsErrors := int(atomic.LoadInt32(&m.tlsErrStreak))
 		profile := m.tlsAgent.Decide(mlpkg.TLSView{
@@ -1037,7 +1009,6 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		atomic.StoreUint32(&m.sessionID, uint32(time.Now().Unix()&0xFFFFFFFF))
 	}
 
-	// Handshake прошёл успешно — сбрасываем счётчик TLS ошибок.
 	if m.tlsAgent != nil {
 		atomic.StoreInt32(&m.tlsErrStreak, 0)
 		m.tlsAgent.RecordOutcome(true)
@@ -1067,9 +1038,6 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	var maxAge time.Duration
 	var maxUploadB int64
 	if m.config.EnableChameleon {
-		// Rotation disabled: single persistent H2 POST connection.
-		// maxAge=0 → connAgentTick skips rotation (c.maxAge > 0 is false).
-		// Re-enable by setting maxAge = time.Duration(10+mrand.Intn(11)) * time.Minute
 		maxAge = 0
 		maxUploadB = 0
 	}
@@ -1090,7 +1058,6 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		return m.config.CustomDialFn(ctx)
 	}
 
-	// Chameleon is the preferred transport when enabled — invisible HTTPS with GRU shaping.
 	if m.config.EnableChameleon && len(m.config.ChameleonSecret) > 0 {
 		addr := m.config.ChameleonAddr
 		if addr == "" {
@@ -1111,6 +1078,7 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			SessionCache: m.chameleonSessionCache,
 		})
 		if err == nil {
+			m.isTransportSecure = true
 			return conn, nil
 		}
 		log.Warn("chameleon dial failed (%v), falling back to standard transports", err)
@@ -1291,7 +1259,6 @@ func (m *Manager) buildCandidates() []dialCandidate {
 
 	cc = m.applyTransportPolicy(cc)
 
-	// Сообщаем транспортному агенту какие транспорты реально доступны.
 	if m.transportAgent != nil && len(cc) > 0 {
 		names := make([]string, len(cc))
 		for i, c := range cc {
@@ -1534,7 +1501,6 @@ func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
 	}
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
-		// OS-level keepalives keep NAT mappings alive on mobile (15-30 min NAT timeout).
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(20 * time.Second)
 	}
@@ -1590,16 +1556,15 @@ func (m *Manager) dialWebSocket(ctx context.Context) (net.Conn, error) {
 	if path == "" {
 		path = "/ws"
 	}
-	host := m.tcfg("ws_host") // optional CDN-fronting Host header
+	host := m.tcfg("ws_host")
 	subproto := m.tcfg("ws_subprotocol")
 	if subproto == "" {
-		subproto = "" // no subprotocol = harder to fingerprint than "whispera"
+		subproto = ""
 	}
 	useTLS := m.tcfg("ws_tls") == "true" || m.tcfg("ws_tls") == "1"
 
 	target := m.config.ServerAddrTCP
 	if host != "" {
-		// CDN fronting: connect to target (CDN IP) but send Host: host
 		target = m.config.ServerAddrTCP
 	}
 
@@ -1622,7 +1587,7 @@ func (m *Manager) dialGRPC(ctx context.Context) (net.Conn, error) {
 	if serverName == "" {
 		serverName = m.tcfg("sni")
 	}
-	useTLS := m.tcfg("grpc_tls") != "false" // TLS on by default
+	useTLS := m.tcfg("grpc_tls") != "false"
 
 	tr, err := grpc_transport.New(&grpc_transport.Config{
 		ListenAddr:  ":0",
@@ -1853,8 +1818,6 @@ func (m *Manager) selectNewSNILocked() string {
 	}
 
 	if m.sniAgent != nil {
-		// Строим состояние: без реального RTT на этом этапе используем нули,
-		// агент всё равно учится на реальных результатах через RecordOutcome.
 		state := m.sniAgent.EncodeState(0, 0, 0, false, 0)
 		domain, _ := m.sniAgent.Select(state)
 		if domain != "" {
@@ -1866,7 +1829,6 @@ func (m *Manager) selectNewSNILocked() string {
 		}
 	}
 
-	// Fallback: crypto/rand (если агент не инициализирован)
 	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(pool))))
 	if err != nil {
 		m.currentSNI = pool[0]
@@ -1998,7 +1960,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	originalTransport := m.config.Transport
 	transportFallbackActivated := false
 
-	// Snapshot last-good params before the loop modifies config.
 	m.lastGoodMu.RLock()
 	zeroRTTSNI := m.lastGoodSNI
 	zeroRTTTransport := m.lastGoodTransport
@@ -2040,7 +2001,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 
 		m.connMu.Lock()
 		if attempts == 1 && zeroRTTSNI != "" {
-			// 0-RTT fast path: reuse last-good SNI and transport, skip ML round-trip.
 			m.currentSNI = zeroRTTSNI
 			if zeroRTTTransport != "" {
 				m.config.Transport = zeroRTTTransport
@@ -2055,7 +2015,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		usedTransport := m.config.Transport
 		var err error
 		if attempts == 1 && zeroRTTSNI != "" {
-			// Fast path: bypass ML recommendations and server racing.
 			err = m.connectInternal(ctx, false)
 		} else {
 			err = m.Connect(ctx)
@@ -2095,8 +2054,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			if strings.Contains(errStr, "reset") {
 				m.tspuDetector.RecordRST(m.currentSNI, dialDur)
 			} else if isTimeoutError(err) {
-				// Timeout after a full dial attempt — probe TCP to check for zombie-TCP.
-				// Run async so we don't add latency to the retry loop.
 				sni := m.currentSNI
 				addr := m.config.ServerAddr
 				detector := m.tspuDetector
@@ -2108,12 +2065,10 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 					tcpDur := time.Since(tcpStart)
 					if tcpErr == nil {
 						c.Close()
-						// TCP succeeded → DPI passes L4 but drops TLS payload → zombie-TCP.
 						detector.RecordZombieTCP(sni, tcpDur, dialDur)
 					}
 				}()
 			}
-			// After recording, check if we should switch transport based on TSPU pattern.
 			if dpiType, conf := m.tspuDetector.DetectTSPU(); dpiType != mlpkg.DPITypeNone && conf >= 0.65 {
 				if cm := mlpkg.TSPUCountermeasure(dpiType); cm != "" && cm != m.config.Transport {
 					log.Warn("[TSPU] %s detected (conf=%.2f) → switching transport: %s → %s",
@@ -2132,7 +2087,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		log.Warn("Reconnect attempt %d failed (transport=%s): %s", attempts, m.config.Transport, ClassifyConnError(err))
 		m.circuitBreakerFail()
 
-		// Backoff-агент выбирает задержку; fallback на exponential backoff если агент не готов.
 		var backoffDelay time.Duration
 		if m.boAgent != nil {
 			errStr := ""
@@ -2241,7 +2195,6 @@ func (m *Manager) RotateSNI() {
 		m.currentSNI = oldSNI
 		m.connMu.Unlock()
 		m.config.Transport = oldTransport
-		// connectInternal sets StateRotating before dialing; restore on failure.
 		m.setState(StateConnected)
 
 		if m.config.MLServerURL != "" {
@@ -2512,7 +2465,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 			}
 			atomic.StoreInt32(&m.missedKAs, 0)
 			log.Debug("Received PONG from server (RTT=%v)", time.Since(m.lastKeepalive))
-			// Положительный сигнал агентам keepalive и jitter.
 			if m.kaAgent != nil || m.jitterAgent != nil {
 				quality := math.Max(0, 1.0-rttMs/500.0)
 				if m.kaAgent != nil {
@@ -2910,7 +2862,7 @@ closeNow:
 	m.connMu.Unlock()
 
 	mc.closeOnce.Do(func() { close(mc.closing) })
-	mc.session.Close() // closes yamux session → underlying H2 POST → RST_STREAM on server
+	mc.session.Close()
 	mc.Close()
 	log.Info("Draining connection closed (%s)", reason)
 }
@@ -2924,7 +2876,6 @@ func (m *Manager) startRotation() {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.rotationCancel = cancel
 
-	// Safety-net: если нейросеть не даёт сигнал долго, всё равно ротируем.
 	const safetyInterval = 6 * time.Hour
 	log.Info("Starting SNI rotation watchdog (safety interval: %s, RL-agent controls active rotation)", safetyInterval)
 	m.rotationTicker = time.NewTicker(safetyInterval)
@@ -2951,9 +2902,6 @@ func (m *Manager) stopRotation() {
 	}
 }
 
-// startConnAgent запускает цикл управления пулом соединений через RL-агента.
-// Тикает каждые 15 секунд. Останавливается через stopConnAgent или когда
-// пользователь явно вызвал Disconnect() (activePool == nil).
 func (m *Manager) startConnAgent() {
 	m.stopConnAgent()
 	if m.connAgent == nil {
@@ -2987,15 +2935,11 @@ func (m *Manager) stopConnAgent() {
 }
 
 func (m *Manager) connAgentTick() {
-	// Агент работает только пока пользователь подключён.
-	// Если Disconnect() был вызван явно — activePool == nil, не вмешиваемся.
+
 	if !m.IsConnected() {
 		return
 	}
 
-	// Chameleon: одно постоянное соединение, пул не трогаем.
-	// connAgent не должен открывать/закрывать соединения — любое изменение
-	// пула даёт микропаузу, критичную для игр.
 	if m.config.EnableChameleon {
 		return
 	}
@@ -3021,7 +2965,6 @@ func (m *Manager) connAgentTick() {
 	m.connMu.RUnlock()
 
 	if poolSize == 0 {
-		// Пользователь явно закрыл все соединения — агент не открывает новые.
 		return
 	}
 
@@ -3082,12 +3025,11 @@ func (m *Manager) connAgentTick() {
 			m.connAgent.RecordOutcome(m.connQuality())
 		}
 
-	default: // ConnActionKeep
+	default:
 		m.connAgent.RecordOutcome(m.connQuality())
 	}
 }
 
-// connQuality возвращает текущее качество пула (0-1) для reward агента.
 func (m *Manager) connQuality() float64 {
 	rttNs := atomic.LoadInt64(&m.qualityRTTEWMA)
 	rttMs := float64(rttNs) / 1e6
@@ -3098,7 +3040,6 @@ func (m *Manager) connQuality() float64 {
 
 	quality := (rttScore + kaScore) / 2.0
 
-	// chunk-агент получает обратную связь с каждым тиком connAgentTick.
 	if m.chunkAgent != nil {
 		upBytes := float64(atomic.LoadUint64(&m.bytesUp))
 		dnBytes := float64(atomic.LoadUint64(&m.bytesDown))
@@ -3110,7 +3051,6 @@ func (m *Manager) connQuality() float64 {
 	return quality
 }
 
-// openPoolConn устанавливает одно дополнительное соединение и добавляет его в activePool.
 func (m *Manager) openPoolConn(ctx context.Context) error {
 	id := fmt.Sprintf("agent-%d", time.Now().UnixNano())
 	mc, err := m.dialManagedConn(ctx, id)
@@ -3125,8 +3065,6 @@ func (m *Manager) openPoolConn(ctx context.Context) error {
 	return nil
 }
 
-// closeWorstPoolConn закрывает самое старое соединение в пуле.
-// Возвращает false если pool.Size <= 1 (constraint: ≥1 соединение).
 func (m *Manager) closeWorstPoolConn() bool {
 	m.connMu.Lock()
 	defer m.connMu.Unlock()
@@ -3135,11 +3073,9 @@ func (m *Manager) closeWorstPoolConn() bool {
 		return false
 	}
 
-	// Worst = самое старое (наибольший возраст → индекс 0 т.к. slice упорядочен по времени добавления).
 	worst := m.activePool[0]
 	m.activePool = m.activePool[1:]
 
-	// Если это было activeConn — переключаем на следующий.
 	if m.activeConn == worst {
 		m.activeConn = m.activePool[0]
 	}
@@ -3308,9 +3244,6 @@ func (s *StreamConn) Read(b []byte) (n int, err error) {
 	}
 }
 
-// maxStreamChunk bounds the payload size per tunnel frame. Keeping chunks
-// small enough to fit the outer transport MTU avoids IP fragmentation and
-// reduces the DPI fingerprint of oversized whispera frames.
 const maxStreamChunk = 1300
 
 func (s *StreamConn) Write(b []byte) (n int, err error) {
@@ -3390,7 +3323,7 @@ func (m *Manager) startKeepalive() {
 				base = m.kaAgent.Decide(kaView)
 			}
 
-			jitterFrac := 0.30 // default ±30%
+			jitterFrac := 0.30
 			if m.jitterAgent != nil {
 				jitterFrac = m.jitterAgent.Decide(mlpkg.JitterView{
 					RTTMs: rttMs, MissedKAs: missed,
@@ -3419,8 +3352,6 @@ func (m *Manager) stopKeepalive() {
 func (m *Manager) sendKeepalive() {
 	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
 		silentDuration := time.Since(m.lastPong)
-		// 90s: enough for a slow network burst, short enough to detect dead NAT
-		// mappings before the user notices prolonged outage.
 		maxSilence := 90 * time.Second
 		if silentDuration > maxSilence {
 			log.Warn("No data received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
@@ -3428,10 +3359,8 @@ func (m *Manager) sendKeepalive() {
 			return
 		}
 
-		// Count consecutive keepalives that got no pong.
 		if !m.lastKeepalive.IsZero() && m.lastPong.Before(m.lastKeepalive) {
 			missed := atomic.AddInt32(&m.missedKAs, 1)
-			// Отрицательный сигнал агентам keepalive и jitter.
 			if m.kaAgent != nil {
 				m.kaAgent.RecordOutcome(0)
 			}
@@ -3447,9 +3376,6 @@ func (m *Manager) sendKeepalive() {
 			}
 		}
 
-		// If data is actively flowing from the server, the connection is clearly
-		// alive — no need to send an explicit ping that would compete with
-		// streaming traffic (YouTube, etc.) in the shared yamux write channel.
 		halfInterval := m.config.KeepaliveInterval / 2
 		if halfInterval > 0 && silentDuration < halfInterval {
 			m.lastKeepalive = time.Now()
@@ -3461,8 +3387,6 @@ func (m *Manager) sendKeepalive() {
 	pingFrame := make([]byte, 8)
 	pingFrame[2] = 0x06
 
-	// Send in a separate goroutine so a blocked write (dead NAT, full TCP buffer)
-	// doesn't stall the keepalive loop and prevent maxSilence from firing.
 	sendTimeout := m.config.KeepaliveInterval
 	if sendTimeout <= 0 {
 		sendTimeout = 30 * time.Second
@@ -3488,9 +3412,8 @@ func (m *Manager) sendKeepalive() {
 	}
 }
 
-// updateQualityRTT updates the EWMA RTT and triggers failover if above threshold.
 func (m *Manager) updateQualityRTT(rtt time.Duration) {
-	const alpha = 0.2 // EWMA smoothing factor — weight of new sample
+	const alpha = 0.2
 	old := atomic.LoadInt64(&m.qualityRTTEWMA)
 	var newEWMA int64
 	if old == 0 {
@@ -3508,7 +3431,6 @@ func (m *Manager) updateQualityRTT(rtt time.Duration) {
 	}
 }
 
-// GetQualityMetrics returns current connection quality measurements.
 func (m *Manager) GetQualityMetrics() (avgRTT time.Duration, missedKeepalives int) {
 	return time.Duration(atomic.LoadInt64(&m.qualityRTTEWMA)),
 		int(atomic.LoadInt32(&m.missedKAs))
@@ -3703,15 +3625,12 @@ func probeLatency(ctx context.Context, addr string, timeout time.Duration) (time
 	return time.Since(start), nil
 }
 
-// pickServer использует serverAgent для выбора сервера если доступно,
-// иначе fallback на pickFastestServer (чистый latency probe).
 func (m *Manager) pickServer(ctx context.Context) string {
 	candidates := m.regionCandidates()
 	if len(candidates) == 0 {
 		return ""
 	}
 
-	// Зондируем все серверы параллельно.
 	type probeResult struct {
 		addr    string
 		latency time.Duration
@@ -3735,14 +3654,12 @@ func (m *Manager) pickServer(ctx context.Context) string {
 		probes[i] = mlpkg.ServerProbe{Addr: r.addr, Latency: r.latency}
 	}
 
-	// serverAgent выбирает сервер с учётом исторических данных.
 	if m.serverAgent != nil {
 		if chosen := m.serverAgent.Decide(probes); chosen != "" {
 			return chosen
 		}
 	}
 
-	// Fallback: возвращаем сервер с минимальным RTT.
 	best := probes[0]
 	for _, p := range probes[1:] {
 		if p.Latency < best.Latency {
@@ -3757,9 +3674,6 @@ func (m *Manager) pickServer(ctx context.Context) string {
 	return best.Addr
 }
 
-// regionCandidates returns the servers to probe based on PreferredRegion.
-// "auto" or "" → all servers from ServerList + all regions.
-// specific region → that region's servers only (falls back to ServerList if empty).
 func (m *Manager) regionCandidates() []string {
 	region := m.config.PreferredRegion
 	seen := make(map[string]struct{})
@@ -3781,7 +3695,6 @@ func (m *Manager) regionCandidates() []string {
 		log.Warn("[LATENCY] Region %q has no servers, falling back to all", region)
 	}
 
-	// auto or unknown region: use all known servers
 	for _, s := range m.config.ServerList {
 		add(s)
 	}
@@ -3986,20 +3899,15 @@ func (m *Manager) SetBehavioralProfile(profile string) error {
 	return m.obfuscator.SetProfile(profile)
 }
 
-// runWeightSnapshotLoop pushes a weight snapshot to the global store every 5 minutes.
-// This lets the server's /api/ml/weights endpoint always return fresh weights.
 func (m *Manager) runWeightSnapshotLoop() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	// Push once immediately so the endpoint has data right away.
 	mlpkg.SetGlobalSnapshot(m.ExportMLWeights())
 	for range ticker.C {
 		mlpkg.SetGlobalSnapshot(m.ExportMLWeights())
 	}
 }
 
-// ExportMLWeights snapshots q-net weights from all RL agents.
-// Called by the server to build the /api/ml/weights response.
 func (m *Manager) ExportMLWeights() *mlpkg.WeightSnapshot {
 	snap := &mlpkg.WeightSnapshot{}
 	if m.transportAgent != nil {
@@ -4032,8 +3940,6 @@ func (m *Manager) ExportMLWeights() *mlpkg.WeightSnapshot {
 	return snap
 }
 
-// ImportMLWeights loads a snapshot into all matching RL agents (warm start).
-// Called by the client after receiving weights from the server.
 func (m *Manager) ImportMLWeights(snap *mlpkg.WeightSnapshot) {
 	if snap == nil {
 		return

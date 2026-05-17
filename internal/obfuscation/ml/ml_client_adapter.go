@@ -26,8 +26,6 @@ func SetMLServerURL(url, token string) {
 	overrideMu.Unlock()
 	if url != "" {
 		os.Setenv("WHISPERA_ML_SERVER", url)
-		// Wire upload/download loops to the global DataCollector so that
-		// samples and NN weights are exchanged with the ML server.
 		if globalDataCollector != nil {
 			globalDataCollector.SetMLServer(url, token)
 		}
@@ -172,11 +170,6 @@ func (a *NativeMLClientEvasionAdapter) ProcessTraffic(data []byte, context *type
 		}
 	}
 
-	// Byte-level mimicry (applyNativeObfuscation) intentionally disabled: the
-	// server would prepend HTTP headers but the client has no symmetric unwrap
-	// at the TCP/smux layer, which would break frame parsing once the model
-	// reaches confidence > 0.5. DPI evasion is handled symmetrically at the
-	// transport level (uTLS, phantom, shadowTLS).
 	return data, nil
 }
 
