@@ -300,54 +300,32 @@ func readSSEStream(body io.Reader, peer net.Conn) {
 // ── Client goroutines ────────────────────────────────────────────────────────
 
 // runRESTUpload drains uploadCh and sends data as batched POST/PUT/PATCH requests.
+// Up to 3 requests fly concurrently over HTTP/2 so that the next batch does not
+// wait for the previous round-trip to complete — this keeps upload latency close
+// to one network RTT instead of RTT × N.
 func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, origin, sessionHdr, token string, uploadCh <-chan []byte) {
-	var buf []byte
+	const concurrency = 3
+	sem := make(chan struct{}, concurrency)
 
-	for {
-		buf = buf[:0]
-
-		// Batch writes for up to 20ms or 32KB
-		timer := time.NewTimer(20 * time.Millisecond)
-	collect:
-		for len(buf) < 32*1024 {
-			select {
-			case data := <-uploadCh:
-				buf = append(buf, data...)
-			case <-timer.C:
-				break collect
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			}
-		}
-		timer.Stop()
-
-		if len(buf) == 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Duration(10+mrand.Intn(20)) * time.Millisecond):
-			}
-			continue
-		}
-
+	sendChunk := func(data []byte) {
 		method := restUploadMethods[mrand.Intn(len(restUploadMethods))]
 		path := restUploadPath(method)
 		url := fmt.Sprintf("https://%s%s", serverAddr, path)
 
-		// Wrap in a JSON envelope so the POST body looks like a real SPA API call.
 		envJSON, err := json.Marshal(map[string]interface{}{
-			"d":  base64.RawStdEncoding.EncodeToString(buf),
+			"d":  base64.RawStdEncoding.EncodeToString(data),
 			"id": restRandomID(),
 			"ts": time.Now().Unix(),
 		})
 		if err != nil {
-			continue
+			<-sem
+			return
 		}
 
 		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(envJSON))
 		if err != nil {
-			continue
+			<-sem
+			return
 		}
 		req.Host = sni
 		req.Header.Set("Content-Type", "application/json")
@@ -357,21 +335,51 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 		applyBrowserHeaders(req, origin)
 
 		resp, err := client.Do(req)
+		<-sem
 		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			continue
+			return
 		}
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
+	}
 
-		// Random inter-request delay: 5–50ms
+	var buf []byte
+	for {
+		buf = buf[:0]
+
+		// Block until first chunk — zero spin when idle.
 		select {
+		case data := <-uploadCh:
+			buf = append(buf, data...)
 		case <-ctx.Done():
 			return
-		case <-time.After(time.Duration(5+mrand.Intn(45)) * time.Millisecond):
 		}
+
+		// Non-blocking drain: grab everything already queued without waiting.
+		// Sparse traffic (pings, DNS) sends immediately; bulk traffic batches
+		// naturally because the channel is already full.
+	drain:
+		for len(buf) < 32*1024 {
+			select {
+			case data := <-uploadCh:
+				buf = append(buf, data...)
+			case <-ctx.Done():
+				return
+			default:
+				break drain
+			}
+		}
+
+		// Acquire semaphore slot; fire the request in a goroutine so the
+		// collector loop can immediately start building the next batch.
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		chunk := make([]byte, len(buf))
+		copy(chunk, buf)
+		go sendChunk(chunk)
 	}
 }
 
