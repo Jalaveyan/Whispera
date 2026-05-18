@@ -250,6 +250,8 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("DELETE /api/v1/dhcp/lease", s.handleDHCPRelease)
 	s.Handle("GET /api/users", s.handleGetUsers)
 	s.Handle("POST /api/users/add", s.handleAddUser)
+	// REST-style alias used by whispera-ui frontend (it posts to /api/users).
+	s.Handle("POST /api/users", s.handleAddUser)
 	s.Handle("PUT /api/users/{id}", s.handleUpdateUser)
 	s.Handle("POST /api/users/delete", s.handleDeleteUser)
 
@@ -2270,7 +2272,14 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 				if chmCfg.Enabled && chmCfg.ListenAddr != "" {
 					_, chmPort, _ := net.SplitHostPort(chmCfg.ListenAddr)
 					if chmPort != "" {
-						chameleonAddr = net.JoinHostPort(serverIP, chmPort)
+						// Use domain as host when autocert is configured — clients verify
+						// TLS hostname against the host portion of chameleon_addr, and LE
+						// certs are only valid for the domain, not the bare IP.
+						host := serverIP
+						if chmCfg.Domain != "" {
+							host = chmCfg.Domain
+						}
+						chameleonAddr = net.JoinHostPort(host, chmPort)
 					}
 					chameleonSNI = chmCfg.Domain
 				}
