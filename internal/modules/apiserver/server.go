@@ -219,6 +219,8 @@ func (s *Server) SetKeyLimits(m *keylimits.Manager) {
 
 func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/login", s.handleLogin)
+	// Alias for the whispera-ui frontend which posts to /api/auth/login.
+	s.Handle("POST /api/auth/login", s.handleLogin)
 	s.Handle("POST /api/logout", s.handleLogout)
 	s.Handle("POST /api/v2/auth/login", s.handleLoginV2)
 	s.Handle("POST /api/v2/auth/refresh", s.handleRefreshToken)
@@ -706,6 +708,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		if r.URL.Path == "/api/login" ||
+			r.URL.Path == "/api/auth/login" ||
 			r.URL.Path == "/api/v2/auth/login" ||
 			r.URL.Path == "/api/v2/auth/refresh" ||
 			r.URL.Path == "/api/logout" ||
