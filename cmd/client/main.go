@@ -447,6 +447,12 @@ func main() {
 			chameleonSecret = pskBytes
 		}
 	}
+	// Keys with phantom:false but chameleon_addr set use the top-level PSK for chameleon.
+	if len(chameleonSecret) == 0 && cfg.ChameleonAddr != "" && cfg.PSK != "" {
+		if pskBytes, err := base64.StdEncoding.DecodeString(cfg.PSK); err == nil && len(pskBytes) == 32 {
+			chameleonSecret = pskBytes
+		}
+	}
 
 	if cfg.Phantom != nil && cfg.Phantom.Enabled {
 		phantomEnabled = true
