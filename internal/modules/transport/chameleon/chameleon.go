@@ -11,6 +11,8 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -530,86 +532,36 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 	}
 }
 
+// decoyProxy transparently reverse-proxies all non-VPN requests to DecoyOrigin
+// (usually nginx on a loopback port). Unlike a simple GET-cache it preserves
+// all methods, status, headers (including WWW-Authenticate, Set-Cookie,
+// Location, …) and streams the body — essential for any real backend
+// (admin panel with Basic Auth, login pages, JSON APIs, etc.).
 type decoyProxy struct {
 	origin string
-	client *http.Client
-	mu     sync.RWMutex
-	cache  map[string]*proxyCacheEntry
-}
-
-type proxyCacheEntry struct {
-	status  int
-	ct      string
-	body    []byte
-	expires time.Time
+	rp     *httputil.ReverseProxy
 }
 
 func newDecoyProxy(origin string) *decoyProxy {
-	return &decoyProxy{
-		origin: strings.TrimRight(origin, "/"),
-		client: &http.Client{Timeout: 8 * time.Second},
-		cache:  make(map[string]*proxyCacheEntry),
+	origin = strings.TrimRight(origin, "/")
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		// Bad origin — serve static decoy as a safe fallback.
+		return &decoyProxy{origin: origin}
 	}
+	rp := httputil.NewSingleHostReverseProxy(u)
+	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		// Upstream offline or refused — fall back to the built-in static decoy
+		// instead of leaking 502 details.
+		serveDecoy(w, r, nil)
+	}
+	return &decoyProxy{origin: origin, rp: rp}
 }
 
 func (p *decoyProxy) serve(w http.ResponseWriter, r *http.Request) {
-	key := r.URL.Path
-
-	p.mu.RLock()
-	entry, ok := p.cache[key]
-	p.mu.RUnlock()
-	if ok && time.Now().Before(entry.expires) {
-		p.writeEntry(w, entry)
+	if p.rp == nil {
+		serveDecoy(w, r, nil)
 		return
 	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, p.origin+key, nil)
-	if err != nil {
-		p.writeStatic(w, r)
-		return
-	}
-	if ua := r.Header.Get("User-Agent"); ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-
-	resp, err := p.client.Do(req)
-	if err != nil {
-		p.writeStatic(w, r)
-		return
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if err != nil {
-		p.writeStatic(w, r)
-		return
-	}
-
-	ct := resp.Header.Get("Content-Type")
-	if ct == "" {
-		ct = "text/html; charset=utf-8"
-	}
-	entry = &proxyCacheEntry{
-		status:  resp.StatusCode,
-		ct:      ct,
-		body:    body,
-		expires: time.Now().Add(time.Hour),
-	}
-	p.mu.Lock()
-	p.cache[key] = entry
-	p.mu.Unlock()
-
-	p.writeEntry(w, entry)
-}
-
-func (p *decoyProxy) writeEntry(w http.ResponseWriter, e *proxyCacheEntry) {
-	w.Header().Set("Server", "nginx/1.24.0")
-	w.Header().Set("Content-Type", e.ct)
-	w.WriteHeader(e.status)
-	w.Write(e.body)
-}
-
-func (p *decoyProxy) writeStatic(w http.ResponseWriter, r *http.Request) {
-	serveDecoy(w, r, nil)
+	p.rp.ServeHTTP(w, r)
 }
