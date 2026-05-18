@@ -137,8 +137,6 @@ func newShapedConn(inner net.Conn, sched *WindowScheduler) *shapedConn {
 }
 
 func (sc *shapedConn) flusher() {
-	ticker := time.NewTicker(2 * time.Millisecond)
-	defer ticker.Stop()
 	var coalesce []byte
 	flush := func() {
 		if len(coalesce) == 0 {
@@ -160,14 +158,10 @@ func (sc *shapedConn) flusher() {
 				select {
 				case more := <-sc.ch:
 					coalesce = append(coalesce, more...)
-					if len(coalesce) >= 8192 {
-						flush()
-					}
 				default:
 					break drain
 				}
 			}
-		case <-ticker.C:
 			flush()
 		case <-sc.done:
 			flush()

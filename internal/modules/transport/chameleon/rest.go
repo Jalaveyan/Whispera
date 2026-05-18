@@ -299,50 +299,11 @@ func readSSEStream(body io.Reader, peer net.Conn) {
 
 // ── Client goroutines ────────────────────────────────────────────────────────
 
-// runRESTUpload drains uploadCh and sends data as batched POST/PUT/PATCH requests.
-// Up to 3 requests fly concurrently over HTTP/2 so that the next batch does not
-// wait for the previous round-trip to complete — this keeps upload latency close
-// to one network RTT instead of RTT × N.
+// runRESTUpload drains uploadCh and sends data as sequential POST/PUT/PATCH
+// requests. Sequential ordering is required: FrameConn uses a per-frame counter
+// as the ChaCha20-Poly1305 nonce — concurrent requests can arrive at the server
+// out of order and break the counter sequence, causing MAC failures.
 func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, origin, sessionHdr, token string, uploadCh <-chan []byte) {
-	const concurrency = 3
-	sem := make(chan struct{}, concurrency)
-
-	sendChunk := func(data []byte) {
-		method := restUploadMethods[mrand.Intn(len(restUploadMethods))]
-		path := restUploadPath(method)
-		url := fmt.Sprintf("https://%s%s", serverAddr, path)
-
-		envJSON, err := json.Marshal(map[string]interface{}{
-			"d":  base64.RawStdEncoding.EncodeToString(data),
-			"id": restRandomID(),
-			"ts": time.Now().Unix(),
-		})
-		if err != nil {
-			<-sem
-			return
-		}
-
-		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(envJSON))
-		if err != nil {
-			<-sem
-			return
-		}
-		req.Host = sni
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set(headerToken, "Bearer "+token)
-		req.Header.Set(headerSession, sessionHdr)
-		req.Header.Set("X-Transport", "rest")
-		applyBrowserHeaders(req, origin)
-
-		resp, err := client.Do(req)
-		<-sem
-		if err != nil {
-			return
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}
-
 	var buf []byte
 	for {
 		buf = buf[:0]
@@ -370,16 +331,39 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 			}
 		}
 
-		// Acquire semaphore slot; fire the request in a goroutine so the
-		// collector loop can immediately start building the next batch.
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			return
+		method := restUploadMethods[mrand.Intn(len(restUploadMethods))]
+		path := restUploadPath(method)
+		url := fmt.Sprintf("https://%s%s", serverAddr, path)
+
+		envJSON, err := json.Marshal(map[string]interface{}{
+			"d":  base64.RawStdEncoding.EncodeToString(buf),
+			"id": restRandomID(),
+			"ts": time.Now().Unix(),
+		})
+		if err != nil {
+			continue
 		}
-		chunk := make([]byte, len(buf))
-		copy(chunk, buf)
-		go sendChunk(chunk)
+
+		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(envJSON))
+		if err != nil {
+			continue
+		}
+		req.Host = sni
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(headerToken, "Bearer "+token)
+		req.Header.Set(headerSession, sessionHdr)
+		req.Header.Set("X-Transport", "rest")
+		applyBrowserHeaders(req, origin)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
 }
 
