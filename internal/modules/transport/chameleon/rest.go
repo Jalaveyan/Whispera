@@ -160,8 +160,14 @@ func (c *restServerConn) Read(b []byte) (int, error) {
 	}
 }
 
-// Write wraps b in an SSE event with a JSON payload so the stream looks like
+// sseChunkSize is the maximum plaintext bytes per SSE event.
+// base64 of 32 KB ≈ 43 KB — well within the client scanner's 256 KB buffer.
+const sseChunkSize = 32 * 1024
+
+// Write wraps b in SSE events with JSON payloads so the stream looks like
 // a real-time web app (Firebase-style) rather than raw binary to DPI.
+// Large writes are split into sseChunkSize chunks so the client scanner
+// never sees a line exceeding its buffer limit.
 // Format: data: {"d":"<base64>","id":"<random>","ts":<unix>}\n\n
 func (c *restServerConn) Write(b []byte) (n int, err error) {
 	select {
@@ -174,16 +180,24 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 			n, err = 0, io.ErrClosedPipe
 		}
 	}()
-	line := fmt.Sprintf("data: {\"d\":\"%s\",\"id\":\"%s\",\"ts\":%d}\n\n",
-		base64.RawStdEncoding.EncodeToString(b), restRandomID(), time.Now().Unix())
-	if _, werr := io.WriteString(c.w, line); werr != nil {
-		c.Close()
-		return 0, werr
+	for len(b) > 0 {
+		chunk := b
+		if len(chunk) > sseChunkSize {
+			chunk = b[:sseChunkSize]
+		}
+		b = b[len(chunk):]
+		line := fmt.Sprintf("data: {\"d\":\"%s\",\"id\":\"%s\",\"ts\":%d}\n\n",
+			base64.RawStdEncoding.EncodeToString(chunk), restRandomID(), time.Now().Unix())
+		if _, werr := io.WriteString(c.w, line); werr != nil {
+			c.Close()
+			return n, werr
+		}
+		n += len(chunk)
 	}
 	if c.flusher != nil {
 		c.flusher.Flush()
 	}
-	return len(b), nil
+	return n, nil
 }
 
 func (c *restServerConn) Close() error {

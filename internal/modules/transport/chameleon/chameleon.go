@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	stdlog "log"
 	mrand "math/rand"
 	"net"
 	"net/http"
@@ -269,6 +270,7 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 		Addr:      listenAddr,
 		Handler:   mux,
 		TLSConfig: tlsCfg,
+		ErrorLog:  stdlog.New(io.Discard, "", 0),
 	}
 
 	if err := http2.ConfigureServer(srv, &http2.Server{
