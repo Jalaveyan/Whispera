@@ -41,14 +41,33 @@ type flowRegistry struct {
 	m  map[string]FlowLabel
 }
 
+// Register labels an incoming tunnel connection (server listens on :443, remote is client).
 func (r *flowRegistry) Register(remoteAddr string, label FlowLabel) {
 	host, portStr, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
 		return
 	}
 	port, _ := strconv.Atoi(portStr)
-	// server listens on :443; remote is the client side
 	key := pcapFlowKey(host, "0.0.0.0", port, 443)
+	r.mu.Lock()
+	r.m[key] = label
+	r.mu.Unlock()
+}
+
+// RegisterConn labels an arbitrary connection by its actual local and remote addresses.
+// Used for outbound connections (e.g. browser simulator → Russian CDN).
+func (r *flowRegistry) RegisterConn(local, remote net.Addr, label FlowLabel) {
+	lh, lp, err := net.SplitHostPort(local.String())
+	if err != nil {
+		return
+	}
+	rh, rp, err := net.SplitHostPort(remote.String())
+	if err != nil {
+		return
+	}
+	lpInt, _ := strconv.Atoi(lp)
+	rpInt, _ := strconv.Atoi(rp)
+	key := pcapFlowKey(lh, rh, lpInt, rpInt)
 	r.mu.Lock()
 	r.m[key] = label
 	r.mu.Unlock()
@@ -67,6 +86,24 @@ func (r *flowRegistry) Delete(remoteAddr string) {
 	}
 	port, _ := strconv.Atoi(portStr)
 	key := pcapFlowKey(host, "0.0.0.0", port, 443)
+	r.mu.Lock()
+	delete(r.m, key)
+	r.mu.Unlock()
+}
+
+// DeleteConn removes the registry entry for an outbound connection.
+func (r *flowRegistry) DeleteConn(local, remote net.Addr) {
+	lh, lp, err := net.SplitHostPort(local.String())
+	if err != nil {
+		return
+	}
+	rh, rp, err := net.SplitHostPort(remote.String())
+	if err != nil {
+		return
+	}
+	lpInt, _ := strconv.Atoi(lp)
+	rpInt, _ := strconv.Atoi(rp)
+	key := pcapFlowKey(lh, rh, lpInt, rpInt)
 	r.mu.Lock()
 	delete(r.m, key)
 	r.mu.Unlock()

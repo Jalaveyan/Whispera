@@ -1,6 +1,7 @@
 package ml
 
 import (
+	"context"
 	"math"
 	"sync"
 	"time"
@@ -234,11 +235,12 @@ func sigmoid64(x float64) float64 {
 // dqnBackpropAdam handles the actual weight update.
 func applyOutputGrad(l gnet.LayerDef, _ float64) gnet.LayerDef { return l }
 
-// GANRunner runs the training loop on a background goroutine.
+// GANRunner runs the training loop and browser simulator on background goroutines.
 type GANRunner struct {
 	gan       *TrafficGAN
 	collector *PCAPCollector
 	stopCh    chan struct{}
+	simCancel context.CancelFunc
 }
 
 func NewGANRunner(iface string, port int) *GANRunner {
@@ -255,11 +257,17 @@ func (r *GANRunner) Start() error {
 	if err := r.collector.Start(); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	r.simCancel = cancel
 	go r.loop()
+	go RunBrowserSim(ctx)
 	return nil
 }
 
 func (r *GANRunner) Stop() {
+	if r.simCancel != nil {
+		r.simCancel()
+	}
 	close(r.stopCh)
 	r.collector.Stop()
 }
