@@ -39,14 +39,25 @@ type ConnGuard struct {
 
 	WhitelistCheck func(ip string) bool
 
+	maxConnsPerSec     int
+	maxPending         int
+	firstBytesDeadline time.Duration
+
 	cleanStop chan struct{}
 }
 
 func NewConnGuard(checkMagics bool) *ConnGuard {
+	return NewConnGuardWithLimits(checkMagics, MaxConnsPerIPPerSec, MaxPendingPerIP, FirstBytesDeadline)
+}
+
+func NewConnGuardWithLimits(checkMagics bool, maxConnsPerSec, maxPending int, firstBytesDeadline time.Duration) *ConnGuard {
 	g := &ConnGuard{
-		buckets:     make(map[string]*ipBucket),
-		CheckMagics: checkMagics,
-		cleanStop:   make(chan struct{}),
+		buckets:            make(map[string]*ipBucket),
+		CheckMagics:        checkMagics,
+		maxConnsPerSec:     maxConnsPerSec,
+		maxPending:         maxPending,
+		firstBytesDeadline: firstBytesDeadline,
+		cleanStop:          make(chan struct{}),
 	}
 	go g.cleanupLoop()
 	return g
@@ -82,10 +93,10 @@ func (g *ConnGuard) Allow(addr net.Addr) bool {
 	}
 	b.opens = b.opens[:j]
 
-	if len(b.opens) >= MaxConnsPerIPPerSec {
+	if len(b.opens) >= g.maxConnsPerSec {
 		return false
 	}
-	if b.pending >= MaxPendingPerIP {
+	if b.pending >= g.maxPending {
 		return false
 	}
 
@@ -112,7 +123,7 @@ func (g *ConnGuard) CheckFirstBytes(conn net.Conn) (peeked []byte, err error) {
 		return nil, nil
 	}
 
-	conn.SetReadDeadline(time.Now().Add(FirstBytesDeadline))
+	conn.SetReadDeadline(time.Now().Add(g.firstBytesDeadline))
 	defer conn.SetReadDeadline(time.Time{})
 
 	buf := make([]byte, MinFirstBytes)

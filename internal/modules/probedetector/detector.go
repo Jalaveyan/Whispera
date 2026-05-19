@@ -22,6 +22,10 @@ type Config struct {
 	FailWindow      time.Duration
 	BlockDuration   time.Duration
 
+	MaxConnsPerIPPerSec int
+	MaxPendingPerIP     int
+	FirstBytesDeadline  time.Duration
+
 	RequireDNSQuery bool
 	DNSQueryWindow  time.Duration
 
@@ -50,6 +54,10 @@ func DefaultConfig() Config {
 		MaxAuthFailures: 5,
 		FailWindow:      5 * time.Minute,
 		BlockDuration:   30 * time.Minute,
+
+		MaxConnsPerIPPerSec: MaxConnsPerIPPerSec,
+		MaxPendingPerIP:     MaxPendingPerIP,
+		FirstBytesDeadline:  FirstBytesDeadline,
 
 		RequireDNSQuery: false,
 		DNSQueryWindow:  90 * time.Second,
@@ -148,7 +156,7 @@ func New(cfg Config) *Detector {
 		whitelist:      make(map[string]time.Time),
 		cleanupStop:    make(chan struct{}),
 		reflectHistory: make(map[string]time.Time),
-		Guard: NewConnGuard(true),
+		Guard: NewConnGuardWithLimits(true, cfg.MaxConnsPerIPPerSec, cfg.MaxPendingPerIP, cfg.FirstBytesDeadline),
 	}
 
 	d.Guard.WhitelistCheck = func(ip string) bool {
