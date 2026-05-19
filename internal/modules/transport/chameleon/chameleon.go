@@ -45,9 +45,10 @@ var chromeHelloPool = []utls.ClientHelloID{
 }
 
 const (
-	headerSession = "X-Session-Id"
-	headerToken   = "Authorization"
-	contentType   = "application/octet-stream"
+	headerSession       = "X-Session-Id"
+	headerToken         = "Authorization"
+	contentType         = "application/octet-stream"
+	contentTypeDownload = "video/mp4"
 )
 
 type UserEntry struct {
@@ -203,7 +204,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 
 	go runDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin, bp)
 
-	return newShapedConn(fc, sched), nil
+	return newShapedConn(fc), nil
 }
 
 func ListenAndServe(ctx context.Context, cfg *Config) error {
@@ -354,7 +355,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 	token := tokenHdr[7:]
 
-	sessionID, anchor, err := decodeSession(sessionHdr)
+	sessionID, _, err := decodeSession(sessionHdr)
 	if err != nil {
 		serveDecoy(w, r, cfg)
 		return
@@ -381,8 +382,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	sched := NewWindowScheduler(keys.Behavior, sessionID, anchor)
-
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
 
@@ -395,7 +394,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	shaped := newShapedConn(fc, sched)
+	shaped := newShapedConn(fc)
 
 	if cfg.OnConn != nil {
 		cfg.OnConn(shaped, userID)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
@@ -51,6 +52,7 @@ func DeriveKeys(sharedSecret []byte, isClient bool) *Keys {
 
 type FrameConn struct {
 	net.Conn
+	sendMu   sync.Mutex
 	sendAEAD cipher.AEAD
 	recvAEAD cipher.AEAD
 	sendSeq  uint64
@@ -77,6 +79,8 @@ func counterNonce(seq uint64) [12]byte {
 }
 
 func (fc *FrameConn) Write(p []byte) (int, error) {
+	fc.sendMu.Lock()
+	defer fc.sendMu.Unlock()
 	overhead := fc.sendAEAD.Overhead()
 	frame := make([]byte, 4+len(p)+overhead)
 	binary.BigEndian.PutUint32(frame, uint32(len(p)+overhead))

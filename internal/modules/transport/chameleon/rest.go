@@ -1,18 +1,14 @@
 package chameleon
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	mrand "math/rand"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -77,17 +73,6 @@ func restDownloadPath(seed uint64) string {
 	return restDownloadPaths[int(seed>>32)%len(restDownloadPaths)]
 }
 
-var restIDChars = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
-
-// restRandomID returns a random 8-char alphanumeric string that looks like
-// a short message/event ID used by real SPA backends (Firebase, Ably, etc.).
-func restRandomID() string {
-	b := make([]byte, 8)
-	for i := range b {
-		b[i] = restIDChars[mrand.Intn(len(restIDChars))]
-	}
-	return string(b)
-}
 
 func restUploadPath(method string) string {
 	paths := restUploadPathsByMethod[method]
@@ -160,15 +145,6 @@ func (c *restServerConn) Read(b []byte) (int, error) {
 	}
 }
 
-// sseChunkSize is the maximum plaintext bytes per SSE event.
-// base64 of 32 KB ≈ 43 KB — well within the client scanner's 256 KB buffer.
-const sseChunkSize = 32 * 1024
-
-// Write wraps b in SSE events with JSON payloads so the stream looks like
-// a real-time web app (Firebase-style) rather than raw binary to DPI.
-// Large writes are split into sseChunkSize chunks so the client scanner
-// never sees a line exceeding its buffer limit.
-// Format: data: {"d":"<base64>","id":"<random>","ts":<unix>}\n\n
 func (c *restServerConn) Write(b []byte) (n int, err error) {
 	select {
 	case <-c.done:
@@ -180,19 +156,10 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 			n, err = 0, io.ErrClosedPipe
 		}
 	}()
-	for len(b) > 0 {
-		chunk := b
-		if len(chunk) > sseChunkSize {
-			chunk = b[:sseChunkSize]
-		}
-		b = b[len(chunk):]
-		line := fmt.Sprintf("data: {\"d\":\"%s\",\"id\":\"%s\",\"ts\":%d}\n\n",
-			base64.RawStdEncoding.EncodeToString(chunk), restRandomID(), time.Now().Unix())
-		if _, werr := io.WriteString(c.w, line); werr != nil {
-			c.Close()
-			return n, werr
-		}
-		n += len(chunk)
+	n, err = c.w.Write(b)
+	if err != nil {
+		c.Close()
+		return n, err
 	}
 	if c.flusher != nil {
 		c.flusher.Flush()
@@ -279,37 +246,6 @@ func (c *restClientConn) SetDeadline(t time.Time) error     { return c.readConn.
 func (c *restClientConn) SetReadDeadline(t time.Time) error  { return c.readConn.SetReadDeadline(t) }
 func (c *restClientConn) SetWriteDeadline(t time.Time) error { return nil }
 
-// ── SSE helpers ──────────────────────────────────────────────────────────────
-
-// restEvent matches the JSON envelope written by restServerConn.Write.
-type restEvent struct {
-	D string `json:"d"`
-}
-
-// readSSEStream parses SSE events with JSON payloads and writes the decoded
-// binary frames to peer. Returns when the body closes.
-func readSSEStream(body io.Reader, peer net.Conn) {
-	scanner := bufio.NewScanner(body)
-	// base64 of a 32 KB frame ≈ 43 KB; 256 KB gives ample headroom.
-	scanner.Buffer(make([]byte, 256*1024), 256*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		var evt restEvent
-		if err := json.Unmarshal([]byte(line[6:]), &evt); err != nil || evt.D == "" {
-			continue
-		}
-		b, err := base64.RawStdEncoding.DecodeString(evt.D)
-		if err != nil || len(b) == 0 {
-			continue
-		}
-		if _, err := peer.Write(b); err != nil {
-			return
-		}
-	}
-}
 
 // ── Client goroutines ────────────────────────────────────────────────────────
 
@@ -349,21 +285,12 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 		path := restUploadPath(method)
 		url := fmt.Sprintf("https://%s%s", serverAddr, path)
 
-		envJSON, err := json.Marshal(map[string]interface{}{
-			"d":  base64.RawStdEncoding.EncodeToString(buf),
-			"id": restRandomID(),
-			"ts": time.Now().Unix(),
-		})
-		if err != nil {
-			continue
-		}
-
-		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(envJSON))
+		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(buf))
 		if err != nil {
 			continue
 		}
 		req.Host = sni
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 		req.Header.Set(headerToken, "Bearer "+token)
 		req.Header.Set(headerSession, sessionHdr)
 		req.Header.Set("X-Transport", "rest")
@@ -518,8 +445,8 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 			return
 		}
 		req.Host = sni
-		req.Header.Set("Accept", "text/event-stream")
-		req.Header.Set("Cache-Control", "no-cache")
+		req.Header.Set("Accept", contentTypeDownload)
+		req.Header.Set("Cache-Control", "no-store")
 		req.Header.Set(headerToken, "Bearer "+token)
 		req.Header.Set(headerSession, sessionHdr)
 		req.Header.Set("X-Transport", "rest")
@@ -538,10 +465,10 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 			return
 		}
 
-		// GET established — signal success, then pipe the SSE body.
+		// GET established — signal success, then pipe the binary body.
 		getReady <- nil
 		defer resp.Body.Close()
-		readSSEStream(resp.Body, conn.readPeer)
+		io.Copy(conn.readPeer, resp.Body)
 		conn.readPeer.Close()
 	}()
 
@@ -570,7 +497,7 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 		return nil, fmt.Errorf("chameleon: frame conn: %w", err)
 	}
 
-	return newShapedConn(fc, sched), nil
+	return fc, nil
 }
 
 // ── Server handlers ──────────────────────────────────────────────────────────
@@ -586,7 +513,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 	token := tokenHdr[7:]
 
-	sessionID, anchor, err := decodeSession(sessionHdr)
+	sessionID, _, err := decodeSession(sessionHdr)
 	if err != nil {
 		serveDecoy(w, r, cfg)
 		return
@@ -622,14 +549,12 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Type", contentTypeDownload)
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	sched := NewWindowScheduler(keys.Behavior, sessionID, anchor)
 
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
@@ -652,10 +577,8 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	shaped := newShapedConn(fc, sched)
-
 	if cfg.OnConn != nil {
-		cfg.OnConn(shaped, userID)
+		cfg.OnConn(fc, userID)
 	}
 
 	<-done
@@ -690,15 +613,8 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	var env restEvent
-	if err := json.NewDecoder(io.LimitReader(r.Body, 700*1024)).Decode(&env); err != nil {
-		r.Body.Close()
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 700*1024))
 	r.Body.Close()
-
-	body, err := base64.RawStdEncoding.DecodeString(env.D)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return

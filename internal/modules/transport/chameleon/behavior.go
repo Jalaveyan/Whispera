@@ -116,7 +116,6 @@ func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte)
 
 type shapedConn struct {
 	net.Conn
-	sched *WindowScheduler
 
 	ch   chan []byte
 	done chan struct{}
@@ -125,12 +124,11 @@ type shapedConn struct {
 	wErr error
 }
 
-func newShapedConn(inner net.Conn, sched *WindowScheduler) *shapedConn {
+func newShapedConn(inner net.Conn) *shapedConn {
 	sc := &shapedConn{
-		Conn:  inner,
-		sched: sched,
-		ch:    make(chan []byte, 512),
-		done:  make(chan struct{}),
+		Conn: inner,
+		ch:   make(chan []byte, 512),
+		done: make(chan struct{}),
 	}
 	go sc.flusher()
 	return sc
