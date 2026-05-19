@@ -1614,11 +1614,19 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		if ganIface == "" {
 			ganIface = "eth0"
 		}
-		ganRunner := mlpkg.NewGANRunner(ganIface, 443)
+		ganPort := serverConfig.Chameleon.GANPort
+		if ganPort == 0 {
+			ganPort = 443
+		}
+		ganMaxPadding := serverConfig.Chameleon.GANMaxPadding
+		if ganMaxPadding == 0 {
+			ganMaxPadding = 4096
+		}
+		ganRunner := mlpkg.NewGANRunner(ganIface, ganPort)
 		if err := ganRunner.Start(); err != nil {
 			log.Printf("[GAN] pcap collector unavailable: %v (continuing without)", err)
 		} else {
-			log.Printf("[GAN] pcap collector started on %s:443", ganIface)
+			log.Printf("[GAN] pcap collector started on %s:%d", ganIface, ganPort)
 		}
 
 		cCfg := &chameleon.Config{
@@ -1628,10 +1636,9 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 					SizeMean: sizeMean,
 					UpRatio:  upRatio,
 				})
-				// PaddingFrac ∈ [0, 0.5] → PaddingN ∈ [0, 2048] bytes
 				return chameleon.GANAction{
 					SleepMs:  a.SleepMs,
-					PaddingN: int(a.PaddingFrac * 4096),
+					PaddingN: int(a.PaddingFrac * float64(ganMaxPadding)),
 				}
 			},
 			ListenAddr:  serverConfig.Chameleon.ListenAddr,
