@@ -49,7 +49,7 @@ var Version = "2.0.0"
 
 var (
 	configPath       = flag.String("config", "", "Path to configuration file")
-	serverAddr       = flag.String("server", "212.192.246.108:8443", "Server address (host:port)")
+	serverAddr       = flag.String("server", "", "Server address (host:port)")
 	socksAddr        = flag.String("socks", "127.0.0.1:10800", "SOCKS5 listen address for hev-socks5-tunnel")
 	connKey          = flag.String("key", "", "Connection key (whispera://...)")
 	transport        = flag.String("transport", "tcp", "Transport mode: auto|tcp|udp")
@@ -80,6 +80,7 @@ var (
 	subURL           = flag.String("sub-url", "", "Subscription URL for automatic key refresh (checked every 24h)")
 	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
 	weightsURL       = flag.String("weights-url", "", "Server weights URL for warm-start (e.g. https://server:8080/api/ml/weights)")
+	bypassDNS        = flag.String("bypass-dns", "77.88.8.8:53", "DNS server used for bypass resolver (never goes through tunnel)")
 )
 
 // pickServerAddress returns the best server address for the given transport,
@@ -306,13 +307,9 @@ func main() {
 	}
 	lc.Register(hsMod)
 
-	dnsUpstreamAddr := "1.1.1.1:53"
-	if *dnsUpstream != "" {
-		if strings.EqualFold(*dnsUpstream, "system") {
-			dnsUpstreamAddr = ""
-		} else {
-			dnsUpstreamAddr = *dnsUpstream
-		}
+	dnsUpstreamAddr := ""
+	if *dnsUpstream != "" && !strings.EqualFold(*dnsUpstream, "system") {
+		dnsUpstreamAddr = *dnsUpstream
 	}
 	// bypassDNS is a resolver that always dials Yandex DNS (77.88.8.8) directly,
 	// never through the VPN tunnel. Yandex DNS is geo-aware for RU services and
@@ -327,7 +324,7 @@ func main() {
 			d := net.Dialer{Timeout: 5 * time.Second}
 			// Try primary (Yandex), fallback to secondary on error is handled by
 			// the Go resolver automatically when the UDP exchange times out.
-			return d.DialContext(ctx, "udp", "77.88.8.8:53")
+			return d.DialContext(ctx, "udp", *bypassDNS)
 		},
 	}
 

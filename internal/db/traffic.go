@@ -116,10 +116,14 @@ func (db *DB) GetUserTotalStats(ctx context.Context, userID uuid.UUID) (*TotalSt
 }
 
 
-func (db *DB) CleanupOldLogs(ctx context.Context) (int64, error) {
-	result, err := db.pool.Exec(ctx, `
-		DELETE FROM traffic_logs WHERE timestamp < NOW() - INTERVAL '30 days'
-	`)
+func (db *DB) CleanupOldLogs(ctx context.Context, retentionDays int) (int64, error) {
+	if retentionDays <= 0 {
+		retentionDays = 30
+	}
+	result, err := db.pool.Exec(ctx,
+		`DELETE FROM traffic_logs WHERE timestamp < NOW() - ($1 * INTERVAL '1 day')`,
+		retentionDays,
+	)
 	if err != nil {
 		return 0, err
 	}

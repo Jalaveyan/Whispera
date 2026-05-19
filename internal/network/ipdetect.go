@@ -78,15 +78,21 @@ var ipServices = []externalIPService{
 		},
 	},
 	{
-		URL: "https://api.my-ip.io/ip",
+		URL: "https://checkip.amazonaws.com",
 		ParseFunc: func(body []byte) (string, error) {
 			return strings.TrimSpace(string(body)), nil
 		},
 	},
 	{
-		URL: "https://checkip.amazonaws.com",
+		URL: "https://2ip.ru/api/self",
 		ParseFunc: func(body []byte) (string, error) {
-			return strings.TrimSpace(string(body)), nil
+			var result struct {
+				IP string `json:"ip"`
+			}
+			if err := json.Unmarshal(body, &result); err != nil {
+				return strings.TrimSpace(string(body)), nil
+			}
+			return result.IP, nil
 		},
 	},
 }
