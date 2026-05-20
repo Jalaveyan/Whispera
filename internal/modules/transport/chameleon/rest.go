@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	crand "crypto/rand"
@@ -217,17 +218,41 @@ type GANAction struct {
 // GANDecideFunc is called on every write with live flow stats.
 // iatMean — mean inter-write interval (seconds) so far in this session.
 // sizeMean — mean write size (bytes) so far.
-// upRatio — fraction of bytes that were uploads (for server-side always 0).
+// upRatio — fraction of bytes that were uploads (upload/(upload+download)).
 type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
+
+// StreamingBiasGANDecide returns a GANDecideFunc that injects padding bytes into
+// the download stream to maintain the target download/upload ratio.
+// targetRatio = desired download-to-upload ratio (e.g. 10.0 for HLS video streaming).
+// When the observed upRatio is above target, padding nudges the ratio back down.
+func StreamingBiasGANDecide(targetRatio float64) GANDecideFunc {
+	targetUpRatio := 1.0 / (1.0 + targetRatio)
+	return func(_, _, upRatio float64) GANAction {
+		if upRatio <= targetUpRatio*1.5 {
+			return GANAction{}
+		}
+		excess := upRatio - targetUpRatio
+		paddingN := int(excess * 32 * 1024)
+		if paddingN > 32*1024 {
+			paddingN = 32 * 1024
+		}
+		if paddingN < 128 {
+			return GANAction{}
+		}
+		return GANAction{PaddingN: paddingN}
+	}
+}
 
 // ── Server-side session ──────────────────────────────────────────────────────
 
 // restSession is created by the download handler and written to by upload handlers.
 type restSession struct {
-	uploadCh chan []byte
-	segCh    chan segSlot // HLS: sequential segment writers arrive here (buffered 1)
-	closed   chan struct{}
-	secret   []byte
+	uploadCh      chan []byte
+	segCh         chan segSlot // HLS: sequential segment writers arrive here (buffered 1)
+	closed        chan struct{}
+	secret        []byte
+	uploadBytes   int64 // atomic — cumulative upload bytes for upRatio computation
+	downloadBytes int64 // atomic — cumulative download bytes for upRatio computation
 }
 
 // ── Server-side net.Conn ─────────────────────────────────────────────────────
@@ -316,7 +341,13 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 		if c.writeCount > 1 {
 			iatMean = c.iatSum / (c.writeCount - 1)
 		}
-		action := c.ganDecide(iatMean, c.sizeSum/c.writeCount, 0)
+		up := float64(atomic.LoadInt64(&c.sess.uploadBytes))
+		down := float64(atomic.LoadInt64(&c.sess.downloadBytes))
+		upRatio := 0.0
+		if up+down > 0 {
+			upRatio = up / (up + down)
+		}
+		action := c.ganDecide(iatMean, c.sizeSum/c.writeCount, upRatio)
 		if action.SleepMs > 0.5 {
 			time.Sleep(time.Duration(action.SleepMs * float64(time.Millisecond)))
 		}
@@ -324,6 +355,9 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 	}
 
 	n, err = c.w.Write(b)
+	if n > 0 {
+		atomic.AddInt64(&c.sess.downloadBytes, int64(n))
+	}
 	if err != nil {
 		c.Close()
 		return n, err
@@ -757,8 +791,17 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
 
+	decide := cfg.GANDecide
+	if decide == nil {
+		ratio := cfg.AsymBiasRatio
+		if ratio <= 0 {
+			ratio = 5.0 // REST default: streaming API is ~5:1 down:up
+		}
+		decide = StreamingBiasGANDecide(ratio)
+	}
+
 	done := make(chan struct{})
-	conn := newRestServerConn(sess, w, local, remote, func() { close(done) }, cfg.GANDecide)
+	conn := newRestServerConn(sess, w, local, remote, func() { close(done) }, decide)
 
 	// Close conn if the HTTP request context dies (client disconnect).
 	go func() {
@@ -775,9 +818,9 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	// Padding goroutine: inject encrypted random-byte frames on a fixed cadence
-	// to break per-packet size fingerprinting while the tunnel is active.
-	if cfg.GANDecide != nil {
+	// Padding goroutine: inject encrypted random-byte frames to break size
+	// fingerprinting and maintain the target download/upload ratio.
+	if decide != nil {
 		go func() {
 			t := time.NewTicker(200 * time.Millisecond)
 			defer t.Stop()
@@ -786,7 +829,13 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 				case <-done:
 					return
 				case <-t.C:
-					action := cfg.GANDecide(0, 0, 0)
+					up := float64(atomic.LoadInt64(&sess.uploadBytes))
+					down := float64(atomic.LoadInt64(&sess.downloadBytes))
+					upRatio := 0.0
+					if up+down > 0 {
+						upRatio = up / (up + down)
+					}
+					action := decide(0, 0, upRatio)
 					if action.PaddingN > 0 {
 						fc.WritePad(action.PaddingN) //nolint:errcheck
 					}
@@ -860,11 +909,20 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
 
+	decide := cfg.GANDecide
+	if decide == nil {
+		ratio := cfg.AsymBiasRatio
+		if ratio <= 0 {
+			ratio = 10.0 // HLS default: video streaming is ~10:1 down:up
+		}
+		decide = StreamingBiasGANDecide(ratio)
+	}
+
 	done := make(chan struct{})
 	segRouter := newSegmentRouter(sess, keys.Behavior, done)
 
 	// restServerConn handles the Read (upload) side; writes go through segRouter.
-	conn := newRestServerConn(sess, segRouter, local, remote, func() { close(done) }, cfg.GANDecide)
+	conn := newRestServerConn(sess, segRouter, local, remote, func() { close(done) }, decide)
 
 	go func() {
 		select {
@@ -880,7 +938,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	if cfg.GANDecide != nil {
+	if decide != nil {
 		go func() {
 			t := time.NewTicker(200 * time.Millisecond)
 			defer t.Stop()
@@ -889,7 +947,13 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 				case <-done:
 					return
 				case <-t.C:
-					action := cfg.GANDecide(0, 0, 0)
+					up := float64(atomic.LoadInt64(&sess.uploadBytes))
+					down := float64(atomic.LoadInt64(&sess.downloadBytes))
+					upRatio := 0.0
+					if up+down > 0 {
+						upRatio = up / (up + down)
+					}
+					action := decide(0, 0, upRatio)
 					if action.PaddingN > 0 {
 						fc.WritePad(action.PaddingN) //nolint:errcheck
 					}
@@ -996,6 +1060,7 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 
 	if len(body) > 0 {
+		atomic.AddInt64(&sess.uploadBytes, int64(len(body)))
 		select {
 		case sess.uploadCh <- body:
 		case <-sess.closed:

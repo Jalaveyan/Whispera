@@ -258,6 +258,17 @@ func (c *PCAPCollector) parse(sc *bufio.Scanner) {
 		if fa.label == FlowUnknown || len(fa.packets) < 5 {
 			return
 		}
+		// Feed real decoy traffic into the KL reference distribution so
+		// RL agents learn against measured traffic rather than hardcoded estimates.
+		if fa.label == FlowDecoy {
+			for i, p := range fa.packets {
+				iatMs := -1.0
+				if i > 0 {
+					iatMs = (fa.packets[i].ts - fa.packets[i-1].ts) * 1000.0
+				}
+				GlobalFlowObserver.UpdateReference(p.size, iatMs)
+			}
+		}
 		select {
 		case c.out <- LabeledFlow{Features: fa.features(), Label: fa.label}:
 		default:

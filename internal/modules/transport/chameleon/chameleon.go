@@ -81,6 +81,11 @@ type Config struct {
 	// GANDecide optionally shapes download writes to match target traffic profile.
 	GANDecide GANDecideFunc
 
+	// AsymBiasRatio overrides the default download/upload byte ratio target used
+	// by the automatic streaming bias (REST default 5.0, HLS default 10.0).
+	// Leave at 0 to use the defaults. Ignored when GANDecide is also set.
+	AsymBiasRatio float64
+
 	proxy    *decoyProxy
 	sessions sync.Map // server-side: hex(sessionID) → *restSession
 }

@@ -155,6 +155,8 @@ func (a *RLBackoffAgent) RecordOutcome(success bool) {
 		reward = -0.5
 	}
 
+	reward += GlobalFlowObserver.KLReward()
+
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus

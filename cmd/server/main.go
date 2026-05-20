@@ -1231,6 +1231,23 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		return err
 	}
 
+	if geo := serverConfig.Routing.Geo; geo.Enabled {
+		dir := "/var/lib/whispera/geo"
+		if geo.GeoIPFile != "" {
+			if err := routerEngine.LoadGeoIPFile(geo.GeoIPFile); err != nil {
+				log.Printf("[GeoIP] load %s: %v", geo.GeoIPFile, err)
+			}
+		} else if geo.GeoSiteFile != "" {
+			if err := routerEngine.LoadGeoSiteFile(geo.GeoSiteFile); err != nil {
+				log.Printf("[GeoSite] load %s: %v", geo.GeoSiteFile, err)
+			}
+		} else {
+			if err := routerEngine.LoadGeoData(dir); err != nil {
+				log.Printf("[GeoIP] auto-load from %s: %v", dir, err)
+			}
+		}
+	}
+
 	obfuscatorEngine, err := obfuscator.New(&obfuscator.Config{
 		DefaultProfile: serverConfig.Obfuscation.Profile,
 		ThreatLevel:    serverConfig.Obfuscation.ThreatLevel,
@@ -1314,11 +1331,12 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		return err
 	}
 	relayServer, err := relay.New(&relay.Config{
-		MaxStreams:    serverConfig.Relay.MaxStreams,
-		EnableTCP:     serverConfig.Relay.EnableTCP,
-		EnableUDP:     serverConfig.Relay.EnableUDP,
-		Debug:         serverConfig.Relay.Debug || *debug,
-		UpstreamProxy: serverConfig.Relay.UpstreamProxy,
+		MaxStreams:      serverConfig.Relay.MaxStreams,
+		EnableTCP:       serverConfig.Relay.EnableTCP,
+		EnableUDP:       serverConfig.Relay.EnableUDP,
+		Debug:           serverConfig.Relay.Debug || *debug,
+		UpstreamProxy:   serverConfig.Relay.UpstreamProxy,
+		PaddingMaxSize:  serverConfig.Obfuscation.Padding.MaxSize,
 	})
 	if err != nil {
 		return err
@@ -1629,6 +1647,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			log.Printf("[GAN] pcap collector started on %s:%d", ganIface, ganPort)
 		}
 
+		hlsBias := chameleon.StreamingBiasGANDecide(10.0)
 		cCfg := &chameleon.Config{
 			GANDecide: func(iatMean, sizeMean, upRatio float64) chameleon.GANAction {
 				a := ganRunner.GAN().Decide(mlpkg.FlowFeatures{
@@ -1636,9 +1655,15 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 					SizeMean: sizeMean,
 					UpRatio:  upRatio,
 				})
+				ganPad := int(a.PaddingFrac * float64(ganMaxPadding))
+				biasPad := hlsBias(iatMean, sizeMean, upRatio).PaddingN
+				pad := ganPad
+				if biasPad > pad {
+					pad = biasPad
+				}
 				return chameleon.GANAction{
 					SleepMs:  a.SleepMs,
-					PaddingN: int(a.PaddingFrac * float64(ganMaxPadding)),
+					PaddingN: pad,
 				}
 			},
 			ListenAddr:  serverConfig.Chameleon.ListenAddr,

@@ -302,6 +302,8 @@ type Config struct {
 
 	QualityThresholdRTT time.Duration
 	QualityMissedKeepalives int
+
+	PaddingMaxSize int
 }
 
 func DefaultConfig() *Config {
@@ -1014,7 +1016,11 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		m.tlsAgent.RecordOutcome(true)
 	}
 
-	paddedConn := mux.NewPaddedConn(conn, 128)
+	padMax := m.config.PaddingMaxSize
+	if padMax <= 0 {
+		padMax = 128
+	}
+	paddedConn := mux.NewPaddedConn(conn, padMax)
 	log.Warn("[dialManagedConn:%s] mux.Client starting", id)
 	muxSess, err := mux.Client(paddedConn, m.getMuxConfig())
 	if err != nil {
@@ -2639,6 +2645,9 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 }
 
 func (m *Manager) Send(data []byte) error {
+	if len(data) > 0 {
+		mlpkg.GlobalFlowObserver.RecordPacket(len(data))
+	}
 	if limitKB := atomic.LoadInt32(&m.rateLimitKB); limitKB > 0 && len(data) > 0 {
 		limitBPS := int64(limitKB) * 1024
 		sleepNs := int64(len(data)) * int64(time.Second) / limitBPS

@@ -476,6 +476,7 @@ func (s *Selector) Dial(ctx context.Context, addr string, netCtx *NetworkContext
 	return conn, dialErr
 }
 
+
 func (s *Selector) UpdateMetrics(t interfaces.TransportType, latency time.Duration, bandwidth float64, packetLoss float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

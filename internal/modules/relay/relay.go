@@ -62,6 +62,7 @@ type Config struct {
 	SafeMode             bool
 	UpstreamProxy        string
 	MaxConcurrentStreams int
+	PaddingMaxSize       int
 }
 
 func DefaultConfig() *Config {
@@ -377,7 +378,11 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		MaxConcurrentStreams: s.config.MaxConcurrentStreams,
 	}
 
-	paddedConn := mux.NewPaddedConn(conn, 128)
+	padMax := s.config.PaddingMaxSize
+	if padMax <= 0 {
+		padMax = 128
+	}
+	paddedConn := mux.NewPaddedConn(conn, padMax)
 
 	session, err := mux.Server(paddedConn, muxCfg)
 	if err != nil {

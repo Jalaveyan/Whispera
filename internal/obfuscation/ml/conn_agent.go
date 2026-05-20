@@ -173,7 +173,7 @@ func (a *RLConnAgent) RecordOutcome(quality float64) {
 	}
 
 	connCountNorm := state[0]
-	reward := quality - 0.05*connCountNorm
+	reward := quality - 0.05*connCountNorm + GlobalFlowObserver.KLReward()
 
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)

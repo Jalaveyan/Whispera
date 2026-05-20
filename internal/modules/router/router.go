@@ -14,6 +14,7 @@ import (
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
+	"whispera/internal/routing"
 )
 
 func init() {
@@ -136,6 +137,9 @@ type Engine struct {
 	routeMisses uint64
 	cacheHits   uint64
 	cacheMisses uint64
+
+	geoMu  sync.RWMutex
+	geoRtr *routing.Router
 }
 
 func New(cfg *Config) (*Engine, error) {
@@ -552,6 +556,33 @@ func (e *Engine) GetStats() Stats {
 		CacheHits:       atomic.LoadUint64(&e.cacheHits),
 		CacheMisses:     atomic.LoadUint64(&e.cacheMisses),
 	}
+}
+
+func (e *Engine) LoadGeoIPFile(path string) error {
+	e.geoMu.Lock()
+	defer e.geoMu.Unlock()
+	if e.geoRtr == nil {
+		e.geoRtr = routing.NewRouter()
+	}
+	return e.geoRtr.LoadGeoIPFile(path)
+}
+
+func (e *Engine) LoadGeoSiteFile(path string) error {
+	e.geoMu.Lock()
+	defer e.geoMu.Unlock()
+	if e.geoRtr == nil {
+		e.geoRtr = routing.NewRouter()
+	}
+	return e.geoRtr.LoadGeoSiteFile(path)
+}
+
+func (e *Engine) LoadGeoData(dir string) error {
+	e.geoMu.Lock()
+	defer e.geoMu.Unlock()
+	if e.geoRtr == nil {
+		e.geoRtr = routing.NewRouter()
+	}
+	return e.geoRtr.LoadGeoData(dir)
 }
 
 func Factory(cfg interface{}) (interfaces.Module, error) {

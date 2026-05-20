@@ -166,6 +166,7 @@ func (a *RLServerAgent) RecordOutcome(success bool, latencyMs float64) {
 	} else {
 		reward = -1.0
 	}
+	reward += GlobalFlowObserver.KLReward()
 
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)

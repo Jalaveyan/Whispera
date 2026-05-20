@@ -139,7 +139,7 @@ func (a *RLKeepaliveAgent) RecordOutcome(quality float64) {
 	}
 
 	intervalPenalty := float64(action) * 0.03
-	reward := quality - intervalPenalty
+	reward := quality - intervalPenalty + GlobalFlowObserver.KLReward()
 
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)

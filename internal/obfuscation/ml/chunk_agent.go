@@ -133,7 +133,7 @@ func (a *RLChunkAgent) RecordOutcome(quality float64) {
 	}
 
 	sizePenalty := float64(action) * 0.02
-	reward := quality - sizePenalty
+	reward := quality - sizePenalty + GlobalFlowObserver.KLReward()
 
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)

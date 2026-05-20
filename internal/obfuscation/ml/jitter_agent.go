@@ -143,7 +143,7 @@ func (a *RLJitterAgent) RecordOutcome(quality float64) {
 	}
 
 	jitterCost := float64(action) * 0.05
-	reward := quality - jitterCost
+	reward := quality - jitterCost + GlobalFlowObserver.KLReward()
 
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)

@@ -160,6 +160,7 @@ func (a *RLTLSAgent) RecordOutcome(success bool) {
 	if success {
 		reward = 1.0
 	}
+	reward += GlobalFlowObserver.KLReward()
 	profile := TLSProfiles[action]
 	if profile == "" {
 		profile = "go-default"
