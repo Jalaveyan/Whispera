@@ -1020,12 +1020,14 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *Config) {
 func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	sessCookie, err := r.Cookie(sessionCookie)
 	if err != nil {
+		log.Printf("chameleon: upload from %s: no session cookie (400)", r.RemoteAddr)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	sessionID, _, err := decodeSession(sessCookie.Value)
 	if err != nil {
+		log.Printf("chameleon: upload from %s: bad cookie (400)", r.RemoteAddr)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -1043,6 +1045,7 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if sess == nil {
+		log.Printf("chameleon: upload from %s: session %s not found (503)", r.RemoteAddr, sessionKey[:8])
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
