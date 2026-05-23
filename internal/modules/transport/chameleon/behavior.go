@@ -107,8 +107,8 @@ func DeriveSegmentSize(behaviorKey []byte, segIdx uint64) int {
 		panic("chameleon seg size: " + err.Error())
 	}
 	v := binary.LittleEndian.Uint32(b[:])
-	const minSeg = 256 * 1024  // ~1 Mbps × 2 s
-	const spanSeg = 1280 * 1024 // range up to ~1.5 MB
+	const minSeg = 1024 * 1024   // 1 MB minimum
+	const spanSeg = 3 * 1024 * 1024 // range up to 4 MB
 	return minSeg + int(v)%spanSeg
 }
 

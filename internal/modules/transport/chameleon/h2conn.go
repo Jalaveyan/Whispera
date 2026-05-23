@@ -36,7 +36,7 @@ func newH2ServerConn(body io.ReadCloser, w io.Writer, flush func(), local, remot
 	go func() {
 		defer readPeer.Close()
 		defer body.Close()
-		io.Copy(readPeer, body)
+		io.CopyBuffer(readPeer, body, make([]byte, 256<<10))
 	}()
 	return c
 }
@@ -178,7 +178,7 @@ func (c *pipelinedConn) deliver(body io.ReadCloser) bool {
 		go func() {
 			defer c.readPeer.Close()
 			defer body.Close()
-			io.Copy(c.readPeer, body)
+			io.CopyBuffer(c.readPeer, body, make([]byte, 256<<10))
 		}()
 	})
 	return ran

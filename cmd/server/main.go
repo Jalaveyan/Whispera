@@ -1688,7 +1688,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				mlpkg.FlowRegistry.Register(conn.RemoteAddr().String(), mlpkg.FlowTunnel)
 				if globalRelay != nil {
 					go func() {
-						globalRelay.ServeTunnel(conn, false)
+						globalRelay.ServeTunnelRaw(conn, false)
 						mlpkg.FlowRegistry.Delete(conn.RemoteAddr().String())
 					}()
 				} else {

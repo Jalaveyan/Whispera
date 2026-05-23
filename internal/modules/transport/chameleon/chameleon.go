@@ -135,9 +135,10 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
 
 	h2Transport := &http2.Transport{
-		ReadIdleTimeout: 0,
+		ReadIdleTimeout:           0,
 		MaxDecoderHeaderTableSize: 65536,
 		MaxHeaderListSize:         262144,
+		DisableCompression:        true,
 		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 			d := &net.Dialer{Timeout: 10 * time.Second}
 			rawConn, err := d.DialContext(ctx, network, addr)

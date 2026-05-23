@@ -85,16 +85,17 @@ func counterNonce(seq uint64) [12]byte {
 
 // writeFrame encrypts and sends [typ][payload] as one frame.
 func (fc *FrameConn) writeFrame(typ byte, p []byte) error {
-	plain := make([]byte, 1+len(p))
-	plain[0] = typ
-	copy(plain[1:], p)
 	overhead := fc.sendAEAD.Overhead()
-	frame := make([]byte, 4+len(plain)+overhead)
-	binary.BigEndian.PutUint32(frame, uint32(len(plain)+overhead))
+	plainLen := 1 + len(p)
+	buf := make([]byte, 4+plainLen+overhead)
+	binary.BigEndian.PutUint32(buf[:4], uint32(plainLen+overhead))
+	buf[4] = typ
+	copy(buf[5:], p)
 	nonce := counterNonce(fc.sendSeq)
-	fc.sendAEAD.Seal(frame[4:4], nonce[:], plain, nil)
+	// In-place seal: chacha20poly1305 supports aliased src/dst.
+	fc.sendAEAD.Seal(buf[4:4], nonce[:], buf[4:4+plainLen], nil)
 	fc.sendSeq++
-	_, err := fc.Conn.Write(frame)
+	_, err := fc.Conn.Write(buf)
 	return err
 }
 

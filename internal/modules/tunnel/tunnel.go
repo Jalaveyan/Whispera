@@ -1016,13 +1016,18 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		m.tlsAgent.RecordOutcome(true)
 	}
 
-	padMax := m.config.PaddingMaxSize
-	if padMax <= 0 {
-		padMax = 128
+	var muxConn net.Conn
+	if m.config.EnableChameleon {
+		muxConn = conn
+	} else {
+		padMax := m.config.PaddingMaxSize
+		if padMax <= 0 {
+			padMax = 128
+		}
+		muxConn = mux.NewPaddedConn(conn, padMax)
 	}
-	paddedConn := mux.NewPaddedConn(conn, padMax)
 	log.Warn("[dialManagedConn:%s] mux.Client starting", id)
-	muxSess, err := mux.Client(paddedConn, m.getMuxConfig())
+	muxSess, err := mux.Client(muxConn, m.getMuxConfig())
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("mux: %w", err)

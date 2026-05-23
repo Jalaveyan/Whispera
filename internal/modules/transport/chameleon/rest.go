@@ -471,7 +471,7 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 		// Sparse traffic (pings, DNS) sends immediately; bulk traffic batches
 		// naturally because the channel is already full.
 	drain:
-		for len(buf) < 32*1024 {
+		for len(buf) < 512*1024 {
 			select {
 			case data := <-uploadCh:
 				buf = append(buf, data...)
@@ -594,6 +594,7 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 		ReadIdleTimeout:           0,
 		MaxDecoderHeaderTableSize: 65536,
 		MaxHeaderListSize:         262144,
+		DisableCompression:        true,
 		DialTLSContext: func(dialCtx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 			d := &net.Dialer{Timeout: 10 * time.Second}
 			rawConn, err := d.DialContext(dialCtx, network, addr)
@@ -763,7 +764,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	// Store session before sending 200 so that upload handlers can find it
 	// immediately after the client receives the OK response.
 	sess := &restSession{
-		uploadCh: make(chan []byte, 128),
+		uploadCh: make(chan []byte, 512),
 		closed:   make(chan struct{}),
 		secret:   secret,
 	}
@@ -883,8 +884,8 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	log.Printf("chameleon: HLS authenticated user=%s from %s", userID, r.RemoteAddr)
 
 	sess := &restSession{
-		uploadCh: make(chan []byte, 128),
-		segCh:    make(chan segSlot, 1), // buffered 1 for pre-fetch overlap
+		uploadCh: make(chan []byte, 512),
+		segCh:    make(chan segSlot, 1),
 		closed:   make(chan struct{}),
 		secret:   secret,
 	}

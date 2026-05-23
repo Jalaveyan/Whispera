@@ -358,6 +358,14 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 }
 
 func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
+	s.serveTunnel(conn, streamObf, true)
+}
+
+func (s *Server) ServeTunnelRaw(conn net.Conn, streamObf bool) {
+	s.serveTunnel(conn, streamObf, false)
+}
+
+func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	defer conn.Close()
 	clientID := conn.RemoteAddr().String()
 	s.log.Info("Starting tunnel session for %s", clientID)
@@ -378,13 +386,18 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		MaxConcurrentStreams: s.config.MaxConcurrentStreams,
 	}
 
-	padMax := s.config.PaddingMaxSize
-	if padMax <= 0 {
-		padMax = 128
+	var muxConn net.Conn
+	if usePadding {
+		padMax := s.config.PaddingMaxSize
+		if padMax <= 0 {
+			padMax = 128
+		}
+		muxConn = mux.NewPaddedConn(conn, padMax)
+	} else {
+		muxConn = conn
 	}
-	paddedConn := mux.NewPaddedConn(conn, padMax)
 
-	session, err := mux.Server(paddedConn, muxCfg)
+	session, err := mux.Server(muxConn, muxCfg)
 	if err != nil {
 		s.log.Error("Failed to create SMUX session for %s: %v", clientID, err)
 		return
