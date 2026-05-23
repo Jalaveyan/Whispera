@@ -100,7 +100,7 @@ func (f *FlowObserver) RecordPacket(sizeBytes int) {
 	}
 	total := atomic.AddInt64(&f.total, 1)
 	// Rolling: reset counters every klDecayPerReset packets so the distribution
-	// tracks recent behaviour rather than the entire session.
+	// tracks recent behavior rather than the entire session.
 	if total%klDecayPerReset == 0 {
 		f.sizeCounts = [7]int64{}
 		f.iatCounts = [5]int64{}

@@ -21,7 +21,7 @@ import (
 // Training loop:
 //   1. Server receives LabeledFlow from PCAPCollector
 //   2. D is trained with BCE loss
-//   3. G is trained to maximise D(G(tunnel_features))
+//   3. G is trained to maximize D(G(tunnel_features))
 type TrafficGAN struct {
 	mu sync.Mutex
 
@@ -88,7 +88,7 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 	}
 
 	// ── Generator step (only for tunnel flows) ───────────────────────────────
-	// Generator loss: maximise D(x) → minimise -log(D(x)) → gradient = -dD/dx
+	// Generator loss: maximize D(x) → minimize -log(D(x)) → gradient = -dD/dx
 	if lf.Label != FlowTunnel {
 		g.trainCount++
 		return

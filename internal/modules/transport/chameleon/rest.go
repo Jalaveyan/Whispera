@@ -146,17 +146,6 @@ func (r *segmentRouter) Write(b []byte) (int, error) {
 
 // ── REST path tables ────────────────────────────────────────────────────────
 
-var restDownloadPaths = []string{
-	"/api/v1/events",
-	"/api/v2/events",
-	"/api/v1/stream",
-	"/api/v2/stream",
-	"/api/v1/notifications",
-	"/api/v2/feed",
-	"/api/v1/subscribe",
-	"/api/v2/updates",
-}
-
 var restUploadPathsByMethod = map[string][]string{
 	http.MethodPost: {
 		"/api/v1/messages",
@@ -193,11 +182,6 @@ var restDecoyDeletePaths = []string{
 	"/api/v1/temp",
 	"/api/v2/temp",
 }
-
-func restDownloadPath(seed uint64) string {
-	return restDownloadPaths[int(seed>>32)%len(restDownloadPaths)]
-}
-
 
 func restUploadPath(method string) string {
 	paths := restUploadPathsByMethod[method]

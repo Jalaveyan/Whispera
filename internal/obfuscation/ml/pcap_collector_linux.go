@@ -4,6 +4,7 @@ package ml
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"math"
 	"net"
@@ -218,26 +219,25 @@ func NewPCAPCollector(iface string, port int) *PCAPCollector {
 func (c *PCAPCollector) Out() <-chan LabeledFlow { return c.out }
 
 func (c *PCAPCollector) Start() error {
-	// tcpdump -i <iface> -l -n -q -tt port <port>
-	// -tt: absolute timestamps (epoch.microseconds)
-	// -q: quiet (less headers)
-	// -n: no DNS
-	cmd := exec.Command("tcpdump",
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "tcpdump",
 		"-i", c.iface,
 		"-l", "-n", "-q", "-tt",
 		fmt.Sprintf("port %d or port 80", c.port),
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		return fmt.Errorf("pcap: stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return fmt.Errorf("pcap: start tcpdump: %w", err)
 	}
 
 	go func() {
 		<-c.stopCh
-		cmd.Process.Kill()
+		cancel()
 	}()
 
 	go c.parse(bufio.NewScanner(stdout))
