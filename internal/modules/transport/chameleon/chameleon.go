@@ -358,7 +358,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		serveDecoy(w, r, cfg)
 		return
 	}
-
 }
 
 func DeriveSecret(psk []byte) []byte {
