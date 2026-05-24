@@ -482,15 +482,14 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 		applyBrowserHeaders(req, origin)
 		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionHdr})
 
-		resp, err := client.Do(req)
-		if err != nil {
-			if ctx.Err() != nil {
+		go func(req *http.Request) {
+			resp, err := client.Do(req)
+			if err != nil {
 				return
 			}
-			continue
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}(req)
 	}
 }
 
@@ -1023,23 +1022,20 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"ok":true}`))
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
 	if len(body) > 0 {
 		atomic.AddInt64(&sess.uploadBytes, int64(len(body)))
 		select {
 		case sess.uploadCh <- body:
 		case <-sess.closed:
-			w.WriteHeader(http.StatusGone)
-			return
 		case <-r.Context().Done():
-			w.WriteHeader(http.StatusRequestTimeout)
-			return
 		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte(`{"ok":true}`)); err != nil {
-		log.Printf("chameleon: REST upload response: %v", err)
 	}
 }
 
