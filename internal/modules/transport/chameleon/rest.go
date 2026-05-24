@@ -482,14 +482,15 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 		applyBrowserHeaders(req, origin)
 		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionHdr})
 
-		go func(req *http.Request) {
-			resp, err := client.Do(req)
-			if err != nil {
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
 				return
 			}
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}(req)
+			continue
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
 }
 
