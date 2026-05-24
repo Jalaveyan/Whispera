@@ -1,30 +1,28 @@
-//go:build linux
+//go:build linux && cgo
 
 package ml
 
 import (
-	"bufio"
-	"context"
 	"fmt"
 	"math"
 	"net"
-	"os/exec"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
 )
 
-// FlowLabel identifies whether a TCP flow is a VPN tunnel or a real browser (decoy).
 type FlowLabel int
 
 const (
 	FlowUnknown FlowLabel = iota
-	FlowTunnel            // VPN session — negative example for discriminator
-	FlowDecoy             // real browser via decoy_origin — positive example
+	FlowTunnel
+	FlowDecoy
 )
 
-// pcapFlowKey is the canonical 5-tuple key (sorted so client→server == server→client).
 func pcapFlowKey(srcIP, dstIP string, srcPort, dstPort int) string {
 	a := fmt.Sprintf("%s:%d", srcIP, srcPort)
 	b := fmt.Sprintf("%s:%d", dstIP, dstPort)
@@ -34,7 +32,6 @@ func pcapFlowKey(srcIP, dstIP string, srcPort, dstPort int) string {
 	return b + "-" + a
 }
 
-// FlowRegistry lets the application tag connections before pcap sees them.
 var FlowRegistry = &flowRegistry{m: make(map[string]FlowLabel)}
 
 type flowRegistry struct {
@@ -42,7 +39,6 @@ type flowRegistry struct {
 	m  map[string]FlowLabel
 }
 
-// Register labels an incoming tunnel connection (server listens on :443, remote is client).
 func (r *flowRegistry) Register(remoteAddr string, label FlowLabel) {
 	host, portStr, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
@@ -55,8 +51,6 @@ func (r *flowRegistry) Register(remoteAddr string, label FlowLabel) {
 	r.mu.Unlock()
 }
 
-// RegisterConn labels an arbitrary connection by its actual local and remote addresses.
-// Used for outbound connections (e.g. browser simulator → Russian CDN).
 func (r *flowRegistry) RegisterConn(local, remote net.Addr, label FlowLabel) {
 	lh, lp, err := net.SplitHostPort(local.String())
 	if err != nil {
@@ -92,7 +86,6 @@ func (r *flowRegistry) Delete(remoteAddr string) {
 	r.mu.Unlock()
 }
 
-// DeleteConn removes the registry entry for an outbound connection.
 func (r *flowRegistry) DeleteConn(local, remote net.Addr) {
 	lh, lp, err := net.SplitHostPort(local.String())
 	if err != nil {
@@ -110,24 +103,13 @@ func (r *flowRegistry) DeleteConn(local, remote net.Addr) {
 	r.mu.Unlock()
 }
 
-// rawPacket is one line parsed from tcpdump output.
-type rawPacket struct {
-	ts      float64
-	srcIP   string
-	srcPort int
-	dstIP   string
-	dstPort int
-	size    int
-}
-
-// flowAccum accumulates per-flow stats until the flow is complete.
 type flowAccum struct {
 	key     string
 	label   FlowLabel
 	packets []struct {
 		ts   float64
 		size int
-		up   bool // client→server direction
+		up   bool
 	}
 	firstSeen float64
 }
@@ -148,18 +130,16 @@ func (fa *flowAccum) features() FlowFeatures {
 			downSizes = append(downSizes, float64(p.size))
 		}
 	}
-
 	allSizes := make([]float64, len(fa.packets))
 	for i, p := range fa.packets {
 		allSizes[i] = float64(p.size)
 	}
-
+	_ = downSizes
 	dur := fa.packets[len(fa.packets)-1].ts - fa.firstSeen
 	upRatio := 0.0
 	if len(fa.packets) > 0 {
 		upRatio = float64(len(upSizes)) / float64(len(fa.packets))
 	}
-
 	return FlowFeatures{
 		IATMean:     mean(iats),
 		IATStd:      stddev(iats),
@@ -174,12 +154,11 @@ func (fa *flowAccum) features() FlowFeatures {
 	}
 }
 
-// FlowFeatures is the feature vector fed to the GAN discriminator.
 type FlowFeatures struct {
-	IATMean, IATStd, IATP90      float64
-	SizeMean, SizeStd, SizeP90   float64
-	UpRatio, BurstSize           float64
-	Duration, PacketCount        float64
+	IATMean, IATStd, IATP90    float64
+	SizeMean, SizeStd, SizeP90 float64
+	UpRatio, BurstSize         float64
+	Duration, PacketCount      float64
 }
 
 func (f FlowFeatures) Vec() []float64 {
@@ -193,18 +172,16 @@ func (f FlowFeatures) Vec() []float64 {
 
 const FlowFeatureSize = 10
 
-// PCAPCollector captures packets via tcpdump and emits labeled FlowFeatures.
+type LabeledFlow struct {
+	Features FlowFeatures
+	Label    FlowLabel
+}
+
 type PCAPCollector struct {
 	iface  string
 	port   int
 	out    chan LabeledFlow
 	stopCh chan struct{}
-}
-
-// LabeledFlow is a completed flow with its feature vector and label.
-type LabeledFlow struct {
-	Features FlowFeatures
-	Label    FlowLabel // FlowTunnel or FlowDecoy
 }
 
 func NewPCAPCollector(iface string, port int) *PCAPCollector {
@@ -217,39 +194,32 @@ func NewPCAPCollector(iface string, port int) *PCAPCollector {
 }
 
 func (c *PCAPCollector) Out() <-chan LabeledFlow { return c.out }
+func (c *PCAPCollector) Stop()                   { close(c.stopCh) }
 
 func (c *PCAPCollector) Start() error {
-	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, "tcpdump",
-		"-i", c.iface,
-		"-l", "-n", "-q", "-tt",
-		fmt.Sprintf("port %d or port 80", c.port),
-	)
-	stdout, err := cmd.StdoutPipe()
+	handle, err := pcap.OpenLive(c.iface, 65535, true, pcap.BlockForever)
 	if err != nil {
-		cancel()
-		return fmt.Errorf("pcap: stdout pipe: %w", err)
+		return fmt.Errorf("pcap: open %s: %w", c.iface, err)
 	}
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return fmt.Errorf("pcap: start tcpdump: %w", err)
+	filter := fmt.Sprintf("tcp and (port %d or port 80)", c.port)
+	if err := handle.SetBPFFilter(filter); err != nil {
+		handle.Close()
+		return fmt.Errorf("pcap: bpf filter: %w", err)
 	}
 
 	go func() {
 		<-c.stopCh
-		cancel()
+		handle.Close()
 	}()
 
-	go c.parse(bufio.NewScanner(stdout))
+	go c.capture(handle)
 	return nil
 }
 
-func (c *PCAPCollector) Stop() { close(c.stopCh) }
+func (c *PCAPCollector) capture(handle *pcap.Handle) {
+	src := gopacket.NewPacketSource(handle, handle.LinkType())
+	src.NoCopy = true
 
-// parse reads tcpdump output lines and emits labeled flows.
-// Example line:
-//   1716057600.123456 IP 1.2.3.4.54321 > 5.6.7.8.443: tcp 1234
-func (c *PCAPCollector) parse(sc *bufio.Scanner) {
 	flows := make(map[string]*flowAccum)
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -258,8 +228,6 @@ func (c *PCAPCollector) parse(sc *bufio.Scanner) {
 		if fa.label == FlowUnknown || len(fa.packets) < 5 {
 			return
 		}
-		// Feed real decoy traffic into the KL reference distribution so
-		// RL agents learn against measured traffic rather than hardcoded estimates.
 		if fa.label == FlowDecoy {
 			for i, p := range fa.packets {
 				iatMs := -1.0
@@ -276,99 +244,66 @@ func (c *PCAPCollector) parse(sc *bufio.Scanner) {
 		delete(flows, key)
 	}
 
-	for sc.Scan() {
-		line := sc.Text()
-		pkt, ok := parseTcpdumpLine(line)
-		if !ok {
+	for packet := range src.Packets() {
+		meta := packet.Metadata()
+		ts := float64(meta.Timestamp.UnixNano()) / 1e9
+		size := meta.CaptureLength
+
+		var srcIP, dstIP string
+		var srcPort, dstPort int
+
+		if ip4 := packet.Layer(layers.LayerTypeIPv4); ip4 != nil {
+			l := ip4.(*layers.IPv4)
+			srcIP = l.SrcIP.String()
+			dstIP = l.DstIP.String()
+		} else if ip6 := packet.Layer(layers.LayerTypeIPv6); ip6 != nil {
+			l := ip6.(*layers.IPv6)
+			srcIP = l.SrcIP.String()
+			dstIP = l.DstIP.String()
+		} else {
 			continue
 		}
 
-		key := pcapFlowKey(pkt.srcIP, pkt.dstIP, pkt.srcPort, pkt.dstPort)
+		tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
+		if !ok {
+			continue
+		}
+		srcPort = int(tcp.SrcPort)
+		dstPort = int(tcp.DstPort)
+
+		key := pcapFlowKey(srcIP, dstIP, srcPort, dstPort)
 		fa, exists := flows[key]
 		if !exists {
 			label := FlowRegistry.Get(key)
-			// port 80 = decoy_origin traffic
-			if pkt.dstPort == 80 || pkt.srcPort == 80 {
+			if dstPort == 80 || srcPort == 80 {
 				label = FlowDecoy
 			}
-			fa = &flowAccum{key: key, label: label, firstSeen: pkt.ts}
+			fa = &flowAccum{key: key, label: label, firstSeen: ts}
 			flows[key] = fa
 		}
 
-		up := pkt.dstPort == c.port || pkt.dstPort == 80
+		up := dstPort == c.port || dstPort == 80
 		fa.packets = append(fa.packets, struct {
 			ts   float64
 			size int
 			up   bool
-		}{pkt.ts, pkt.size, up})
+		}{ts, size, up})
 
-		// Emit after 200 packets or 30s of data.
 		if len(fa.packets) >= 200 {
 			emit(key, fa)
 		}
 
-		// Periodic cleanup of stale flows.
 		select {
 		case <-ticker.C:
-			now := time.Now().UnixNano()
-			_ = now
 			for k, f := range flows {
-				if len(f.packets) > 0 {
-					age := pkt.ts - f.firstSeen
-					if age > 30 {
-						emit(k, f)
-					}
+				if len(f.packets) > 0 && ts-f.firstSeen > 30 {
+					emit(k, f)
 				}
 			}
 		default:
 		}
 	}
 }
-
-// parseTcpdumpLine parses one line of tcpdump -q -tt -n output.
-func parseTcpdumpLine(line string) (rawPacket, bool) {
-	// 1716057600.123456 IP 1.2.3.4.54321 > 5.6.7.8.443: tcp 1234
-	parts := strings.Fields(line)
-	if len(parts) < 7 {
-		return rawPacket{}, false
-	}
-	ts, err := strconv.ParseFloat(parts[0], 64)
-	if err != nil {
-		return rawPacket{}, false
-	}
-	if parts[1] != "IP" {
-		return rawPacket{}, false
-	}
-	src, ok := parseAddr(parts[2])
-	if !ok {
-		return rawPacket{}, false
-	}
-	// parts[3] == ">"
-	dst, ok := parseAddr(strings.TrimSuffix(parts[4], ":"))
-	if !ok {
-		return rawPacket{}, false
-	}
-	size := 0
-	if len(parts) >= 7 {
-		size, _ = strconv.Atoi(parts[len(parts)-1])
-	}
-	return rawPacket{ts: ts, srcIP: src[0].(string), srcPort: src[1].(int), dstIP: dst[0].(string), dstPort: dst[1].(int), size: size}, true
-}
-
-// parseAddr splits "1.2.3.4.54321" → ("1.2.3.4", 54321).
-func parseAddr(s string) ([2]interface{}, bool) {
-	idx := strings.LastIndex(s, ".")
-	if idx < 0 {
-		return [2]interface{}{}, false
-	}
-	port, err := strconv.Atoi(s[idx+1:])
-	if err != nil {
-		return [2]interface{}{}, false
-	}
-	return [2]interface{}{s[:idx], port}, true
-}
-
-// ── stats helpers ────────────────────────────────────────────────────────────
 
 func mean(v []float64) float64 {
 	if len(v) == 0 {
@@ -400,7 +335,6 @@ func percentile(v []float64, p float64) float64 {
 	}
 	sorted := make([]float64, len(v))
 	copy(sorted, v)
-	// simple insertion sort for small slices
 	for i := 1; i < len(sorted); i++ {
 		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
 			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
@@ -417,7 +351,7 @@ func maxBurst(packets []struct {
 }) int {
 	max, cur := 0, 0
 	for i := 1; i < len(packets); i++ {
-		if packets[i].ts-packets[i-1].ts < 0.005 { // 5ms window
+		if packets[i].ts-packets[i-1].ts < 0.005 {
 			cur++
 		} else {
 			if cur > max {
@@ -431,3 +365,4 @@ func maxBurst(packets []struct {
 	}
 	return max
 }
+

@@ -77,24 +77,38 @@ jobs:
           - goos: linux
             goarch: amd64
             asset_name: whispera-server-linux-amd64
+            cc: gcc
           - goos: linux
             goarch: arm64
             asset_name: whispera-server-linux-arm64
+            cc: aarch64-linux-gnu-gcc
 
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
+
       - uses: actions/setup-go@v4
         with:
           go-version: '1.26.x'
+
+      - name: Install libpcap (amd64)
+        if: matrix.goarch == 'amd64'
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+
+      - name: Install libpcap (arm64 cross)
+        if: matrix.goarch == 'arm64'
+        run: |
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libpcap-dev:arm64
 
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
+          CGO_ENABLED: 1
+          CC: ${{ matrix.cc }}
           VERSION: ${{ needs.prepare.outputs.version }}
           BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
           GIT_COMMIT: ${{ needs.prepare.outputs.git_commit }}
