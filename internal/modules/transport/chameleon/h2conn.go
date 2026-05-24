@@ -142,10 +142,12 @@ type httpStreamConn struct {
 	flush  func()
 	local  net.Addr
 	remote net.Addr
+	done   chan struct{}
+	once   sync.Once
 }
 
 func newHTTPStreamConn(r io.Reader, w http.ResponseWriter, flush func(), local, remote net.Addr) *httpStreamConn {
-	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote}
+	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote, done: make(chan struct{})}
 }
 
 func (c *httpStreamConn) Read(b []byte) (int, error)  { return c.r.Read(b) }
@@ -156,7 +158,10 @@ func (c *httpStreamConn) Write(b []byte) (int, error) {
 	}
 	return n, err
 }
-func (c *httpStreamConn) Close() error                       { return nil }
+func (c *httpStreamConn) Close() error {
+	c.once.Do(func() { close(c.done) })
+	return nil
+}
 func (c *httpStreamConn) LocalAddr() net.Addr                { return c.local }
 func (c *httpStreamConn) RemoteAddr() net.Addr               { return c.remote }
 func (c *httpStreamConn) SetDeadline(t time.Time) error      { return nil }

@@ -434,6 +434,11 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	if cfg.OnConn != nil {
 		cfg.OnConn(fc, userID)
 	}
+
+	select {
+	case <-conn.done:
+	case <-r.Context().Done():
+	}
 }
 
 func DeriveSecret(psk []byte) []byte {
