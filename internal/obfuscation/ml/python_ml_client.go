@@ -228,7 +228,7 @@ func (client *PythonMLClient) checkMLAvailability() {
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 500 {
 			client.mlAvailable = true
-			log.Info("ML service at %s is available", client.baseURL)
+			log.Debug("ML service at %s is available", client.baseURL)
 		} else {
 			client.mlAvailable = false
 		}
