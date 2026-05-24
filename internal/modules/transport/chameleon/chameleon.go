@@ -149,7 +149,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	}
 	anchor := time.Now().UTC().Truncate(time.Second)
 
-	keys := DeriveKeys(cfg.SharedSecret, true)
+	keys := DeriveKeys(cfg.SharedSecret)
 	sched := NewWindowScheduler(keys.Behavior, sessionID, anchor)
 
 	windowIdx := sched.CurrentIndex()
@@ -163,6 +163,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
 
 	h2Transport := &http2.Transport{
+		MaxReadFrameSize:          1 << 20,
 		ReadIdleTimeout:           0,
 		MaxDecoderHeaderTableSize: 65536,
 		MaxHeaderListSize:         262144,
@@ -233,11 +234,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 		}
 	}()
 
-	fc, err := NewFrameConn(pc, keys.DataSend, keys.DataRecv)
-	if err != nil {
-		pc.Close()
-		return nil, fmt.Errorf("chameleon: frame conn: %w", err)
-	}
+	fc := NewFrameConn(pc)
 
 	go runDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin, bp)
 
@@ -390,12 +387,12 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 }
 
 func DeriveSecret(psk []byte) []byte {
-	return DeriveKeys(psk, true).Auth[:32]
+	return DeriveKeys(psk).Auth[:32]
 }
 
 func resolveSecret(cfg *Config, token string, sessionID []byte) ([]byte, string) {
 	if cfg.GetUsers == nil {
-		k := DeriveKeys(cfg.SharedSecret, false)
+		k := DeriveKeys(cfg.SharedSecret)
 		if VerifyAuthToken(k.Auth, token, sessionID) {
 			return cfg.SharedSecret, "default"
 		}
@@ -405,7 +402,7 @@ func resolveSecret(cfg *Config, token string, sessionID []byte) ([]byte, string)
 		if len(u.PSK) != 32 {
 			continue
 		}
-		k := DeriveKeys(u.PSK, false)
+		k := DeriveKeys(u.PSK)
 		if VerifyAuthToken(k.Auth, token, sessionID) {
 			return u.PSK, u.UserID
 		}

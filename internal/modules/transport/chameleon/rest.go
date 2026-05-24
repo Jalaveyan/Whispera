@@ -440,10 +440,6 @@ func (c *restClientConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // ── Client goroutines ────────────────────────────────────────────────────────
 
-// runRESTUpload drains uploadCh and sends data as sequential POST/PUT/PATCH
-// requests. Sequential ordering is required: FrameConn uses a per-frame counter
-// as the ChaCha20-Poly1305 nonce — concurrent requests can arrive at the server
-// out of order and break the counter sequence, causing MAC failures.
 func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, origin, sessionHdr, token string, uploadCh <-chan []byte) {
 	var buf []byte
 	for {
@@ -570,7 +566,7 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	}
 	anchor := time.Now().UTC().Truncate(time.Second)
 
-	keys := DeriveKeys(cfg.SharedSecret, true)
+	keys := DeriveKeys(cfg.SharedSecret)
 	token := AuthToken(keys.Auth, anchor.Unix()/30, sessionID)
 	sessionHdr := encodeSession(sessionID, anchor)
 
@@ -580,6 +576,7 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
 
 	h2t := &http2.Transport{
+		MaxReadFrameSize:          1 << 20,
 		ReadIdleTimeout:           0,
 		MaxDecoderHeaderTableSize: 65536,
 		MaxHeaderListSize:         262144,
@@ -711,13 +708,7 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	go runRESTUpload(tunnelCtx, client, cfg.ServerAddr, sni, origin, sessionHdr, token, conn.uploadCh)
 	go runRESTDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin)
 
-	fc, err := NewFrameConn(conn, keys.DataSend, keys.DataRecv)
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("chameleon: frame conn: %w", err)
-	}
-
-	return fc, nil
+	return NewFrameConn(conn), nil
 }
 
 // ── Server handlers ──────────────────────────────────────────────────────────
@@ -750,7 +741,6 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	keys := DeriveKeys(secret, false)
 	log.Printf("chameleon: REST authenticated user=%s from %s", userID, r.RemoteAddr)
 
 	// Store session before sending 200 so that upload handlers can find it
@@ -798,16 +788,11 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		}
 	}()
 
-	fc, err := NewFrameConn(conn, keys.DataSend, keys.DataRecv)
-	if err != nil {
-		log.Printf("chameleon: REST frame conn: %v", err)
-		return
-	}
+	fc := NewFrameConn(conn)
 
-	// Padding goroutine: inject encrypted random-byte frames to break size
-	// fingerprinting and maintain the target download/upload ratio.
 	if decide != nil {
 		go func() {
+			var prevDown int64
 			for {
 				jitter := time.Duration(mrand.Intn(100)-50) * time.Millisecond
 				t := time.NewTimer(200*time.Millisecond + jitter)
@@ -817,8 +802,14 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 					return
 				case <-t.C:
 				}
+				curDown := atomic.LoadInt64(&sess.downloadBytes)
+				rate := curDown - prevDown
+				prevDown = curDown
+				if rate > 2*1024*1024 {
+					continue
+				}
 				up := float64(atomic.LoadInt64(&sess.uploadBytes))
-				down := float64(atomic.LoadInt64(&sess.downloadBytes))
+				down := float64(curDown)
 				upRatio := 0.0
 				if up+down > 0 {
 					upRatio = up / (up + down)
@@ -872,7 +863,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	keys := DeriveKeys(secret, false)
+	keys := DeriveKeys(secret)
 	log.Printf("chameleon: HLS authenticated user=%s from %s", userID, r.RemoteAddr)
 
 	sess := &restSession{
@@ -911,14 +902,11 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		segRouter := newSegmentRouter(sess, keys.Behavior, done)
 		conn := newRestServerConn(sess, segRouter, local, remote, func() { close(done) }, decide)
 
-		fc, err := NewFrameConn(conn, keys.DataSend, keys.DataRecv)
-		if err != nil {
-			log.Printf("chameleon: HLS frame conn: %v", err)
-			return
-		}
+		fc := NewFrameConn(conn)
 
 		if decide != nil {
 			go func() {
+				var prevDown int64
 				for {
 					jitter := time.Duration(mrand.Intn(100)-50) * time.Millisecond
 					t := time.NewTimer(200*time.Millisecond + jitter)
@@ -928,8 +916,14 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 						return
 					case <-t.C:
 					}
+					curDown := atomic.LoadInt64(&sess.downloadBytes)
+					rate := curDown - prevDown
+					prevDown = curDown
+					if rate > 2*1024*1024 {
+						continue
+					}
 					up := float64(atomic.LoadInt64(&sess.uploadBytes))
-					down := float64(atomic.LoadInt64(&sess.downloadBytes))
+					down := float64(curDown)
 					upRatio := 0.0
 					if up+down > 0 {
 						upRatio = up / (up + down)
