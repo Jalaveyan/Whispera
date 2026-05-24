@@ -238,7 +238,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 
 	go runDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin, bp)
 
-	return newShapedConn(fc), nil
+	return fc, nil
 }
 
 func ListenAndServe(ctx context.Context, cfg *Config) error {
@@ -348,8 +348,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	_, cookieErr := r.Cookie(sessionCookie)
 	hasSess := func() bool { return cookieErr == nil }
 
-	stdlog.Printf("chameleon: req %s %s from %s cookie=%v", r.Method, r.URL.Path, r.RemoteAddr, cookieErr == nil)
-
 	switch r.Method {
 	case http.MethodOptions:
 		handleRESTOptions(w, r)
@@ -421,7 +419,12 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
+	w.Header().Set("Content-Type", contentTypeDownload)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
+	w.Write(mp4FtypAtom[:])
 	flusher.Flush()
 
 	local := staticAddr{"tcp", r.Host}
