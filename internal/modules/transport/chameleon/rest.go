@@ -881,12 +881,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 	sessionKey := hlsSessionKey(sessionID)
 	cfg.sessions.Store(sessionKey, sess)
-	defer func() {
-		close(sess.closed)
-		cfg.sessions.Delete(sessionKey)
-	}()
 
-	// Send the HLS playlist immediately so the client can start requesting segments.
 	playlist := hlsM3U8(0)
 	w.Header().Set("Content-Type", "application/x-mpegURL")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -896,6 +891,8 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+	// Handler returns here → HTTP/2 sends END_STREAM → client unblocks.
+	// Tunnel runs in a goroutine so the session outlives the HTTP handler.
 
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
@@ -904,51 +901,56 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	if decide == nil {
 		ratio := cfg.AsymBiasRatio
 		if ratio <= 0 {
-			ratio = 10.0 // HLS default: video streaming is ~10:1 down:up
+			ratio = 10.0
 		}
 		decide = StreamingBiasGANDecide(ratio)
 	}
 
-	done := make(chan struct{})
-	segRouter := newSegmentRouter(sess, keys.Behavior, done)
+	go func() {
+		defer func() {
+			close(sess.closed)
+			cfg.sessions.Delete(sessionKey)
+		}()
 
-	// restServerConn handles the Read (upload) side; writes go through segRouter.
-	conn := newRestServerConn(sess, segRouter, local, remote, func() { close(done) }, decide)
+		done := make(chan struct{})
+		segRouter := newSegmentRouter(sess, keys.Behavior, done)
+		conn := newRestServerConn(sess, segRouter, local, remote, func() { close(done) }, decide)
 
-	fc, err := NewFrameConn(conn, keys.DataSend, keys.DataRecv)
-	if err != nil {
-		log.Printf("chameleon: HLS frame conn: %v", err)
-		return
-	}
+		fc, err := NewFrameConn(conn, keys.DataSend, keys.DataRecv)
+		if err != nil {
+			log.Printf("chameleon: HLS frame conn: %v", err)
+			return
+		}
 
-	if decide != nil {
-		go func() {
-			t := time.NewTicker(200 * time.Millisecond)
-			defer t.Stop()
-			for {
-				select {
-				case <-done:
-					return
-				case <-t.C:
-					up := float64(atomic.LoadInt64(&sess.uploadBytes))
-					down := float64(atomic.LoadInt64(&sess.downloadBytes))
-					upRatio := 0.0
-					if up+down > 0 {
-						upRatio = up / (up + down)
-					}
-					action := decide(0, 0, upRatio)
-					if action.PaddingN > 0 {
-						fc.WritePad(action.PaddingN) //nolint:errcheck
+		if decide != nil {
+			go func() {
+				t := time.NewTicker(200 * time.Millisecond)
+				defer t.Stop()
+				for {
+					select {
+					case <-done:
+						return
+					case <-t.C:
+						up := float64(atomic.LoadInt64(&sess.uploadBytes))
+						down := float64(atomic.LoadInt64(&sess.downloadBytes))
+						upRatio := 0.0
+						if up+down > 0 {
+							upRatio = up / (up + down)
+						}
+						action := decide(0, 0, upRatio)
+						if action.PaddingN > 0 {
+							fc.WritePad(action.PaddingN) //nolint:errcheck
+						}
 					}
 				}
-			}
-		}()
-	}
+			}()
+		}
 
-	if cfg.OnConn != nil {
-		cfg.OnConn(fc, userID)
-	}
-	<-done
+		if cfg.OnConn != nil {
+			cfg.OnConn(fc, userID)
+		}
+		<-done
+	}()
 }
 
 // handleHLSSegment handles GET /video/{sid}/seg{n}.ts — delivers exactly one
