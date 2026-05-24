@@ -39,9 +39,10 @@ func isNormalConnClose(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "use of closed network connection") ||
 		strings.Contains(msg, "read/write on closed pipe") ||
+		strings.Contains(msg, "closed pipe") ||
 		strings.Contains(msg, "forcibly closed")
 }
 
@@ -120,6 +121,8 @@ type Server struct {
 
 	outboundDial func(ctx context.Context, tag, network, addr string) (net.Conn, error)
 
+	streamSem chan struct{}
+
 	log *logger.Logger
 	mu  sync.RWMutex
 }
@@ -132,11 +135,16 @@ func New(cfg *Config) (*Server, error) {
 		return nil, err
 	}
 
+	limit := cfg.MaxConcurrentStreams
+	if limit <= 0 {
+		limit = 1024
+	}
 	s := &Server{
 		Module:         base.NewModule(ModuleName, ModuleVersion, []string{"transport.udp"}),
 		config:         cfg,
 		sessionWriters: make(map[uint32]ResponseWriter),
 		rawPackets:     make(map[uint32]ResponseWriter),
+		streamSem:      make(chan struct{}, limit),
 		log:            logger.Module("relay"),
 	}
 
@@ -380,7 +388,7 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     256 * 1024 * 1024,
-		MaxStreamBuffer:      2 * 1024 * 1024,
+		MaxStreamBuffer:      16 * 1024 * 1024,
 		KeepAliveInterval:    time.Duration(kaBase) * time.Second,
 		KeepAliveTimeout:     120 * time.Second,
 		MaxConcurrentStreams: s.config.MaxConcurrentStreams,
@@ -414,12 +422,11 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 			errStr := err.Error()
 			if strings.Contains(errStr, "keepalive timeout") ||
 				strings.Contains(errStr, "session closed") ||
-				strings.Contains(errStr, "EOF") {
-				s.log.Debug("Tunnel session ended for %s: %v (graceful)", clientID, err)
-			} else if strings.Contains(errStr, "connection reset by peer") {
-				s.log.Debug("Tunnel session ended for %s: client reset (%v)", clientID, err)
+				strings.Contains(errStr, "EOF") ||
+				isNormalConnClose(err) {
+				s.log.Debug("Tunnel session ended for %s: %v", clientID, err)
 			} else {
-				s.log.Info("Tunnel session closed for %s: accept stream failed: %v", clientID, err)
+				s.log.Info("Tunnel session closed for %s: %v", clientID, err)
 			}
 			return
 		}
@@ -437,8 +444,16 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		if streamObf {
 			proxyConn = transport.WrapStreamTLS(stream)
 		}
-		s.log.Info("accepted proxy stream from %s", clientID)
-		go s.handleProxyStream(proxyConn)
+		select {
+		case s.streamSem <- struct{}{}:
+			go func() {
+				defer func() { <-s.streamSem }()
+				s.handleProxyStream(proxyConn)
+			}()
+		default:
+			s.log.Info("stream limit reached, dropping stream from %s", clientID)
+			proxyConn.Close()
+		}
 	}
 }
 
@@ -579,6 +594,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 
 	if network == "udp" {
 		go func() {
+			defer target.Close()
 			bufp := udpCopyBufPool.Get().(*[]byte)
 			defer udpCopyBufPool.Put(bufp)
 			buf := *bufp
@@ -607,6 +623,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 			}
 		}()
 		go func() {
+			defer stream.Close()
 			bufp := udpCopyBufPool.Get().(*[]byte)
 			defer udpCopyBufPool.Put(bufp)
 			buf := *bufp
@@ -627,6 +644,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		}()
 	} else {
 		go func() {
+			defer target.Close()
 			bufp := tcpCopyBufPool.Get().(*[]byte)
 			defer tcpCopyBufPool.Put(bufp)
 			n, err := io.CopyBuffer(target, stream, *bufp)
@@ -636,6 +654,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 			resCh <- copyResult{n, err, "up"}
 		}()
 		go func() {
+			defer stream.Close()
 			bufp := tcpCopyBufPool.Get().(*[]byte)
 			defer tcpCopyBufPool.Put(bufp)
 			n, err := io.CopyBuffer(stream, target, *bufp)

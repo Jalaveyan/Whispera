@@ -885,14 +885,14 @@ func (h *Handler) proxyToSNI(clientConn net.Conn, clientHello []byte, sni string
 	done := make(chan struct{}, 2)
 
 	go func() {
+		defer destConn.Close()
 		io.Copy(destConn, clientConn)
-		destConn.SetReadDeadline(time.Now())
 		done <- struct{}{}
 	}()
 
 	go func() {
+		defer clientConn.Close()
 		io.Copy(clientConn, destConn)
-		clientConn.SetReadDeadline(time.Now())
 		done <- struct{}{}
 	}()
 
@@ -1013,13 +1013,13 @@ func (h *Handler) handleHTTPFallback(conn net.Conn) {
 
 	done := make(chan struct{}, 2)
 	go func() {
+		defer destConn.Close()
 		io.Copy(destConn, conn)
-		destConn.SetReadDeadline(time.Now())
 		done <- struct{}{}
 	}()
 	go func() {
+		defer conn.Close()
 		io.Copy(conn, destConn)
-		conn.SetReadDeadline(time.Now())
 		done <- struct{}{}
 	}()
 	<-done

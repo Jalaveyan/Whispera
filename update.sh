@@ -1178,6 +1178,8 @@ _repair_panel_bundle() {
 }
 
 do_update() {
+    trap 'systemctl is-active --quiet whispera 2>/dev/null || { systemctl daemon-reload 2>/dev/null; systemctl start whispera 2>/dev/null || true; }' EXIT
+
     mkdir -p "$WORK_DIR"
     cd "$WORK_DIR" || exit 1
 

@@ -207,17 +207,20 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 
 	errCh := make(chan error, 2)
 	go func() {
+		defer stream.Close()
 		bp := copyBufPool.Get().(*[]byte)
 		_, err := io.CopyBuffer(stream, clientConn, *bp)
 		copyBufPool.Put(bp)
 		errCh <- err
 	}()
 	go func() {
+		defer clientConn.Close()
 		bp := copyBufPool.Get().(*[]byte)
 		_, err := io.CopyBuffer(clientConn, stream, *bp)
 		copyBufPool.Put(bp)
 		errCh <- err
 	}()
+	<-errCh
 	<-errCh
 	return nil
 }
@@ -231,17 +234,20 @@ func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error
 	defer upstream.Close()
 	errCh := make(chan error, 2)
 	go func() {
+		defer upstream.Close()
 		bufp := copyBufPool.Get().(*[]byte)
 		_, err := io.CopyBuffer(upstream, clientConn, *bufp)
 		copyBufPool.Put(bufp)
 		errCh <- err
 	}()
 	go func() {
+		defer clientConn.Close()
 		bufp := copyBufPool.Get().(*[]byte)
 		_, err := io.CopyBuffer(clientConn, upstream, *bufp)
 		copyBufPool.Put(bufp)
 		errCh <- err
 	}()
+	<-errCh
 	<-errCh
 	return nil
 }

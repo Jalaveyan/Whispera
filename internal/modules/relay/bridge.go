@@ -163,6 +163,7 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 	done := make(chan struct{}, 2)
 
 	go func() {
+		defer upstreamConn.Close()
 		io.Copy(upstreamConn, clientConn)
 		if tc, ok := upstreamConn.(interface{ CloseWrite() error }); ok {
 			tc.CloseWrite()
@@ -171,6 +172,7 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 	}()
 
 	go func() {
+		defer clientConn.Close()
 		io.Copy(clientConn, upstreamConn)
 		if tc, ok := clientConn.(interface{ CloseWrite() error }); ok {
 			tc.CloseWrite()
