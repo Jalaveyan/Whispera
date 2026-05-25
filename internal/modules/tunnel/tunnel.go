@@ -353,6 +353,10 @@ type managedConn struct {
 	uploadBytes  int64
 	closing      chan struct{}
 	closeOnce    sync.Once
+
+	lastSampledBytes atomic.Uint64
+	lastSampleNs     atomic.Int64
+	rateMbpsX100     atomic.Int64
 }
 
 const (
@@ -986,6 +990,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.startRotation()
 		m.startRekey()
 		m.startConnAgent()
+		m.startConnRateSampler()
 		m.connectedAt = time.Now()
 		m.lastPong = time.Now()
 		m.setState(StateConnected)
@@ -2677,8 +2682,13 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		return nil, fmt.Errorf("not connected")
 	}
 
-	idx := atomic.AddUint32(&m.streamIdx, 1) % uint32(len(pool))
-	mc := pool[idx]
+	healthy := m.healthyPool(pool)
+	if len(healthy) == 0 {
+		healthy = pool
+	}
+
+	idx := atomic.AddUint32(&m.streamIdx, 1) % uint32(len(healthy))
+	mc := healthy[idx]
 
 	stream, err := mc.session.OpenStream()
 	if err != nil {
@@ -2950,6 +2960,95 @@ closeNow:
 	mc.session.Close()
 	mc.Close()
 	log.Info("Draining connection closed (%s)", reason)
+}
+
+func (m *Manager) startConnRateSampler() {
+	if !m.config.EnableChameleon {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(3 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-m.Module.Context().Done():
+				return
+			case <-ticker.C:
+			}
+			m.sampleConnRates()
+		}
+	}()
+}
+
+func (m *Manager) sampleConnRates() {
+	m.connMu.RLock()
+	pool := append([]*managedConn(nil), m.activePool...)
+	m.connMu.RUnlock()
+
+	nowNs := time.Now().UnixNano()
+	for _, mc := range pool {
+		if mc == nil || mc.session == nil {
+			continue
+		}
+		_, _, rx, tx := mc.session.Stats()
+		bytes := rx + tx
+		prevBytes := mc.lastSampledBytes.Load()
+		prevNs := mc.lastSampleNs.Load()
+		mc.lastSampledBytes.Store(bytes)
+		mc.lastSampleNs.Store(nowNs)
+		if prevNs == 0 {
+			continue
+		}
+		elapsedNs := nowNs - prevNs
+		if elapsedNs <= 0 {
+			continue
+		}
+		delta := int64(bytes) - int64(prevBytes)
+		if delta < 0 {
+			delta = 0
+		}
+		mbps := float64(delta) * 8 / (float64(elapsedNs) / 1e9) / 1e6
+		mc.rateMbpsX100.Store(int64(mbps * 100))
+	}
+}
+
+func (m *Manager) healthyPool(pool []*managedConn) []*managedConn {
+	if len(pool) <= 1 {
+		return pool
+	}
+	rates := make([]int64, 0, len(pool))
+	for _, mc := range pool {
+		r := mc.rateMbpsX100.Load()
+		if r > 0 {
+			rates = append(rates, r)
+		}
+	}
+	if len(rates) == 0 {
+		return pool
+	}
+	sortInt64(rates)
+	median := rates[len(rates)/2]
+	threshold := median * 30 / 100
+	if threshold < 200 {
+		threshold = 200
+	}
+
+	healthy := make([]*managedConn, 0, len(pool))
+	for _, mc := range pool {
+		r := mc.rateMbpsX100.Load()
+		if r == 0 || r >= threshold {
+			healthy = append(healthy, mc)
+		}
+	}
+	return healthy
+}
+
+func sortInt64(a []int64) {
+	for i := 1; i < len(a); i++ {
+		for j := i; j > 0 && a[j-1] > a[j]; j-- {
+			a[j-1], a[j] = a[j], a[j-1]
+		}
+	}
 }
 
 func (m *Manager) startRotation() {
