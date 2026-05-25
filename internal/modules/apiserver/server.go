@@ -1842,6 +1842,7 @@ func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Username          string `json:"username"`
+		Email             string `json:"email"`
 		TrafficLimit      int64  `json:"trafficLimit"`
 		ExpiryDate        string `json:"expiryDate"`
 		ObfsProfile       string `json:"obfsProfile"`
@@ -1854,6 +1855,9 @@ func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Username == "" {
+		req.Username = req.Email
+	}
 	if req.Username == "" {
 		s.jsonError(w, http.StatusBadRequest, "Username is required")
 		return
