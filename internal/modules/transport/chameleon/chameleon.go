@@ -237,7 +237,10 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 
 	client := &http.Client{Transport: h2Transport}
 
+	go runDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin, bp)
+
 	go func() {
+		time.Sleep(time.Duration(20+mrand.Intn(80)) * time.Millisecond)
 		resp, err := client.Do(req)
 		if err != nil || resp.StatusCode != http.StatusOK {
 			if resp != nil {
@@ -252,8 +255,6 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	}()
 
 	fc := NewFrameConn(pc)
-
-	go runDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin, bp)
 
 	return fc, nil
 }
