@@ -1628,7 +1628,6 @@ WorkingDirectory=$DAT_PATH/panel
 ExecStart=$NODE_BIN bundle/index.js
 Restart=always
 RestartSec=3
-WatchdogSec=15
 TimeoutStopSec=10
 Environment=PORT=3000
 Environment=BACKEND_URL=http://127.0.0.1:8080

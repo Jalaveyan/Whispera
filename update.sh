@@ -1353,7 +1353,6 @@ WorkingDirectory=$DAT_PATH/panel
 ExecStart=$NODE_BIN bundle/index.js
 Restart=always
 RestartSec=3
-WatchdogSec=15
 TimeoutStopSec=10
 Environment=PORT=3000
 Environment=BACKEND_URL=http://127.0.0.1:8080
@@ -1376,6 +1375,12 @@ PANELEOF
                 sed -i "s|ExecStart=.* dist/main.js|ExecStart=$NODE_BIN bundle/index.js|" /etc/systemd/system/whispera-panel.service
                 systemctl daemon-reload
                 log_info "Migrated panel service to bundle/index.js"
+            fi
+
+            if grep -q "^WatchdogSec=" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
+                sed -i '/^WatchdogSec=/d' /etc/systemd/system/whispera-panel.service
+                systemctl daemon-reload
+                log_info "Removed WatchdogSec from panel service (Nest does not sd_notify)"
             fi
 
             generate_panel_cert
