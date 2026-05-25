@@ -686,6 +686,12 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 		if s.sessionToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) == 1 {
 			return true
 		}
+		if s.validateTimedToken(token) {
+			return true
+		}
+	}
+	if qt := r.URL.Query().Get("token"); qt != "" && s.validateTimedToken(qt) {
+		return true
 	}
 	if claims := GetClaims(r); claims != nil && claims.HasRole(auth.RoleAdmin) {
 		return true
