@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/crypto/hkdf"
 )
@@ -48,6 +49,8 @@ type FrameConn struct {
 	sendMu  sync.Mutex
 	buf     []byte
 	recvBuf []byte
+
+	bytesRecent uint64
 }
 
 func NewFrameConn(conn net.Conn) *FrameConn {
@@ -81,7 +84,12 @@ func (fc *FrameConn) Write(p []byte) (int, error) {
 	if err := fc.writeFrame(frameTypeData, p); err != nil {
 		return 0, err
 	}
+	atomic.AddUint64(&fc.bytesRecent, uint64(len(p)))
 	return len(p), nil
+}
+
+func (fc *FrameConn) SampleAndResetBytes() uint64 {
+	return atomic.SwapUint64(&fc.bytesRecent, 0)
 }
 
 func (fc *FrameConn) WritePad(n int) error {
@@ -135,6 +143,7 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 			fc.buf = make([]byte, len(pt)-n)
 			copy(fc.buf, pt[n:])
 		}
+		atomic.AddUint64(&fc.bytesRecent, uint64(len(pt)))
 		return n, nil
 	}
 }

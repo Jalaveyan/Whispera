@@ -237,7 +237,9 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 
 	client := &http.Client{Transport: h2Transport}
 
-	go runDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin, bp)
+	fc := NewFrameConn(pc)
+
+	go runDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin, bp, fc)
 
 	go func() {
 		time.Sleep(time.Duration(20+mrand.Intn(80)) * time.Millisecond)
@@ -253,8 +255,6 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 			resp.Body.Close()
 		}
 	}()
-
-	fc := NewFrameConn(pc)
 
 	return fc, nil
 }
@@ -540,7 +540,7 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 }
 
-func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams) {
+func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams, fc *FrameConn) {
 	get := func(path string) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 			fmt.Sprintf("https://%s%s", serverAddr, path), nil)
@@ -555,7 +555,25 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 		}
 	}
 
+	loadFactor := func() int {
+		if fc == nil {
+			return 1
+		}
+		bytes := fc.SampleAndResetBytes()
+		switch {
+		case bytes > 4<<20:
+			return 8
+		case bytes > 1<<20:
+			return 4
+		case bytes > 256<<10:
+			return 2
+		default:
+			return 1
+		}
+	}
+
 	sleep := func(ms int) bool {
+		ms *= loadFactor()
 		jitter := time.Duration(mrand.Intn(ms/4+1)) * time.Millisecond
 		select {
 		case <-ctx.Done():
