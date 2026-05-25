@@ -14,6 +14,7 @@ import (
 	"net/url"
 	_ "net/http/pprof"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -968,6 +969,9 @@ func main() {
 	if *configFile == "" {
 		*configFile = "config.yaml"
 	}
+
+	runtime.SetBlockProfileRate(10000)
+	runtime.SetMutexProfileFraction(100)
 
 	go func() {
 		log.Printf("pprof listening on http://%s/debug/pprof/", *pprofAddr)

@@ -355,6 +355,52 @@ type managedConn struct {
 	closeOnce    sync.Once
 }
 
+const (
+	streamShardCount = 16
+	streamShardMask  = streamShardCount - 1
+)
+
+type streamShard struct {
+	mu sync.RWMutex
+	m  map[uint16]chan []byte
+}
+
+func (m *Manager) streamLoad(streamID uint16) (chan []byte, bool) {
+	s := &m.streamShards[streamID&streamShardMask]
+	s.mu.RLock()
+	ch, ok := s.m[streamID]
+	s.mu.RUnlock()
+	return ch, ok
+}
+
+func (m *Manager) streamStore(streamID uint16, ch chan []byte) {
+	s := &m.streamShards[streamID&streamShardMask]
+	s.mu.Lock()
+	s.m[streamID] = ch
+	s.mu.Unlock()
+}
+
+func (m *Manager) streamDelete(streamID uint16) {
+	s := &m.streamShards[streamID&streamShardMask]
+	s.mu.Lock()
+	delete(s.m, streamID)
+	s.mu.Unlock()
+}
+
+func (m *Manager) streamExists(streamID uint16) bool {
+	s := &m.streamShards[streamID&streamShardMask]
+	s.mu.RLock()
+	_, ok := s.m[streamID]
+	s.mu.RUnlock()
+	return ok
+}
+
+func (m *Manager) initStreamShards() {
+	for i := range m.streamShards {
+		m.streamShards[i].m = make(map[uint16]chan []byte)
+	}
+}
+
 type Manager struct {
 	*base.Module
 	config *Config
@@ -368,8 +414,7 @@ type Manager struct {
 	streamConns   map[uint16]*managedConn
 	readCh        chan []byte
 
-	streamChs   map[uint16]chan []byte
-	streamChsMu sync.RWMutex
+	streamShards [streamShardCount]streamShard
 
 	connMu    sync.RWMutex
 	sessionID uint32
@@ -501,12 +546,12 @@ func New(cfg *Config) (*Manager, error) {
 		state:                 StateDisconnected,
 		streamConns:           make(map[uint16]*managedConn),
 		readCh:                make(chan []byte, 4096),
-		streamChs:             make(map[uint16]chan []byte),
 		goroutineLimiter:      base.NewGoroutineLimiter(1024),
 		reconnectDone:         make(chan struct{}),
 		forceObfuscation:      forceObfs,
 		chameleonSessionCache: chameleon.NewSessionCache(16),
 	}
+	m.initStreamShards()
 	close(m.reconnectDone)
 
 	if cfg.EnableASNBypass || cfg.EnablePhantom || cfg.ForceSNI != "" {
@@ -2524,9 +2569,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 		streamID := binary.BigEndian.Uint16(frameData[0:2])
 
-		m.streamChsMu.RLock()
-		ch, exists := m.streamChs[streamID]
-		m.streamChsMu.RUnlock()
+		ch, exists := m.streamLoad(streamID)
 
 		if exists {
 			select {
@@ -3197,10 +3240,7 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 		if candidate == 0 {
 			continue
 		}
-		m.streamChsMu.RLock()
-		_, exists := m.streamChs[candidate]
-		m.streamChsMu.RUnlock()
-		if !exists {
+		if !m.streamExists(candidate) {
 			streamID = candidate
 			break
 		}
@@ -3210,9 +3250,7 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 	}
 
 	ch := make(chan []byte, 4096)
-	m.streamChsMu.Lock()
-	m.streamChs[streamID] = ch
-	m.streamChsMu.Unlock()
+	m.streamStore(streamID, ch)
 
 	var proto byte = 0x06
 	if network == "udp" {
@@ -3237,9 +3275,7 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 	copy(frame[8:], connectPayload)
 
 	if err := m.Send(frame); err != nil {
-		m.streamChsMu.Lock()
-		delete(m.streamChs, streamID)
-		m.streamChsMu.Unlock()
+		m.streamDelete(streamID)
 		return nil, err
 	}
 
@@ -3326,9 +3362,7 @@ func (s *StreamConn) Write(b []byte) (n int, err error) {
 
 func (s *StreamConn) Close() error {
 	s.closeOnce.Do(func() {
-		s.manager.streamChsMu.Lock()
-		delete(s.manager.streamChs, s.streamID)
-		s.manager.streamChsMu.Unlock()
+		s.manager.streamDelete(s.streamID)
 		close(s.done)
 	})
 
