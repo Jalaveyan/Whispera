@@ -1336,6 +1336,41 @@ ENVEOF
 
 
 
+            if [[ ! -f /etc/systemd/system/whispera-panel.service ]]; then
+                local NODE_BIN=$(command -v node || echo "/usr/bin/node")
+                log_info "Creating whispera-panel.service (was missing)"
+                cat > /etc/systemd/system/whispera-panel.service <<PANELEOF
+[Unit]
+Description=Whispera Panel (Frontend)
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+User=whispera
+Group=whispera
+WorkingDirectory=$DAT_PATH/panel
+ExecStart=$NODE_BIN bundle/index.js
+Restart=always
+RestartSec=3
+WatchdogSec=15
+TimeoutStopSec=10
+Environment=PORT=3000
+Environment=BACKEND_URL=http://127.0.0.1:8080
+Environment=CORS_ORIGIN=*
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$DAT_PATH
+
+[Install]
+WantedBy=multi-user.target
+PANELEOF
+                systemctl daemon-reload
+                systemctl enable whispera-panel >/dev/null 2>&1 || true
+            fi
+
             if grep -q "dist/main.js" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
                 local NODE_BIN=$(command -v node || echo "/usr/bin/node")
                 sed -i "s|ExecStart=.* dist/main.js|ExecStart=$NODE_BIN bundle/index.js|" /etc/systemd/system/whispera-panel.service
