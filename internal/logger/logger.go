@@ -314,36 +314,8 @@ func Global() *Logger {
 	return globalLogger
 }
 
-func SetGlobal(l *Logger) {
-	globalLogger = l
-}
-
-func Debug(msg string, args ...interface{}) {
-	Global().Debug(msg, args...)
-}
-
-func Info(msg string, args ...interface{}) {
-	Global().Info(msg, args...)
-}
-
 func Warn(msg string, args ...interface{}) {
 	Global().Warn(msg, args...)
-}
-
-func Error(msg string, args ...interface{}) {
-	Global().Error(msg, args...)
-}
-
-func Fatal(msg string, args ...interface{}) {
-	Global().Fatal(msg, args...)
-}
-
-func WithField(key string, value interface{}) *Logger {
-	return Global().WithField(key, value)
-}
-
-func WithFields(fields map[string]interface{}) *Logger {
-	return Global().WithFields(fields)
 }
 
 func SetLevel(level Level) {

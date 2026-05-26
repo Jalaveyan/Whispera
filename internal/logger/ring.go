@@ -97,9 +97,3 @@ func Snapshot(limit int, minLevel Level) []RingEntry {
 	return ring().snapshot(limit, minLevel)
 }
 
-// ResizeRing replaces the ring with one of the given size, discarding previous entries.
-// Intended for startup configuration; not safe to call concurrently with logging.
-func ResizeRing(size int) {
-	globalRingOnce.Do(func() {})
-	globalRing = newRingBuffer(size)
-}

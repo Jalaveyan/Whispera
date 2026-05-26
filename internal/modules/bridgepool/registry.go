@@ -593,59 +593,6 @@ func max(a, b int) int {
 	return b
 }
 
-type BridgeRotation struct {
-	registry *Registry
-	interval time.Duration
-	stopCh   chan struct{}
-}
-
-func NewBridgeRotation(registry *Registry, interval time.Duration) *BridgeRotation {
-	if interval <= 0 {
-		interval = 4 * time.Hour
-	}
-	return &BridgeRotation{
-		registry: registry,
-		interval: interval,
-		stopCh:   make(chan struct{}),
-	}
-}
-
-func (br *BridgeRotation) Start() {
-	go func() {
-		ticker := time.NewTicker(br.interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-br.stopCh:
-				return
-			case <-ticker.C:
-				br.rotate()
-			}
-		}
-	}()
-}
-
-func (br *BridgeRotation) Stop() {
-	close(br.stopCh)
-}
-
-func (br *BridgeRotation) rotate() {
-	br.registry.mu.Lock()
-	defer br.registry.mu.Unlock()
-
-	for _, b := range br.registry.bridges {
-		if !b.IsAlive {
-			continue
-		}
-		stale := time.Since(b.LastCheck) > 2*br.interval
-		if stale {
-			b.TrustLevel = max(b.TrustLevel-5, 0)
-		}
-	}
-
-	br.registry.persist()
-}
-
 type BridgeAlert struct {
 	BridgeID  string    `json:"bridge_id"`
 	Type      string    `json:"type"`
@@ -668,12 +615,6 @@ func NewNotificationManager() *NotificationManager {
 	}
 }
 
-func (nm *NotificationManager) OnAlert(handler func(BridgeAlert)) {
-	nm.mu.Lock()
-	nm.handlers = append(nm.handlers, handler)
-	nm.mu.Unlock()
-}
-
 func (nm *NotificationManager) Emit(alert BridgeAlert) {
 	alert.Timestamp = time.Now()
 	nm.mu.Lock()
@@ -688,19 +629,6 @@ func (nm *NotificationManager) Emit(alert BridgeAlert) {
 	for _, h := range handlers {
 		go h(alert)
 	}
-}
-
-func (nm *NotificationManager) GetAlerts(since time.Time, limit int) []BridgeAlert {
-	nm.mu.Lock()
-	defer nm.mu.Unlock()
-
-	result := make([]BridgeAlert, 0)
-	for i := len(nm.alerts) - 1; i >= 0 && len(result) < limit; i-- {
-		if nm.alerts[i].Timestamp.After(since) {
-			result = append(result, nm.alerts[i])
-		}
-	}
-	return result
 }
 
 type UpdateDelivery struct {
