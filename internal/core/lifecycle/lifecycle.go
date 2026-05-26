@@ -37,14 +37,6 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	GracefulStop    bool
 }
-func DefaultConfig() Config {
-	return Config{
-		ShutdownTimeout: 30 * time.Second,
-		GracefulStop:    true,
-	}
-}
-
-
 func NewManager(cfg Config) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -320,85 +312,4 @@ func (m *Manager) HealthEndpoint() func() map[string]interface{} {
 
 func (m *Manager) GracefulShutdown() {
 	m.cancel()
-}
-type Builder struct {
-	config  Config
-	modules []func() (interfaces.Module, error)
-	onStart []func() error
-	onStop  []func() error
-}
-
-
-func NewBuilder() *Builder {
-	return &Builder{
-		config:  DefaultConfig(),
-		modules: make([]func() (interfaces.Module, error), 0),
-		onStart: make([]func() error, 0),
-		onStop:  make([]func() error, 0),
-	}
-}
-
-
-func (b *Builder) WithShutdownTimeout(timeout time.Duration) *Builder {
-	b.config.ShutdownTimeout = timeout
-	return b
-}
-
-
-func (b *Builder) WithGracefulStop(graceful bool) *Builder {
-	b.config.GracefulStop = graceful
-	return b
-}
-
-
-func (b *Builder) WithModule(createFn func() (interfaces.Module, error)) *Builder {
-	b.modules = append(b.modules, createFn)
-	return b
-}
-
-
-func (b *Builder) OnStart(cb func() error) *Builder {
-	b.onStart = append(b.onStart, cb)
-	return b
-}
-
-
-func (b *Builder) OnStop(cb func() error) *Builder {
-	b.onStop = append(b.onStop, cb)
-	return b
-}
-
-
-func (b *Builder) Build() (*Manager, error) {
-	m := NewManager(b.config)
-
-	
-	for _, cb := range b.onStart {
-		m.OnStart(cb)
-	}
-	for _, cb := range b.onStop {
-		m.OnStop(cb)
-	}
-
-	
-	for _, createFn := range b.modules {
-		module, err := createFn()
-		if err != nil {
-			return nil, err
-		}
-		if err := m.Register(module); err != nil {
-			return nil, err
-		}
-	}
-
-	return m, nil
-}
-
-
-func (b *Builder) Run() error {
-	m, err := b.Build()
-	if err != nil {
-		return err
-	}
-	return m.Run()
 }
