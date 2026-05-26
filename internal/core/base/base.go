@@ -282,113 +282,6 @@ func (rl *RateLimiter) SetRate(rate float64, burst int) {
 	rl.burst = burst
 }
 
-type CircuitBreaker struct {
-	mu            sync.Mutex
-	failures      int
-	threshold     int
-	timeout       time.Duration
-	state         CircuitState
-	lastFailure   time.Time
-	onStateChange func(CircuitState)
-}
-
-type CircuitState int
-
-const (
-	CircuitClosed CircuitState = iota
-	CircuitOpen
-	CircuitHalfOpen
-)
-
-func (s CircuitState) String() string {
-	switch s {
-	case CircuitClosed:
-		return "closed"
-	case CircuitOpen:
-		return "open"
-	case CircuitHalfOpen:
-		return "half-open"
-	default:
-		return "unknown"
-	}
-}
-
-func NewCircuitBreaker(threshold int, timeout time.Duration) *CircuitBreaker {
-	return &CircuitBreaker{
-		threshold: threshold,
-		timeout:   timeout,
-		state:     CircuitClosed,
-	}
-}
-
-func (cb *CircuitBreaker) Execute(fn func() error) error {
-	cb.mu.Lock()
-
-	switch cb.state {
-	case CircuitOpen:
-		if time.Since(cb.lastFailure) > cb.timeout {
-			cb.setState(CircuitHalfOpen)
-		} else {
-			cb.mu.Unlock()
-			return ErrCircuitOpen
-		}
-	case CircuitHalfOpen:
-	default:
-	}
-	cb.mu.Unlock()
-
-	err := fn()
-
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-
-	if err != nil {
-		cb.failures++
-		cb.lastFailure = time.Now()
-		if cb.failures >= cb.threshold {
-			cb.setState(CircuitOpen)
-		}
-		return err
-	}
-
-	cb.failures = 0
-	if cb.state == CircuitHalfOpen {
-		cb.setState(CircuitClosed)
-	}
-	return nil
-}
-
-func (cb *CircuitBreaker) setState(state CircuitState) {
-	if cb.state != state {
-		cb.state = state
-		if cb.onStateChange != nil {
-			cb.onStateChange(state)
-		}
-	}
-}
-
-func (cb *CircuitBreaker) State() CircuitState {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	return cb.state
-}
-
-func (cb *CircuitBreaker) OnStateChange(fn func(CircuitState)) {
-	cb.mu.Lock()
-	defer cb.mu.Unlock()
-	cb.onStateChange = fn
-}
-
-var ErrCircuitOpen = &CircuitError{Message: "circuit breaker is open"}
-
-type CircuitError struct {
-	Message string
-}
-
-func (e *CircuitError) Error() string {
-	return e.Message
-}
-
 type GoroutineLimiter struct {
 	sem     chan struct{}
 	active  int64
@@ -463,10 +356,6 @@ func NewMemoryWatchdog(softLimitMB, hardLimitMB uint64, period time.Duration) *M
 		ctx:         ctx,
 		cancel:      cancel,
 	}
-}
-
-func (mw *MemoryWatchdog) OnPressure(fn func(allocMB uint64)) {
-	mw.onPressure = fn
 }
 
 func (mw *MemoryWatchdog) Start() {
