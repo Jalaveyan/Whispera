@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"nhooyr.io/websocket"
+	"whispera/internal/buf"
 	"whispera/internal/core/base"
 	whisperdns "whispera/internal/dns"
 	"whispera/internal/core/events"
@@ -111,12 +112,6 @@ const (
 	FrameTypeData    = 0x04
 	FrameTypeClose   = 0x05
 )
-
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, 66048)
-	},
-}
 
 func isConnResetOrBroken(err error) bool {
 	var opErr *net.OpError
@@ -366,10 +361,10 @@ const (
 
 type streamShard struct {
 	mu sync.RWMutex
-	m  map[uint16]chan []byte
+	m  map[uint16]chan *buf.Buffer
 }
 
-func (m *Manager) streamLoad(streamID uint16) (chan []byte, bool) {
+func (m *Manager) streamLoad(streamID uint16) (chan *buf.Buffer, bool) {
 	s := &m.streamShards[streamID&streamShardMask]
 	s.mu.RLock()
 	ch, ok := s.m[streamID]
@@ -377,7 +372,7 @@ func (m *Manager) streamLoad(streamID uint16) (chan []byte, bool) {
 	return ch, ok
 }
 
-func (m *Manager) streamStore(streamID uint16, ch chan []byte) {
+func (m *Manager) streamStore(streamID uint16, ch chan *buf.Buffer) {
 	s := &m.streamShards[streamID&streamShardMask]
 	s.mu.Lock()
 	s.m[streamID] = ch
@@ -401,7 +396,7 @@ func (m *Manager) streamExists(streamID uint16) bool {
 
 func (m *Manager) initStreamShards() {
 	for i := range m.streamShards {
-		m.streamShards[i].m = make(map[uint16]chan []byte)
+		m.streamShards[i].m = make(map[uint16]chan *buf.Buffer)
 	}
 }
 
@@ -416,7 +411,7 @@ type Manager struct {
 	activePool    []*managedConn
 	drainingConns []*managedConn
 	streamConns   map[uint16]*managedConn
-	readCh        chan []byte
+	readCh        chan *buf.Buffer
 
 	streamShards [streamShardCount]streamShard
 
@@ -549,7 +544,7 @@ func New(cfg *Config) (*Manager, error) {
 		config:                cfg,
 		state:                 StateDisconnected,
 		streamConns:           make(map[uint16]*managedConn),
-		readCh:                make(chan []byte, 4096),
+		readCh:                make(chan *buf.Buffer, 4096),
 		goroutineLimiter:      base.NewGoroutineLimiter(1024),
 		reconnectDone:         make(chan struct{}),
 		forceObfuscation:      forceObfs,
@@ -2346,13 +2341,13 @@ func (m *Manager) readLoop(mc *managedConn) {
 					isWrappedFrame := false
 
 					if peek[0] == 0x17 {
-						buf := make([]byte, tlsLen)
-						if _, err := io.ReadFull(reader, buf); err != nil {
+						tlsPayload := make([]byte, tlsLen)
+						if _, err := io.ReadFull(reader, tlsPayload); err != nil {
 							m.handleReadError(mc, err)
 							return
 						}
 
-						processBuf := buf
+						processBuf := tlsPayload
 						for layer := 0; layer < 5; layer++ {
 							if len(processBuf) >= FrameHeaderSize {
 								pLen := binary.BigEndian.Uint32(processBuf[4:8])
@@ -2388,10 +2383,13 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 										m.UpdateActivity()
 
+										b := buf.NewSize(len(frameData))
+										b.Write(frameData)
 										select {
-										case m.readCh <- frameData:
+										case m.readCh <- b:
 											atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
 										case <-mc.closing:
+											b.Release()
 											return
 										}
 
@@ -2418,12 +2416,12 @@ func (m *Manager) readLoop(mc *managedConn) {
 							continue
 						}
 
-						if len(buf) > 0 {
-							headerPeek := buf
+						if len(tlsPayload) > 0 {
+							headerPeek := tlsPayload
 							if len(headerPeek) > 16 {
 								headerPeek = headerPeek[:16]
 							}
-							log.Warn("Failed to unwrap TLS AppData (Len=%d). First 16 bytes: %x", len(buf), headerPeek)
+							log.Warn("Failed to unwrap TLS AppData (Len=%d). First 16 bytes: %x", len(tlsPayload), headerPeek)
 						}
 					}
 
@@ -2524,18 +2522,14 @@ func (m *Manager) readLoop(mc *managedConn) {
 		}
 
 		needed := FrameHeaderSize + int(payloadLen)
-		var frameData []byte
-		if needed <= 66048 {
-			frameData = bufferPool.Get().([]byte)
-			frameData = frameData[:needed]
-		} else {
-			frameData = make([]byte, needed)
-		}
+		b := buf.NewSize(needed)
+		frameData := b.Extend(needed)
 
 		copy(frameData, header)
 
 		if payloadLen > 0 {
 			if _, err := io.ReadFull(reader, frameData[FrameHeaderSize:]); err != nil {
+				b.Release()
 				m.handleReadError(mc, err)
 				return
 			}
@@ -2561,12 +2555,14 @@ func (m *Manager) readLoop(mc *managedConn) {
 					m.jitterAgent.RecordOutcome(quality)
 				}
 			}
+			b.Release()
 			continue
 		}
 
 		if len(frameData) >= 3 && frameData[2] == FrameTypeRekey {
 			log.Info("[REKEY] Received rekey acknowledgement from server")
 			m.lastPong = time.Now()
+			b.Release()
 			continue
 		}
 
@@ -2578,18 +2574,20 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 		if exists {
 			select {
-			case ch <- frameData:
+			case ch <- b:
 				atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
 				m.UpdateActivity()
 			default:
 				log.Warn("Stream %d buffer full, dropping frame", streamID)
+				b.Release()
 			}
 		} else {
 			select {
-			case m.readCh <- frameData:
+			case m.readCh <- b:
 				atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
 				m.UpdateActivity()
 			case <-mc.closing:
+				b.Release()
 				return
 			}
 		}
@@ -2615,40 +2613,20 @@ func (m *Manager) handleReadError(mc *managedConn, err error) {
 	}
 }
 
-func (m *Manager) Receive(buf []byte) (int, error) {
+func (m *Manager) Receive(dst []byte) (int, error) {
 	packet, ok := <-m.readCh
 	if !ok {
 		return 0, fmt.Errorf("tunnel closed")
 	}
-
-	if len(packet) > len(buf) {
-		log.Error("Receive buffer too small for packet (%d > %d)", len(packet), len(buf))
-		if cap(packet) == 66048 {
-			bufferPool.Put(packet)
-		}
+	data := packet.Bytes()
+	if len(data) > len(dst) {
+		log.Error("Receive buffer too small for packet (%d > %d)", len(data), len(dst))
+		packet.Release()
 		return 0, fmt.Errorf("buffer too small")
 	}
-
-	copy(buf, packet)
-
-	if cap(packet) == 66048 {
-		bufferPool.Put(packet)
-	}
-
-	n := len(packet)
+	n := copy(dst, data)
+	packet.Release()
 	return n, nil
-}
-
-func (m *Manager) ReceivePacket() ([]byte, error) {
-	packet, ok := <-m.readCh
-	if !ok {
-		return nil, fmt.Errorf("tunnel closed")
-	}
-	return packet, nil
-}
-
-func (m *Manager) Recycle(buf []byte) {
-	bufferPool.Put(buf)
 }
 
 func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
@@ -3348,7 +3326,7 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 		return nil, fmt.Errorf("failed to allocate stream ID")
 	}
 
-	ch := make(chan []byte, 4096)
+	ch := make(chan *buf.Buffer, 4096)
 	m.streamStore(streamID, ch)
 
 	var proto byte = 0x06
@@ -3396,7 +3374,8 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 type StreamConn struct {
 	streamID  uint16
 	manager   *Manager
-	readCh    chan []byte
+	readCh    chan *buf.Buffer
+	readBuf   []byte
 	done      chan struct{}
 	closeOnce sync.Once
 	local     net.Addr
@@ -3404,17 +3383,28 @@ type StreamConn struct {
 }
 
 func (s *StreamConn) Read(b []byte) (n int, err error) {
+	if len(s.readBuf) > 0 {
+		n = copy(b, s.readBuf)
+		s.readBuf = s.readBuf[n:]
+		return n, nil
+	}
 	select {
-	case data, ok := <-s.readCh:
+	case frame, ok := <-s.readCh:
 		if !ok {
 			return 0, io.EOF
 		}
+		data := frame.Bytes()
 		if len(data) <= FrameHeaderSize {
+			frame.Release()
 			return 0, nil
 		}
 		payload := data[FrameHeaderSize:]
-		copy(b, payload)
-		return len(payload), nil
+		n = copy(b, payload)
+		if n < len(payload) {
+			s.readBuf = append(s.readBuf[:0], payload[n:]...)
+		}
+		frame.Release()
+		return n, nil
 	case <-s.done:
 		return 0, io.EOF
 	}
@@ -3436,12 +3426,8 @@ func (s *StreamConn) Write(b []byte) (n int, err error) {
 		chunk := b[total:end]
 
 		frameLen := FrameHeaderSize + len(chunk)
-		frame := bufferPool.Get().([]byte)
-		if cap(frame) < frameLen {
-			frame = make([]byte, frameLen)
-		} else {
-			frame = frame[:frameLen]
-		}
+		fb := buf.NewSize(frameLen)
+		frame := fb.Extend(frameLen)
 
 		binary.BigEndian.PutUint16(frame[0:2], s.streamID)
 		frame[2] = 0x02
@@ -3450,7 +3436,7 @@ func (s *StreamConn) Write(b []byte) (n int, err error) {
 		copy(frame[8:], chunk)
 
 		sendErr := s.manager.Send(frame)
-		bufferPool.Put(frame[:cap(frame)])
+		fb.Release()
 		if sendErr != nil {
 			return total, sendErr
 		}
