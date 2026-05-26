@@ -10,9 +10,10 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 )
 
 type ResolverType string
@@ -57,10 +58,9 @@ type CacheEntry struct {
 }
 
 type Resolver struct {
-	config  *Config
-	cache   map[string]*CacheEntry
-	cacheMu sync.RWMutex
-	client  *http.Client
+	config *Config
+	cache  *lru.Cache[string, *CacheEntry]
+	client *http.Client
 
 	queries   uint64
 	cacheHits uint64
@@ -72,10 +72,11 @@ func NewResolver(cfg *Config) *Resolver {
 		cfg = DefaultConfig()
 	}
 
+	cache, _ := lru.New[string, *CacheEntry](cfg.CacheSize)
 	ipv4Dialer := &net.Dialer{}
-	r := &Resolver{
+	return &Resolver{
 		config: cfg,
-		cache:  make(map[string]*CacheEntry),
+		cache:  cache,
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 			Transport: &http.Transport{
@@ -88,10 +89,6 @@ func NewResolver(cfg *Config) *Resolver {
 			},
 		},
 	}
-
-	go r.cacheCleanup()
-
-	return r
 }
 
 func (r *Resolver) Resolve(ctx context.Context, host string) ([]net.IP, error) {
@@ -311,10 +308,7 @@ func (r *Resolver) doTQuery(ctx context.Context, server string, query []byte) ([
 }
 
 func (r *Resolver) getFromCache(host string) []net.IP {
-	r.cacheMu.RLock()
-	entry, ok := r.cache[strings.ToLower(host)]
-	r.cacheMu.RUnlock()
-
+	entry, ok := r.cache.Get(strings.ToLower(host))
 	if !ok || time.Now().After(entry.ExpiresAt) {
 		return nil
 	}
@@ -322,41 +316,10 @@ func (r *Resolver) getFromCache(host string) []net.IP {
 }
 
 func (r *Resolver) putToCache(host string, ips []net.IP) {
-	r.cacheMu.Lock()
-	defer r.cacheMu.Unlock()
-
-	if len(r.cache) >= r.config.CacheSize {
-		var oldestKey string
-		var oldestTime time.Time
-		for k, v := range r.cache {
-			if oldestKey == "" || v.ExpiresAt.Before(oldestTime) {
-				oldestKey = k
-				oldestTime = v.ExpiresAt
-			}
-		}
-		delete(r.cache, oldestKey)
-	}
-
-	r.cache[strings.ToLower(host)] = &CacheEntry{
+	r.cache.Add(strings.ToLower(host), &CacheEntry{
 		IPs:       ips,
 		ExpiresAt: time.Now().Add(r.config.CacheTTL),
-	}
-}
-
-func (r *Resolver) cacheCleanup() {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		r.cacheMu.Lock()
-		now := time.Now()
-		for k, v := range r.cache {
-			if now.After(v.ExpiresAt) {
-				delete(r.cache, k)
-			}
-		}
-		r.cacheMu.Unlock()
-	}
+	})
 }
 
 func (r *Resolver) Stats() (queries, hits, misses uint64) {
@@ -364,10 +327,9 @@ func (r *Resolver) Stats() (queries, hits, misses uint64) {
 		atomic.LoadUint64(&r.cacheHits),
 		atomic.LoadUint64(&r.cacheMiss)
 }
+
 func (r *Resolver) ClearCache() {
-	r.cacheMu.Lock()
-	r.cache = make(map[string]*CacheEntry)
-	r.cacheMu.Unlock()
+	r.cache.Purge()
 }
 
 func buildDNSQuery(host string, qtype uint16) []byte {
