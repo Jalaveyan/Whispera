@@ -10,9 +10,9 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	utls "github.com/refraction-networking/utls"
 
 	"whispera/internal/logger"
@@ -21,8 +21,7 @@ import (
 var log = logger.Module("asn_bypass")
 
 type ECHProvider struct {
-	mu          sync.RWMutex
-	configs     map[string]*ECHDomainConfig
+	configs     *lru.Cache[string, *ECHDomainConfig]
 	httpClient  *http.Client
 	cacheExpiry time.Duration
 }
@@ -39,8 +38,9 @@ type ECHDomainConfig struct {
 }
 
 func NewECHProvider() *ECHProvider {
+	configs, _ := lru.New[string, *ECHDomainConfig](1024)
 	return &ECHProvider{
-		configs:     make(map[string]*ECHDomainConfig),
+		configs:     configs,
 		cacheExpiry: 24 * time.Hour,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
@@ -49,11 +49,7 @@ func NewECHProvider() *ECHProvider {
 }
 
 func (p *ECHProvider) GetConfig(ctx context.Context, domain string) (*ECHDomainConfig, error) {
-	p.mu.RLock()
-	cfg, exists := p.configs[domain]
-	p.mu.RUnlock()
-
-	if exists && cfg.Valid && time.Since(cfg.LastFetched) < p.cacheExpiry {
+	if cfg, exists := p.configs.Get(domain); exists && cfg.Valid && time.Since(cfg.LastFetched) < p.cacheExpiry {
 		return cfg, nil
 	}
 
@@ -270,9 +266,7 @@ func (p *ECHProvider) tryCloudflareECH(_ context.Context, domain string) (*ECHDo
 }
 
 func (p *ECHProvider) cacheConfig(domain string, cfg *ECHDomainConfig) {
-	p.mu.Lock()
-	p.configs[domain] = cfg
-	p.mu.Unlock()
+	p.configs.Add(domain, cfg)
 }
 
 func extractECHFromHTTPS(data string) []byte {

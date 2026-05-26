@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"golang.org/x/crypto/hkdf"
 
 	"whispera/internal/buf"
@@ -30,12 +31,15 @@ type Keys struct {
 	Behavior []byte
 }
 
-var deriveKeysCache sync.Map
+var deriveKeysCache = func() *lru.Cache[[32]byte, *Keys] {
+	c, _ := lru.New[[32]byte, *Keys](1024)
+	return c
+}()
 
 func DeriveKeys(sharedSecret []byte) *Keys {
 	cacheKey := sha256.Sum256(sharedSecret)
-	if v, ok := deriveKeysCache.Load(cacheKey); ok {
-		return v.(*Keys)
+	if v, ok := deriveKeysCache.Get(cacheKey); ok {
+		return v
 	}
 
 	derive := func(info string) []byte {
@@ -51,7 +55,7 @@ func DeriveKeys(sharedSecret []byte) *Keys {
 		Auth:     derive("chameleon-auth-v1"),
 		Behavior: derive("chameleon-behavior-v1"),
 	}
-	deriveKeysCache.Store(cacheKey, keys)
+	deriveKeysCache.Add(cacheKey, keys)
 	return keys
 }
 

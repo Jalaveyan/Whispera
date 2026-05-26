@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
+
 	"whispera/internal/adblock"
 	"whispera/internal/core/base"
 	"whispera/internal/logger"
@@ -52,20 +54,22 @@ type Config struct {
 
 type Proxy struct {
 	*base.Module
-	cfg    *Config
-	caMu   sync.RWMutex
-	caCert *x509.Certificate
-	caKey  *ecdsa.PrivateKey
-	certMu sync.Map
+	cfg     *Config
+	caMu    sync.RWMutex
+	caCert  *x509.Certificate
+	caKey   *ecdsa.PrivateKey
+	hostCerts *lru.Cache[string, *tls.Certificate]
 }
 
 func New(cfg *Config) (*Proxy, error) {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = "127.0.0.1:10899"
 	}
+	hostCerts, _ := lru.New[string, *tls.Certificate](2048)
 	p := &Proxy{
-		Module: base.NewModule("mitm.proxy", "1.0.0", nil),
-		cfg:    cfg,
+		Module:    base.NewModule("mitm.proxy", "1.0.0", nil),
+		cfg:       cfg,
+		hostCerts: hostCerts,
 	}
 	if err := p.generateCA(); err != nil {
 		return nil, fmt.Errorf("mitm ca: %w", err)
@@ -114,8 +118,8 @@ func (p *Proxy) CACertPEM() []byte {
 }
 
 func (p *Proxy) signHostCert(host string) (*tls.Certificate, error) {
-	if cached, ok := p.certMu.Load(host); ok {
-		return cached.(*tls.Certificate), nil
+	if cached, ok := p.hostCerts.Get(host); ok {
+		return cached, nil
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -156,7 +160,7 @@ func (p *Proxy) signHostCert(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.certMu.Store(host, &tlsCert)
+	p.hostCerts.Add(host, &tlsCert)
 	return &tlsCert, nil
 }
 
