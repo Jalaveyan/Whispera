@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"whispera/internal/adblock"
+	"whispera/internal/buf"
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
@@ -82,13 +83,6 @@ func (c *Config) Validate() error {
 		c.MaxStreams = 10000
 	}
 	return nil
-}
-
-var tcpCopyBufPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, 512*1024)
-		return &buf
-	},
 }
 
 var udpCopyBufPool = sync.Pool{
@@ -596,9 +590,9 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 			defer target.Close()
 			bufp := udpCopyBufPool.Get().(*[]byte)
 			defer udpCopyBufPool.Put(bufp)
-			buf := *bufp
-			hdr := buf[:2]
-			data := buf[2:]
+			localBuf := *bufp
+			hdr := localBuf[:2]
+			data := localBuf[2:]
 			var n int64
 			for {
 				if _, err := io.ReadFull(stream, hdr); err != nil {
@@ -621,20 +615,20 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 				n += int64(sz)
 			}
 		}()
-		go func() {
+		func() {
 			defer stream.Close()
 			bufp := udpCopyBufPool.Get().(*[]byte)
 			defer udpCopyBufPool.Put(bufp)
-			buf := *bufp
+			localBuf := *bufp
 			var n int64
 			for {
-				r, err := target.Read(buf[2:])
+				r, err := target.Read(localBuf[2:])
 				if err != nil {
 					resCh <- copyResult{n, err, "down"}
 					return
 				}
-				binary.BigEndian.PutUint16(buf[:2], uint16(r))
-				if _, err := stream.Write(buf[:2+r]); err != nil {
+				binary.BigEndian.PutUint16(localBuf[:2], uint16(r))
+				if _, err := stream.Write(localBuf[:2+r]); err != nil {
 					resCh <- copyResult{n, err, "down"}
 					return
 				}
@@ -644,24 +638,18 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	} else {
 		go func() {
 			defer target.Close()
-			bufp := tcpCopyBufPool.Get().(*[]byte)
-			defer tcpCopyBufPool.Put(bufp)
-			n, err := io.CopyBuffer(target, stream, *bufp)
+			n, err := buf.Copy(buf.NewReader(stream), buf.NewWriter(target))
 			if tc, ok := target.(*net.TCPConn); ok {
 				tc.CloseWrite()
 			}
 			resCh <- copyResult{n, err, "up"}
 		}()
-		go func() {
-			defer stream.Close()
-			bufp := tcpCopyBufPool.Get().(*[]byte)
-			defer tcpCopyBufPool.Put(bufp)
-			n, err := io.CopyBuffer(stream, target, *bufp)
-			if tc, ok := stream.(*net.TCPConn); ok {
-				tc.CloseWrite()
-			}
-			resCh <- copyResult{n, err, "down"}
-		}()
+		n, err := buf.Copy(buf.NewReader(target), buf.NewWriter(stream))
+		if tc, ok := stream.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
+		stream.Close()
+		resCh <- copyResult{n, err, "down"}
 	}
 	r1 := <-resCh
 	r2 := <-resCh

@@ -19,13 +19,34 @@ import (
 	"crypto/tls"
 
 	utls "github.com/refraction-networking/utls"
+
+	"whispera/internal/buf"
 )
 
-var uploadBufPool = sync.Pool{New: func() any { b := make([]byte, 0, 4096); return &b }}
+const uploadBodyMax = 700 * 1024
 
-// mp4FtypAtom is a minimal valid MP4 ftyp box prepended to every download
-// response so the first bytes match the MP4 signature that DPI sniffers check.
-// size=24 "ftyp" major="isom" ver=0x200 compat="isom","mp42"
+type uploadBody struct {
+	data []byte
+}
+
+var uploadBodyPool = sync.Pool{
+	New: func() any { return &uploadBody{data: make([]byte, uploadBodyMax)} },
+}
+
+func acquireUploadBody() *uploadBody {
+	ub := uploadBodyPool.Get().(*uploadBody)
+	ub.data = ub.data[:cap(ub.data)]
+	return ub
+}
+
+func releaseUploadBody(ub *uploadBody) {
+	if ub == nil {
+		return
+	}
+	ub.data = ub.data[:cap(ub.data)]
+	uploadBodyPool.Put(ub)
+}
+
 var mp4FtypAtom = [24]byte{
 	0x00, 0x00, 0x00, 0x18,
 	0x66, 0x74, 0x79, 0x70,
@@ -35,7 +56,6 @@ var mp4FtypAtom = [24]byte{
 	0x6D, 0x70, 0x34, 0x32,
 }
 
-// ── HLS path helpers ─────────────────────────────────────────────────────────
 
 func hlsSessionKey(sessionID []byte) string { return hex.EncodeToString(sessionID) }
 
@@ -47,16 +67,14 @@ func hlsSegmentPath(sessionID []byte, n uint64) string {
 	return fmt.Sprintf("/video/%s/seg%04d.ts", hlsSessionKey(sessionID), n)
 }
 
-// hlsKeyFromPath extracts the 32-hex session key from an HLS URL path.
 func hlsKeyFromPath(path string) string {
-	parts := strings.SplitN(path, "/", 4) // ["","video","{key}","seg*.ts"]
+	parts := strings.SplitN(path, "/", 4)
 	if len(parts) < 4 || parts[1] != "video" || len(parts[2]) != 32 {
 		return ""
 	}
 	return parts[2]
 }
 
-// hlsM3U8 returns a minimal live-HLS playlist; segment names are relative.
 func hlsM3U8(startSeg uint64) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n")
@@ -67,19 +85,13 @@ func hlsM3U8(startSeg uint64) string {
 	return sb.String()
 }
 
-// ── HLS segment routing ──────────────────────────────────────────────────────
 
-// segSlot carries one HTTP response writer to the segmentRouter.
-// The segment handler blocks until done is closed by the router.
 type segSlot struct {
 	w     io.Writer
 	flush func()
 	done  chan struct{}
 }
 
-// segmentRouter implements io.Writer, routing FrameConn frames across sequential
-// HTTP segment responses. Each call to Write() is one complete encrypted frame.
-// A segment ends (at a frame boundary) once its byte budget is exhausted.
 type segmentRouter struct {
 	sess        *restSession
 	behaviorKey []byte
@@ -123,8 +135,6 @@ func (r *segmentRouter) acquireSlot() (*segSlot, error) {
 	}
 }
 
-// Write routes one encrypted frame to the current segment, rotating to the
-// next segment after the budget is reached.
 func (r *segmentRouter) Write(b []byte) (int, error) {
 	s, err := r.acquireSlot()
 	if err != nil {
@@ -149,7 +159,6 @@ func (r *segmentRouter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// ── REST path tables ────────────────────────────────────────────────────────
 
 var restUploadPathsByMethod = map[string][]string{
 	http.MethodPost: {
@@ -174,7 +183,6 @@ var restUploadPathsByMethod = map[string][]string{
 	},
 }
 
-// POST 60%, PUT 20%, PATCH 20%
 var restUploadMethods = []string{
 	http.MethodPost, http.MethodPost, http.MethodPost,
 	http.MethodPut,
@@ -196,24 +204,14 @@ func restUploadPath(method string) string {
 	return paths[mrand.Intn(len(paths))]
 }
 
-// ── GAN shaping interface ────────────────────────────────────────────────────
 
-// GANAction is returned by GANDecideFunc to shape individual writes.
 type GANAction struct {
-	SleepMs  float64 // sleep before the write to match target IAT distribution
-	PaddingN int     // bytes of padding to inject between data writes (0 = none)
+	SleepMs  float64
+	PaddingN int
 }
 
-// GANDecideFunc is called on every write with live flow stats.
-// iatMean — mean inter-write interval (seconds) so far in this session.
-// sizeMean — mean write size (bytes) so far.
-// upRatio — fraction of bytes that were uploads (upload/(upload+download)).
 type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
 
-// StreamingBiasGANDecide returns a GANDecideFunc that injects padding bytes into
-// the download stream to maintain the target download/upload ratio.
-// targetRatio = desired download-to-upload ratio (e.g. 10.0 for HLS video streaming).
-// When the observed upRatio is above target, padding nudges the ratio back down.
 func StreamingBiasGANDecide(targetRatio float64) GANDecideFunc {
 	targetUpRatio := 1.0 / (1.0 + targetRatio)
 	return func(_, _, upRatio float64) GANAction {
@@ -232,19 +230,16 @@ func StreamingBiasGANDecide(targetRatio float64) GANDecideFunc {
 	}
 }
 
-// ── Server-side session ──────────────────────────────────────────────────────
 
-// restSession is created by the download handler and written to by upload handlers.
 type restSession struct {
-	uploadCh      chan []byte
-	segCh         chan segSlot // HLS: sequential segment writers arrive here (buffered 1)
+	uploadCh      chan *uploadBody
+	segCh         chan segSlot
 	closed        chan struct{}
 	secret        []byte
-	uploadBytes   int64 // atomic — cumulative upload bytes for upRatio computation
-	downloadBytes int64 // atomic — cumulative download bytes for upRatio computation
+	uploadBytes   int64
+	downloadBytes int64
 }
 
-// ── Server-side net.Conn ─────────────────────────────────────────────────────
 
 type restServerConn struct {
 	sess    *restSession
@@ -260,7 +255,6 @@ type restServerConn struct {
 	localAddr  net.Addr
 	remoteAddr net.Addr
 
-	// live flow stats for GAN shaping
 	ganDecide  GANDecideFunc
 	lastWrite  time.Time
 	iatSum     float64
@@ -290,14 +284,15 @@ func (c *restServerConn) Read(b []byte) (int, error) {
 			return n, nil
 		}
 		select {
-		case chunk, ok := <-c.sess.uploadCh:
+		case ub, ok := <-c.sess.uploadCh:
 			if !ok {
 				return 0, io.EOF
 			}
-			n := copy(b, chunk)
-			if n < len(chunk) {
-				c.readBuf = append(c.readBuf[:0], chunk[n:]...)
+			n := copy(b, ub.data)
+			if n < len(ub.data) {
+				c.readBuf = append(c.readBuf[:0], ub.data[n:]...)
 			}
+			releaseUploadBody(ub)
 			return n, nil
 		case <-c.done:
 			return 0, io.EOF
@@ -317,7 +312,6 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 		}
 	}()
 
-	// GAN-driven timing shaping.
 	if c.ganDecide != nil {
 		now := time.Now()
 		if !c.lastWrite.IsZero() {
@@ -373,13 +367,12 @@ func (c *restServerConn) SetDeadline(t time.Time) error     { return nil }
 func (c *restServerConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *restServerConn) SetWriteDeadline(t time.Time) error { return nil }
 
-// ── Client-side net.Conn ─────────────────────────────────────────────────────
 
 type restClientConn struct {
 	bodyCh  chan io.ReadCloser
 	curBody io.ReadCloser
 
-	uploadCh chan []byte
+	uploadCh chan *buf.Buffer
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -392,7 +385,7 @@ type restClientConn struct {
 func newRestClientConn(ctx context.Context, cancel context.CancelFunc, local, remote net.Addr) *restClientConn {
 	return &restClientConn{
 		bodyCh:     make(chan io.ReadCloser, 4),
-		uploadCh:   make(chan []byte, 512),
+		uploadCh:   make(chan *buf.Buffer, 512),
 		ctx:        ctx,
 		cancel:     cancel,
 		localAddr:  local,
@@ -426,15 +419,14 @@ func (c *restClientConn) Read(b []byte) (int, error) {
 	}
 }
 
-func (c *restClientConn) Write(b []byte) (int, error) {
-	bufp := uploadBufPool.Get().(*[]byte)
-	cp := append((*bufp)[:0], b...)
-	*bufp = cp
+func (c *restClientConn) Write(p []byte) (int, error) {
+	b := buf.NewSize(len(p))
+	b.Write(p)
 	select {
-	case c.uploadCh <- cp:
-		return len(b), nil
+	case c.uploadCh <- b:
+		return len(p), nil
 	case <-c.ctx.Done():
-		uploadBufPool.Put(bufp)
+		b.Release()
 		return 0, io.ErrClosedPipe
 	}
 }
@@ -460,29 +452,26 @@ func (c *restClientConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *restClientConn) SetWriteDeadline(t time.Time) error { return nil }
 
 
-// ── Client goroutines ────────────────────────────────────────────────────────
 
-func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, origin, sessionHdr, token string, uploadCh <-chan []byte) {
-	var buf []byte
+func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, origin, sessionHdr, token string, uploadCh <-chan *buf.Buffer) {
+	var coalesce []byte
 	for {
-		buf = buf[:0]
+		coalesce = coalesce[:0]
 
-		// Block until first chunk — zero spin when idle.
 		select {
-		case data := <-uploadCh:
-			buf = append(buf, data...)
-			uploadBufPool.Put(&data)
+		case b := <-uploadCh:
+			coalesce = append(coalesce, b.Bytes()...)
+			b.Release()
 		case <-ctx.Done():
 			return
 		}
 
-		// Non-blocking drain: grab everything already queued without waiting.
 	drain:
-		for len(buf) < 512*1024 {
+		for len(coalesce) < 512*1024 {
 			select {
-			case data := <-uploadCh:
-				buf = append(buf, data...)
-				uploadBufPool.Put(&data)
+			case b := <-uploadCh:
+				coalesce = append(coalesce, b.Bytes()...)
+				b.Release()
 			case <-ctx.Done():
 				return
 			default:
@@ -494,7 +483,7 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 		path := restUploadPath(method)
 		url := fmt.Sprintf("https://%s%s", serverAddr, path)
 
-		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(buf))
+		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(coalesce))
 		if err != nil {
 			continue
 		}
@@ -516,8 +505,6 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 	}
 }
 
-// runRESTDecoy sends periodic DELETE and OPTIONS requests (no auth) to simulate
-// normal browser cache cleanup and CORS preflight activity.
 func runRESTDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string) {
 	doDelete := func() {
 		path := restDecoyDeletePaths[mrand.Intn(len(restDecoyDeletePaths))]
@@ -576,11 +563,7 @@ func runRESTDecoy(ctx context.Context, client *http.Client, serverAddr, sni, ori
 	}()
 }
 
-// ── RESTClient ───────────────────────────────────────────────────────────────
 
-// RESTClient connects to the chameleon server using the REST transport:
-// a persistent GET for the download channel and short POST/PUT/PATCH chunks
-// for the upload channel, together resembling a real-time web app.
 func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	sessionID := make([]byte, 16)
 	if _, err := crand.Read(sessionID); err != nil {
@@ -631,7 +614,6 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	conn := newRestClientConn(tunnelCtx, tunnelCancel, local, remote)
 	client := &http.Client{Transport: h2t}
 
-	// hlsGet issues one authenticated GET and returns the response.
 	hlsGet := func(path string) (*http.Response, error) {
 		u := fmt.Sprintf("https://%s%s", cfg.ServerAddr, path)
 		req, err := http.NewRequestWithContext(tunnelCtx, http.MethodGet, u, nil)
@@ -645,7 +627,6 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 		return client.Do(req)
 	}
 
-	// 1. GET playlist — establishes the session on the server.
 	playlistReady := make(chan error, 1)
 	go func() {
 		resp, err := hlsGet(hlsPlaylistPath(sessionID))
@@ -677,9 +658,6 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 		return nil, ctx.Err()
 	}
 
-	// 2. Sequential segment GETs with 1-slot pre-fetch.
-	// Pre-fetching starts immediately when a segment response arrives (before
-	// reading its body), giving the full segment read time as pre-fetch window.
 	type segResult struct {
 		resp *http.Response
 		err  error
@@ -731,9 +709,7 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	return NewFrameConn(conn), nil
 }
 
-// ── Server handlers ──────────────────────────────────────────────────────────
 
-// handleRESTDownload handles GET requests that establish the download channel.
 func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	tokenHdr := r.Header.Get(headerToken)
 	sessCookie, cookieErr := r.Cookie(sessionCookie)
@@ -763,10 +739,8 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 
 	log.Printf("chameleon: REST authenticated user=%s from %s", userID, r.RemoteAddr)
 
-	// Store session before sending 200 so that upload handlers can find it
-	// immediately after the client receives the OK response.
 	sess := &restSession{
-		uploadCh: make(chan []byte, 512),
+		uploadCh: make(chan *uploadBody, 512),
 		closed:   make(chan struct{}),
 		secret:   secret,
 	}
@@ -799,7 +773,6 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	done := make(chan struct{})
 	conn := newRestServerConn(sess, w, local, remote, func() { close(done) }, decide)
 
-	// Close conn if the HTTP request context dies (client disconnect).
 	go func() {
 		select {
 		case <-r.Context().Done():
@@ -851,11 +824,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	<-done
 }
 
-// ── HLS server handlers ──────────────────────────────────────────────────────
 
-// handleHLSPlaylist handles GET /video/{sid}/index.m3u8 — authenticates the
-// client, creates the session, sends an HLS playlist, then blocks while
-// sequential segment handlers fill the FrameConn download stream.
 func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	tokenHdr := r.Header.Get(headerToken)
 	sessCookie, cookieErr := r.Cookie(sessionCookie)
@@ -887,7 +856,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	log.Printf("chameleon: HLS authenticated user=%s from %s", userID, r.RemoteAddr)
 
 	sess := &restSession{
-		uploadCh: make(chan []byte, 512),
+		uploadCh: make(chan *uploadBody, 512),
 		segCh:    make(chan segSlot, 1),
 		closed:   make(chan struct{}),
 		secret:   secret,
@@ -904,8 +873,6 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
-	// Handler returns here → HTTP/2 sends END_STREAM → client unblocks.
-	// Tunnel runs in a goroutine so the session outlives the HTTP handler.
 
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
@@ -965,8 +932,6 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}()
 }
 
-// handleHLSSegment handles GET /video/{sid}/seg{n}.ts — delivers exactly one
-// HLS segment worth of FrameConn data and returns when the budget is exhausted.
 func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	sessionKey := hlsKeyFromPath(r.URL.Path)
 	if sessionKey == "" {
@@ -1009,9 +974,6 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 }
 
-// handleRESTUpload handles POST/PUT/PATCH requests that feed the upload channel.
-// Authentication is implicit: the 16-byte random sessionID is a capability token —
-// only a client that received a valid GET 200 knows it. No resolveSecret needed.
 func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	sessCookie, err := r.Cookie(sessionCookie)
 	if err != nil {
@@ -1036,12 +998,15 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 700*1024))
+	ub := acquireUploadBody()
+	n, err := io.ReadFull(io.LimitReader(r.Body, int64(len(ub.data))), ub.data)
 	r.Body.Close()
-	if err != nil {
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		releaseUploadBody(ub)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	ub.data = ub.data[:n]
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -1050,17 +1015,21 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		f.Flush()
 	}
 
-	if len(body) > 0 {
-		atomic.AddInt64(&sess.uploadBytes, int64(len(body)))
-		select {
-		case sess.uploadCh <- body:
-		case <-sess.closed:
-		case <-r.Context().Done():
-		}
+	if n == 0 {
+		releaseUploadBody(ub)
+		return
+	}
+
+	atomic.AddInt64(&sess.uploadBytes, int64(n))
+	select {
+	case sess.uploadCh <- ub:
+	case <-sess.closed:
+		releaseUploadBody(ub)
+	case <-r.Context().Done():
+		releaseUploadBody(ub)
 	}
 }
 
-// handleRESTOptions returns CORS preflight response (decoy + real functionality).
 func handleRESTOptions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
@@ -1069,7 +1038,6 @@ func handleRESTOptions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRESTDelete returns a realistic DELETE response (decoy).
 func handleRESTDelete(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

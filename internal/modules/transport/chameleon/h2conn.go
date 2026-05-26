@@ -6,11 +6,13 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"whispera/internal/buf"
 )
 
 type bufferedPipeWriter struct {
 	pw   *io.PipeWriter
-	ch   chan []byte
+	ch   chan *buf.Buffer
 	done chan struct{}
 	once sync.Once
 }
@@ -18,49 +20,54 @@ type bufferedPipeWriter struct {
 func newBufferedPipeWriter(pw *io.PipeWriter) *bufferedPipeWriter {
 	b := &bufferedPipeWriter{
 		pw:   pw,
-		ch:   make(chan []byte, 1024),
+		ch:   make(chan *buf.Buffer, 1024),
 		done: make(chan struct{}),
 	}
 	go b.drain()
 	return b
 }
 
-func (b *bufferedPipeWriter) Write(p []byte) (int, error) {
-	cp := make([]byte, len(p))
-	copy(cp, p)
+func (bw *bufferedPipeWriter) Write(p []byte) (int, error) {
+	b := buf.NewSize(len(p))
+	b.Write(p)
 	select {
-	case b.ch <- cp:
+	case bw.ch <- b:
 		return len(p), nil
-	case <-b.done:
+	case <-bw.done:
+		b.Release()
 		return 0, io.ErrClosedPipe
 	}
 }
 
-func (b *bufferedPipeWriter) Close() {
-	b.once.Do(func() { close(b.done) })
+func (bw *bufferedPipeWriter) Close() {
+	bw.once.Do(func() { close(bw.done) })
 }
 
-func (b *bufferedPipeWriter) drain() {
-	defer b.pw.Close()
-	var coalesce []byte
+func (bw *bufferedPipeWriter) drain() {
+	defer bw.pw.Close()
+	var pending buf.MultiBuffer
 	for {
 		select {
-		case data := <-b.ch:
-			coalesce = append(coalesce, data...)
-		drain:
+		case b := <-bw.ch:
+			pending = append(pending, b)
+		drainLoop:
 			for {
 				select {
-				case more := <-b.ch:
-					coalesce = append(coalesce, more...)
+				case more := <-bw.ch:
+					pending = append(pending, more)
 				default:
-					break drain
+					break drainLoop
 				}
 			}
-			if _, err := b.pw.Write(coalesce); err != nil {
-				return
+			for _, b := range pending {
+				if _, err := bw.pw.Write(b.Bytes()); err != nil {
+					buf.ReleaseMulti(pending)
+					return
+				}
 			}
-			coalesce = coalesce[:0]
-		case <-b.done:
+			pending = buf.ReleaseMulti(pending)
+		case <-bw.done:
+			buf.ReleaseMulti(pending)
 			return
 		}
 	}

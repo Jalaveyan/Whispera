@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -611,7 +612,20 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 		}
 	}()
 
+	shouldSkip := func() bool {
+		if fc == nil {
+			return false
+		}
+		return atomic.LoadUint64(&fc.bytesRecent) > 8<<20
+	}
+
 	for {
+		if shouldSkip() {
+			if !sleep(bp.ParseDelayMs * 4) {
+				return
+			}
+			continue
+		}
 		nav := decoyGraph[0]
 		get(nav[mrand.Intn(len(nav))])
 		if !sleep(bp.ParseDelayMs) {

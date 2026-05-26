@@ -1,7 +1,6 @@
 package chameleon
 
 import (
-	"bufio"
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -12,10 +11,12 @@ import (
 	"sync/atomic"
 
 	"golang.org/x/crypto/hkdf"
+
+	"whispera/internal/buf"
 )
 
 var frameBufPool = sync.Pool{
-	New: func() any { b := make([]byte, 0, 5+4*1024*1024); return &b },
+	New: func() any { b := make([]byte, 0, 5+65536); return &b },
 }
 
 const (
@@ -29,7 +30,14 @@ type Keys struct {
 	Behavior []byte
 }
 
+var deriveKeysCache sync.Map
+
 func DeriveKeys(sharedSecret []byte) *Keys {
+	cacheKey := sha256.Sum256(sharedSecret)
+	if v, ok := deriveKeysCache.Load(cacheKey); ok {
+		return v.(*Keys)
+	}
+
 	derive := func(info string) []byte {
 		r := hkdf.New(sha256.New, sharedSecret, nil, []byte(info))
 		k := make([]byte, 32)
@@ -39,10 +47,12 @@ func DeriveKeys(sharedSecret []byte) *Keys {
 		return k
 	}
 
-	return &Keys{
+	keys := &Keys{
 		Auth:     derive("chameleon-auth-v1"),
 		Behavior: derive("chameleon-behavior-v1"),
 	}
+	deriveKeysCache.Store(cacheKey, keys)
+	return keys
 }
 
 type FrameConn struct {
@@ -51,16 +61,11 @@ type FrameConn struct {
 	buf     []byte
 	recvBuf []byte
 
-	bufRead *bufio.Reader
-
 	bytesRecent uint64
 }
 
 func NewFrameConn(conn net.Conn) *FrameConn {
-	return &FrameConn{
-		Conn:    conn,
-		bufRead: bufio.NewReaderSize(conn, 128*1024),
-	}
+	return &FrameConn{Conn: conn}
 }
 
 func (fc *FrameConn) writeFrame(typ byte, p []byte) error {
@@ -98,11 +103,120 @@ func (fc *FrameConn) SampleAndResetBytes() uint64 {
 	return atomic.SwapUint64(&fc.bytesRecent, 0)
 }
 
+func (fc *FrameConn) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	for {
+		if len(fc.buf) > 0 {
+			b := buf.NewSize(len(fc.buf))
+			b.Write(fc.buf)
+			fc.buf = fc.buf[:0]
+			return buf.MultiBuffer{b}, nil
+		}
+
+		var hdr [4]byte
+		if _, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
+			return nil, err
+		}
+		frameLen := binary.BigEndian.Uint32(hdr[:])
+		if frameLen == 0 || frameLen > uint32(maxFrameSize) {
+			return nil, fmt.Errorf("chameleon: bad frame len %d", frameLen)
+		}
+
+		var typ [1]byte
+		if _, err := io.ReadFull(fc.Conn, typ[:]); err != nil {
+			return nil, err
+		}
+		bodyLen := int(frameLen) - 1
+
+		if typ[0] == framePadding {
+			if _, err := io.CopyN(io.Discard, fc.Conn, int64(bodyLen)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if bodyLen <= 0 {
+			continue
+		}
+
+		var mb buf.MultiBuffer
+		remaining := bodyLen
+		for remaining > 0 {
+			b := buf.New()
+			chunk := remaining
+			if chunk > b.Cap() {
+				chunk = b.Cap()
+			}
+			slice := b.Extend(chunk)
+			if _, err := io.ReadFull(fc.Conn, slice); err != nil {
+				b.Release()
+				buf.ReleaseMulti(mb)
+				return nil, err
+			}
+			mb = append(mb, b)
+			remaining -= chunk
+		}
+		atomic.AddUint64(&fc.bytesRecent, uint64(bodyLen))
+		return mb, nil
+	}
+}
+
+func (fc *FrameConn) WriteMultiBuffer(mb buf.MultiBuffer) error {
+	defer buf.ReleaseMulti(mb)
+	if len(mb) == 0 {
+		return nil
+	}
+
+	totalSize := 0
+	for _, b := range mb {
+		if b != nil && !b.IsEmpty() {
+			totalSize += 5 + b.Len()
+		}
+	}
+	if totalSize == 0 {
+		return nil
+	}
+
+	bufp := frameBufPool.Get().(*[]byte)
+	combined := *bufp
+	if cap(combined) < totalSize {
+		combined = make([]byte, totalSize)
+	} else {
+		combined = combined[:totalSize]
+	}
+
+	off := 0
+	var payloadBytes uint64
+	for _, b := range mb {
+		if b == nil || b.IsEmpty() {
+			continue
+		}
+		data := b.Bytes()
+		binary.BigEndian.PutUint32(combined[off:off+4], uint32(1+len(data)))
+		combined[off+4] = frameTypeData
+		copy(combined[off+5:], data)
+		off += 5 + len(data)
+		payloadBytes += uint64(len(data))
+	}
+
+	fc.sendMu.Lock()
+	_, err := fc.Conn.Write(combined[:off])
+	fc.sendMu.Unlock()
+
+	*bufp = combined
+	frameBufPool.Put(bufp)
+
+	if err == nil {
+		atomic.AddUint64(&fc.bytesRecent, payloadBytes)
+	}
+	return err
+}
+
 func (fc *FrameConn) WritePad(n int) error {
 	if n <= 0 {
 		return nil
 	}
-	pad := make([]byte, n)
+	b := buf.NewSize(n)
+	defer b.Release()
+	pad := b.Extend(n)
 	crand.Read(pad)
 	fc.sendMu.Lock()
 	defer fc.sendMu.Unlock()
@@ -118,7 +232,7 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 		}
 
 		var hdr [4]byte
-		if _, err := io.ReadFull(fc.bufRead, hdr[:]); err != nil {
+		if _, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
 			return 0, err
 		}
 		frameLen := binary.BigEndian.Uint32(hdr[:])
@@ -131,7 +245,7 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 		} else {
 			fc.recvBuf = fc.recvBuf[:frameLen]
 		}
-		if _, err := io.ReadFull(fc.bufRead, fc.recvBuf); err != nil {
+		if _, err := io.ReadFull(fc.Conn, fc.recvBuf); err != nil {
 			return 0, err
 		}
 
@@ -146,8 +260,13 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 		}
 		n := copy(b, pt)
 		if n < len(pt) {
-			fc.buf = make([]byte, len(pt)-n)
-			copy(fc.buf, pt[n:])
+			leftover := pt[n:]
+			if cap(fc.buf) < len(leftover) {
+				fc.buf = make([]byte, len(leftover))
+			} else {
+				fc.buf = fc.buf[:len(leftover)]
+			}
+			copy(fc.buf, leftover)
 		}
 		atomic.AddUint64(&fc.bytesRecent, uint64(len(pt)))
 		return n, nil
