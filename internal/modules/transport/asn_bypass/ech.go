@@ -14,7 +14,11 @@ import (
 	"time"
 
 	utls "github.com/refraction-networking/utls"
+
+	"whispera/internal/logger"
 )
+
+var log = logger.Module("asn_bypass")
 
 type ECHProvider struct {
 	mu          sync.RWMutex
