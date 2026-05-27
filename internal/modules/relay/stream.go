@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/klauspost/reedsolomon"
 	"golang.org/x/net/proxy"
 )
@@ -29,10 +30,11 @@ var streamReadBufPool = sync.Pool{
 	},
 }
 
-var (
-	dnsCache   = make(map[string]dnsCacheEntry)
-	dnsCacheMu sync.RWMutex
-)
+var dnsCache *lru.Cache[string, dnsCacheEntry]
+
+func init() {
+	dnsCache, _ = lru.New[string, dnsCacheEntry](5000)
+}
 
 type dnsCacheEntry struct {
 	ips       []net.IP
@@ -54,10 +56,7 @@ var fastResolver = &net.Resolver{
 func lookupIPCached(host string) ([]net.IP, error) {
 	key := strings.ToLower(host)
 
-	dnsCacheMu.RLock()
-	entry, ok := dnsCache[key]
-	dnsCacheMu.RUnlock()
-
+	entry, ok := dnsCache.Get(key)
 	if ok && time.Now().Before(entry.expiresAt) {
 		return entry.ips, nil
 	}
@@ -73,25 +72,10 @@ func lookupIPCached(host string) ([]net.IP, error) {
 		return nil, err
 	}
 
-	dnsCacheMu.Lock()
-	dnsCache[key] = dnsCacheEntry{
+	dnsCache.Add(key, dnsCacheEntry{
 		ips:       ips,
 		expiresAt: time.Now().Add(5 * time.Minute),
-	}
-	if len(dnsCache) > 5000 {
-		now := time.Now()
-		count := 0
-		for k, v := range dnsCache {
-			if now.After(v.expiresAt) && count < 100 {
-				delete(dnsCache, k)
-				count++
-			}
-			if count >= 100 {
-				break
-			}
-		}
-	}
-	dnsCacheMu.Unlock()
+	})
 
 	return ips, nil
 }

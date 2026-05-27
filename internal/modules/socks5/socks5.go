@@ -179,15 +179,20 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	tunnel := m.tunnel
 	m.mu.RUnlock()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for tunnel == nil || !tunnel.IsConnected() {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("tunnel not ready")
+	if tunnel == nil || !tunnel.IsConnected() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		deadline := time.After(5 * time.Second)
+		for tunnel == nil || !tunnel.IsConnected() {
+			select {
+			case <-deadline:
+				return fmt.Errorf("tunnel not ready")
+			case <-ticker.C:
+			}
+			m.mu.RLock()
+			tunnel = m.tunnel
+			m.mu.RUnlock()
 		}
-		time.Sleep(100 * time.Millisecond)
-		m.mu.RLock()
-		tunnel = m.tunnel
-		m.mu.RUnlock()
 	}
 
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
@@ -235,16 +240,12 @@ func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error
 	errCh := make(chan error, 2)
 	go func() {
 		defer upstream.Close()
-		bufp := copyBufPool.Get().(*[]byte)
-		_, err := io.CopyBuffer(upstream, clientConn, *bufp)
-		copyBufPool.Put(bufp)
+		_, err := io.Copy(upstream, clientConn)
 		errCh <- err
 	}()
 	go func() {
 		defer clientConn.Close()
-		bufp := copyBufPool.Get().(*[]byte)
-		_, err := io.CopyBuffer(clientConn, upstream, *bufp)
-		copyBufPool.Put(bufp)
+		_, err := io.Copy(clientConn, upstream)
 		errCh <- err
 	}()
 	<-errCh

@@ -390,6 +390,11 @@ type ChameleonConfig struct {
 	GANIface      string `yaml:"gan_iface" json:"gan_iface"`
 	GANPort       int    `yaml:"gan_port" json:"gan_port"`
 	GANMaxPadding int    `yaml:"gan_max_padding" json:"gan_max_padding"`
+	// BrutalMbps: when >0 on Linux with the apernet/tcp-brutal kernel module
+	// loaded, accepted sockets use "brutal" congestion control paced at this
+	// rate (Mbit/s). Holds throughput on lossy/long-RTT paths where TCP backs
+	// off. No-op without the module.
+	BrutalMbps int `yaml:"brutal_mbps" json:"brutal_mbps"`
 }
 
 type ServerSettings struct {

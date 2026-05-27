@@ -101,6 +101,11 @@ type Config struct {
 
 	DecoyOrigin string
 
+	// BrutalMbps, when >0 on Linux, switches accepted TCP sockets to the
+	// "brutal" congestion control (apernet/tcp-brutal kernel module) paced at
+	// this rate in Mbit/s. No-op if the module is absent or off-Linux.
+	BrutalMbps int
+
 	OnConn func(conn net.Conn, userID string)
 
 	// GANDecide optionally shapes download writes to match target traffic profile.
@@ -247,7 +252,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc)
 
 	go func() {
-		time.Sleep(time.Duration(20+mrand.Intn(80)) * time.Millisecond)
+		time.Sleep(time.Duration(5+mrand.Intn(25)) * time.Millisecond)
 		resp, err := client.Do(req)
 		if err != nil || resp.StatusCode != http.StatusOK {
 			if resp != nil {
@@ -349,12 +354,19 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("chameleon: listen: %w", err)
 	}
-	tlsLn := tls.NewListener(&noDelayListener{rawLn.(*net.TCPListener)}, tlsCfg)
-	log.Printf("Chameleon listening on %s", listenAddr)
+	tlsLn := tls.NewListener(&noDelayListener{TCPListener: rawLn.(*net.TCPListener), brutalMbps: cfg.BrutalMbps}, tlsCfg)
+	if cfg.BrutalMbps > 0 {
+		log.Printf("Chameleon listening on %s (brutal CC @ %d Mbit/s)", listenAddr, cfg.BrutalMbps)
+	} else {
+		log.Printf("Chameleon listening on %s", listenAddr)
+	}
 	return srv.Serve(tlsLn)
 }
 
-type noDelayListener struct{ *net.TCPListener }
+type noDelayListener struct {
+	*net.TCPListener
+	brutalMbps int
+}
 
 func (l *noDelayListener) Accept() (net.Conn, error) {
 	tc, err := l.TCPListener.AcceptTCP()
@@ -364,6 +376,9 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 	tc.SetKeepAlive(true)
 	tc.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 	tc.SetNoDelay(true)
+	if l.brutalMbps > 0 {
+		setBrutalRate(tc, l.brutalMbps)
+	}
 	return tc, nil
 }
 

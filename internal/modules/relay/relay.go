@@ -499,7 +499,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	addr := string(rest[:addrLen])
 	port := binary.BigEndian.Uint16(rest[addrLen:])
 
-	s.log.Info("proxy stream: %s:%d", addr, port)
+	s.log.Debug("proxy stream: %s:%d", addr, port)
 	streamStart := time.Now()
 
 	network := "tcp"
@@ -675,7 +675,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 			s.log.Info("stream done %s:%d up=%d down=%d in %s, %s err: %v", addr, port, up, down, dur, firstDir, firstErr)
 		}
 	} else if dur > 5*time.Second || up+down > 0 {
-		s.log.Info("stream done %s:%d up=%d down=%d in %s", addr, port, up, down, dur)
+		s.log.Debug("stream done %s:%d up=%d down=%d in %s", addr, port, up, down, dur)
 	}
 }
 

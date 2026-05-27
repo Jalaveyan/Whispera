@@ -547,7 +547,7 @@ func New(cfg *Config) (*Manager, error) {
 		goroutineLimiter:      base.NewGoroutineLimiter(1024),
 		reconnectDone:         make(chan struct{}),
 		forceObfuscation:      forceObfs,
-		chameleonSessionCache: chameleon.NewSessionCache(16),
+		chameleonSessionCache: chameleon.NewSessionCache(128),
 	}
 	m.initStreamShards()
 	close(m.reconnectDone)
@@ -916,7 +916,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		idx := i
 		go func() {
 			if idx > 0 && m.config.EnableChameleon {
-				time.Sleep(time.Duration(mrand.Intn(150)) * time.Millisecond)
+				time.Sleep(time.Duration(mrand.Intn(40)) * time.Millisecond)
 			}
 			spawnConnection(idx)
 		}()
@@ -1096,20 +1096,20 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		}
 		muxConn = mux.NewPaddedConn(conn, padMax)
 	}
-	log.Warn("[dialManagedConn:%s] mux.Client starting", id)
+	log.Debug("[dialManagedConn:%s] mux.Client starting", id)
 	muxSess, err := mux.Client(muxConn, m.getMuxConfig())
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("mux: %w", err)
 	}
-	log.Warn("[dialManagedConn:%s] mux.Client OK, opening control stream", id)
+	log.Debug("[dialManagedConn:%s] mux.Client OK, opening control stream", id)
 
 	stream, err := muxSess.OpenStream()
 	if err != nil {
 		muxSess.Close()
 		return nil, fmt.Errorf("open stream: %w", err)
 	}
-	log.Warn("[dialManagedConn:%s] control stream opened, managedConn ready", id)
+	log.Debug("[dialManagedConn:%s] control stream opened, managedConn ready", id)
 
 	var controlStream net.Conn = stream
 	if m.config.EnablePhantom && !m.config.EnableChameleon {
@@ -2629,7 +2629,7 @@ func (m *Manager) Receive(dst []byte) (int, error) {
 }
 
 func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
-	log.Warn("[OpenStream] called: %s:%d (proto=0x%02x)", addr, port, proto)
+	log.Debug("[OpenStream] called: %s:%d (proto=0x%02x)", addr, port, proto)
 	for {
 		m.connMu.RLock()
 		pool := m.activePool
@@ -2699,19 +2699,46 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		return nil, fmt.Errorf("write connect header: %w", err)
 	}
 
-	proxyStream.SetDeadline(time.Now().Add(10 * time.Second))
-	resp := make([]byte, 1)
-	if _, err := io.ReadFull(proxyStream, resp); err != nil {
-		stream.Close()
-		return nil, fmt.Errorf("read connect response: %w", err)
-	}
-	proxyStream.SetDeadline(time.Time{})
-	if resp[0] != 0x00 {
-		stream.Close()
-		return nil, fmt.Errorf("relay refused connection")
-	}
+	// Optimistic (0-RTT) open: don't block on the connect ack here. The caller
+	// starts pumping client data immediately, pipelining the first request
+	// (e.g. TLS ClientHello) right behind the connect header instead of waiting
+	// a full RTT for the server's ack. The 1-byte ack is consumed lazily on the
+	// first downstream Read by ackStripConn; a non-zero ack or dial failure
+	// surfaces there as a read error, tearing the stream down (the app retries).
+	return &ackStripConn{Conn: proxyStream, stream: stream}, nil
+}
 
-	return proxyStream, nil
+type ackStripConn struct {
+	net.Conn
+	stream net.Conn
+	once   sync.Once
+	ackErr error
+}
+
+func (c *ackStripConn) Read(b []byte) (int, error) {
+	c.once.Do(func() {
+		c.Conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		var ack [1]byte
+		if _, err := io.ReadFull(c.Conn, ack[:]); err != nil {
+			c.ackErr = fmt.Errorf("read connect response: %w", err)
+			return
+		}
+		c.Conn.SetReadDeadline(time.Time{})
+		if ack[0] != 0x00 {
+			c.ackErr = fmt.Errorf("relay refused connection")
+		}
+	})
+	if c.ackErr != nil {
+		return 0, c.ackErr
+	}
+	return c.Conn.Read(b)
+}
+
+func (c *ackStripConn) Close() error {
+	if c.stream != nil && c.stream != c.Conn {
+		c.stream.Close()
+	}
+	return c.Conn.Close()
 }
 
 func (m *Manager) Send(data []byte) error {
@@ -3276,7 +3303,7 @@ func (m *Manager) OnStateChange(callback func(TunnelState)) {
 }
 
 func (m *Manager) setState(state TunnelState) {
-	log.Warn("[setState] %v", state)
+	log.Debug("[setState] %v", state)
 	m.stateMu.Lock()
 	oldState := m.state
 	m.state = state

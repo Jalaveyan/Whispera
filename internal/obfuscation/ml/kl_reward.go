@@ -84,6 +84,10 @@ func (f *FlowObserver) iatBucket(ms float64) int {
 
 // RecordPacket records an outbound packet for KL reward computation.
 // Call this on every packet/chunk sent through the tunnel.
+//
+// Lock-free fast path: per-bucket atomic increments. Mutex is taken only on
+// the periodic reset (every klDecayPerReset packets) and when readers
+// (KLReward, UpdateReference) need a consistent snapshot.
 func (f *FlowObserver) RecordPacket(sizeBytes int) {
 	now := time.Now().UnixNano()
 	prev := atomic.SwapInt64(&f.lastPacketAt, now)
@@ -94,17 +98,22 @@ func (f *FlowObserver) RecordPacket(sizeBytes int) {
 		ib = f.iatBucket(float64(now-prev) / 1e6)
 	}
 
-	total := atomic.AddInt64(&f.total, 1)
-	f.mu.Lock()
-	f.sizeCounts[sb]++
+	atomic.AddInt64(&f.sizeCounts[sb], 1)
 	if ib >= 0 {
-		f.iatCounts[ib]++
+		atomic.AddInt64(&f.iatCounts[ib], 1)
 	}
+	total := atomic.AddInt64(&f.total, 1)
+
 	if total%klDecayPerReset == 0 {
-		f.sizeCounts = [7]int64{}
-		f.iatCounts = [5]int64{}
+		f.mu.Lock()
+		for i := range f.sizeCounts {
+			atomic.StoreInt64(&f.sizeCounts[i], 0)
+		}
+		for i := range f.iatCounts {
+			atomic.StoreInt64(&f.iatCounts[i], 0)
+		}
+		f.mu.Unlock()
 	}
-	f.mu.Unlock()
 }
 
 // UpdateReference records a single packet from real decoy traffic (FlowDecoy label).
@@ -163,8 +172,14 @@ func (f *FlowObserver) KLReward() float64 {
 	if total == 0 {
 		total = klDecayPerReset
 	}
-	sc := f.sizeCounts
-	ic := f.iatCounts
+	var sc [7]int64
+	var ic [5]int64
+	for i := range f.sizeCounts {
+		sc[i] = atomic.LoadInt64(&f.sizeCounts[i])
+	}
+	for i := range f.iatCounts {
+		ic[i] = atomic.LoadInt64(&f.iatCounts[i])
+	}
 	sizeDist, iatDist := f.refDistributions()
 	f.mu.Unlock()
 
