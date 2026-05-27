@@ -28,9 +28,10 @@ const (
 type Config struct {
 	Type      ResolverType
 	Servers   []string
-	Timeout   time.Duration
-	CacheSize int
-	CacheTTL  time.Duration
+	Timeout     time.Duration
+	CacheSize   int
+	CacheTTL    time.Duration
+	NegativeTTL time.Duration
 
 	DoHPath string
 
@@ -44,18 +45,22 @@ func DefaultConfig() *Config {
 	return &Config{
 		Type:      ResolverTypeDoH,
 		Servers:   []string{"https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query", "https://dns.yandex.ru/dns-query"},
-		Timeout:   5 * time.Second,
-		CacheSize: 10000,
-		CacheTTL:  5 * time.Minute,
-		DoHPath:   "/dns-query",
-		DoTPort:   853,
+		Timeout:     5 * time.Second,
+		CacheSize:   10000,
+		CacheTTL:    5 * time.Minute,
+		NegativeTTL: 15 * time.Second,
+		DoHPath:     "/dns-query",
+		DoTPort:     853,
 	}
 }
 
 type CacheEntry struct {
 	IPs       []net.IP
 	ExpiresAt time.Time
+	Negative  bool
 }
+
+var errNXCached = errors.New("resolve failed (negative-cached)")
 
 type Resolver struct {
 	config *Config
@@ -98,9 +103,12 @@ func (r *Resolver) Resolve(ctx context.Context, host string) ([]net.IP, error) {
 		return []net.IP{ip}, nil
 	}
 
-	if ips := r.getFromCache(host); ips != nil {
+	if entry, ok := r.cacheLookup(host); ok {
 		atomic.AddUint64(&r.cacheHits, 1)
-		return ips, nil
+		if entry.Negative {
+			return nil, errNXCached
+		}
+		return entry.IPs, nil
 	}
 	atomic.AddUint64(&r.cacheMiss, 1)
 
@@ -121,6 +129,7 @@ func (r *Resolver) Resolve(ctx context.Context, host string) ([]net.IP, error) {
 	}
 
 	if err != nil {
+		r.putNegative(host)
 		return nil, err
 	}
 
@@ -196,6 +205,7 @@ func (r *Resolver) resolveDoH(ctx context.Context, host string) ([]net.IP, error
 	}
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
 	ch := make(chan dohResult, len(r.config.Servers))
 	for _, server := range r.config.Servers {
 		server := server
@@ -332,12 +342,23 @@ func (r *Resolver) doTQuery(ctx context.Context, server string, query []byte) ([
 	return parseDNSResponse(response)
 }
 
-func (r *Resolver) getFromCache(host string) []net.IP {
+func (r *Resolver) cacheLookup(host string) (*CacheEntry, bool) {
 	entry, ok := r.cache.Get(strings.ToLower(host))
 	if !ok || time.Now().After(entry.ExpiresAt) {
-		return nil
+		return nil, false
 	}
-	return entry.IPs
+	return entry, true
+}
+
+func (r *Resolver) putNegative(host string) {
+	ttl := r.config.NegativeTTL
+	if ttl <= 0 {
+		ttl = 15 * time.Second
+	}
+	r.cache.Add(strings.ToLower(host), &CacheEntry{
+		Negative:  true,
+		ExpiresAt: time.Now().Add(ttl),
+	})
 }
 
 func (r *Resolver) putToCache(host string, ips []net.IP) {
