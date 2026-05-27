@@ -127,8 +127,8 @@ func TestBondBidirectional(t *testing.T) {
 	gotA := make([]byte, len(msgB))
 	var rg sync.WaitGroup
 	rg.Add(2)
-	go func() { defer rg.Done(); io.ReadFull(b, gotB) }()
-	go func() { defer rg.Done(); io.ReadFull(a, gotA) }()
+	go func() { defer rg.Done(); _, _ = io.ReadFull(b, gotB) }()
+	go func() { defer rg.Done(); _, _ = io.ReadFull(a, gotA) }()
 	rg.Wait()
 	wg.Wait()
 

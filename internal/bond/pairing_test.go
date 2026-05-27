@@ -16,7 +16,7 @@ func TestHandshakeCodec(t *testing.T) {
 	for i := range id {
 		id[i] = byte(i + 1)
 	}
-	go func() { writeHandshake(ca, id) }()
+	go func() { _ = writeHandshake(ca, id) }()
 	gotID, err := readHandshake(cb)
 	if err != nil {
 		t.Fatalf("read handshake: %v", err)

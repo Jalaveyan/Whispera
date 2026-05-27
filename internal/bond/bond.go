@@ -89,7 +89,7 @@ func (c *Conn) loadErr() error {
 	return ErrClosed
 }
 
-func (c *Conn) setErr(err error) { c.shutdown(err, false) }
+func (c *Conn) setErr(err error) { _ = c.shutdown(err, false) }
 
 func (c *Conn) Close() error { return c.shutdown(nil, true) }
 
