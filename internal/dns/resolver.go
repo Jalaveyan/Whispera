@@ -14,6 +14,7 @@ import (
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
+	"golang.org/x/sync/singleflight"
 )
 
 type ResolverType string
@@ -45,7 +46,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Type:      ResolverTypeDoH,
 		Servers:   []string{"https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query", "https://dns.yandex.ru/dns-query"},
-		Timeout:     5 * time.Second,
+		Timeout:     2 * time.Second,
 		CacheSize:   10000,
 		CacheTTL:    5 * time.Minute,
 		NegativeTTL: 15 * time.Second,
@@ -66,6 +67,7 @@ type Resolver struct {
 	config *Config
 	cache  *lru.Cache[string, *CacheEntry]
 	client *http.Client
+	sf     singleflight.Group
 
 	queries   uint64
 	cacheHits uint64
@@ -112,30 +114,49 @@ func (r *Resolver) Resolve(ctx context.Context, host string) ([]net.IP, error) {
 	}
 	atomic.AddUint64(&r.cacheMiss, 1)
 
-	var ips []net.IP
-	var err error
+	key := strings.ToLower(host)
+	ch := r.sf.DoChan(key, func() (interface{}, error) {
+		if entry, ok := r.cacheLookup(host); ok {
+			if entry.Negative {
+				return nil, errNXCached
+			}
+			return entry.IPs, nil
+		}
+		qctx, qcancel := context.WithTimeout(context.Background(), r.config.Timeout)
+		defer qcancel()
+		ips, err := r.queryOnce(qctx, host)
+		if err != nil {
+			r.putNegative(host)
+			return nil, err
+		}
+		r.putToCache(host, ips)
+		return ips, nil
+	})
 
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.([]net.IP), nil
+	}
+}
+
+func (r *Resolver) queryOnce(ctx context.Context, host string) ([]net.IP, error) {
 	switch r.config.Type {
 	case ResolverTypeSystem:
-		ips, err = r.resolveSystem(ctx, host)
+		return r.resolveSystem(ctx, host)
 	case ResolverTypeUDP:
-		ips, err = r.resolveUDP(ctx, host)
+		return r.resolveUDP(ctx, host)
 	case ResolverTypeDoH:
-		ips, err = r.resolveDoH(ctx, host)
+		return r.resolveDoH(ctx, host)
 	case ResolverTypeDoT:
-		ips, err = r.resolveDoT(ctx, host)
+		return r.resolveDoT(ctx, host)
 	default:
 		return nil, fmt.Errorf("unknown resolver type: %s", r.config.Type)
 	}
-
-	if err != nil {
-		r.putNegative(host)
-		return nil, err
-	}
-
-	r.putToCache(host, ips)
-
-	return ips, nil
 }
 
 func (r *Resolver) resolveSystem(ctx context.Context, host string) ([]net.IP, error) {
