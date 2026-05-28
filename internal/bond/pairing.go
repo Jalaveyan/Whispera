@@ -43,19 +43,62 @@ func readHandshake(c net.Conn) (id bondID, err error) {
 type DialFunc func(context.Context) (net.Conn, error)
 
 func Dial(ctx context.Context, dial DialFunc) (*Conn, error) {
+	return DialN(ctx, 1, dial)
+}
+
+func DialN(ctx context.Context, n int, dial DialFunc) (*Conn, error) {
+	if n < 1 {
+		n = 1
+	}
+	if n > maxBondMembers {
+		n = maxBondMembers
+	}
 	var id bondID
 	if _, err := crand.Read(id[:]); err != nil {
 		return nil, err
 	}
-	c, err := dial(ctx)
-	if err != nil {
-		return nil, err
+	members := make([]net.Conn, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			c, err := dial(ctx)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			if err := writeHandshake(c, id); err != nil {
+				c.Close()
+				errs[i] = err
+				return
+			}
+			members[i] = c
+		}(i)
 	}
-	if err := writeHandshake(c, id); err != nil {
-		c.Close()
-		return nil, err
+	wg.Wait()
+
+	firstIdx := -1
+	var firstErr error
+	for i, m := range members {
+		if m != nil && firstIdx < 0 {
+			firstIdx = i
+		}
+		if errs[i] != nil && firstErr == nil {
+			firstErr = errs[i]
+		}
 	}
-	return newConn(id, c), nil
+	if firstIdx < 0 {
+		return nil, firstErr
+	}
+	b := newConn(id, members[firstIdx])
+	for i, m := range members {
+		if i != firstIdx && m != nil {
+			b.AddMember(m)
+		}
+	}
+	return b, nil
 }
 
 func (c *Conn) Grow(ctx context.Context, dial DialFunc) error {

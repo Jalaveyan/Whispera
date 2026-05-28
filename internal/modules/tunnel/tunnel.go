@@ -244,8 +244,9 @@ type Config struct {
 	ChameleonSNI      string
 	ChameleonSecret   []byte
 	ChameleonMux      int
-	ChameleonStripe   bool
-	ChameleonStripeN  int
+	ChameleonStripe      bool
+	ChameleonStripeN     int
+	ChameleonStripeStart int
 
 	EnableChatFSM        bool
 	ChatFSMCoverInterval time.Duration
@@ -532,7 +533,7 @@ func (m *Manager) getMuxConfig() *mux.Config {
 		MaxReceiveBuffer:     1 << 29,
 		MaxStreamBuffer:      1 << 29,
 		KeepAliveInterval:    time.Duration(base) * time.Second,
-		KeepAliveTimeout:     20 * time.Second,
+		KeepAliveTimeout:     24 * time.Hour,
 		MaxConcurrentStreams: 256,
 	}
 }
@@ -1178,7 +1179,14 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			return chameleon.Client(ctx, cCfg)
 		}
 		if m.config.ChameleonStripe {
-			b, err := bond.Dial(ctx, dialOne)
+			start := m.config.ChameleonStripeStart
+			if start <= 0 {
+				start = 4
+			}
+			if cap := m.config.ChameleonStripeN; cap > 0 && start > cap {
+				start = cap
+			}
+			b, err := bond.DialN(ctx, start, dialOne)
 			if err == nil {
 				m.stripe.Store(&stripeState{bond: b, dial: dialOne})
 				m.isTransportSecure = true
@@ -3363,9 +3371,9 @@ func (m *Manager) closeWorstPoolConn() bool {
 }
 
 const (
-	chScaleGrowPerConn   = 2.5 * 1024 * 1024
-	chScaleShrinkPerConn = 640 * 1024
-	chScaleMaxConns      = 32
+	chScaleGrowPerConn   = 1.0 * 1024 * 1024
+	chScaleShrinkPerConn = 256 * 1024
+	chScaleMaxConns      = 256
 	scaleEvalBytes       = 2 * 1024 * 1024
 )
 
@@ -3468,17 +3476,32 @@ func (m *Manager) evalStripe(rate float64) {
 	if !atomic.CompareAndSwapInt32(&m.chScaleOpening, 0, 1) {
 		return
 	}
+	batch := w / 2
+	if batch < 1 {
+		batch = 1
+	}
+	if w+batch > maxW {
+		batch = maxW - w
+	}
 	b, dial := st.bond, st.dial
 	safeGo("stripeGrow", func() {
 		defer atomic.StoreInt32(&m.chScaleOpening, 0)
 		ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
 		defer cancel()
-		if err := b.Grow(ctx, dial); err != nil {
-			log.Warn("[CH-STRIPE] widen failed: %v", err)
-			return
+		var wg sync.WaitGroup
+		var failed int32
+		for i := 0; i < batch; i++ {
+			wg.Add(1)
+			safeGo("stripeGrowOne", func() {
+				defer wg.Done()
+				if err := b.Grow(ctx, dial); err != nil {
+					atomic.AddInt32(&failed, 1)
+				}
+			})
 		}
-		log.Info("[CH-STRIPE] widened bond to %d members (%.0f Mbit/s, %.0f/member)",
-			b.Width(), rate*8/1e6, perMember*8/1e6)
+		wg.Wait()
+		log.Info("[CH-STRIPE] widened bond to %d members (rate=%.0f Mbit/s, %.0f/member, batch=%d, failed=%d)",
+			b.Width(), rate*8/1e6, perMember*8/1e6, batch, failed)
 	})
 }
 

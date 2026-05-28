@@ -13,10 +13,10 @@ import (
 const (
 	hdrSize         = 12
 	maxChunk        = 32 * 1024
-	defaultBudget   = 16 * 1024 * 1024
-	writeQueueDepth = 64
+	defaultBudget   = 64 * 1024 * 1024
+	writeQueueDepth = 256
 	flushTimeout    = 2 * time.Second
-	maxBondMembers  = 32
+	maxBondMembers  = 1024
 )
 
 var ErrClosed = errors.New("bond: closed")
@@ -45,9 +45,8 @@ type Conn struct {
 	id bondID
 
 	mu      sync.Mutex
-	members [maxBondMembers]net.Conn
-	wq      [maxBondMembers]chan *[]byte
-	n       int32
+	members atomic.Pointer[[]net.Conn]
+	wq      atomic.Pointer[[]chan *[]byte]
 
 	writeMu sync.Mutex
 	nextSeq uint64
@@ -58,6 +57,7 @@ type Conn struct {
 	closed    chan struct{}
 	err       atomic.Value
 	writerWg  sync.WaitGroup
+	readerWg  sync.WaitGroup
 }
 
 func newConn(id bondID, first net.Conn) *Conn {
@@ -70,32 +70,53 @@ func newConn(id bondID, first net.Conn) *Conn {
 	return c
 }
 
+func (c *Conn) loadMembers() []net.Conn {
+	if p := c.members.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+func (c *Conn) loadWQ() []chan *[]byte {
+	if p := c.wq.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
 func (c *Conn) AddMember(m net.Conn) bool {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	select {
 	case <-c.closed:
-		c.mu.Unlock()
 		m.Close()
 		return false
 	default:
 	}
-	i := int(c.n)
+	cur := c.loadMembers()
+	curQ := c.loadWQ()
+	i := len(cur)
 	if i >= maxBondMembers {
-		c.mu.Unlock()
 		m.Close()
 		return false
 	}
-	c.members[i] = m
-	c.wq[i] = make(chan *[]byte, writeQueueDepth)
+	newMembers := make([]net.Conn, i+1)
+	copy(newMembers, cur)
+	newMembers[i] = m
+	newWQ := make([]chan *[]byte, i+1)
+	copy(newWQ, curQ)
+	q := make(chan *[]byte, writeQueueDepth)
+	newWQ[i] = q
+	c.members.Store(&newMembers)
+	c.wq.Store(&newWQ)
 	c.writerWg.Add(1)
-	atomic.StoreInt32(&c.n, int32(i+1))
-	c.mu.Unlock()
-	go c.writeLoop(i)
-	go c.readLoop(i)
+	c.readerWg.Add(1)
+	go c.writeLoop(i, m, q)
+	go c.readLoop(i, m)
 	return true
 }
 
-func (c *Conn) Width() int { return int(atomic.LoadInt32(&c.n)) }
+func (c *Conn) Width() int { return len(c.loadMembers()) }
 
 func (c *Conn) Done() <-chan struct{} { return c.closed }
 
@@ -124,30 +145,33 @@ func (c *Conn) shutdown(err error, graceful bool) error {
 	if !first {
 		return nil
 	}
-	if graceful {
-		done := make(chan struct{})
-		go func() { c.writerWg.Wait(); close(done) }()
+	go func() {
+		if graceful {
+			done := make(chan struct{})
+			go func() { c.writerWg.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(flushTimeout):
+			}
+		}
+		for _, m := range c.loadMembers() {
+			if m != nil {
+				m.Close()
+			}
+		}
+		readDone := make(chan struct{})
+		go func() { c.readerWg.Wait(); close(readDone) }()
 		select {
-		case <-done:
+		case <-readDone:
 		case <-time.After(flushTimeout):
 		}
-	}
-	c.ro.setClosed(c.loadErr())
-	c.mu.Lock()
-	n := int(c.n)
-	c.mu.Unlock()
-	for i := 0; i < n; i++ {
-		if c.members[i] != nil {
-			c.members[i].Close()
-		}
-	}
+		c.ro.setClosed(c.loadErr())
+	}()
 	return nil
 }
 
-func (c *Conn) writeLoop(i int) {
+func (c *Conn) writeLoop(i int, m net.Conn, q chan *[]byte) {
 	defer c.writerWg.Done()
-	m := c.members[i]
-	q := c.wq[i]
 	write := func(bp *[]byte) bool {
 		_, err := m.Write(*bp)
 		framePut(bp)
@@ -178,8 +202,8 @@ func (c *Conn) writeLoop(i int) {
 	}
 }
 
-func (c *Conn) readLoop(i int) {
-	m := c.members[i]
+func (c *Conn) readLoop(i int, m net.Conn) {
+	defer c.readerWg.Done()
 	var hdr [hdrSize]byte
 	for {
 		if _, err := io.ReadFull(m, hdr[:]); err != nil {
@@ -226,7 +250,8 @@ func (c *Conn) Write(p []byte) (int, error) {
 		binary.BigEndian.PutUint32(frame[8:12], uint32(n))
 		copy(frame[hdrSize:], p[:n])
 		*bp = frame
-		width := int(atomic.LoadInt32(&c.n))
+		wq := c.loadWQ()
+		width := len(wq)
 		if width < 1 {
 			framePut(bp)
 			return total, c.loadErr()
@@ -235,7 +260,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 		placed := false
 		for off := 0; off < width; off++ {
 			select {
-			case c.wq[(start+off)%width] <- bp:
+			case wq[(start+off)%width] <- bp:
 				placed = true
 			default:
 			}
@@ -245,7 +270,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 		}
 		if !placed {
 			select {
-			case c.wq[start] <- bp:
+			case wq[start] <- bp:
 			case <-c.closed:
 				framePut(bp)
 				return total, c.loadErr()
@@ -276,10 +301,10 @@ func (c *Conn) RemoteAddr() net.Addr {
 }
 
 func (c *Conn) member0() net.Conn {
-	if atomic.LoadInt32(&c.n) == 0 {
-		return nil
+	if ms := c.loadMembers(); len(ms) > 0 {
+		return ms[0]
 	}
-	return c.members[0]
+	return nil
 }
 
 func (c *Conn) SetDeadline(t time.Time) error      { return nil }

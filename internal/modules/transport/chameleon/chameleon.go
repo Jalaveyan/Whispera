@@ -101,19 +101,12 @@ type Config struct {
 
 	DecoyOrigin string
 
-	// BrutalMbps, when >0 on Linux, switches accepted TCP sockets to the
-	// "brutal" congestion control (apernet/tcp-brutal kernel module) paced at
-	// this rate in Mbit/s. No-op if the module is absent or off-Linux.
 	BrutalMbps int
 
 	OnConn func(conn net.Conn, userID string)
 
-	// GANDecide optionally shapes download writes to match target traffic profile.
 	GANDecide GANDecideFunc
 
-	// AsymBiasRatio overrides the default download/upload byte ratio target used
-	// by the automatic streaming bias (REST default 5.0, HLS default 10.0).
-	// Leave at 0 to use the defaults. Ignored when GANDecide is also set.
 	AsymBiasRatio float64
 
 	proxy      *decoyProxy
@@ -202,6 +195,9 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 			tcpConn.SetKeepAlive(true)
 			tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 			tcpConn.SetNoDelay(true)
+			_ = tcpConn.SetReadBuffer(4 * 1024 * 1024)
+			_ = tcpConn.SetWriteBuffer(4 * 1024 * 1024)
+			tcpFastKeepalive(tcpConn)
 		}
 		uCfg := &utls.Config{
 			ServerName:         sni,
@@ -311,10 +307,6 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 		tlsCfg = m.TLSConfig()
 		tlsCfg.NextProtos = []string{"h2", "http/1.1"}
 		tlsCfg.MinVersion = tls.VersionTLS12
-		// Fallback: clients that connect by IP and don't send SNI (older Whispera
-		// subscription keys issued before Chameleon.Domain was set) should still
-		// receive the domain cert instead of "missing server name". Treat empty
-		// or non-matching SNI as if the client requested our configured domain.
 		domain := cfg.Domain
 		origGet := tlsCfg.GetCertificate
 		tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -376,6 +368,9 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 	tc.SetKeepAlive(true)
 	tc.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 	tc.SetNoDelay(true)
+	_ = tc.SetReadBuffer(4 * 1024 * 1024)
+	_ = tc.SetWriteBuffer(4 * 1024 * 1024)
+	tcpFastKeepalive(tc)
 	if l.brutalMbps > 0 {
 		setBrutalRate(tc, l.brutalMbps)
 	}
@@ -696,11 +691,6 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 	}
 }
 
-// decoyProxy transparently reverse-proxies all non-VPN requests to DecoyOrigin
-// (usually nginx on a loopback port). Unlike a simple GET-cache it preserves
-// all methods, status, headers (including WWW-Authenticate, Set-Cookie,
-// Location, …) and streams the body — essential for any real backend
-// (admin panel with Basic Auth, login pages, JSON APIs, etc.).
 type decoyProxy struct {
 	origin string
 	rp     *httputil.ReverseProxy
@@ -710,13 +700,10 @@ func newDecoyProxy(origin string) *decoyProxy {
 	origin = strings.TrimRight(origin, "/")
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {
-		// Bad origin — serve static decoy as a safe fallback.
 		return &decoyProxy{origin: origin}
 	}
 	rp := httputil.NewSingleHostReverseProxy(u)
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		// Upstream offline or refused — fall back to the built-in static decoy
-		// instead of leaking 502 details.
 		serveDecoy(w, r, nil)
 	}
 	return &decoyProxy{origin: origin, rp: rp}
