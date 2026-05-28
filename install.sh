@@ -881,7 +881,7 @@ show_extras_menu() {
         _row " 16.  View Logs     - Watch live logs"
         _row " 17.  Edit Config   - Modify config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row " 18.  Reinstall     - Fresh install from GitHub"
+        _row " 18.  Update        - Update Whispera from GitHub"
         _row "  0.  Exit"
         echo -e "${BLUE}╚${SEP}╝${PLAIN}"
         echo ""
@@ -906,7 +906,7 @@ show_extras_menu() {
             15) systemctl status whispera ;;
             16) journalctl -u whispera -f ;;
             17) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
-            18) bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh) ;;
+            18) bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/update.sh) ;;
             19)
                 local tok=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
                 if [[ -z "$tok" ]]; then
@@ -1704,6 +1704,65 @@ _enable_ml_in_config() {
     log_success "ML enabled in config.yaml"
 }
 
+_disable_phantom_in_config() {
+    local cfg="${CONF_PATH}/config.yaml"
+    [[ -f "$cfg" ]] || return
+    grep -q "^phantom:" "$cfg" || return
+    sed -i '/^phantom:/,/^[^ ]/{s/enabled: true/enabled: false/}' "$cfg"
+    refresh_config "$cfg"
+    log_success "Phantom disabled in config.yaml"
+}
+
+_enable_chameleon_in_config() {
+    local cfg="${CONF_PATH}/config.yaml"
+    [[ -f "$cfg" ]] || return
+
+    local cert="" key=""
+    cert=$(grep -hE '^[[:space:]]*ssl_certificate[[:space:]]' /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
+    key=$(grep -hE '^[[:space:]]*ssl_certificate_key[[:space:]]' /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
+
+    if grep -q "^chameleon:" "$cfg"; then
+        sed -i '/^chameleon:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
+        local cur_domain
+        cur_domain=$(awk '/^chameleon:/{f=1} f && /^[[:space:]]+domain:/{print $2; exit}' "$cfg" | tr -d '"')
+        if [[ -n "$cur_domain" ]]; then
+            refresh_config "$cfg"
+            log_success "Chameleon enabled in config.yaml (autocert domain=$cur_domain, tls_cert untouched)"
+            return
+        fi
+        local cur_cert
+        cur_cert=$(awk '/^chameleon:/{f=1} f && /tls_cert:/{print $2; exit}' "$cfg" | tr -d '"')
+        if [[ -z "$cur_cert" && -n "$cert" ]]; then
+            python3 - "$cfg" "$cert" "$key" <<'PYEOF'
+import sys, re
+path, cert, key = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    text = f.read()
+def patch_block(m):
+    blk = m.group(0)
+    blk = re.sub(r'tls_cert:\s*""', f'tls_cert: "{cert}"', blk)
+    blk = re.sub(r'tls_key:\s*""',  f'tls_key: "{key}"',   blk)
+    return blk
+text = re.sub(r'^chameleon:.*?(?=\n\S|\Z)', patch_block, text, flags=re.S|re.M)
+with open(path, 'w') as f:
+    f.write(text)
+PYEOF
+            log_info "Chameleon: injected TLS cert from nginx into existing config"
+        fi
+    else
+        printf '\nchameleon:\n  enabled: true\n  listen_addr: ":9443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
+            "${cert}" "${key}" >> "$cfg"
+    fi
+    if command -v ufw &>/dev/null; then
+        ufw allow 9443/tcp >/dev/null 2>&1 || true
+    elif command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --permanent --add-port=9443/tcp >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    fi
+    refresh_config "$cfg"
+    log_success "Chameleon enabled in config.yaml"
+}
+
 setup_network() {
     log_info "Configuring network..."
     
@@ -1846,7 +1905,13 @@ main() {
     generate_panel_cert
     setup_systemd
     setup_nginx_proxy
-    
+
+    _enable_chameleon_in_config
+    _disable_phantom_in_config
+    if systemctl is-active whispera &>/dev/null; then
+        systemctl restart whispera >/dev/null 2>&1 || true
+    fi
+
     local PG_PASS=""
     local ADMIN_PASS=""
     

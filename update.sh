@@ -101,13 +101,13 @@ PYEOF
             log_info "Chameleon: injected TLS cert from nginx into existing config"
         fi
     else
-        printf '\nchameleon:\n  enabled: true\n  listen_addr: ":8443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
+        printf '\nchameleon:\n  enabled: true\n  listen_addr: ":9443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
             "${cert}" "${key}" >> "$cfg"
     fi
     if command -v ufw &>/dev/null; then
-        ufw allow 8443/tcp >/dev/null 2>&1 || true
+        ufw allow 9443/tcp >/dev/null 2>&1 || true
     elif command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port=8443/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=9443/tcp >/dev/null 2>&1 || true
         firewall-cmd --reload >/dev/null 2>&1 || true
     fi
     refresh_config "$cfg"
