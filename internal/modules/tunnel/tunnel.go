@@ -530,8 +530,8 @@ func (m *Manager) getMuxConfig() *mux.Config {
 
 	return &mux.Config{
 		MaxFrameSize:         frameSize,
-		MaxReceiveBuffer:     1 << 29,
-		MaxStreamBuffer:      1 << 29,
+		MaxReceiveBuffer:     1 << 25,
+		MaxStreamBuffer:      1 << 24,
 		KeepAliveInterval:    time.Duration(base) * time.Second,
 		KeepAliveTimeout:     24 * time.Hour,
 		MaxConcurrentStreams: 256,
@@ -1190,6 +1190,18 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			if err == nil {
 				m.stripe.Store(&stripeState{bond: b, dial: dialOne})
 				m.isTransportSecure = true
+				maxW := m.config.ChameleonStripeN
+				if maxW < start {
+					maxW = chScaleMaxConns
+				}
+				bond.StartScaler(context.Background(), b, dialOne, bond.ScalerOpts{
+					MinMembers:  start,
+					MaxMembers:  maxW,
+					DialTimeout: m.config.ConnectionTimeout,
+					Logf: func(f string, a ...interface{}) {
+						log.Info("[CH-STRIPE] "+f, a...)
+					},
+				})
 				return b, nil
 			}
 			log.Warn("chameleon stripe dial failed (%v), falling back to standard transports", err)

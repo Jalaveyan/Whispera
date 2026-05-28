@@ -53,6 +53,8 @@ type Conn struct {
 
 	ro *reorderer
 
+	fallbackHits atomic.Uint64
+
 	closeOnce sync.Once
 	closed    chan struct{}
 	err       atomic.Value
@@ -117,6 +119,31 @@ func (c *Conn) AddMember(m net.Conn) bool {
 }
 
 func (c *Conn) Width() int { return len(c.loadMembers()) }
+
+func (c *Conn) QueuePressure() (avgPct, maxPct, minPct int, fallbackHits uint64) {
+	wq := c.loadWQ()
+	if len(wq) == 0 {
+		return 0, 0, 0, c.fallbackHits.Load()
+	}
+	capPer := cap(wq[0])
+	if capPer <= 0 {
+		return 0, 0, 0, c.fallbackHits.Load()
+	}
+	var sum, peak int
+	low := capPer
+	for _, q := range wq {
+		l := len(q)
+		sum += l
+		if l > peak {
+			peak = l
+		}
+		if l < low {
+			low = l
+		}
+	}
+	n := len(wq)
+	return sum * 100 / (n * capPer), peak * 100 / capPer, low * 100 / capPer, c.fallbackHits.Load()
+}
 
 func (c *Conn) Done() <-chan struct{} { return c.closed }
 
@@ -256,7 +283,14 @@ func (c *Conn) Write(p []byte) (int, error) {
 			framePut(bp)
 			return total, c.loadErr()
 		}
-		start := int(seq % uint64(width))
+		start := 0
+		minLen := len(wq[0])
+		for j := 1; j < width; j++ {
+			if l := len(wq[j]); l < minLen {
+				minLen = l
+				start = j
+			}
+		}
 		placed := false
 		for off := 0; off < width; off++ {
 			select {
@@ -269,6 +303,7 @@ func (c *Conn) Write(p []byte) (int, error) {
 			}
 		}
 		if !placed {
+			c.fallbackHits.Add(1)
 			select {
 			case wq[start] <- bp:
 			case <-c.closed:
