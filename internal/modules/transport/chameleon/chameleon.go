@@ -195,8 +195,8 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 			tcpConn.SetKeepAlive(true)
 			tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 			tcpConn.SetNoDelay(true)
-			_ = tcpConn.SetReadBuffer(4 * 1024 * 1024)
-			_ = tcpConn.SetWriteBuffer(4 * 1024 * 1024)
+			_ = tcpConn.SetReadBuffer(16 * 1024 * 1024)
+			_ = tcpConn.SetWriteBuffer(16 * 1024 * 1024)
 			tcpFastKeepalive(tcpConn)
 		}
 		uCfg := &utls.Config{
@@ -368,8 +368,8 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 	tc.SetKeepAlive(true)
 	tc.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 	tc.SetNoDelay(true)
-	_ = tc.SetReadBuffer(4 * 1024 * 1024)
-	_ = tc.SetWriteBuffer(4 * 1024 * 1024)
+	_ = tc.SetReadBuffer(16 * 1024 * 1024)
+	_ = tc.SetWriteBuffer(16 * 1024 * 1024)
 	tcpFastKeepalive(tc)
 	if l.brutalMbps > 0 {
 		setBrutalRate(tc, l.brutalMbps)
