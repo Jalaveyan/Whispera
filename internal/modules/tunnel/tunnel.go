@@ -22,14 +22,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"nhooyr.io/websocket"
 	"github.com/sourcegraph/conc/iter"
+	"nhooyr.io/websocket"
 	"whispera/internal/bond"
 	"whispera/internal/buf"
 	"whispera/internal/core/base"
-	whisperdns "whispera/internal/dns"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
+	whisperdns "whispera/internal/dns"
 	"whispera/internal/logger"
 	"whispera/internal/modules/killswitch"
 	"whispera/internal/modules/phantom"
@@ -48,9 +48,9 @@ import (
 	quic_transport "whispera/internal/modules/transport/quic"
 	"whispera/internal/modules/transport/shadowsocks"
 	shadowtls_transport "whispera/internal/modules/transport/shadowtls"
+	"whispera/internal/modules/transport/snowflake"
 	splithttp_transport "whispera/internal/modules/transport/splithttp"
 	"whispera/internal/modules/transport/tgbot"
-	"whispera/internal/modules/transport/snowflake"
 	"whispera/internal/modules/transport/torsocks"
 	tuic_transport "whispera/internal/modules/transport/tuic"
 	"whispera/internal/modules/transport/vkbot"
@@ -102,8 +102,6 @@ func safeGo(name string, fn func()) {
 		fn()
 	}()
 }
-
-
 
 const (
 	ModuleName    = "tunnel.manager"
@@ -239,11 +237,11 @@ type Config struct {
 	PhantomServerPubKey string
 	PhantomPSK          []byte
 
-	EnableChameleon   bool
-	ChameleonAddr     string
-	ChameleonSNI      string
-	ChameleonSecret   []byte
-	ChameleonMux      int
+	EnableChameleon      bool
+	ChameleonAddr        string
+	ChameleonSNI         string
+	ChameleonSecret      []byte
+	ChameleonMux         int
 	ChameleonStripe      bool
 	ChameleonStripeN     int
 	ChameleonStripeStart int
@@ -286,11 +284,11 @@ type Config struct {
 
 	MLToken string
 
-	SNIModelDir string
+	SNIModelDir   string
 	SNIDomainsURL string
 
-	CustomSNI string
-	NoSNI     bool
+	CustomSNI   string
+	NoSNI       bool
 	BridgeAddr  string
 	RateLimitKB int
 
@@ -301,7 +299,7 @@ type Config struct {
 
 	ForceSNI string
 
-	QualityThresholdRTT time.Duration
+	QualityThresholdRTT     time.Duration
 	QualityMissedKeepalives int
 
 	PaddingMaxSize int
@@ -345,14 +343,14 @@ func (c *Config) Validate() error {
 
 type managedConn struct {
 	net.Conn
-	session      *mux.Session
-	id           string
-	createdAt    time.Time
-	maxAge       time.Duration
-	maxUploadB   int64
-	uploadBytes  int64
-	closing      chan struct{}
-	closeOnce    sync.Once
+	session     *mux.Session
+	id          string
+	createdAt   time.Time
+	maxAge      time.Duration
+	maxUploadB  int64
+	uploadBytes int64
+	closing     chan struct{}
+	closeOnce   sync.Once
 
 	lastSampledBytes atomic.Uint64
 	lastSampleNs     atomic.Int64
@@ -456,34 +454,35 @@ type Manager struct {
 	transportSecureOverride int32
 	forceObfuscation        int32
 
-	russianSNIs   []string
-	russianSNIsMu sync.RWMutex
-	currentSNI    string
-	lastRotation  time.Time
-	sniAgent           *mlpkg.RLSNIAgent
-	connAgent          *mlpkg.RLConnAgent
-	connAgentStop      chan struct{}
-	gpLastDn           uint64
-	gpLastUp           uint64
-	gpLastSample       time.Time
-	scaleAccBytes      uint64
-	scaleLastEval      time.Time
-	scaleMu            sync.Mutex
-	chScaleOpening     int32
-	stripe             atomic.Pointer[stripeState]
-	transportAgent     *mlpkg.RLTransportAgent
-	kaAgent            *mlpkg.RLKeepaliveAgent
-	boAgent            *mlpkg.RLBackoffAgent
-	jitterAgent        *mlpkg.RLJitterAgent
-	serverAgent        *mlpkg.RLServerAgent
-	chunkAgent         *mlpkg.RLChunkAgent
-	tlsAgent           *mlpkg.RLTLSAgent
-	tspuDetector       *mlpkg.TSPUDetector
+	russianSNIs    []string
+	russianSNIsMu  sync.RWMutex
+	currentSNI     string
+	lastRotation   time.Time
+	sniAgent       *mlpkg.RLSNIAgent
+	connAgent      *mlpkg.RLConnAgent
+	connAgentStop  chan struct{}
+	gpLastDn       uint64
+	gpLastUp       uint64
+	gpLastSample   time.Time
+	scaleAccBytes  uint64
+	scaleLastEval  time.Time
+	scaleMu        sync.Mutex
+	chScaleOpening int32
+	stripe         atomic.Pointer[stripeState]
+	gameLn         gameLane
+	transportAgent *mlpkg.RLTransportAgent
+	kaAgent        *mlpkg.RLKeepaliveAgent
+	boAgent        *mlpkg.RLBackoffAgent
+	jitterAgent    *mlpkg.RLJitterAgent
+	serverAgent    *mlpkg.RLServerAgent
+	chunkAgent     *mlpkg.RLChunkAgent
+	tlsAgent       *mlpkg.RLTLSAgent
+	tspuDetector   *mlpkg.TSPUDetector
 
 	boFailCount     int32
 	boLastSuccessAt int64
 	boLastErrType   int32
-	tlsErrStreak int32
+	tlsErrStreak    int32
 
 	russianTunneler *russian.RussianTunneler
 
@@ -497,8 +496,8 @@ type Manager struct {
 	rateLimitKB     int32
 	tlsFragmentSize int32
 
-	spoofIPs    []string
-	spoofIdx    uint64
+	spoofIPs []string
+	spoofIdx uint64
 
 	fedSyncOnce sync.Once
 
@@ -592,10 +591,10 @@ func New(cfg *Config) (*Manager, error) {
 				}
 				return 40
 			}(),
-			ConnectionBurstLimit:   5,
-			ConnectionCooldown:     2 * time.Second,
-			FailoverTimeout:        cfg.ConnectionTimeout,
-			FallbackStrategies:     []asnbypass.Strategy{asnbypass.StrategyTLSMasquerade, asnbypass.StrategyDomainFronting},
+			ConnectionBurstLimit: 5,
+			ConnectionCooldown:   2 * time.Second,
+			FailoverTimeout:      cfg.ConnectionTimeout,
+			FallbackStrategies:   []asnbypass.Strategy{asnbypass.StrategyTLSMasquerade, asnbypass.StrategyDomainFronting},
 		}
 
 		if cfg.EnablePhantom {
@@ -1141,13 +1140,13 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	}
 
 	return &managedConn{
-		Conn:        controlStream,
-		session:     muxSess,
-		id:          id,
-		createdAt:   time.Now(),
-		maxAge:      maxAge,
-		maxUploadB:  maxUploadB,
-		closing:     make(chan struct{}),
+		Conn:       controlStream,
+		session:    muxSess,
+		id:         id,
+		createdAt:  time.Now(),
+		maxAge:     maxAge,
+		maxUploadB: maxUploadB,
+		closing:    make(chan struct{}),
 	}, nil
 }
 
@@ -1179,24 +1178,21 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			return chameleon.Client(ctx, cCfg)
 		}
 		if m.config.ChameleonStripe {
+			bulkMax := m.bulkConnCap()
 			start := m.config.ChameleonStripeStart
 			if start <= 0 {
 				start = 4
 			}
-			if cap := m.config.ChameleonStripeN; cap > 0 && start > cap {
-				start = cap
+			if start > bulkMax {
+				start = bulkMax
 			}
 			b, err := bond.DialN(ctx, start, dialOne)
 			if err == nil {
 				m.stripe.Store(&stripeState{bond: b, dial: dialOne})
 				m.isTransportSecure = true
-				maxW := m.config.ChameleonStripeN
-				if maxW < start {
-					maxW = chScaleMaxConns
-				}
 				bond.StartScaler(context.Background(), b, dialOne, bond.ScalerOpts{
 					MinMembers:  start,
-					MaxMembers:  maxW,
+					MaxMembers:  bulkMax,
 					DialTimeout: m.config.ConnectionTimeout,
 					Logf: func(f string, a ...interface{}) {
 						log.Info("[CH-STRIPE] "+f, a...)
@@ -1700,12 +1696,12 @@ func (m *Manager) dialWebSocket(ctx context.Context) (net.Conn, error) {
 	}
 
 	tr, err := ws_transport.New(&ws_transport.Config{
-		ListenAddr:  ":0",
-		Path:        path,
-		Subprotocol: subproto,
+		ListenAddr:   ":0",
+		Path:         path,
+		Subprotocol:  subproto,
 		HostOverride: host,
-		UseTLS:      useTLS,
-		ServerName:  m.tcfg("ws_sni"),
+		UseTLS:       useTLS,
+		ServerName:   m.tcfg("ws_sni"),
 	})
 	if err != nil {
 		return nil, err
@@ -1879,7 +1875,7 @@ func (m *Manager) dialMirage(ctx context.Context) (net.Conn, error) {
 
 func (m *Manager) dialMTProto(ctx context.Context) (net.Conn, error) {
 	tr, err := mtproto.New(&mtproto.Config{
-		Secret:      m.tcfg("mtproto_secret"),
+		Secret:        m.tcfg("mtproto_secret"),
 		EnableFakeTLS: m.tcfg("mtproto_faketls") != "false",
 	})
 	if err != nil {
@@ -1993,7 +1989,6 @@ func (m *Manager) getRotationSNI() string {
 
 	return m.selectNewSNILocked()
 }
-
 
 func (m *Manager) enableKillSwitch(remoteAddr net.Addr) {
 	var serverIP net.IP
@@ -2746,25 +2741,37 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		return nil, fmt.Errorf("not connected")
 	}
 
-	healthy := m.healthyPool(pool)
-	if len(healthy) == 0 {
-		healthy = pool
-	}
-
-	mc := healthy[0]
-	if len(healthy) > 1 {
-		minStreams := mc.session.NumStreams()
-		for i := 1; i < len(healthy); i++ {
-			n := healthy[i].session.NumStreams()
-			if n < minStreams {
-				minStreams = n
-				mc = healthy[i]
-			}
+	var sess *mux.Session
+	var onClose func()
+	if proto == protoUDP && m.config.EnableChameleon && m.config.ChameleonStripe {
+		if gs, gerr := m.gameSession(ctx); gerr == nil {
+			sess, onClose = gs, m.gameStreamClosed
 		}
 	}
+	if sess == nil {
+		healthy := m.healthyPool(pool)
+		if len(healthy) == 0 {
+			healthy = pool
+		}
+		mc := healthy[0]
+		if len(healthy) > 1 {
+			minStreams := mc.session.NumStreams()
+			for i := 1; i < len(healthy); i++ {
+				n := healthy[i].session.NumStreams()
+				if n < minStreams {
+					minStreams = n
+					mc = healthy[i]
+				}
+			}
+		}
+		sess = mc.session
+	}
 
-	stream, err := mc.session.OpenStream()
+	stream, err := sess.OpenStream()
 	if err != nil {
+		if onClose != nil {
+			onClose()
+		}
 		return nil, fmt.Errorf("open stream: %w", err)
 	}
 	m.lastPong = time.Now()
@@ -2783,17 +2790,22 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 
 	if _, err := proxyStream.Write(header); err != nil {
 		stream.Close()
+		if onClose != nil {
+			onClose()
+		}
 		return nil, fmt.Errorf("write connect header: %w", err)
 	}
 
-	return &ackStripConn{Conn: proxyStream, stream: stream}, nil
+	return &ackStripConn{Conn: proxyStream, stream: stream, onClose: onClose}, nil
 }
 
 type ackStripConn struct {
 	net.Conn
-	stream net.Conn
-	once   sync.Once
-	ackErr error
+	stream    net.Conn
+	once      sync.Once
+	ackErr    error
+	onClose   func()
+	closeOnce sync.Once
 }
 
 func (c *ackStripConn) Read(b []byte) (int, error) {
@@ -2816,9 +2828,14 @@ func (c *ackStripConn) Read(b []byte) (int, error) {
 }
 
 func (c *ackStripConn) Close() error {
-	if c.stream != nil && c.stream != c.Conn {
-		c.stream.Close()
-	}
+	c.closeOnce.Do(func() {
+		if c.onClose != nil {
+			c.onClose()
+		}
+		if c.stream != nil && c.stream != c.Conn {
+			c.stream.Close()
+		}
+	})
 	return c.Conn.Close()
 }
 
@@ -3387,7 +3404,82 @@ const (
 	chScaleShrinkPerConn = 256 * 1024
 	chScaleMaxConns      = 256
 	scaleEvalBytes       = 2 * 1024 * 1024
+	browserConnBudget    = 6
+	chGameLaneReserve    = 1
+	gameIdleTimeout      = 15 * time.Second
+	protoUDP             = 0x11
 )
+
+func (m *Manager) bulkConnCap() int {
+	lim := browserConnBudget - chGameLaneReserve
+	if n := m.config.ChameleonStripeN; n > 0 && n < lim {
+		lim = n
+	}
+	return lim
+}
+
+type gameLane struct {
+	mu   sync.Mutex
+	sess *mux.Session
+	bond *bond.Conn
+	refs int
+	idle *time.Timer
+}
+
+func (m *Manager) gameSession(ctx context.Context) (*mux.Session, error) {
+	st := m.stripe.Load()
+	if st == nil || st.dial == nil {
+		return nil, fmt.Errorf("game lane: no chameleon dial")
+	}
+	g := &m.gameLn
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.idle != nil {
+		g.idle.Stop()
+		g.idle = nil
+	}
+	if g.sess != nil && !g.sess.IsClosed() {
+		g.refs++
+		return g.sess, nil
+	}
+	b, err := bond.DialN(ctx, 1, st.dial)
+	if err != nil {
+		return nil, err
+	}
+	sess, err := mux.Client(b, m.getMuxConfig())
+	if err != nil {
+		b.Close()
+		return nil, err
+	}
+	g.bond = b
+	g.sess = sess
+	g.refs = 1
+	return sess, nil
+}
+
+func (m *Manager) gameStreamClosed() {
+	g := &m.gameLn
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.refs > 0 {
+		g.refs--
+	}
+	if g.refs == 0 && g.sess != nil && g.idle == nil {
+		g.idle = time.AfterFunc(gameIdleTimeout, func() {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			g.idle = nil
+			if g.refs == 0 && g.sess != nil {
+				g.sess.Close()
+				if g.bond != nil {
+					g.bond.Close()
+				}
+				g.sess = nil
+				g.bond = nil
+			}
+		})
+	}
+}
 
 type stripeState struct {
 	bond *bond.Conn
@@ -3477,10 +3569,7 @@ func (m *Manager) evalStripe(rate float64) {
 	if w < 1 {
 		return
 	}
-	maxW := m.config.ChameleonStripeN
-	if maxW < 2 || maxW > chScaleMaxConns {
-		maxW = chScaleMaxConns
-	}
+	maxW := m.bulkConnCap()
 	perMember := rate / float64(w)
 	if perMember < chScaleGrowPerConn || w >= maxW {
 		return
@@ -3782,7 +3871,7 @@ func (m *Manager) startKeepalive() {
 				})
 			}
 
-			jitter := time.Duration(float64(base)*jitterFrac*(2*mrand.Float64()-1))
+			jitter := time.Duration(float64(base) * jitterFrac * (2*mrand.Float64() - 1))
 			timer := time.NewTimer(base + jitter)
 			select {
 			case <-ctx.Done():
