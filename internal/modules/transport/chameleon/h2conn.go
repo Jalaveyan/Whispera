@@ -144,24 +144,46 @@ func (a staticAddr) Network() string { return a.network }
 func (a staticAddr) String() string  { return a.addr }
 
 type httpStreamConn struct {
-	r      io.Reader
-	w      http.ResponseWriter
-	flush  func()
-	local  net.Addr
-	remote net.Addr
-	done   chan struct{}
-	once   sync.Once
+	r        io.Reader
+	w        http.ResponseWriter
+	flush    func()
+	local    net.Addr
+	remote   net.Addr
+	done     chan struct{}
+	once     sync.Once
+	flushSig chan struct{}
 }
 
 func newHTTPStreamConn(r io.Reader, w http.ResponseWriter, flush func(), local, remote net.Addr) *httpStreamConn {
-	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote, done: make(chan struct{})}
+	c := &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote, done: make(chan struct{}), flushSig: make(chan struct{}, 1)}
+	go c.flushLoop()
+	return c
 }
 
-func (c *httpStreamConn) Read(b []byte) (int, error)  { return c.r.Read(b) }
+func (c *httpStreamConn) flushLoop() {
+	for {
+		select {
+		case <-c.flushSig:
+			c.safeFlush()
+		case <-c.done:
+			return
+		}
+	}
+}
+
+func (c *httpStreamConn) safeFlush() {
+	defer func() { _ = recover() }()
+	c.flush()
+}
+
+func (c *httpStreamConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 func (c *httpStreamConn) Write(b []byte) (int, error) {
 	n, err := c.w.Write(b)
 	if err == nil {
-		c.flush()
+		select {
+		case c.flushSig <- struct{}{}:
+		default:
+		}
 	}
 	return n, err
 }

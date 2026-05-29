@@ -177,6 +177,10 @@ func (fc *FrameConn) writer() {
 			default:
 			}
 		}
+		if err != nil {
+			go fc.Close()
+			return
+		}
 	}
 }
 

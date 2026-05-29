@@ -472,6 +472,7 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	case <-conn.done:
 	case <-r.Context().Done():
 	}
+	fc.Close()
 }
 
 func DeriveSecret(psk []byte) []byte {
