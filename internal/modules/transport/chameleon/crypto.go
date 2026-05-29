@@ -171,6 +171,11 @@ func (fc *FrameConn) writer() {
 		if err == nil && addBytes > 0 {
 			atomic.AddUint64(&fc.bytesRecent, addBytes)
 		}
+		if err == nil && len(fc.writeCh) == 0 {
+			if f, ok := fc.Conn.(interface{ FlushWrite() }); ok {
+				f.FlushWrite()
+			}
+		}
 		for _, r := range batch {
 			select {
 			case r.done <- err:

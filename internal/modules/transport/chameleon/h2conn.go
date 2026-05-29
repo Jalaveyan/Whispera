@@ -157,13 +157,12 @@ func newHTTPStreamConn(r io.Reader, w http.ResponseWriter, flush func(), local, 
 	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote, done: make(chan struct{})}
 }
 
-func (c *httpStreamConn) Read(b []byte) (int, error)  { return c.r.Read(b) }
+func (c *httpStreamConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 func (c *httpStreamConn) Write(b []byte) (int, error) {
-	n, err := c.w.Write(b)
-	if err == nil {
-		c.flush()
-	}
-	return n, err
+	return c.w.Write(b)
+}
+func (c *httpStreamConn) FlushWrite() {
+	c.flush()
 }
 func (c *httpStreamConn) Close() error {
 	c.once.Do(func() { close(c.done) })
