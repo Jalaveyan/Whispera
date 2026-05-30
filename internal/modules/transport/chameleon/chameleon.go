@@ -195,8 +195,6 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 			tcpConn.SetKeepAlive(true)
 			tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 			tcpConn.SetNoDelay(true)
-			_ = tcpConn.SetReadBuffer(16 * 1024 * 1024)
-			_ = tcpConn.SetWriteBuffer(16 * 1024 * 1024)
 			tcpFastKeepalive(tcpConn)
 		}
 		uCfg := &utls.Config{
