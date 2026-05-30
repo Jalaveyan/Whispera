@@ -869,10 +869,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		if m.config.ChameleonStripe {
 			targetPoolSize = 1
 		} else {
-			targetPoolSize = m.config.ChameleonMux
-			if targetPoolSize < 1 {
-				targetPoolSize = 16
-			}
+			targetPoolSize = m.poolConnCap()
 		}
 	}
 	var connectedPool []*managedConn
@@ -1155,28 +1152,7 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		return m.config.CustomDialFn(ctx)
 	}
 
-	if m.config.EnableChameleon && len(m.config.ChameleonSecret) > 0 {
-		addr := m.config.ChameleonAddr
-		if addr == "" {
-			addr = m.config.ServerAddr
-		}
-		sni := m.config.ChameleonSNI
-		if sni == "" {
-			host, _, _ := net.SplitHostPort(addr)
-			if host == "" {
-				host = addr
-			}
-			sni = host
-		}
-		cCfg := &chameleon.Config{
-			ServerAddr:   addr,
-			ServerName:   sni,
-			SharedSecret: m.config.ChameleonSecret,
-			SessionCache: m.chameleonSessionCache,
-		}
-		dialOne := func(ctx context.Context) (net.Conn, error) {
-			return chameleon.Client(ctx, cCfg)
-		}
+	if dialOne, ok := m.chameleonDial(); ok {
 		if m.config.ChameleonStripe {
 			bulkMax := m.bulkConnCap()
 			start := m.config.ChameleonStripeStart
@@ -2743,7 +2719,7 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 
 	var sess *mux.Session
 	var onClose func()
-	if proto == protoUDP && m.config.EnableChameleon && m.config.ChameleonStripe {
+	if proto == protoUDP && m.config.EnableChameleon {
 		if gs, gerr := m.gameSession(ctx); gerr == nil {
 			sess, onClose = gs, m.gameStreamClosed
 		}
@@ -3364,16 +3340,34 @@ func (m *Manager) connQuality() float64 {
 }
 
 func (m *Manager) openPoolConn(ctx context.Context) error {
+	capN := 0
+	if m.config.EnableChameleon {
+		capN = m.poolConnCap()
+	}
+	if capN > 0 {
+		m.connMu.RLock()
+		full := len(m.activePool) >= capN
+		m.connMu.RUnlock()
+		if full {
+			return nil
+		}
+	}
 	id := fmt.Sprintf("agent-%d", time.Now().UnixNano())
 	mc, err := m.dialManagedConn(ctx, id)
 	if err != nil {
 		return err
 	}
-	safeGo("readLoop", func() { m.readLoop(mc) })
 	m.connMu.Lock()
+	if capN > 0 && len(m.activePool) >= capN {
+		m.connMu.Unlock()
+		mc.Close()
+		return nil
+	}
 	m.activePool = append(m.activePool, mc)
+	size := len(m.activePool)
 	m.connMu.Unlock()
-	log.Info("[CONN-AGENT] Pool expanded to %d connections", len(m.activePool))
+	safeGo("readLoop", func() { m.readLoop(mc) })
+	log.Info("[CONN-AGENT] Pool expanded to %d connections", size)
 	return nil
 }
 
@@ -3418,6 +3412,51 @@ func (m *Manager) bulkConnCap() int {
 	return lim
 }
 
+func (m *Manager) poolConnCap() int {
+	lim := browserConnBudget - chGameLaneReserve
+	if n := m.config.ChameleonMux; n > 0 && n < lim {
+		lim = n
+	}
+	return lim
+}
+
+func (m *Manager) chameleonDial() (bond.DialFunc, bool) {
+	if !m.config.EnableChameleon || len(m.config.ChameleonSecret) == 0 {
+		return nil, false
+	}
+	addr := m.config.ChameleonAddr
+	if addr == "" {
+		addr = m.config.ServerAddr
+	}
+	sni := m.config.ChameleonSNI
+	if sni == "" {
+		host, _, _ := net.SplitHostPort(addr)
+		if host == "" {
+			host = addr
+		}
+		sni = host
+	}
+	cCfg := &chameleon.Config{
+		ServerAddr:   addr,
+		ServerName:   sni,
+		SharedSecret: m.config.ChameleonSecret,
+		SessionCache: m.chameleonSessionCache,
+	}
+	return func(ctx context.Context) (net.Conn, error) {
+		return chameleon.Client(ctx, cCfg)
+	}, true
+}
+
+func (m *Manager) gameDial() bond.DialFunc {
+	if st := m.stripe.Load(); st != nil && st.dial != nil {
+		return st.dial
+	}
+	if d, ok := m.chameleonDial(); ok {
+		return d
+	}
+	return nil
+}
+
 type gameLane struct {
 	mu   sync.Mutex
 	sess *mux.Session
@@ -3427,8 +3466,8 @@ type gameLane struct {
 }
 
 func (m *Manager) gameSession(ctx context.Context) (*mux.Session, error) {
-	st := m.stripe.Load()
-	if st == nil || st.dial == nil {
+	dial := m.gameDial()
+	if dial == nil {
 		return nil, fmt.Errorf("game lane: no chameleon dial")
 	}
 	g := &m.gameLn
@@ -3442,7 +3481,7 @@ func (m *Manager) gameSession(ctx context.Context) (*mux.Session, error) {
 		g.refs++
 		return g.sess, nil
 	}
-	b, err := bond.DialN(ctx, 1, st.dial)
+	b, err := bond.DialN(ctx, 1, dial)
 	if err != nil {
 		return nil, err
 	}
@@ -3455,6 +3494,13 @@ func (m *Manager) gameSession(ctx context.Context) (*mux.Session, error) {
 	g.sess = sess
 	g.refs = 1
 	return sess, nil
+}
+
+func (m *Manager) gameLaneActive() bool {
+	g := &m.gameLn
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.refs > 0
 }
 
 func (m *Manager) gameStreamClosed() {
@@ -3526,10 +3572,17 @@ func (m *Manager) evalScale() {
 	if base < 1 {
 		base = 16
 	}
+	ceiling := chScaleMaxConns
+	if m.config.EnableChameleon {
+		ceiling = m.poolConnCap()
+		if base > ceiling {
+			base = ceiling
+		}
+	}
 	perConn := rate / float64(poolSize)
 
 	switch {
-	case perConn >= chScaleGrowPerConn && poolSize < chScaleMaxConns:
+	case perConn >= chScaleGrowPerConn && poolSize < ceiling:
 		if atomic.LoadInt32(&m.chScaleOpening) != 0 {
 			return
 		}
@@ -3537,8 +3590,8 @@ func (m *Manager) evalScale() {
 		if grow < 1 {
 			grow = 1
 		}
-		if poolSize+grow > chScaleMaxConns {
-			grow = chScaleMaxConns - poolSize
+		if poolSize+grow > ceiling {
+			grow = ceiling - poolSize
 		}
 		log.Info("[CH-SCALE] saturated: %.0f Mbit/s over %d conns (%.0f/conn) → +%d",
 			rate*8/1e6, poolSize, perConn*8/1e6, grow)
@@ -4080,6 +4133,9 @@ func (m *Manager) mlStartTransportWatchdog(ctx context.Context) {
 				if rec == "" || rec == m.config.Transport {
 					continue
 				}
+				if m.gameLaneActive() {
+					continue
+				}
 				log.Info("[RL-Transport] Watchdog: switching %s → %s (eps=%.2f)",
 					m.config.Transport, rec, m.transportAgent.Epsilon())
 				m.config.Transport = rec
@@ -4293,12 +4349,7 @@ func (m *Manager) performRekey() {
 		log.Warn("[REKEY] Failed to send rekey frame: %v", err)
 		return
 	}
-	log.Info("[REKEY] Sent rekey frame, initiating transport rotation (seed=%x...)", seed[:4])
-
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		m.rotateTransport()
-	}()
+	log.Info("[REKEY] Sent in-place rekey frame (PFS, seed=%x...)", seed[:4])
 }
 
 func (m *Manager) rotateTransport() {
