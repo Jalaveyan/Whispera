@@ -360,7 +360,7 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 }
 
 func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, true)
+	s.serveTunnel(conn, streamObf, s.config.PaddingMaxSize >= 0)
 }
 
 func (s *Server) ServeTunnelRaw(conn net.Conn, streamObf bool) {
@@ -417,6 +417,8 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 			if strings.Contains(errStr, "keepalive timeout") ||
 				strings.Contains(errStr, "session closed") ||
 				strings.Contains(errStr, "EOF") ||
+				strings.Contains(errStr, "client disconnected") ||
+				strings.Contains(errStr, "padded_conn:") ||
 				isNormalConnClose(err) {
 				s.log.Debug("Tunnel session ended for %s: %v", clientID, err)
 			} else {

@@ -1100,7 +1100,7 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	}
 
 	var muxConn net.Conn
-	if m.config.EnableChameleon {
+	if m.config.EnableChameleon || m.config.PaddingMaxSize < 0 {
 		muxConn = conn
 	} else {
 		padMax := m.config.PaddingMaxSize

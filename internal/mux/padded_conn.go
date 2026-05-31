@@ -13,27 +13,15 @@ import (
 	"whispera/internal/buf"
 )
 
-// PaddedConn wraps a net.Conn and adds random-length padding to every write,
-// making the on-wire frame sizes unpredictable.  This defeats DPI that
-// fingerprints yamux by its fixed 12-byte headers / frame structure.
-//
-// Wire format per frame:
-//   [2 bytes: total frame len (big-endian, excludes these 2 bytes)]
-//   [2 bytes: real payload len (big-endian)]
-//   [payload bytes]
-//   [random padding bytes]
-//
-// Both sides must use PaddedConn for the framing to work.
 type PaddedConn struct {
 	net.Conn
 	writeMu   sync.Mutex
 	readMu    sync.Mutex
-	readBuf   []byte // buffered leftover from partial reads
+	readBuf   []byte
 	maxPad    int
 	headerBuf [4]byte
 }
 
-// NewPaddedConn wraps conn with random padding of 0..maxPad bytes per write.
 func NewPaddedConn(conn net.Conn, maxPad int) *PaddedConn {
 	if maxPad <= 0 {
 		maxPad = 128
@@ -50,7 +38,6 @@ func (pc *PaddedConn) Write(p []byte) (int, error) {
 
 	dataLen := len(p)
 	if dataLen > 65000 {
-		// Split large writes to keep frame size within uint16 range
 		written := 0
 		for written < dataLen {
 			chunk := dataLen - written
@@ -69,6 +56,12 @@ func (pc *PaddedConn) Write(p []byte) (int, error) {
 
 func (pc *PaddedConn) writeFrame(data []byte) error {
 	padLen := pc.computePad(len(data))
+	if allowed := 65533 - len(data); padLen > allowed {
+		padLen = allowed
+	}
+	if padLen < 0 {
+		padLen = 0
+	}
 	totalLen := 2 + len(data) + padLen
 	frameSize := 2 + totalLen
 
@@ -89,11 +82,8 @@ func (pc *PaddedConn) writeFrame(data []byte) error {
 	return err
 }
 
-// computePad returns padding bytes so the on-wire frame lands in a size bucket,
-// making DPI packet-size fingerprinting ineffective.
-// Buckets: ≤256 → 256, ≤512 → 512, ≤1024 → 1024, larger → random up to maxPad.
 func (pc *PaddedConn) computePad(dataLen int) int {
-	wireBase := 4 + dataLen // 2-byte outer len + 2-byte inner len + data
+	wireBase := 4 + dataLen
 
 	var bucket int
 	switch {
@@ -112,7 +102,6 @@ func (pc *PaddedConn) computePad(dataLen int) int {
 	if remainder != 0 {
 		padNeeded = bucket - remainder
 	}
-	// Small random overshoot (0..31 bytes) so equal-sized payloads differ
 	overshoot := rand.Intn(32)
 	total := padNeeded + overshoot
 	if total > 65000-dataLen {
@@ -125,40 +114,49 @@ func (pc *PaddedConn) Read(p []byte) (int, error) {
 	pc.readMu.Lock()
 	defer pc.readMu.Unlock()
 
-	// Return buffered data first
 	if len(pc.readBuf) > 0 {
 		n := copy(p, pc.readBuf)
 		pc.readBuf = pc.readBuf[n:]
 		return n, nil
 	}
-
-	// Read frame header: 2 bytes total length
-	if _, err := io.ReadFull(pc.Conn, pc.headerBuf[:2]); err != nil {
-		return 0, err
-	}
-	totalLen := int(binary.BigEndian.Uint16(pc.headerBuf[:2]))
-	if totalLen < 2 || totalLen > 66000 {
-		return 0, fmt.Errorf("padded_conn: invalid frame length %d", totalLen)
+	if len(p) == 0 {
+		return 0, nil
 	}
 
-	b := buf.NewSize(totalLen)
-	defer b.Release()
-	frameBuf := b.Extend(totalLen)
-	if _, err := io.ReadFull(pc.Conn, frameBuf); err != nil {
-		return 0, err
-	}
+	for {
+		if _, err := io.ReadFull(pc.Conn, pc.headerBuf[:2]); err != nil {
+			return 0, err
+		}
+		totalLen := int(binary.BigEndian.Uint16(pc.headerBuf[:2]))
+		if totalLen < 2 || totalLen > 66000 {
+			return 0, fmt.Errorf("padded_conn: invalid frame length %d", totalLen)
+		}
 
-	dataLen := int(binary.BigEndian.Uint16(frameBuf[:2]))
-	if dataLen > totalLen-2 {
-		return 0, fmt.Errorf("padded_conn: data length %d exceeds frame %d", dataLen, totalLen)
-	}
+		b := buf.NewSize(totalLen)
+		frameBuf := b.Extend(totalLen)
+		if _, err := io.ReadFull(pc.Conn, frameBuf); err != nil {
+			b.Release()
+			return 0, err
+		}
 
-	realData := frameBuf[2 : 2+dataLen]
-	n := copy(p, realData)
-	if n < dataLen {
-		pc.readBuf = append(pc.readBuf[:0], realData[n:]...)
+		dataLen := int(binary.BigEndian.Uint16(frameBuf[:2]))
+		if dataLen > totalLen-2 {
+			b.Release()
+			return 0, fmt.Errorf("padded_conn: data length %d exceeds frame %d", dataLen, totalLen)
+		}
+		if dataLen == 0 {
+			b.Release()
+			continue
+		}
+
+		realData := frameBuf[2 : 2+dataLen]
+		n := copy(p, realData)
+		if n < dataLen {
+			pc.readBuf = append(pc.readBuf[:0], realData[n:]...)
+		}
+		b.Release()
+		return n, nil
 	}
-	return n, nil
 }
 
 func (pc *PaddedConn) SetDeadline(t time.Time) error      { return pc.Conn.SetDeadline(t) }
