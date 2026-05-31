@@ -241,6 +241,7 @@ type Config struct {
 	ChameleonAddr        string
 	ChameleonSNI         string
 	ChameleonSecret      []byte
+	ChameleonCertPin     string
 	ChameleonMux         int
 	ChameleonStripe      bool
 	ChameleonStripeN     int
@@ -3437,10 +3438,11 @@ func (m *Manager) chameleonDial() (bond.DialFunc, bool) {
 		sni = host
 	}
 	cCfg := &chameleon.Config{
-		ServerAddr:   addr,
-		ServerName:   sni,
-		SharedSecret: m.config.ChameleonSecret,
-		SessionCache: m.chameleonSessionCache,
+		ServerAddr:    addr,
+		ServerName:    sni,
+		SharedSecret:  m.config.ChameleonSecret,
+		ServerCertPin: m.config.ChameleonCertPin,
+		SessionCache:  m.chameleonSessionCache,
 	}
 	return func(ctx context.Context) (net.Conn, error) {
 		return chameleon.Client(ctx, cCfg)

@@ -3,7 +3,10 @@ package chameleon
 import (
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -46,8 +49,8 @@ var chromeHelloPool = []utls.ClientHelloID{
 }
 
 const (
-	sessionCookie = "_s"
-	headerToken   = "Authorization"
+	sessionCookie       = "_s"
+	headerToken         = "Authorization"
 	contentType         = "application/octet-stream"
 	contentTypeDownload = "video/mp4"
 
@@ -83,10 +86,10 @@ type UserEntry struct {
 
 type Config struct {
 	ListenAddr string
-	TLSCert string
-	TLSKey  string
-	Domain  string
-	ACMEDir string
+	TLSCert    string
+	TLSKey     string
+	Domain     string
+	ACMEDir    string
 
 	GetUsers func() []UserEntry
 
@@ -96,6 +99,8 @@ type Config struct {
 	ServerNames []string
 
 	SharedSecret []byte
+
+	ServerCertPin string
 
 	SessionCache any
 
@@ -107,9 +112,9 @@ type Config struct {
 
 	AsymBiasRatio float64
 
-	proxy      *decoyProxy
-	sessions   sync.Map
-	sessionMu  sync.Mutex
+	proxy       *decoyProxy
+	sessions    sync.Map
+	sessionMu   sync.Mutex
 	sessionCond *sync.Cond
 }
 
@@ -163,6 +168,27 @@ func pickSNI(cfg *Config) string {
 	return cfg.ServerName
 }
 
+func SPKIPin(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func pinVerifier(pin string) func([][]byte, [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return fmt.Errorf("chameleon: no server certificate to pin")
+		}
+		cert, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("chameleon: parse server cert: %w", err)
+		}
+		if subtle.ConstantTimeCompare([]byte(SPKIPin(cert)), []byte(pin)) != 1 {
+			return fmt.Errorf("chameleon: server cert pin mismatch")
+		}
+		return nil
+	}
+}
+
 func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	sessionID := make([]byte, 16)
 	if _, err := crand.Read(sessionID); err != nil {
@@ -199,6 +225,9 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 			ServerName:         sni,
 			InsecureSkipVerify: true,
 		}
+		if cfg.ServerCertPin != "" {
+			uCfg.VerifyPeerCertificate = pinVerifier(cfg.ServerCertPin)
+		}
 		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
 			uCfg.ClientSessionCache = sc
 		}
@@ -222,7 +251,8 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	req, err := http.NewRequestWithContext(tunnelCtx, http.MethodPost, url, pr)
 	if err != nil {
 		tunnelCancel()
-		pr.Close(); bpw.Close()
+		pr.Close()
+		bpw.Close()
 		return nil, fmt.Errorf("chameleon: build request: %w", err)
 	}
 	req.Host = sni
@@ -285,6 +315,11 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 			Certificates: []tls.Certificate{cert},
 			NextProtos:   []string{"h2", "http/1.1"},
 			MinVersion:   tls.VersionTLS12,
+		}
+		if len(cert.Certificate) > 0 {
+			if leaf, e := x509.ParseCertificate(cert.Certificate[0]); e == nil {
+				log.Printf("Chameleon server SPKI pin: %s", SPKIPin(leaf))
+			}
 		}
 	} else if cfg.Domain != "" {
 		cacheDir := cfg.ACMEDir
@@ -665,7 +700,7 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 		}
 
 		parallel(decoyGraph[2], burstFor(1+mrand.Intn(2)))
-		if !sleep(bp.ParseDelayMs/2) {
+		if !sleep(bp.ParseDelayMs / 2) {
 			return
 		}
 

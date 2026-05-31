@@ -56,7 +56,6 @@ var mp4FtypAtom = [24]byte{
 	0x6D, 0x70, 0x34, 0x32,
 }
 
-
 func hlsSessionKey(sessionID []byte) string { return hex.EncodeToString(sessionID) }
 
 func hlsPlaylistPath(sessionID []byte) string {
@@ -84,7 +83,6 @@ func hlsM3U8(startSeg uint64) string {
 	}
 	return sb.String()
 }
-
 
 type segSlot struct {
 	w     io.Writer
@@ -159,7 +157,6 @@ func (r *segmentRouter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-
 var restUploadPathsByMethod = map[string][]string{
 	http.MethodPost: {
 		"/api/v1/messages",
@@ -204,7 +201,6 @@ func restUploadPath(method string) string {
 	return paths[mrand.Intn(len(paths))]
 }
 
-
 type GANAction struct {
 	SleepMs  float64
 	PaddingN int
@@ -230,7 +226,6 @@ func StreamingBiasGANDecide(targetRatio float64) GANDecideFunc {
 	}
 }
 
-
 type restSession struct {
 	uploadCh      chan *uploadBody
 	segCh         chan segSlot
@@ -239,7 +234,6 @@ type restSession struct {
 	uploadBytes   int64
 	downloadBytes int64
 }
-
 
 type restServerConn struct {
 	sess    *restSession
@@ -265,10 +259,10 @@ type restServerConn struct {
 func newRestServerConn(sess *restSession, w io.Writer, local, remote net.Addr, onClose func(), ganDecide GANDecideFunc) *restServerConn {
 	flusher, _ := w.(http.Flusher)
 	return &restServerConn{
-		sess:      sess,
-		w:         w,
-		flusher:   flusher,
-		ganDecide: ganDecide,
+		sess:       sess,
+		w:          w,
+		flusher:    flusher,
+		ganDecide:  ganDecide,
 		done:       make(chan struct{}),
 		onClose:    onClose,
 		localAddr:  local,
@@ -361,12 +355,11 @@ func (c *restServerConn) Close() error {
 	return nil
 }
 
-func (c *restServerConn) LocalAddr() net.Addr               { return c.localAddr }
-func (c *restServerConn) RemoteAddr() net.Addr              { return c.remoteAddr }
-func (c *restServerConn) SetDeadline(t time.Time) error     { return nil }
+func (c *restServerConn) LocalAddr() net.Addr                { return c.localAddr }
+func (c *restServerConn) RemoteAddr() net.Addr               { return c.remoteAddr }
+func (c *restServerConn) SetDeadline(t time.Time) error      { return nil }
 func (c *restServerConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *restServerConn) SetWriteDeadline(t time.Time) error { return nil }
-
 
 type restClientConn struct {
 	bodyCh  chan io.ReadCloser
@@ -445,13 +438,11 @@ func (c *restClientConn) Close() error {
 	return nil
 }
 
-func (c *restClientConn) LocalAddr() net.Addr               { return c.localAddr }
-func (c *restClientConn) RemoteAddr() net.Addr              { return c.remoteAddr }
-func (c *restClientConn) SetDeadline(t time.Time) error     { return nil }
+func (c *restClientConn) LocalAddr() net.Addr                { return c.localAddr }
+func (c *restClientConn) RemoteAddr() net.Addr               { return c.remoteAddr }
+func (c *restClientConn) SetDeadline(t time.Time) error      { return nil }
 func (c *restClientConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *restClientConn) SetWriteDeadline(t time.Time) error { return nil }
-
-
 
 func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, origin, sessionHdr, token string, uploadCh <-chan *buf.Buffer) {
 	var coalesce []byte
@@ -563,7 +554,6 @@ func runRESTDecoy(ctx context.Context, client *http.Client, serverAddr, sni, ori
 	}()
 }
 
-
 func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	sessionID := make([]byte, 16)
 	if _, err := crand.Read(sessionID); err != nil {
@@ -594,6 +584,9 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 		uCfg := &utls.Config{
 			ServerName:         sni,
 			InsecureSkipVerify: true,
+		}
+		if cfg.ServerCertPin != "" {
+			uCfg.VerifyPeerCertificate = pinVerifier(cfg.ServerCertPin)
 		}
 		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
 			uCfg.ClientSessionCache = sc
@@ -709,7 +702,6 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	return NewFrameConn(conn), nil
 }
 
-
 func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	tokenHdr := r.Header.Get(headerToken)
 	sessCookie, cookieErr := r.Cookie(sessionCookie)
@@ -823,7 +815,6 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 
 	<-done
 }
-
 
 func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	tokenHdr := r.Header.Get(headerToken)
