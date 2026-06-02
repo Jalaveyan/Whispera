@@ -101,46 +101,120 @@ check_os() {
 }
 
 
+has_systemd() {
+    [[ -d /run/systemd/system ]] || { command -v systemctl &>/dev/null && systemctl --version &>/dev/null; }
+}
+
+make_service_user() {
+    local user="$1"
+    if id -u "$user" &>/dev/null; then
+        return 0
+    fi
+    local nologin
+    nologin=$(command -v nologin 2>/dev/null || true)
+    if [[ -z "$nologin" ]]; then
+        for p in /usr/sbin/nologin /sbin/nologin /bin/false; do
+            [[ -x "$p" ]] && nologin="$p" && break
+        done
+    fi
+    [[ -z "$nologin" ]] && nologin=/bin/false
+    if command -v useradd &>/dev/null; then
+        useradd --system --no-create-home --shell "$nologin" "$user" 2>/dev/null || \
+        useradd -r -M -s "$nologin" "$user" 2>/dev/null || true
+    elif command -v adduser &>/dev/null; then
+        adduser -S -D -H -s "$nologin" "$user" 2>/dev/null || \
+        adduser --system --no-create-home --disabled-password "$user" 2>/dev/null || true
+    fi
+    if id -u "$user" &>/dev/null; then
+        log_info "Created system user '$user'"
+    else
+        log_warn "Could not create system user '$user'"
+    fi
+}
+
+fw_allow_port() {
+    local port="$1" proto="${2:-tcp}"
+    if command -v ufw &>/dev/null && ufw status &>/dev/null; then
+        ufw allow "${port}/${proto}" >/dev/null 2>&1 || true
+    elif command -v firewall-cmd &>/dev/null && firewall-cmd --state &>/dev/null; then
+        firewall-cmd --permanent --add-port="${port}/${proto}" >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    elif command -v iptables &>/dev/null; then
+        iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || \
+        iptables -A INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || true
+    fi
+}
+
+fw_deny_port() {
+    local port="$1" proto="${2:-tcp}"
+    if command -v ufw &>/dev/null && ufw status &>/dev/null; then
+        ufw deny "${port}/${proto}" >/dev/null 2>&1 || true
+    elif command -v firewall-cmd &>/dev/null && firewall-cmd --state &>/dev/null; then
+        firewall-cmd --permanent --remove-port="${port}/${proto}" >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+    elif command -v iptables &>/dev/null; then
+        iptables -C INPUT -p "$proto" --dport "$port" -j DROP 2>/dev/null || \
+        iptables -A INPUT -p "$proto" --dport "$port" -j DROP 2>/dev/null || true
+    fi
+}
+
 install_dependencies() {
     log_info "Installing dependencies..."
-    
+
     case $RELEASE in
-        centos|fedora|almalinux|rocky)
-            yum install -y curl git wget tar unzip openssl nodejs >/dev/null 2>&1
-            ;;
         ubuntu|debian)
             apt-get update
             apt-get remove -y libnode-dev libnode72 nodejs npm || true
             dpkg --remove --force-all libnode-dev libnode72 || true
             apt-get autoremove -y || true
-            apt-get install -y curl git wget tar unzip openssl nano jq bc net-tools
+            apt-get install -y curl git wget tar unzip openssl nano jq bc net-tools iproute2
             curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
             apt-get install -y nodejs
             ;;
+        centos|fedora|almalinux|rocky)
+            local DNF=dnf
+            command -v dnf &>/dev/null || DNF=yum
+            $DNF install -y epel-release || true
+            $DNF install -y curl git wget tar unzip openssl nano jq bc net-tools iproute
+            curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - || true
+            $DNF install -y nodejs || $DNF install -y nodejs npm || true
+            ;;
         alpine)
-            apk add curl git wget tar unzip openssl nodejs >/dev/null 2>&1
+            apk add --no-cache curl git wget tar unzip openssl nano jq bc iproute2 nodejs npm
             ;;
         arch|manjaro)
-            pacman -Sy --noconfirm curl git wget tar unzip openssl nodejs npm jq bc net-tools >/dev/null 2>&1
+            pacman -Sy --noconfirm curl git wget tar unzip openssl nano jq bc net-tools iproute2 nodejs npm
             ;;
         opensuse*|sles)
-            zypper --non-interactive install -y curl git wget tar unzip openssl nodejs20 jq bc >/dev/null 2>&1
-            ;;
-        mageia)
-            urpmi --auto curl git wget tar unzip openssl nodejs jq >/dev/null 2>&1
+            zypper --non-interactive install -y curl git wget tar unzip openssl nano jq bc net-tools iproute2 nodejs20 npm || \
+            zypper --non-interactive install -y curl git wget tar unzip openssl nano jq bc net-tools iproute2 nodejs npm
             ;;
         *)
-            log_warn "Unknown OS: $RELEASE - trying apt-get"
-            apt-get update >/dev/null 2>&1 || true
-            apt-get install -y curl git wget tar unzip openssl >/dev/null 2>&1 || true
+            log_warn "Unknown OS '$RELEASE' — attempting generic install"
+            if command -v apt-get &>/dev/null; then
+                apt-get update; apt-get install -y curl git wget tar unzip openssl nodejs npm jq bc
+            elif command -v dnf &>/dev/null; then
+                dnf install -y curl git wget tar unzip openssl nodejs npm jq bc
+            elif command -v yum &>/dev/null; then
+                yum install -y curl git wget tar unzip openssl nodejs npm jq bc
+            elif command -v apk &>/dev/null; then
+                apk add --no-cache curl git wget tar unzip openssl nodejs npm jq bc
+            elif command -v pacman &>/dev/null; then
+                pacman -Sy --noconfirm curl git wget tar unzip openssl nodejs npm jq bc
+            elif command -v zypper &>/dev/null; then
+                zypper --non-interactive install -y curl git wget tar unzip openssl nodejs npm jq bc
+            else
+                log_err "No supported package manager found"
+                exit 1
+            fi
             ;;
     esac
-    
+
     if command -v timedatectl &>/dev/null; then
         log_info "Synchronizing system time..."
         timedatectl set-ntp on || true
     fi
-    
+
     log_success "Dependencies installed"
 }
 
@@ -530,9 +604,7 @@ POSTGRES_URL=postgresql://whispera:$PG_PASS@localhost/whispera
 EOF
     chmod 600 "$CONF_PATH/postgres.env"
     
-    if command -v ufw &>/dev/null; then
-        ufw deny 5432/tcp >/dev/null 2>&1 || true
-    fi
+    fw_deny_port 5432 tcp
     
     if sudo -u postgres psql -lqt 2>/dev/null | grep -q whispera; then
         log_success "PostgreSQL installed and configured (local-only)"
@@ -1550,10 +1622,8 @@ NGINX
 
     rm -f /etc/nginx/sites-enabled/default
 
-    if command -v ufw &>/dev/null; then
-        ufw allow 80/tcp >/dev/null 2>&1 || true
-        ufw allow 443/tcp >/dev/null 2>&1 || true
-    fi
+    fw_allow_port 80 tcp
+    fw_allow_port 443 tcp
 
     if nginx -t 2>/dev/null; then
         systemctl enable nginx >/dev/null 2>&1
@@ -1567,22 +1637,27 @@ NGINX
 setup_systemd() {
     log_info "Setting up SystemD services..."
 
-    if ! id -u whispera &>/dev/null; then
-        useradd --system --no-create-home --shell /usr/sbin/nologin whispera
-        log_info "Created system user 'whispera'"
-    fi
+    make_service_user whispera
 
-    local UFW_BIN
-    UFW_BIN=$(command -v ufw 2>/dev/null || echo /usr/sbin/ufw)
-    echo "whispera ALL=(ALL) NOPASSWD: $UFW_BIN" > /etc/sudoers.d/whispera-ufw
-    chmod 440 /etc/sudoers.d/whispera-ufw
-    log_info "Configured sudo access for UFW"
+    if command -v ufw &>/dev/null; then
+        local UFW_BIN
+        UFW_BIN=$(command -v ufw)
+        echo "whispera ALL=(ALL) NOPASSWD: $UFW_BIN" > /etc/sudoers.d/whispera-ufw
+        chmod 440 /etc/sudoers.d/whispera-ufw
+        log_info "Configured sudo access for UFW"
+    fi
 
     mkdir -p "$LOG_PATH"
     mkdir -p "$DAT_PATH/panel/public/uploads"
     chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$DAT_PATH" "$LOG_PATH" 2>/dev/null || true
     chmod 750 "$CONF_PATH"
     chmod 640 "$CONF_PATH/config.yaml" 2>/dev/null || true
+
+    if ! has_systemd; then
+        log_warn "No systemd detected (Alpine/OpenRC?). User & config are set up, but service units were NOT installed."
+        log_warn "Start manually: $BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080"
+        return 0
+    fi
 
     cat > /etc/systemd/system/whispera.service <<EOF
 [Unit]
@@ -1824,6 +1899,14 @@ setup_firewall() {
         firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="127.0.0.1" port protocol="tcp" port="3000" accept' >/dev/null 2>&1 || true
         firewall-cmd --reload >/dev/null 2>&1 || true
         log_success "Firewalld configured"
+    elif command -v iptables &>/dev/null; then
+        for p in 22 8443 8080 9443 80 443; do
+            iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || \
+            iptables -A INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
+        done
+        iptables -C INPUT -p udp --dport 8443 -j ACCEPT 2>/dev/null || \
+        iptables -A INPUT -p udp --dport 8443 -j ACCEPT 2>/dev/null || true
+        log_success "iptables rules added (not persistent without netfilter-persistent)"
     else
         log_warn "No firewall found, skipping"
     fi

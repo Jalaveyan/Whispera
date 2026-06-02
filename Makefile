@@ -47,8 +47,6 @@ build: ## Build binaries
 	@go build -o server ./cmd/server
 	@echo "Building keygen..."
 	@go build -o keygen ./cmd/keygen
-	@echo "Building speedtest server..."
-	@go build -o speedtest-server ./cmd/whispera-speedtest-server
 
 build-windows: ## Build binaries for Windows (Tauri)
 	@echo "Building client for Tauri..."
@@ -58,7 +56,7 @@ build-windows: ## Build binaries for Windows (Tauri)
 
 clean: ## Clean build artifacts
 	@echo "Cleaning build artifacts..."
-	@rm -f client server keygen speedtest-server
+	@rm -f client server keygen
 	@rm -f coverage.out coverage.html
 	@go clean -cache
 

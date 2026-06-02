@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "go.uber.org/automaxprocs"
+
 	"whispera/internal/modules/config"
 )
 
@@ -114,7 +116,7 @@ func generateConfig(ck *config.ConnectionKey) string {
 
 	profile := ck.ObfsProfile
 	if profile == "" {
-		profile = "vk" 
+		profile = "vk"
 	}
 
 	phantomSNI := ck.PhantomSNI

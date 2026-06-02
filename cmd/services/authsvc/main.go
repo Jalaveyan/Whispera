@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	_ "go.uber.org/automaxprocs"
+
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/lifecycle"
 	"whispera/internal/modules/crypto"
