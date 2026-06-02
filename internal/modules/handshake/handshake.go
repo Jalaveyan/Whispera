@@ -336,7 +336,14 @@ func (h *Handler) handleResponse(ctx context.Context, data []byte, addr net.Addr
 }
 
 func (h *Handler) handleRekey(ctx context.Context, data []byte, addr net.Addr) (interfaces.Session, error) {
-	session, ok := h.sessionManager.GetSessionByAddr(addr)
+	h.mu.RLock()
+	sessionMgr := h.sessionManager
+	h.mu.RUnlock()
+	if sessionMgr == nil {
+		return nil, fmt.Errorf("dependencies not set")
+	}
+
+	session, ok := sessionMgr.GetSessionByAddr(addr)
 	if !ok {
 		return nil, fmt.Errorf("session not found for rekey")
 	}

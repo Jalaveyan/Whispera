@@ -74,6 +74,9 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 
 	if len(cfg.Chain) > 0 {
 		firstHop := cfg.Chain[0]
+		if len(cfg.Chain) > 1 {
+			om.log.Warn("outbound %s: chain has %d hops but only %q is dialed — for multi-hop cascade nest outbounds (each chains to one next hop)", cfg.Tag, len(cfg.Chain), firstHop)
+		}
 		targetAddr := cfg.Address
 		tCfg.CustomDialFn = func(ctx context.Context) (net.Conn, error) {
 			om.mu.RLock()

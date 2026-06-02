@@ -360,7 +360,7 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 }
 
 func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, s.config.PaddingMaxSize >= 0)
+	s.serveTunnel(conn, streamObf, true)
 }
 
 func (s *Server) ServeTunnelRaw(conn net.Conn, streamObf bool) {

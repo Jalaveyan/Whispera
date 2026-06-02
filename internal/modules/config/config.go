@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,7 +23,7 @@ func (d Duration) D() time.Duration { return time.Duration(d) }
 
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind != yaml.ScalarNode {
-		return fmt.Errorf("Duration must be a scalar, got %v", value.Kind)
+		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: duration must be a scalar, keeping default", value.Line)}}
 	}
 
 	if n, err := strconv.ParseInt(value.Value, 10, 64); err == nil {
@@ -32,7 +33,7 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 
 	dur, err := time.ParseDuration(value.Value)
 	if err != nil {
-		return fmt.Errorf("cannot parse %q as duration (use integer seconds or Go duration string like '30s')", value.Value)
+		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: cannot parse %q as duration (use integer seconds or '30s'), keeping default", value.Line, value.Value)}}
 	}
 	*d = Duration(dur)
 	return nil
@@ -236,28 +237,28 @@ type NATSConfig struct {
 }
 
 type UpdateConfig struct {
-	Enabled      bool   `yaml:"enabled" json:"enabled"`
-	ManifestURL  string `yaml:"manifest_url" json:"manifest_url"`
-	PublicKey    string `yaml:"public_key" json:"public_key"`
-	Channel      string `yaml:"channel" json:"channel"`
+	Enabled       bool     `yaml:"enabled" json:"enabled"`
+	ManifestURL   string   `yaml:"manifest_url" json:"manifest_url"`
+	PublicKey     string   `yaml:"public_key" json:"public_key"`
+	Channel       string   `yaml:"channel" json:"channel"`
 	CheckInterval Duration `yaml:"check_interval" json:"check_interval"`
 }
 
 type CorrelationConfig struct {
-	Enabled        bool    `yaml:"enabled" json:"enabled"`
-	PaddingEnabled bool    `yaml:"padding" json:"padding"`
-	JitterEnabled  bool    `yaml:"jitter" json:"jitter"`
-	CoverTraffic   bool    `yaml:"cover_traffic" json:"cover_traffic"`
-	MaxJitterMs    int     `yaml:"max_jitter_ms" json:"max_jitter_ms"`
-	CoverRateMs    int     `yaml:"cover_rate_ms" json:"cover_rate_ms"`
-	RateBytesPerSec int    `yaml:"rate_bytes_per_sec" json:"rate_bytes_per_sec"`
+	Enabled         bool `yaml:"enabled" json:"enabled"`
+	PaddingEnabled  bool `yaml:"padding" json:"padding"`
+	JitterEnabled   bool `yaml:"jitter" json:"jitter"`
+	CoverTraffic    bool `yaml:"cover_traffic" json:"cover_traffic"`
+	MaxJitterMs     int  `yaml:"max_jitter_ms" json:"max_jitter_ms"`
+	CoverRateMs     int  `yaml:"cover_rate_ms" json:"cover_rate_ms"`
+	RateBytesPerSec int  `yaml:"rate_bytes_per_sec" json:"rate_bytes_per_sec"`
 }
 
 type SNIBypassConfig struct {
-	Enabled       bool   `yaml:"enabled" json:"enabled"`
-	Mode          string `yaml:"mode" json:"mode"`
-	FragmentSize  int    `yaml:"fragment_size" json:"fragment_size"`
-	Fingerprint   string `yaml:"fingerprint" json:"fingerprint"`
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	Mode         string `yaml:"mode" json:"mode"`
+	FragmentSize int    `yaml:"fragment_size" json:"fragment_size"`
+	Fingerprint  string `yaml:"fingerprint" json:"fingerprint"`
 }
 
 type VKRelayConfig struct {
@@ -283,7 +284,7 @@ type InboundConfig struct {
 	Protocol string `yaml:"protocol" json:"protocol"`
 	Listen   string `yaml:"listen" json:"listen"`
 	Port     int    `yaml:"port" json:"port"`
-	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
+	Ports    []int  `yaml:"ports,omitempty" json:"ports,omitempty"`
 
 	Mode       string `yaml:"mode,omitempty" json:"mode,omitempty"`
 	RemoteAddr string `yaml:"remote_addr,omitempty" json:"remote_addr,omitempty"`
@@ -310,14 +311,14 @@ func (c *InboundConfig) AllPorts() []int {
 }
 
 type StreamConfig struct {
-	Network  string              `yaml:"network" json:"network"`
-	Security string              `yaml:"security" json:"security"`
-	TLS      TLSConfig           `yaml:"tls" json:"tls"`
-	Phantom  PhantomStreamConfig `yaml:"phantom" json:"phantom"`
-	Reality  PhantomStreamConfig `yaml:"reality,omitempty" json:"reality,omitempty"`
-	WS       WebSocketConfig     `yaml:"ws" json:"ws"`
-	H2C      H2CStreamConfig     `yaml:"h2c" json:"h2c"`
-	Params map[string]interface{} `yaml:"params,omitempty" json:"params,omitempty"`
+	Network  string                 `yaml:"network" json:"network"`
+	Security string                 `yaml:"security" json:"security"`
+	TLS      TLSConfig              `yaml:"tls" json:"tls"`
+	Phantom  PhantomStreamConfig    `yaml:"phantom" json:"phantom"`
+	Reality  PhantomStreamConfig    `yaml:"reality,omitempty" json:"reality,omitempty"`
+	WS       WebSocketConfig        `yaml:"ws" json:"ws"`
+	H2C      H2CStreamConfig        `yaml:"h2c" json:"h2c"`
+	Params   map[string]interface{} `yaml:"params,omitempty" json:"params,omitempty"`
 }
 
 type TLSConfig struct {
@@ -372,13 +373,13 @@ type PhantomConfig struct {
 }
 
 type ChameleonConfig struct {
-	Enabled    bool   `yaml:"enabled" json:"enabled"`
-	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
-	TLSCert string `yaml:"tls_cert" json:"tls_cert"`
-	TLSKey  string `yaml:"tls_key" json:"tls_key"`
-	Domain  string `yaml:"domain" json:"domain"`
-	ACMEDir string `yaml:"acme_dir" json:"acme_dir"`
-	DecoyOrigin string `yaml:"decoy_origin" json:"decoy_origin"`
+	Enabled       bool   `yaml:"enabled" json:"enabled"`
+	ListenAddr    string `yaml:"listen_addr" json:"listen_addr"`
+	TLSCert       string `yaml:"tls_cert" json:"tls_cert"`
+	TLSKey        string `yaml:"tls_key" json:"tls_key"`
+	Domain        string `yaml:"domain" json:"domain"`
+	ACMEDir       string `yaml:"acme_dir" json:"acme_dir"`
+	DecoyOrigin   string `yaml:"decoy_origin" json:"decoy_origin"`
 	GANIface      string `yaml:"gan_iface" json:"gan_iface"`
 	GANPort       int    `yaml:"gan_port" json:"gan_port"`
 	GANMaxPadding int    `yaml:"gan_max_padding" json:"gan_max_padding"`
@@ -646,7 +647,13 @@ func (p *Provider) Load(source string) error {
 	cfg := *cfgPtr
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("failed to parse config: %w", err)
+		if te, ok := err.(*yaml.TypeError); ok {
+			for _, msg := range te.Errors {
+				log.Printf("[config] %s: invalid value ignored, using default: %s", source, msg)
+			}
+		} else {
+			return fmt.Errorf("failed to parse config: %w", err)
+		}
 	}
 
 	p.mu.Lock()
