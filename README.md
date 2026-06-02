@@ -31,7 +31,7 @@ Masquerades as legitimate HTTPS traffic with ML-driven obfuscation, multi-transp
 ### Quick install (Ubuntu/Debian)
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
+sudo bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
 ```
 
 The installer will:
