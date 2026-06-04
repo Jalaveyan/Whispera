@@ -2,15 +2,48 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"syscall"
 	"time"
 )
 
-var subscriptionClient = &http.Client{Timeout: 30 * time.Second}
+func isBlockedSubscriptionIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast()
+}
+
+var subscriptionClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout: 10 * time.Second,
+			Control: func(network, address string, _ syscall.RawConn) error {
+				host, _, err := net.SplitHostPort(address)
+				if err != nil {
+					return err
+				}
+				if isBlockedSubscriptionIP(net.ParseIP(host)) {
+					return errors.New("subscription: refusing to connect to internal/private address (SSRF guard)")
+				}
+				return nil
+			},
+		}).DialContext,
+	},
+}
 
 func subscriptionHTTPGet(rawURL string) (string, error) {
+	if u, perr := url.Parse(rawURL); perr != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", errors.New("subscription: only http/https URLs are allowed")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

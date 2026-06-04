@@ -353,6 +353,12 @@ func (s *Server) handleUserStatsV2(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserRegisterV2(w http.ResponseWriter, r *http.Request) {
+	clientIP := s.getClientIP(r)
+	if !s.checkLoginRateLimit(clientIP) {
+		s.jsonError(w, http.StatusTooManyRequests, "Too many registration attempts. Please wait 1 minute.")
+		return
+	}
+
 	database := db.Global()
 	if database == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "Database not configured")
