@@ -74,24 +74,6 @@ func (stm *SplitTunnelManager) LoadConfig(filename string) error {
 	return nil
 }
 
-func (stm *SplitTunnelManager) SaveConfig(filename string) error {
-	if filename == "" {
-		return nil
-	}
-
-	stm.config.Rules = stm.rules
-	data, err := json.MarshalIndent(stm.config, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal split tunnel config: %w", err)
-	}
-
-	if err := os.WriteFile(filename, data, 0600); err != nil {
-		return fmt.Errorf("failed to write split tunnel config: %w", err)
-	}
-
-	return nil
-}
-
 func (stm *SplitTunnelManager) AddRule(rule *SplitTunnelRule) {
 	rule.Created = time.Now().Unix()
 	rule.Modified = time.Now().Unix()
@@ -100,78 +82,12 @@ func (stm *SplitTunnelManager) AddRule(rule *SplitTunnelRule) {
 	stm.mu.Unlock()
 }
 
-func (stm *SplitTunnelManager) RemoveRule(index int) bool {
-	stm.mu.Lock()
-	defer stm.mu.Unlock()
-	if index < 0 || index >= len(stm.rules) {
-		return false
-	}
-	stm.rules = append(stm.rules[:index], stm.rules[index+1:]...)
-	return true
-}
-
-func (stm *SplitTunnelManager) UpdateRule(index int, rule *SplitTunnelRule) bool {
-	stm.mu.Lock()
-	defer stm.mu.Unlock()
-	if index < 0 || index >= len(stm.rules) {
-		return false
-	}
-	rule.Modified = time.Now().Unix()
-	stm.rules[index] = *rule
-	return true
-}
-
-func (stm *SplitTunnelManager) GetRules() []SplitTunnelRule {
-	stm.mu.RLock()
-	out := make([]SplitTunnelRule, len(stm.rules))
-	copy(out, stm.rules)
-	stm.mu.RUnlock()
-	return out
-}
-
 func (stm *SplitTunnelManager) SetMode(mode string) {
 	stm.config.Mode = mode
 }
 
 func (stm *SplitTunnelManager) SetEnabled(enabled bool) {
 	stm.config.Enabled = enabled
-}
-
-func (stm *SplitTunnelManager) ShouldTunnel(destIP, destPort, appName string) bool {
-	if !stm.config.Enabled {
-		return true
-	}
-
-	stm.mu.RLock()
-	rules := stm.rules
-	stm.mu.RUnlock()
-
-	for _, rule := range rules {
-		if !rule.Enabled {
-			continue
-		}
-		if stm.matchesRule(&rule, destIP, destPort, appName) {
-			return rule.Action == "tunnel"
-		}
-	}
-
-	return stm.config.DefaultAction == "tunnel"
-}
-
-func (stm *SplitTunnelManager) matchesRule(rule *SplitTunnelRule, destIP, destPort, appName string) bool {
-	switch rule.Type {
-	case "ip":
-		return stm.matchesIP(rule.Value, destIP)
-	case "domain":
-		// domain rules must be matched by hostname, not IP — use ShouldBypassByHostname.
-		return false
-	case "app":
-		return stm.matchesApp(rule.Value, appName)
-	case "port":
-		return destPort == rule.Value
-	default:
-		return false
-	}
 }
 
 // ShouldBypass returns true when addr (hostname or IP) should be routed directly.
@@ -254,30 +170,6 @@ func (stm *SplitTunnelManager) matchesIP(ruleValue, destIP string) bool {
 	}
 
 	return network.Contains(ip)
-}
-
-func (stm *SplitTunnelManager) matchesApp(ruleValue, appName string) bool {
-	if strings.EqualFold(appName, ruleValue) {
-		return true
-	}
-
-	if strings.Contains(strings.ToLower(appName), strings.ToLower(ruleValue)) {
-		return true
-	}
-
-	if stm.appDetector != nil {
-		return stm.appDetector.IsProcessRunning(ruleValue)
-	}
-
-	return false
-}
-
-func (stm *SplitTunnelManager) GetConfig() *SplitTunnelConfig {
-	stm.mu.RLock()
-	stm.config.Rules = make([]SplitTunnelRule, len(stm.rules))
-	copy(stm.config.Rules, stm.rules)
-	stm.mu.RUnlock()
-	return stm.config
 }
 
 // PreResolveAndCacheIPs resolves all bypass-listed domains using the provided
@@ -411,63 +303,4 @@ func (stm *SplitTunnelManager) CreateDefaultRules() {
 		Priority:    100,
 	}
 	stm.AddRule(&rule)
-}
-
-func (stm *SplitTunnelManager) StartAppDetection(interval time.Duration) {
-	if stm.appDetector != nil {
-		stm.appDetector.StartScanning(interval)
-	}
-}
-
-func (stm *SplitTunnelManager) StopAppDetection() {
-	if stm.appDetector != nil {
-		stm.appDetector.StopScanning()
-	}
-}
-
-func (stm *SplitTunnelManager) GetRunningApps() []string {
-	if stm.appDetector == nil {
-		return []string{}
-	}
-	return stm.appDetector.GetExecutableList()
-}
-
-func (stm *SplitTunnelManager) GetPopularApps() []string {
-	if stm.appDetector == nil {
-		return []string{}
-	}
-	return stm.appDetector.GetPopularApplications()
-}
-
-func (stm *SplitTunnelManager) GetSystemApps() []string {
-	if stm.appDetector == nil {
-		return []string{}
-	}
-	return stm.appDetector.GetSystemApplications()
-}
-
-func (stm *SplitTunnelManager) AddAppRule(appName, action, description string) {
-	rule := SplitTunnelRule{
-		Type:        "app",
-		Value:       appName,
-		Action:      action,
-		Description: description,
-		Enabled:     true,
-		Priority:    50,
-	}
-	stm.AddRule(&rule)
-}
-
-func (stm *SplitTunnelManager) GetAppSuggestions() []string {
-	if stm.appDetector == nil {
-		return []string{}
-	}
-	return stm.appDetector.SuggestAppRules()
-}
-
-func (stm *SplitTunnelManager) ValidateAppRule(ruleValue string) error {
-	if stm.appDetector == nil {
-		return fmt.Errorf("app detector not initialized")
-	}
-	return stm.appDetector.ValidateAppRule(ruleValue)
 }

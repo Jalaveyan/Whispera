@@ -38,10 +38,10 @@ var dohResolvers = []string{
 type Config struct {
 	Mode BridgeMode `yaml:"mode" json:"mode"`
 
-	DiscoveryURL         string       `yaml:"discovery_url" json:"discovery_url"`
-	FallbackDiscoveryURLs []string    `yaml:"fallback_discovery_urls" json:"fallback_discovery_urls"`
-	DNSDiscoveryDomain   string       `yaml:"dns_discovery_domain" json:"dns_discovery_domain"`
-	BootstrapBridges     []*BridgeInfo `yaml:"bootstrap_bridges" json:"bootstrap_bridges"`
+	DiscoveryURL          string        `yaml:"discovery_url" json:"discovery_url"`
+	FallbackDiscoveryURLs []string      `yaml:"fallback_discovery_urls" json:"fallback_discovery_urls"`
+	DNSDiscoveryDomain    string        `yaml:"dns_discovery_domain" json:"dns_discovery_domain"`
+	BootstrapBridges      []*BridgeInfo `yaml:"bootstrap_bridges" json:"bootstrap_bridges"`
 
 	ManualBridge string `yaml:"manual_bridge" json:"manual_bridge"`
 
@@ -121,25 +121,6 @@ func (s *Selector) StartRefresh(ctx context.Context) {
 			}
 		}
 	}()
-}
-
-func (s *Selector) SetMode(mode BridgeMode) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.config.Mode = mode
-}
-
-func (s *Selector) SetManualBridge(address string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.config.ManualBridge = address
-	s.config.Mode = ModeManual
-}
-
-func (s *Selector) GetMode() BridgeMode {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.config.Mode
 }
 
 func (s *Selector) GetAvailableBridges() []*BridgeInfo {
@@ -374,27 +355,6 @@ func (s *Selector) SelectBest() *BridgeInfo {
 	return available[0]
 }
 
-func (s *Selector) GetNextBridge() *BridgeInfo {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, b := range s.bridges {
-		if !s.isFailed(b.ID) {
-			return b
-		}
-	}
-
-	s.mu.RUnlock()
-	s.resetFailed()
-	s.mu.RLock()
-
-	if len(s.bridges) > 0 {
-		return s.bridges[0]
-	}
-
-	return nil
-}
-
 func (s *Selector) MarkFailed(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -416,129 +376,10 @@ func (s *Selector) isFailed(id string) bool {
 	return true
 }
 
-func (s *Selector) resetFailed() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failedIDs = make(map[string]time.Time)
-}
-
-func (s *Selector) GetCurrent() *BridgeInfo {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.current
-}
-
-func (s *Selector) SetCurrent(b *BridgeInfo) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.current = b
-}
-
-func (s *Selector) ConnectWithMode(ctx context.Context, directAddr string) (net.Conn, *BridgeInfo, error) {
-	mode := s.GetMode()
-
-	switch mode {
-	case ModeDirect:
-		log.Printf("[BridgeSelector] Mode: DIRECT - connecting to %s", directAddr)
-		conn, err := s.dialDirect(ctx, directAddr)
-		return conn, nil, err
-
-	case ModeManual:
-
-		s.mu.RLock()
-		manualAddr := s.config.ManualBridge
-		s.mu.RUnlock()
-
-		if manualAddr == "" {
-			return nil, nil, errors.New("manual mode but no bridge address specified")
-		}
-
-		log.Printf("[BridgeSelector] Mode: MANUAL - connecting via %s", manualAddr)
-		bridge := &BridgeInfo{ID: "manual", Address: manualAddr}
-		conn, err := s.dialBridge(ctx, bridge)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to connect to manual bridge %s: %w", manualAddr, err)
-		}
-		s.SetCurrent(bridge)
-		return conn, bridge, nil
-
-	case ModeAuto:
-
-		log.Printf("[BridgeSelector] Mode: AUTO - selecting best bridge")
-		return s.Connect(ctx)
-
-	default:
-		return nil, nil, errors.New("unknown bridge mode")
-	}
-}
-
-func (s *Selector) dialDirect(ctx context.Context, addr string) (net.Conn, error) {
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{
-			Timeout: s.config.TestTimeout,
-		},
-		Config: &tls.Config{
-			InsecureSkipVerify: true,
-		},
-	}
-	return dialer.DialContext(ctx, "tcp", addr)
-}
-
-func (s *Selector) Connect(ctx context.Context) (net.Conn, *BridgeInfo, error) {
-	if len(s.bridges) == 0 {
-		if err := s.FetchBridges(ctx); err != nil {
-			return nil, nil, fmt.Errorf("failed to fetch bridges: %w", err)
-		}
-	}
-
-	s.TestAllBridges(ctx)
-
-	for attempt := 0; attempt < s.config.MaxRetries; attempt++ {
-		bridge := s.SelectBest()
-		if bridge == nil {
-			return nil, nil, errors.New("no available bridges")
-		}
-
-		log.Printf("[BridgeSelector] Attempting connection via %s (%s)", bridge.ID, bridge.Address)
-
-		conn, err := s.dialBridge(ctx, bridge)
-		if err != nil {
-			log.Printf("[BridgeSelector] Failed to connect via %s: %v", bridge.ID, err)
-			s.MarkFailed(bridge.ID)
-			continue
-		}
-
-		s.SetCurrent(bridge)
-		log.Printf("[BridgeSelector] Connected via bridge %s (%s)", bridge.ID, bridge.Address)
-		return conn, bridge, nil
-	}
-
-	return nil, nil, errors.New("all bridge connection attempts failed")
-}
-
-func (s *Selector) dialBridge(ctx context.Context, b *BridgeInfo) (net.Conn, error) {
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{
-			Timeout: s.config.TestTimeout,
-		},
-		Config: &tls.Config{
-			InsecureSkipVerify: true,
-		},
-	}
-
-	return dialer.DialContext(ctx, "tcp", b.Address)
-}
-
 func (s *Selector) HasBridges() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.bridges) > 0
-}
-
-func (s *Selector) BridgeCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.bridges)
 }
 
 type ClusterMasterInfo struct {

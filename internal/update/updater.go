@@ -65,7 +65,7 @@ func NewUpdater(cfg *Config) *Updater {
 	}
 }
 
-func (u *Updater) OnUpdateAvailable(fn func(VersionInfo)) { u.onUpdateAvailable = fn }
+func (u *Updater) OnUpdateAvailable(fn func(VersionInfo))  { u.onUpdateAvailable = fn }
 func (u *Updater) OnUpdateApplied(fn func(string, string)) { u.onUpdateApplied = fn }
 func (u *Updater) OnUpdateFailed(fn func(string, error))   { u.onUpdateFailed = fn }
 
@@ -291,31 +291,4 @@ func (u *Updater) rollback() error {
 
 	latest := matches[len(matches)-1]
 	return os.Rename(latest, u.config.BinaryPath)
-}
-
-func (u *Updater) Rollback() error {
-	u.mu.Lock()
-	defer u.mu.Unlock()
-	return u.rollback()
-}
-
-func GenerateSigningKeypair() (ed25519.PublicKey, ed25519.PrivateKey, error) {
-	return ed25519.GenerateKey(nil)
-}
-
-func SignBinary(privateKey ed25519.PrivateKey, binaryPath string) (string, error) {
-	f, err := os.Open(binaryPath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	digest := h.Sum(nil)
-
-	sig := ed25519.Sign(privateKey, digest)
-	return hex.EncodeToString(sig), nil
 }

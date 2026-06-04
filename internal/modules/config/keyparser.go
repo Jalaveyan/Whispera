@@ -11,21 +11,21 @@ import (
 )
 
 type ConnectionKey struct {
-	Version    int    `json:"v"`
-	Name       string `json:"name,omitempty"`
-	KeyID      string `json:"kid,omitempty"`
-	ExpiresAt  int64  `json:"exp,omitempty"`
-	Server     string `json:"server"`
+	Version   int    `json:"v"`
+	Name      string `json:"name,omitempty"`
+	KeyID     string `json:"kid,omitempty"`
+	ExpiresAt int64  `json:"exp,omitempty"`
+	Server    string `json:"server"`
 	// ServerAlts lists additional "host:port" endpoints that accept the same
 	// key. Used for seamless port migration: operators add the new port to
 	// the list, wait for clients to pick it up, then drop the old entry.
 	ServerAlts []string `json:"server_alts,omitempty"`
 	ServerTCP  string   `json:"server_tcp,omitempty"`
 	ServerWS   string   `json:"server_ws,omitempty"`
-	PSK        string `json:"psk"`
-	ServerPub  string `json:"pub"`
-	ObfsPreset string `json:"obfs"`
-	Transport  string `json:"transport"`
+	PSK        string   `json:"psk"`
+	ServerPub  string   `json:"pub"`
+	ObfsPreset string   `json:"obfs"`
+	Transport  string   `json:"transport"`
 
 	ObfsProfile string `json:"obfs_profile,omitempty"`
 
@@ -123,7 +123,7 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 			Server:      u.Host,
 			Transport:   "auto",
 			ObfsPreset:  "default",
-			ObfsProfile: "vk", 
+			ObfsProfile: "vk",
 			EnableML:    true,
 			EnableFTE:   true,
 		}
@@ -333,109 +333,6 @@ func (ck *ConnectionKey) GetPrimaryServer() string {
 	}
 }
 
-func GenerateConnectionKey(cfg *ClientConfig, name string) (string, error) {
-	ck := ConnectionKey{
-		Version:       2,
-		Name:          name,
-		Server:        cfg.Server,
-		ServerAlts:    append([]string(nil), cfg.ServerAlts...),
-		ServerTCP:     cfg.ServerTCP,
-		ServerWS:      cfg.ServerWS,
-		ChameleonAddr: cfg.ChameleonAddr,
-		ChameleonSNI:  cfg.ChameleonSNI,
-		PSK:           cfg.PSK,
-		ServerPub:   cfg.ServerPub,
-		ObfsPreset:  cfg.ObfsPreset,
-		ObfsProfile: "vk",
-		Transport:   "auto",
-		EnableML:    true,
-		EnableFTE:   true,
-	}
-
-	data, err := json.Marshal(ck)
-	if err != nil {
-		return "", fmt.Errorf("failed to encode key: %w", err)
-	}
-
-	return "whispera://" + base64.StdEncoding.EncodeToString(data), nil
-}
-
-func GenerateConnectionKeyURL(cfg *ClientConfig, opts *KeyGenOptions) string {
-	if opts == nil {
-		opts = &KeyGenOptions{
-			ObfsProfile: "vk",
-		}
-	}
-
-	if opts.ObfsProfile == "" {
-		opts.ObfsProfile = "vk"
-	}
-
-	params := url.Values{}
-
-	if cfg.PSK != "" {
-		params.Set("key", cfg.PSK)
-	}
-	if cfg.ServerPub != "" {
-		params.Set("pub", cfg.ServerPub)
-	}
-	params.Set("profile", opts.ObfsProfile)
-
-	if opts.Name != "" {
-		params.Set("name", opts.Name)
-	}
-	if opts.Transport != "" && opts.Transport != "auto" {
-		params.Set("transport", opts.Transport)
-	}
-	if opts.ObfsPreset != "" && opts.ObfsPreset != "default" {
-		params.Set("obfs", opts.ObfsPreset)
-	}
-
-	if opts.PhantomEnabled {
-		params.Set("phantom", "1")
-		if opts.PhantomSNI != "" {
-			params.Set("sni", opts.PhantomSNI)
-		}
-		if opts.PhantomShortID != "" {
-			params.Set("sid", opts.PhantomShortID)
-		}
-	}
-
-	if opts.ASNBypass {
-		params.Set("asn", "1")
-		if opts.TLSFingerprint != "" {
-			params.Set("tls", opts.TLSFingerprint)
-		}
-		if opts.DomainFront != "" {
-			params.Set("front", opts.DomainFront)
-		}
-	}
-
-	if cfg.RussianService != "" {
-		params.Set("russian", cfg.RussianService)
-	}
-
-	if cfg.MLServerURL != "" {
-		params.Set("ml", cfg.MLServerURL)
-	}
-
-	if opts.KeyID != "" {
-		params.Set("kid", opts.KeyID)
-	}
-	if opts.ExpiresAt > 0 {
-		params.Set("exp", fmt.Sprintf("%d", opts.ExpiresAt))
-	}
-
-	if len(opts.TransportConfig) > 0 {
-		cfgData, err := json.Marshal(opts.TransportConfig)
-		if err == nil {
-			params.Set("cfg", base64.RawURLEncoding.EncodeToString(cfgData))
-		}
-	}
-
-	return fmt.Sprintf("whispera://%s?%s", cfg.Server, params.Encode())
-}
-
 type KeyGenOptions struct {
 	Name              string
 	KeyID             string
@@ -452,23 +349,6 @@ type KeyGenOptions struct {
 	DomainFront       string
 	RussianService    string
 	TransportConfig   map[string]interface{}
-}
-
-func DefaultKeyGenOptions() *KeyGenOptions {
-	return &KeyGenOptions{
-		ObfsProfile:    "vk",
-		ObfsPreset:     "default",
-		Transport:      "auto",
-		PhantomEnabled: true,
-		PhantomSNI:     "cloudflare.com",
-		ASNBypass:      true,
-		TLSFingerprint: "chrome",
-	}
-}
-
-func ValidateKey(key string) error {
-	_, err := ParseConnectionKey(key)
-	return err
 }
 
 // FetchSubscription downloads a subscription URL and returns all valid

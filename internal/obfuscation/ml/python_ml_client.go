@@ -180,35 +180,6 @@ func NewPythonMLClientLocal() *PythonMLClient {
 	return client
 }
 
-func NewPythonMLClientEnhanced() *PythonMLClient {
-	baseURL := GetEnvOrDefault("WHISPERA_ML_SERVER", "http://127.0.0.1:8000")
-	if strings.Contains(baseURL, "localhost") && !strings.Contains(baseURL, "127.0.0.1") {
-		baseURL = strings.Replace(baseURL, "localhost", "127.0.0.1", 1)
-	}
-	client := &PythonMLClient{
-		baseURL:      baseURL,
-		httpClient:   createSecureHTTPClient(baseURL, 10*time.Second),
-		fallbackMode: false,
-		mlAvailable:  false,
-	}
-	client.resultChanPool = sync.Pool{
-		New: func() interface{} {
-			return make(chan *types.MLPredictionResponse, 1)
-		},
-	}
-	client.errorChanPool = sync.Pool{
-		New: func() interface{} {
-			return make(chan error, 1)
-		},
-	}
-
-	client.checkMLAvailability()
-
-	client.initializeAdaptiveLearning()
-
-	return client
-}
-
 func (client *PythonMLClient) checkMLAvailability() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -234,8 +205,6 @@ func (client *PythonMLClient) checkMLAvailability() {
 		}
 	}()
 }
-
-func (client *PythonMLClient) initializeAdaptiveLearning() {}
 
 func (client *PythonMLClient) PredictTraffic(packetData []byte, protocol, direction string) (*types.MLPredictionResponse, error) {
 	isHTTP := client.isHTTPRequest(packetData) || client.isHTTPResponse(packetData)

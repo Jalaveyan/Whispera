@@ -165,30 +165,6 @@ func NewAPIHandler(registry *Registry) *APIHandler {
 	}
 }
 
-func NewAPIHandlerWithTokenPath(registry *Registry, tokenPath string) *APIHandler {
-	h := &APIHandler{
-		registry:     registry,
-		trustManager: NewTrustManager(registry),
-		tokenPath:    tokenPath,
-	}
-	h.loadToken()
-	return h
-}
-
-func (h *APIHandler) loadToken() {
-	if h.tokenPath == "" {
-		return
-	}
-	data, err := os.ReadFile(h.tokenPath)
-	if err != nil {
-		return
-	}
-	tok := strings.TrimSpace(string(data))
-	if tok != "" {
-		h.registrationToken = tok
-	}
-}
-
 func (h *APIHandler) saveToken() {
 	if h.tokenPath == "" {
 		return
@@ -463,7 +439,7 @@ func (h *APIHandler) HandleRegisterBridge(w http.ResponseWriter, r *http.Request
 		Provider:  req.Provider,
 		Region:    req.Region,
 		PublicKey: req.PublicKey,
-		IsAlive: true,
+		IsAlive:   true,
 	}
 
 	if err := h.registry.RegisterBridge(info); err != nil {

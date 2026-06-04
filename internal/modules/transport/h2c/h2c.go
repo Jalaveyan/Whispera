@@ -1,7 +1,6 @@
 package h2c
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -370,34 +369,6 @@ func (c *h2cConn) SetWriteDeadline(t time.Time) error {
 
 type H2CUpgrader struct {
 	MaxConcurrentStreams uint32
-}
-
-func (u *H2CUpgrader) Upgrade(w http.ResponseWriter, r *http.Request) (net.Conn, *bufio.ReadWriter, error) {
-	if r.ProtoMajor != 1 {
-		return nil, nil, fmt.Errorf("not HTTP/1.1")
-	}
-
-	if r.Header.Get("Upgrade") != "h2c" {
-		return nil, nil, fmt.Errorf("no h2c upgrade header")
-	}
-
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		return nil, nil, fmt.Errorf("hijacking not supported")
-	}
-
-	conn, rw, err := hijacker.Hijack()
-	if err != nil {
-		return nil, nil, fmt.Errorf("hijack failed: %w", err)
-	}
-
-	rw.WriteString("HTTP/1.1 101 Switching Protocols\r\n")
-	rw.WriteString("Connection: Upgrade\r\n")
-	rw.WriteString("Upgrade: h2c\r\n")
-	rw.WriteString("\r\n")
-	rw.Flush()
-
-	return conn, rw, nil
 }
 
 func (t *Transport) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {

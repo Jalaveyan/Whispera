@@ -28,12 +28,12 @@ type AgentConfig struct {
 	MetricsInterval    time.Duration `yaml:"metrics_interval"`
 	ConfigPollInterval time.Duration `yaml:"config_poll_interval"`
 
-	MLServerURL        string        `yaml:"ml_server_url"`
-	MLSyncInterval     time.Duration `yaml:"ml_sync_interval"`
+	MLServerURL    string        `yaml:"ml_server_url"`
+	MLSyncInterval time.Duration `yaml:"ml_sync_interval"`
 
-	SelfAddress string `yaml:"self_address"`
-	ClusterListenAddr string `yaml:"cluster_listen_addr"`
-	PeerAddresses []string `yaml:"peer_addresses"`
+	SelfAddress       string   `yaml:"self_address"`
+	ClusterListenAddr string   `yaml:"cluster_listen_addr"`
+	PeerAddresses     []string `yaml:"peer_addresses"`
 }
 
 func DefaultAgentConfig() *AgentConfig {
@@ -47,15 +47,15 @@ func DefaultAgentConfig() *AgentConfig {
 
 type AgentMetrics struct {
 	CPUPercent    float64 `json:"cpu_percent"`
-	MemoryMB     uint64  `json:"memory_mb"`
+	MemoryMB      uint64  `json:"memory_mb"`
 	MemoryPercent float64 `json:"memory_percent"`
-	Goroutines   int     `json:"goroutines"`
-	Connections  int64   `json:"connections"`
-	BytesIn      int64   `json:"bytes_in"`
-	BytesOut     int64   `json:"bytes_out"`
-	Uptime       int64   `json:"uptime_seconds"`
-	BandwidthIn  int64   `json:"bandwidth_in_bps"`
-	BandwidthOut int64   `json:"bandwidth_out_bps"`
+	Goroutines    int     `json:"goroutines"`
+	Connections   int64   `json:"connections"`
+	BytesIn       int64   `json:"bytes_in"`
+	BytesOut      int64   `json:"bytes_out"`
+	Uptime        int64   `json:"uptime_seconds"`
+	BandwidthIn   int64   `json:"bandwidth_in_bps"`
+	BandwidthOut  int64   `json:"bandwidth_out_bps"`
 }
 
 const (
@@ -106,19 +106,19 @@ type Agent struct {
 	trafficNet   *gnet.GorgoniaNet
 	dpiNet       *gnet.GorgoniaNet
 	transportNet *gnet.GorgoniaNet
-	mlMu       sync.RWMutex
-	mlReady    int32
+	mlMu         sync.RWMutex
+	mlReady      int32
 
 	trafficSamples []trafficSample
 	sampleMu       sync.Mutex
 	maxSamples     int
 
-	peerMu      sync.RWMutex
-	peers       []*peerBridge
-	masterID    string
-	masterAddr  string
-	masterTerm  uint64
-	electedAt   time.Time
+	peerMu     sync.RWMutex
+	peers      []*peerBridge
+	masterID   string
+	masterAddr string
+	masterTerm uint64
+	electedAt  time.Time
 
 	onConfigUpdate func(map[string]interface{})
 	onAlert        func(alertType, message string)
@@ -136,8 +136,8 @@ func NewAgent(cfg *AgentConfig) *Agent {
 		cfg = DefaultAgentConfig()
 	}
 	a := &Agent{
-		config:  cfg,
-		client:  &http.Client{Timeout: 15 * time.Second},
+		config: cfg,
+		client: &http.Client{Timeout: 15 * time.Second},
 		mlClient: &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
@@ -155,8 +155,8 @@ func NewAgent(cfg *AgentConfig) *Agent {
 func (a *Agent) OnConfigUpdate(fn func(map[string]interface{})) { a.onConfigUpdate = fn }
 func (a *Agent) OnAlert(fn func(string, string))                { a.onAlert = fn }
 
-func (a *Agent) AddConnection()    { atomic.AddInt64(&a.connections, 1) }
-func (a *Agent) RemoveConnection() { atomic.AddInt64(&a.connections, -1) }
+func (a *Agent) AddConnection()      { atomic.AddInt64(&a.connections, 1) }
+func (a *Agent) RemoveConnection()   { atomic.AddInt64(&a.connections, -1) }
 func (a *Agent) AddBytesIn(n int64)  { atomic.AddInt64(&a.bytesIn, n) }
 func (a *Agent) AddBytesOut(n int64) { atomic.AddInt64(&a.bytesOut, n) }
 
@@ -191,22 +191,6 @@ func (a *Agent) Stop() {
 	close(a.stopCh)
 	a.wg.Wait()
 	log.Printf("Bridge agent stopped")
-}
-
-func (a *Agent) SendAlert(alertType, message string) {
-	body := map[string]interface{}{
-		"bridge_id":  a.config.BridgeID,
-		"token":      a.config.RegistrationToken,
-		"alert_type": alertType,
-		"message":    message,
-		"timestamp":  fmt.Sprintf("%d", time.Now().Unix()),
-	}
-	resp, err := a.post("/api/bridge-alert", body)
-	if err != nil {
-		log.Printf("Alert send failed (%s): %v", alertType, err)
-		return
-	}
-	resp.Body.Close()
 }
 
 func (a *Agent) initMiniNets() {
@@ -247,138 +231,6 @@ func argmax(x []float64) (int, float64) {
 		}
 	}
 	return best, bestVal
-}
-
-func (a *Agent) ExtractFeatures(data []byte) []float64 {
-	f := make([]float64, miniInputSize)
-	if len(data) == 0 {
-		return f
-	}
-
-	f[0] = float64(len(data)) / 1500.0
-
-	entropy := 0.0
-	var freq [256]int
-	for _, b := range data {
-		freq[b]++
-	}
-	n := float64(len(data))
-	for _, c := range freq {
-		if c > 0 {
-			p := float64(c) / n
-			entropy -= p * math.Log2(p)
-		}
-	}
-	f[1] = entropy / 8.0
-
-	printable := 0
-	for _, b := range data {
-		if b >= 32 && b <= 126 {
-			printable++
-		}
-	}
-	f[2] = float64(printable) / n
-
-	if len(data) >= 3 {
-		f[3] = float64(data[0]) / 255.0
-		f[4] = float64(data[1]) / 255.0
-		f[5] = float64(data[2]) / 255.0
-	}
-
-	if len(data) >= 2 && data[0] == 0x16 && data[1] == 0x03 {
-		f[6] = 1.0
-	}
-	if len(data) >= 4 && string(data[:4]) == "HTTP" {
-		f[7] = 1.0
-	}
-	if len(data) >= 4 && string(data[:4]) == "GET " {
-		f[7] = 0.8
-	}
-	if len(data) >= 5 && string(data[:5]) == "POST " {
-		f[7] = 0.9
-	}
-	if len(data) >= 4 && string(data[:4]) == "SSH-" {
-		f[8] = 1.0
-	}
-	if len(data) >= 2 && data[0] == 0x00 && data[1] <= 64 {
-		f[9] = 1.0
-	}
-
-	var sum, sumSq float64
-	limit := len(data)
-	if limit > 256 {
-		limit = 256
-	}
-	for _, b := range data[:limit] {
-		v := float64(b)
-		sum += v
-		sumSq += v * v
-	}
-	mean := sum / float64(limit)
-	variance := sumSq/float64(limit) - mean*mean
-	f[10] = mean / 255.0
-	f[11] = math.Sqrt(math.Abs(variance)) / 128.0
-
-	chiSq := 0.0
-	expected := n / 256.0
-	for _, c := range freq {
-		diff := float64(c) - expected
-		chiSq += diff * diff / expected
-	}
-	f[12] = math.Min(chiSq/1000.0, 1.0)
-
-	uniq := 0
-	for _, c := range freq {
-		if c > 0 {
-			uniq++
-		}
-	}
-	f[13] = float64(uniq) / 256.0
-
-	runs := 1
-	if len(data) > 1 {
-		for i := 1; i < len(data) && i < 256; i++ {
-			if data[i] != data[i-1] {
-				runs++
-			}
-		}
-	}
-	f[14] = float64(runs) / float64(limit)
-
-	zeros := 0
-	for _, b := range data {
-		if b == 0 {
-			zeros++
-		}
-	}
-	f[15] = float64(zeros) / n
-
-	return f
-}
-
-func (a *Agent) ClassifyTraffic(data []byte) *mlPrediction {
-	if atomic.LoadInt32(&a.mlReady) == 0 {
-		return nil
-	}
-	features := a.ExtractFeatures(data)
-	a.mlMu.RLock()
-	rawTraffic := a.trafficNet.Forward(features)
-	rawDPI := a.dpiNet.Forward(features)
-	a.mlMu.RUnlock()
-
-	probs := softmax(rawTraffic)
-	classID, confidence := argmax(probs)
-
-	dpiProbs := softmax(rawDPI)
-	dpiType, _ := argmax(dpiProbs)
-
-	a.recordSample(features, classID, dpiType)
-
-	return &mlPrediction{
-		ClassID:    classID,
-		Confidence: confidence,
-		DPIType:    dpiType,
-	}
 }
 
 func (a *Agent) RecommendTransport() *mlRecommendation {
@@ -429,20 +281,6 @@ func (a *Agent) RecommendTransport() *mlRecommendation {
 		Transport:  transport,
 		Confidence: confidence,
 	}
-}
-
-func (a *Agent) recordSample(features []float64, classID, dpiType int) {
-	a.sampleMu.Lock()
-	defer a.sampleMu.Unlock()
-	if len(a.trafficSamples) >= a.maxSamples {
-		a.trafficSamples = a.trafficSamples[1:]
-	}
-	a.trafficSamples = append(a.trafficSamples, trafficSample{
-		Features: features,
-		ClassID:  classID,
-		DPIType:  dpiType,
-		TS:       time.Now().Unix(),
-	})
 }
 
 func (a *Agent) mlSyncLoop() {

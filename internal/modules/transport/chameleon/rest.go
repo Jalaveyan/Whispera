@@ -1,7 +1,6 @@
 package chameleon
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
@@ -14,11 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	crand "crypto/rand"
-	"crypto/tls"
-
-	utls "github.com/refraction-networking/utls"
 
 	"whispera/internal/buf"
 )
@@ -57,14 +51,6 @@ var mp4FtypAtom = [24]byte{
 }
 
 func hlsSessionKey(sessionID []byte) string { return hex.EncodeToString(sessionID) }
-
-func hlsPlaylistPath(sessionID []byte) string {
-	return "/video/" + hlsSessionKey(sessionID) + "/index.m3u8"
-}
-
-func hlsSegmentPath(sessionID []byte, n uint64) string {
-	return fmt.Sprintf("/video/%s/seg%04d.ts", hlsSessionKey(sessionID), n)
-}
 
 func hlsKeyFromPath(path string) string {
 	parts := strings.SplitN(path, "/", 4)
@@ -193,38 +179,12 @@ var restDecoyDeletePaths = []string{
 	"/api/v2/temp",
 }
 
-func restUploadPath(method string) string {
-	paths := restUploadPathsByMethod[method]
-	if len(paths) == 0 {
-		paths = restUploadPathsByMethod[http.MethodPost]
-	}
-	return paths[mrand.Intn(len(paths))]
-}
-
 type GANAction struct {
 	SleepMs  float64
 	PaddingN int
 }
 
 type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
-
-func StreamingBiasGANDecide(targetRatio float64) GANDecideFunc {
-	targetUpRatio := 1.0 / (1.0 + targetRatio)
-	return func(_, _, upRatio float64) GANAction {
-		if upRatio <= targetUpRatio*1.5 {
-			return GANAction{}
-		}
-		excess := upRatio - targetUpRatio
-		paddingN := int(excess * 32 * 1024)
-		if paddingN > 32*1024 {
-			paddingN = 32 * 1024
-		}
-		if paddingN < 128 {
-			return GANAction{}
-		}
-		return GANAction{PaddingN: paddingN}
-	}
-}
 
 type restSession struct {
 	uploadCh      chan *uploadBody
@@ -377,333 +337,6 @@ type restClientConn struct {
 
 	localAddr  net.Addr
 	remoteAddr net.Addr
-}
-
-func newRestClientConn(ctx context.Context, cancel context.CancelFunc, local, remote net.Addr) *restClientConn {
-	return &restClientConn{
-		bodyCh:     make(chan io.ReadCloser, 4),
-		uploadCh:   make(chan *buf.Buffer, 512),
-		ctx:        ctx,
-		cancel:     cancel,
-		localAddr:  local,
-		remoteAddr: remote,
-	}
-}
-
-func (c *restClientConn) Read(b []byte) (int, error) {
-	for {
-		if c.curBody != nil {
-			n, err := c.curBody.Read(b)
-			if n > 0 {
-				return n, nil
-			}
-			c.curBody.Close()
-			c.curBody = nil
-			if err == io.EOF {
-				continue
-			}
-			return 0, err
-		}
-		select {
-		case body, ok := <-c.bodyCh:
-			if !ok || body == nil {
-				return 0, io.EOF
-			}
-			c.curBody = body
-		case <-c.ctx.Done():
-			return 0, io.EOF
-		}
-	}
-}
-
-func (c *restClientConn) Write(p []byte) (int, error) {
-	b := buf.NewSize(len(p))
-	b.Write(p)
-	select {
-	case c.uploadCh <- b:
-		return len(p), nil
-	case <-c.ctx.Done():
-		b.Release()
-		return 0, io.ErrClosedPipe
-	}
-}
-
-func (c *restClientConn) Close() error {
-	c.once.Do(func() {
-		c.cancel()
-		go func() {
-			for body := range c.bodyCh {
-				if body != nil {
-					body.Close()
-				}
-			}
-		}()
-	})
-	return nil
-}
-
-func (c *restClientConn) LocalAddr() net.Addr                { return c.localAddr }
-func (c *restClientConn) RemoteAddr() net.Addr               { return c.remoteAddr }
-func (c *restClientConn) SetDeadline(t time.Time) error      { return nil }
-func (c *restClientConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *restClientConn) SetWriteDeadline(t time.Time) error { return nil }
-
-func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, origin, sessionHdr, token string, uploadCh <-chan *buf.Buffer) {
-	var coalesce []byte
-	for {
-		coalesce = coalesce[:0]
-
-		select {
-		case b := <-uploadCh:
-			coalesce = append(coalesce, b.Bytes()...)
-			b.Release()
-		case <-ctx.Done():
-			return
-		}
-
-	drain:
-		for len(coalesce) < 512*1024 {
-			select {
-			case b := <-uploadCh:
-				coalesce = append(coalesce, b.Bytes()...)
-				b.Release()
-			case <-ctx.Done():
-				return
-			default:
-				break drain
-			}
-		}
-
-		method := restUploadMethods[mrand.Intn(len(restUploadMethods))]
-		path := restUploadPath(method)
-		url := fmt.Sprintf("https://%s%s", serverAddr, path)
-
-		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(coalesce))
-		if err != nil {
-			continue
-		}
-		req.Host = sni
-		req.Header.Set("Content-Type", contentType)
-		req.Header.Set(headerToken, "Bearer "+token)
-		applyBrowserHeaders(req, origin)
-		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionHdr})
-
-		resp, err := client.Do(req)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			continue
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}
-}
-
-func runRESTDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string) {
-	doDelete := func() {
-		path := restDecoyDeletePaths[mrand.Intn(len(restDecoyDeletePaths))]
-		suffix := hex.EncodeToString([]byte{byte(mrand.Intn(256)), byte(mrand.Intn(256)), byte(mrand.Intn(256))})
-		url := fmt.Sprintf("https://%s%s/%s", serverAddr, path, suffix)
-		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
-		if err != nil {
-			return
-		}
-		req.Host = sni
-		applyBrowserHeaders(req, origin)
-		if resp, err := client.Do(req); err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}
-	}
-
-	doOptions := func() {
-		paths := restUploadPathsByMethod[http.MethodPost]
-		path := paths[mrand.Intn(len(paths))]
-		url := fmt.Sprintf("https://%s%s", serverAddr, path)
-		req, err := http.NewRequestWithContext(ctx, http.MethodOptions, url, nil)
-		if err != nil {
-			return
-		}
-		req.Host = sni
-		req.Header.Set("Access-Control-Request-Method", "POST")
-		req.Header.Set("Access-Control-Request-Headers", "content-type,authorization")
-		applyBrowserHeaders(req, origin)
-		if resp, err := client.Do(req); err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}
-	}
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Duration(30000+mrand.Intn(60000)) * time.Millisecond):
-				doDelete()
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Duration(10000+mrand.Intn(20000)) * time.Millisecond):
-				doOptions()
-			}
-		}
-	}()
-}
-
-func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
-	sessionID := make([]byte, 16)
-	if _, err := crand.Read(sessionID); err != nil {
-		return nil, fmt.Errorf("chameleon: session id: %w", err)
-	}
-	anchor := time.Now().UTC().Truncate(time.Second)
-
-	keys := DeriveKeys(cfg.SharedSecret)
-	token := AuthToken(keys.Auth, anchor.Unix()/30, sessionID)
-	sessionHdr := encodeSession(sessionID, anchor)
-
-	sni := pickSNI(cfg)
-	origin := "https://" + sni
-
-	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
-
-	h2t := newH2Transport(func(dialCtx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-		d := &net.Dialer{Timeout: 10 * time.Second}
-		rawConn, err := d.DialContext(dialCtx, network, addr)
-		if err != nil {
-			return nil, err
-		}
-		if tcpConn, ok := rawConn.(*net.TCPConn); ok {
-			tcpConn.SetKeepAlive(true)
-			tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
-			tcpConn.SetNoDelay(true)
-		}
-		uCfg := &utls.Config{
-			ServerName:         sni,
-			InsecureSkipVerify: true,
-		}
-		if cfg.ServerCertPin != "" {
-			uCfg.VerifyPeerCertificate = pinVerifier(cfg.ServerCertPin)
-		}
-		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
-			uCfg.ClientSessionCache = sc
-		}
-		uConn := utls.UClient(rawConn, uCfg, helloID)
-		if err := uConn.HandshakeContext(dialCtx); err != nil {
-			rawConn.Close()
-			return nil, fmt.Errorf("chameleon: utls handshake: %w", err)
-		}
-		return uConn, nil
-	})
-
-	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
-
-	local := staticAddr{"tcp", cfg.ServerAddr}
-	remote := staticAddr{"tcp", cfg.ServerAddr}
-
-	conn := newRestClientConn(tunnelCtx, tunnelCancel, local, remote)
-	client := &http.Client{Transport: h2t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-
-	hlsGet := func(path string) (*http.Response, error) {
-		u := fmt.Sprintf("https://%s%s", cfg.ServerAddr, path)
-		req, err := http.NewRequestWithContext(tunnelCtx, http.MethodGet, u, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Host = sni
-		req.Header.Set(headerToken, "Bearer "+token)
-		applyBrowserHeaders(req, origin)
-		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionHdr})
-		return client.Do(req)
-	}
-
-	playlistReady := make(chan error, 1)
-	go func() {
-		resp, err := hlsGet(hlsPlaylistPath(sessionID))
-		if err != nil {
-			playlistReady <- fmt.Errorf("chameleon: HLS playlist: %w", err)
-			return
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			playlistReady <- fmt.Errorf("chameleon: HLS playlist %d", resp.StatusCode)
-			return
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		playlistReady <- nil
-	}()
-
-	select {
-	case err := <-playlistReady:
-		if err != nil {
-			conn.Close()
-			return nil, err
-		}
-	case <-time.After(10 * time.Second):
-		conn.Close()
-		return nil, fmt.Errorf("chameleon: HLS playlist timeout")
-	case <-ctx.Done():
-		conn.Close()
-		return nil, ctx.Err()
-	}
-
-	type segResult struct {
-		resp *http.Response
-		err  error
-	}
-	fetchSeg := func(n uint64) <-chan segResult {
-		ch := make(chan segResult, 1)
-		go func() {
-			resp, err := hlsGet(hlsSegmentPath(sessionID, n))
-			if err != nil {
-				ch <- segResult{nil, err}
-				return
-			}
-			if resp.StatusCode != http.StatusOK {
-				resp.Body.Close()
-				ch <- segResult{nil, fmt.Errorf("chameleon: HLS seg%d %d", n, resp.StatusCode)}
-				return
-			}
-			ch <- segResult{resp, nil}
-		}()
-		return ch
-	}
-
-	go func() {
-		defer close(conn.bodyCh)
-		nextCh := fetchSeg(0)
-		for segIdx := uint64(0); ; segIdx++ {
-			var res segResult
-			select {
-			case res = <-nextCh:
-			case <-tunnelCtx.Done():
-				return
-			}
-			if res.err != nil {
-				return
-			}
-			nextCh = fetchSeg(segIdx + 1)
-			select {
-			case conn.bodyCh <- res.resp.Body:
-			case <-tunnelCtx.Done():
-				res.resp.Body.Close()
-				return
-			}
-		}
-	}()
-
-	go runRESTUpload(tunnelCtx, client, cfg.ServerAddr, sni, origin, sessionHdr, token, conn.uploadCh)
-	go runRESTDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin)
-
-	return NewFrameConn(conn), nil
 }
 
 func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {

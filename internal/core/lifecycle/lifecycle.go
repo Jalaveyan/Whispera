@@ -15,7 +15,6 @@ import (
 	"whispera/internal/core/registry"
 )
 
-
 type Manager struct {
 	mu              sync.RWMutex
 	registry        registry.Registry
@@ -32,11 +31,11 @@ type Manager struct {
 	onShutdown []func()
 }
 
-
 type Config struct {
 	ShutdownTimeout time.Duration
 	GracefulStop    bool
 }
+
 func NewManager(cfg Config) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -57,30 +56,9 @@ func NewManager(cfg Config) *Manager {
 	return m
 }
 
-
 func (m *Manager) Register(module interfaces.Module) error {
 	return m.registry.Register(module)
 }
-func (m *Manager) RegisterFunc(name string, createFn func() (interfaces.Module, error)) error {
-	module, err := createFn()
-	if err != nil {
-		return fmt.Errorf("failed to create module %s: %w", name, err)
-	}
-	return m.Register(module)
-}
-
-
-func (m *Manager) Get(name string) (interfaces.Module, bool) {
-	return m.registry.Get(name)
-}
-func (m *Manager) MustGet(name string) interfaces.Module {
-	module, ok := m.registry.Get(name)
-	if !ok {
-		panic(fmt.Sprintf("module %s not found", name))
-	}
-	return module
-}
-
 
 func (m *Manager) Start() error {
 	m.mu.Lock()
@@ -92,14 +70,12 @@ func (m *Manager) Start() error {
 
 	log.Println("[Lifecycle] Starting application...")
 
-	
 	for _, cb := range m.onStart {
 		if err := cb(); err != nil {
 			return fmt.Errorf("pre-start callback failed: %w", err)
 		}
 	}
 
-	
 	if err := m.registry.StartAll(m.ctx); err != nil {
 		return fmt.Errorf("failed to start modules: %w", err)
 	}
@@ -108,7 +84,6 @@ func (m *Manager) Start() error {
 	log.Println("[Lifecycle] Application started successfully")
 	return nil
 }
-
 
 func recoverPanic(idx int) {
 	if r := recover(); r != nil {
@@ -126,7 +101,6 @@ func (m *Manager) Stop() error {
 
 	log.Println("[Lifecycle] Stopping application...")
 
-	
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), m.shutdownTimeout)
 	defer shutdownCancel()
 
@@ -145,11 +119,9 @@ func (m *Manager) Stop() error {
 		}
 	}
 
-	
 	if err := m.registry.StopAll(shutdownCtx); err != nil {
 		log.Printf("[Lifecycle] Error stopping modules: %v", err)
 	}
-
 
 	m.cancel()
 
@@ -166,14 +138,12 @@ func (m *Manager) Stop() error {
 		}
 	}
 
-	
 	m.eventBus.Close()
 
 	m.running = false
 	log.Println("[Lifecycle] Application stopped")
 	return nil
 }
-
 
 func (m *Manager) Run() error {
 	if err := m.Start(); err != nil {
@@ -211,21 +181,18 @@ func (m *Manager) Run() error {
 	}
 }
 
-
 func (m *Manager) Reload() error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	log.Println("[Lifecycle] Reloading configuration...")
 
-	
 	for _, cb := range m.onReload {
 		if err := cb(); err != nil {
 			return fmt.Errorf("reload callback failed: %w", err)
 		}
 	}
 
-	
 	if err := m.registry.Reload(m.ctx, nil); err != nil {
 		return fmt.Errorf("registry reload failed: %w", err)
 	}
@@ -234,7 +201,6 @@ func (m *Manager) Reload() error {
 	return nil
 }
 
-
 func (m *Manager) Context() context.Context {
 	return m.ctx
 }
@@ -242,25 +208,9 @@ func (m *Manager) Events() events.EventBus {
 	return m.eventBus
 }
 
-
 func (m *Manager) Registry() registry.Registry {
 	return m.registry
 }
-func (m *Manager) HealthCheck() map[string]interfaces.HealthStatus {
-	return m.registry.HealthCheck()
-}
-
-
-func (m *Manager) IsHealthy() bool {
-	status := m.HealthCheck()
-	for _, s := range status {
-		if !s.Healthy {
-			return false
-		}
-	}
-	return true
-}
-
 
 func (m *Manager) OnStart(cb func() error) {
 	m.mu.Lock()
@@ -268,13 +218,11 @@ func (m *Manager) OnStart(cb func() error) {
 	m.onStart = append(m.onStart, cb)
 }
 
-
 func (m *Manager) OnStop(cb func() error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onStop = append(m.onStop, cb)
 }
-
 
 func (m *Manager) OnReload(cb func() error) {
 	m.mu.Lock()
@@ -282,50 +230,8 @@ func (m *Manager) OnReload(cb func() error) {
 	m.onReload = append(m.onReload, cb)
 }
 
-
 func (m *Manager) OnShutdown(cb func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onShutdown = append(m.onShutdown, cb)
-}
-
-
-func (m *Manager) IsRunning() bool {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.running
-}
-
-
-func (m *Manager) WaitForShutdown() {
-	<-m.ctx.Done()
-}
-func (m *Manager) HealthEndpoint() func() map[string]interface{} {
-	return func() map[string]interface{} {
-		status := m.HealthCheck()
-		healthy := true
-		modules := make(map[string]interface{})
-
-		for name, s := range status {
-			if !s.Healthy {
-				healthy = false
-			}
-			modules[name] = map[string]interface{}{
-				"healthy":      s.Healthy,
-				"message":      s.Message,
-				"last_checked": s.LastChecked,
-				"details":      s.Details,
-			}
-		}
-
-		return map[string]interface{}{
-			"healthy": healthy,
-			"modules": modules,
-		}
-	}
-}
-
-
-func (m *Manager) GracefulShutdown() {
-	m.cancel()
 }

@@ -14,7 +14,3 @@ func NewMarionetteAdapter() *MarionetteAdapter {
 type Marionette = mariomethods.Marionette
 
 type UnifiedMLSystem = mlpkg.UnifiedMLSystem
-
-func NewUnifiedMLSystem() *UnifiedMLSystem {
-	return mlpkg.NewUnifiedMLSystem()
-}

@@ -200,12 +200,6 @@ func (p *TransportPool) List() []*TransportEntry {
 	return out
 }
 
-func (p *TransportPool) Remove(id string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	delete(p.entries, id)
-}
-
 func (p *TransportPool) NextID() string {
 	n := atomic.AddUint64(&p.counter, 1)
 	return fmt.Sprintf("conn-%d", n)
@@ -223,20 +217,20 @@ func (p *TransportPool) AnyConnected() bool {
 }
 
 type entryView struct {
-	ID             string     `json:"id"`
-	Transport      string     `json:"transport"`
-	Server         string     `json:"server"`
-	Status         connStatus `json:"status"`
-	Enabled        bool       `json:"enabled"`
-	Obfuscated     bool       `json:"obfuscated"`
-	Mux            bool       `json:"mux"`
-	RateLimitKB    int        `json:"rate_limit_kb"`
-	SNI            string     `json:"sni"`
-	Bridge         string     `json:"bridge"`
-	BytesUp        uint64     `json:"bytes_up"`
-	BytesDown      uint64     `json:"bytes_down"`
-	ConnectedAt    time.Time  `json:"connected_at,omitempty"`
-	Error          string     `json:"error,omitempty"`
+	ID                string     `json:"id"`
+	Transport         string     `json:"transport"`
+	Server            string     `json:"server"`
+	Status            connStatus `json:"status"`
+	Enabled           bool       `json:"enabled"`
+	Obfuscated        bool       `json:"obfuscated"`
+	Mux               bool       `json:"mux"`
+	RateLimitKB       int        `json:"rate_limit_kb"`
+	SNI               string     `json:"sni"`
+	Bridge            string     `json:"bridge"`
+	BytesUp           uint64     `json:"bytes_up"`
+	BytesDown         uint64     `json:"bytes_down"`
+	ConnectedAt       time.Time  `json:"connected_at,omitempty"`
+	Error             string     `json:"error,omitempty"`
 	EncapsulatedIn    string     `json:"encapsulated_in,omitempty"`
 	ForceObfuscation  bool       `json:"force_obfuscation"`
 	BehavioralProfile string     `json:"behavioral_profile,omitempty"`

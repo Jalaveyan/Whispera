@@ -18,8 +18,8 @@ import (
 
 type ClientConfig struct {
 	ServerPublicKey string
-	ShortId string
-	PrivateKey []byte
+	ShortId         string
+	PrivateKey      []byte
 }
 
 type ClientAuth struct {
@@ -74,15 +74,6 @@ func (c *ClientAuth) CreatePhantomExtension() (extensionType uint16, extensionDa
 	}
 
 	return phantomExtensionID, authData, nil
-}
-
-func ValidateServerPublicKey(key string) bool {
-	if len(key) >= 43 {
-		if b, err := base64.StdEncoding.DecodeString(key); err == nil && len(b) == 32 {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *ClientAuth) GenerateSessionID() (clientRandom, sessionID []byte, err error) {
@@ -306,15 +297,25 @@ func buildChromeClientHello(clientRandom, sessionID []byte, sni string) []byte {
 	body := make([]byte, bodyLen)
 	pos := 0
 
-	body[pos] = 0x03; body[pos+1] = 0x03; pos += 2
-	copy(body[pos:pos+32], clientRandom); pos += 32
-	body[pos] = 32; pos++
-	copy(body[pos:pos+32], sessionID); pos += 32
-	binary.BigEndian.PutUint16(body[pos:pos+2], uint16(len(cipherSuites))); pos += 2
-	copy(body[pos:], cipherSuites); pos += len(cipherSuites)
-	body[pos] = 1; pos++
-	body[pos] = 0x00; pos++
-	binary.BigEndian.PutUint16(body[pos:pos+2], uint16(totalExtLen)); pos += 2
+	body[pos] = 0x03
+	body[pos+1] = 0x03
+	pos += 2
+	copy(body[pos:pos+32], clientRandom)
+	pos += 32
+	body[pos] = 32
+	pos++
+	copy(body[pos:pos+32], sessionID)
+	pos += 32
+	binary.BigEndian.PutUint16(body[pos:pos+2], uint16(len(cipherSuites)))
+	pos += 2
+	copy(body[pos:], cipherSuites)
+	pos += len(cipherSuites)
+	body[pos] = 1
+	pos++
+	body[pos] = 0x00
+	pos++
+	binary.BigEndian.PutUint16(body[pos:pos+2], uint16(totalExtLen))
+	pos += 2
 	copy(body[pos:], exts)
 
 	handshake := make([]byte, 4+bodyLen)

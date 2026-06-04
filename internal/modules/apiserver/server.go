@@ -18,24 +18,24 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"runtime"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"whispera/internal/auth"
 	"whispera/internal/core/base"
-	"whispera/internal/logger"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
 	"whispera/internal/db"
+	"whispera/internal/logger"
 	"whispera/internal/modules/apiserver/handlers"
 	"whispera/internal/modules/bridgepool"
-	"whispera/internal/modules/keylimits"
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/dhcp"
+	"whispera/internal/modules/keylimits"
 	asn_bypass "whispera/internal/modules/transport/asn_bypass"
 	"whispera/internal/network"
 	"whispera/internal/stats"
@@ -1426,10 +1426,6 @@ func (s *Server) handleUserStats(w http.ResponseWriter, r *http.Request) {
 }
 
 var globalDHCPManager *dhcp.Manager
-
-func SetDHCPManager(m *dhcp.Manager) {
-	globalDHCPManager = m
-}
 
 func (s *Server) handleDHCPStatus(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
@@ -3354,7 +3350,6 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-
 func mlTokenFilePath(tokenFile string) string {
 	if tokenFile != "" {
 		return tokenFile
@@ -3406,11 +3401,11 @@ func (s *Server) handleMLConfig(w http.ResponseWriter, r *http.Request) {
 	tokenFile := mlTokenFilePath(mlCfg.TokenFile)
 
 	s.jsonOK(w, map[string]interface{}{
-		"enabled":     mlCfg.Enabled,
-		"server_url":  mlCfg.ServerURL,
-		"token":       token,
-		"token_file":  tokenFile,
-		"token_set":   token != "",
+		"enabled":    mlCfg.Enabled,
+		"server_url": mlCfg.ServerURL,
+		"token":      token,
+		"token_file": tokenFile,
+		"token_set":  token != "",
 	})
 }
 

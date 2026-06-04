@@ -9,40 +9,6 @@ import (
 
 const profileDefault = "default"
 
-func (m *Marionette) SetActiveProfile(name string) error {
-	m.Mutex.Lock()
-	defer m.Mutex.Unlock()
-
-	if _, exists := m.Profiles[name]; !exists {
-		return fmt.Errorf("profile %s not found", name)
-	}
-
-	m.Active = name
-	return nil
-}
-
-func (m *Marionette) GetState() *types.TrafficState {
-	m.Mutex.RLock()
-	defer m.Mutex.RUnlock()
-	return m.State
-}
-
-func (m *Marionette) GetProfileNames() []string {
-	m.Mutex.RLock()
-	profileCount := len(m.Profiles)
-	m.Mutex.RUnlock()
-
-	names := make([]string, 0, profileCount)
-
-	m.Mutex.RLock()
-	for name := range m.Profiles {
-		names = append(names, name)
-	}
-	m.Mutex.RUnlock()
-
-	return names
-}
-
 func (m *Marionette) GetActiveProfile() string {
 	m.Mutex.RLock()
 	defer m.Mutex.RUnlock()
@@ -77,62 +43,6 @@ func (m *Marionette) SwitchProfile(targetProfile, reason string) error {
 	}
 
 	return nil
-}
-
-func (m *Marionette) GetCurrentProfile() string {
-	return m.GetActiveProfile()
-}
-
-func (m *Marionette) GetProfileSwitchHistory() []types.ProfileSwitch {
-	m.Mutex.RLock()
-	defer m.Mutex.RUnlock()
-
-	if m.DynamicManager == nil {
-		return []types.ProfileSwitch{}
-	}
-	return m.DynamicManager.GetProfileSwitchHistory()
-}
-
-func (m *Marionette) AddProfile(name string, config map[string]interface{}) error {
-	m.Mutex.Lock()
-	defer m.Mutex.Unlock()
-
-	if _, exists := m.Profiles[name]; exists {
-		return fmt.Errorf("profile %s already exists", name)
-	}
-
-	profile := &types.TrafficProfile{
-		Name: name,
-		Type: "custom",
-	}
-
-	if val, ok := config["type"].(string); ok {
-		profile.Type = val
-	}
-
-	m.Profiles[name] = profile
-	return nil
-}
-
-func (m *Marionette) RemoveProfile(name string) error {
-	m.Mutex.Lock()
-	defer m.Mutex.Unlock()
-
-	if _, exists := m.Profiles[name]; !exists {
-		return fmt.Errorf("profile %s not found", name)
-	}
-
-	if m.Active == name {
-		return fmt.Errorf("cannot remove active profile %s, switch to another profile first", name)
-	}
-
-	delete(m.Profiles, name)
-	return nil
-}
-
-func (m *Marionette) StartDynamicManager() {
-	if m.DynamicManager != nil {
-	}
 }
 
 func (m *Marionette) initDefaultProfiles() {
@@ -180,7 +90,6 @@ func (m *Marionette) getCurrentServiceProfileName() string {
 	return m.State.CurrentProfile
 }
 
-
 type DynamicProfileManagerImpl struct {
 	ActiveProfile  string
 	ProfileHistory []types.ProfileSwitch
@@ -215,7 +124,6 @@ func (dpm *DynamicProfileManagerImpl) GetProfileSwitchHistory() []types.ProfileS
 func (dpm *DynamicProfileManagerImpl) GetCurrentProfile() string {
 	return dpm.ActiveProfile
 }
-
 
 func (m *Marionette) evaluateCondition(condition types.Condition) bool {
 	switch condition.Type {
@@ -418,7 +326,6 @@ func (m *Marionette) evaluateCompositeCondition(condition types.Condition) bool 
 	}
 	return result
 }
-
 
 func (m *Marionette) createRule(name, conditionType, conditionField, conditionOp string, conditionValue interface{}, actionType, actionMethod string, params map[string]interface{}, priority int) types.ObfuscationRule {
 	return types.ObfuscationRule{

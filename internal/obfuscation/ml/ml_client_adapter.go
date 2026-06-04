@@ -32,15 +32,6 @@ func SetMLServerURL(url, token string) {
 	}
 }
 
-func GetMLServerURL() string {
-	overrideMu.RLock()
-	defer overrideMu.RUnlock()
-	if overrideMLServerURL != "" {
-		return overrideMLServerURL
-	}
-	return os.Getenv("WHISPERA_ML_SERVER")
-}
-
 func init() {
 	modelDir := os.Getenv("WHISPERA_ML_MODEL_DIR")
 	if modelDir == "" {
@@ -105,8 +96,8 @@ func (a *PythonMLClientEvasionAdapter) LoadModels() error {
 }
 
 type NativeMLClientEvasionAdapter struct {
-	engine    *NativeMLEngine
-	flowCache sync.Map
+	engine      *NativeMLEngine
+	flowCache   sync.Map
 	sampleCount uint64
 }
 

@@ -45,13 +45,11 @@ type AdaptiveProfileManager interface {
 	LearnFromTraffic(data []byte, profileName string, success bool)
 }
 
-
 type ProfileInitializer interface {
 	InitializeDefaultProfiles() error
 	InitializeProfile(name string, config map[string]interface{}) error
 	ValidateProfile(profile *TrafficProfile) error
 }
-
 
 type MetricsCollector interface {
 	RecordPacketProcessed(size int, latency time.Duration) error
@@ -63,14 +61,6 @@ type MetricsCollector interface {
 	Reset()
 	RecordPacket(size int, latency time.Duration) error
 }
-
-
-
-
-
-
-
-
 
 type ProfileSwitch struct {
 	FromProfile   string
@@ -391,10 +381,6 @@ type LearningPattern struct {
 type UtilityFunctions struct {
 }
 
-func NewUtilityFunctions() *UtilityFunctions {
-	return &UtilityFunctions{}
-}
-
 type TrafficProfile struct {
 	Name                 string
 	Type                 string
@@ -555,10 +541,10 @@ type EffectivenessStats struct {
 	AverageLatency time.Duration `json:"average_latency"`
 	TotalAttempts  int64         `json:"total_attempts"`
 	LastUpdated    time.Time     `json:"last_updated"`
-	TotalBytes   int64 `json:"total_bytes"`
-	TotalPackets int64 `json:"total_packets"`
-	SuccessCount int64 `json:"success_count"`
-	FailureCount int64 `json:"failure_count"`
+	TotalBytes     int64         `json:"total_bytes"`
+	TotalPackets   int64         `json:"total_packets"`
+	SuccessCount   int64         `json:"success_count"`
+	FailureCount   int64         `json:"failure_count"`
 }
 
 type ProfileConfig struct {
@@ -585,7 +571,6 @@ type ProfileRecommendation struct {
 	Reason      string  `json:"reason"`
 	Priority    int     `json:"priority"`
 }
-
 
 type FTE struct {
 	Enabled bool
@@ -654,58 +639,6 @@ type ProtocolState struct {
 	Actions     []string
 }
 
-func NewProfileManager() interface{} {
-	return nil
-}
-
-func NewRuleEngine() interface{} {
-	return nil
-}
-
-func NewMetricsCollector() interface{} {
-	return nil
-}
-
-func NewTrafficAnalyzer() interface{} {
-	return nil
-}
-
-func NewProductionEvasion() interface{} {
-	return nil
-}
-
-func NewMLSystem() interface{} {
-	return nil
-}
-
-func NewEffectivenessMetrics() interface{} {
-	return nil
-}
-
-func NewDynamicProfileManager() interface{} {
-	return nil
-}
-
-func NewTrafficShaping() interface{} {
-	return nil
-}
-
-func NewMLEvasion() interface{} {
-	return nil
-}
-
-func NewUnifiedMLSystem() interface{} {
-	return nil
-}
-
-func NewCoverTraffic() interface{} {
-	return nil
-}
-
-func NewRealTrafficAnalysis() interface{} {
-	return nil
-}
-
 type MLEvasion struct {
 	Enabled bool
 }
@@ -751,7 +684,6 @@ type CoverTraffic struct {
 type RealTrafficAnalysis struct {
 	Enabled bool
 }
-
 
 type TrafficRecordFTE struct {
 	Data         []byte

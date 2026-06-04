@@ -246,19 +246,6 @@ func (d *IPDetector) cacheIP(ip string) {
 	d.mu.Unlock()
 }
 
-func (d *IPDetector) GetCachedIP() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.cachedIP
-}
-
-func (d *IPDetector) InvalidateCache() {
-	d.mu.Lock()
-	d.cachedIP = ""
-	d.lastCheck = time.Time{}
-	d.mu.Unlock()
-}
-
 func isPrivateIP(ip net.IP) bool {
 	if ip4 := ip.To4(); ip4 != nil {
 		if ip4[0] == 10 {
@@ -291,24 +278,6 @@ func DetectServerIP(ctx context.Context) (string, error) {
 	return GetGlobalDetector().DetectExternalIP(ctx)
 }
 
-func GetServerInfo(ctx context.Context) (*ServerInfo, error) {
-	detector := GetGlobalDetector()
-
-	externalIP, err := detector.DetectExternalIP(ctx)
-	if err != nil {
-		externalIP = "unknown"
-	}
-
-	info := &ServerInfo{
-		ExternalIP: externalIP,
-		Hostname:   getHostname(),
-		Interfaces: getInterfaceInfo(),
-		DetectedAt: time.Now(),
-	}
-
-	return info, nil
-}
-
 type ServerInfo struct {
 	ExternalIP string          `json:"external_ip"`
 	Hostname   string          `json:"hostname"`
@@ -320,39 +289,4 @@ type InterfaceInfo struct {
 	Name      string   `json:"name"`
 	Addresses []string `json:"addresses"`
 	IsUp      bool     `json:"is_up"`
-}
-
-func getHostname() string {
-	return "whispera-server"
-}
-
-func getInterfaceInfo() []InterfaceInfo {
-	var result []InterfaceInfo
-
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return result
-	}
-
-	for _, iface := range interfaces {
-		if iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-
-		info := InterfaceInfo{
-			Name: iface.Name,
-			IsUp: iface.Flags&net.FlagUp != 0,
-		}
-
-		addrs, _ := iface.Addrs()
-		for _, addr := range addrs {
-			info.Addresses = append(info.Addresses, addr.String())
-		}
-
-		if len(info.Addresses) > 0 {
-			result = append(result, info)
-		}
-	}
-
-	return result
 }

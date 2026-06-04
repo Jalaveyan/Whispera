@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync/atomic"
 )
@@ -55,6 +54,7 @@ type Frame struct {
 	Flags    uint8
 	Payload  []byte
 }
+
 func FrameTypeName(t uint8) string {
 	switch t {
 	case FrameConnect:
@@ -104,7 +104,6 @@ func (f *Frame) Encode() ([]byte, error) {
 	return buf, nil
 }
 
-
 func Decode(data []byte) (*Frame, error) {
 	if len(data) < HeaderSize {
 		return nil, ErrInvalidFrame
@@ -131,42 +130,6 @@ func Decode(data []byte) (*Frame, error) {
 	}
 
 	return f, nil
-}
-
-func ReadFrame(r io.Reader) (*Frame, error) {
-	header := make([]byte, HeaderSize)
-	if _, err := io.ReadFull(r, header); err != nil {
-		return nil, err
-	}
-
-	f := &Frame{
-		StreamID: binary.BigEndian.Uint16(header[0:2]),
-		Type:     header[2],
-		Flags:    header[3],
-	}
-
-	payloadLen := binary.BigEndian.Uint32(header[4:8])
-	if payloadLen > MaxPayloadLen {
-		return nil, ErrFrameTooLarge
-	}
-
-	if payloadLen > 0 {
-		f.Payload = make([]byte, payloadLen)
-		if _, err := io.ReadFull(r, f.Payload); err != nil {
-			return nil, err
-		}
-	}
-
-	return f, nil
-}
-
-func WriteFrame(w io.Writer, f *Frame) error {
-	data, err := f.Encode()
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(data)
-	return err
 }
 
 type ConnectPayload struct {
@@ -335,47 +298,11 @@ func parseIPv6(addr string) []byte {
 	return ipv6
 }
 
-func NewConnectFrame(streamID uint16, proto uint8, addrType uint8, addr string, port uint16) *Frame {
-	payload := ConnectPayload{
-		Profile:  ProfileBalanced,
-		Protocol: proto,
-		AddrType: addrType,
-		Addr:     addr,
-		Port:     port,
-	}
-	encodedPayload := payload.Encode()
-
-	return &Frame{
-		StreamID: streamID,
-		Type:     FrameConnect,
-		Flags:    0,
-		Payload:  encodedPayload,
-	}
-}
-
-func NewDataFrame(streamID uint16, data []byte) *Frame {
-	return &Frame{
-		StreamID: streamID,
-		Type:     FrameData,
-		Flags:    0,
-		Payload:  data,
-	}
-}
-
 func NewCloseFrame(streamID uint16) *Frame {
 	return &Frame{
 		StreamID: streamID,
 		Type:     FrameClose,
 		Flags:    FlagFin,
-		Payload:  nil,
-	}
-}
-
-func NewConnectOKFrame(streamID uint16) *Frame {
-	return &Frame{
-		StreamID: streamID,
-		Type:     FrameConnectOK,
-		Flags:    0,
 		Payload:  nil,
 	}
 }
@@ -389,80 +316,12 @@ func NewConnectFailFrame(streamID uint16, reason string) *Frame {
 	}
 }
 
-func NewPingFrame() *Frame {
-	return &Frame{
-		StreamID: 0,
-		Type:     FramePing,
-		Flags:    0,
-		Payload:  nil,
-	}
-}
 func NewPongFrame() *Frame {
 	return &Frame{
 		StreamID: 0,
 		Type:     FramePong,
 		Flags:    0,
 		Payload:  nil,
-	}
-}
-
-func NewUDPDataFrame(streamID uint16, addrType uint8, addr string, port uint16, data []byte) *Frame {
-	addrLen := 0
-	switch addrType {
-	case AddrTypeIPv4:
-		addrLen = 4
-	case AddrTypeIPv6:
-		addrLen = 16
-	case AddrTypeDomain:
-		addrLen = 1 + len(addr)
-	}
-
-	size := 1 + addrLen + 2 + len(data)
-	payload := make([]byte, size)
-
-	offset := 0
-
-	payload[offset] = addrType
-	offset++
-
-	switch addrType {
-	case AddrTypeIPv4:
-		copy(payload[offset:], parseIPv4(addr))
-		offset += 4
-	case AddrTypeIPv6:
-		copy(payload[offset:], parseIPv6(addr))
-		offset += 16
-	case AddrTypeDomain:
-		payload[offset] = byte(len(addr))
-		offset++
-		copy(payload[offset:], addr)
-		offset += len(addr)
-	}
-
-	binary.BigEndian.PutUint16(payload[offset:], port)
-	offset += 2
-
-	copy(payload[offset:], data)
-
-	return &Frame{
-		StreamID: streamID,
-		Type:     FrameUDPData,
-		Flags:    0,
-		Payload:  payload,
-	}
-}
-
-func NewRawPacketFrame(packetID uint32, rawPacket []byte) *Frame {
-	payload := make([]byte, 4+len(rawPacket))
-	binary.BigEndian.PutUint32(payload[0:4], packetID)
-
-	copy(payload[4:], rawPacket)
-
-	return &Frame{
-		StreamID: 0,
-		Type:     FrameRawPacket,
-		Flags:    0,
-		Payload:  payload,
 	}
 }
 
@@ -485,51 +344,12 @@ func ParseRawPacketFrame(f *Frame) (packetID uint32, rawPacket []byte, err error
 	return packetID, rawPacket, nil
 }
 
-func NewWindowUpdateFrame(streamID uint16, increment uint32) *Frame {
-	payload := make([]byte, 4)
-	binary.BigEndian.PutUint32(payload, increment)
-
-	return &Frame{
-		StreamID: streamID,
-		Type:     FrameWindowUpdate,
-		Flags:    0,
-		Payload:  payload,
-	}
-}
-
-func ParseWindowUpdateFrame(f *Frame) (uint32, error) {
-	if f.Type != FrameWindowUpdate {
-		return 0, ErrInvalidFrame
-	}
-	if len(f.Payload) < 4 {
-		return 0, ErrInvalidFrame
-	}
-	return binary.BigEndian.Uint32(f.Payload), nil
-}
-
 func WriteFrameHeader(buf []byte, streamID uint16, fType uint8, flags uint8, payloadLen int) {
 	binary.BigEndian.PutUint16(buf[0:2], streamID)
 	buf[2] = fType
 	buf[3] = flags
 	binary.BigEndian.PutUint32(buf[4:8], uint32(payloadLen))
 }
-
-func SealRawPacket(buf []byte, streamID uint16, packetID uint32) ([]byte, error) {
-	dataOffset := HeaderSize + 4
-	if len(buf) < dataOffset {
-		return nil, errors.New("buffer too small for headers")
-	}
-
-	packetLen := len(buf) - dataOffset
-	totalPayloadLen := 4 + packetLen
-
-	WriteFrameHeader(buf, streamID, FrameRawPacket, 0, totalPayloadLen)
-
-	binary.BigEndian.PutUint32(buf[HeaderSize:], packetID)
-
-	return buf, nil
-}
-
 
 func SealUDPData(buf []byte, streamID uint16, addrType uint8, addr string, port uint16, dataOffset int) ([]byte, error) {
 	if len(buf) < dataOffset {

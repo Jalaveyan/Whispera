@@ -1,7 +1,6 @@
 package evasion
 
 import (
-	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -30,40 +29,6 @@ func (m *Marionette) analyzeTrafficSuccess(_ []byte, _ string) error {
 	return nil
 }
 
-func (m *Marionette) GetAdaptiveLearning() types.AdaptiveLearning {
-	return m.AdaptiveLearning
-}
-
-func (m *Marionette) GetEffectivenessMetrics() *EvasionEffectivenessMetrics {
-	if metrics, ok := m.Effectiveness.(*EvasionEffectivenessMetrics); ok {
-		return metrics
-	}
-	return nil
-}
-
-func (m *Marionette) GetSystemMetrics() *EvasionSystemMetrics {
-	return m.Metrics
-}
-
-func (m *Marionette) HealthCheck() error {
-	m.Mutex.RLock()
-	defer m.Mutex.RUnlock()
-
-	if m.MlSystem != nil {
-		if err := m.MlSystem.HealthCheck(); err != nil {
-			return err
-		}
-	}
-
-	if m.CircuitBreaker.State == "open" {
-		if time.Since(m.CircuitBreaker.LastFailureTime) < m.CircuitBreaker.Timeout {
-			return fmt.Errorf("circuit breaker is open")
-		}
-	}
-
-	return nil
-}
-
 func (m *Marionette) cleanupRuleCache() {
 	count := 0
 	m.RuleCache.Range(func(key, value interface{}) bool {
@@ -78,7 +43,6 @@ func (m *Marionette) cleanupRuleCache() {
 func (m *Marionette) applyMetadataProtection(data []byte) []byte {
 	return data
 }
-
 
 func (em *EvasionEffectivenessMetrics) RecordSuccess(profile string, method string, latency time.Duration) error {
 	atomic.AddInt64(&em.SuccessfulEvasion, 1)

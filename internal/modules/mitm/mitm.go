@@ -54,10 +54,10 @@ type Config struct {
 
 type Proxy struct {
 	*base.Module
-	cfg     *Config
-	caMu    sync.RWMutex
-	caCert  *x509.Certificate
-	caKey   *ecdsa.PrivateKey
+	cfg       *Config
+	caMu      sync.RWMutex
+	caCert    *x509.Certificate
+	caKey     *ecdsa.PrivateKey
 	hostCerts *lru.Cache[string, *tls.Certificate]
 }
 
@@ -426,10 +426,6 @@ func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, firstReq *http.Reque
 	combinedBR := bufio.NewReader(io.MultiReader(&prefixBuf, br))
 
 	p.proxyHTTPStream(conn, combinedBR, upstream, h, h, isTLS)
-}
-
-func (p *Proxy) Stop() error {
-	return p.Module.Stop()
 }
 
 func (p *Proxy) ListenAddr() string {

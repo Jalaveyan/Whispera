@@ -3,8 +3,6 @@ package config
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 
@@ -251,18 +249,4 @@ func LoadClient(path string) (*ClientConfig, error) {
 		return nil, errors.New("unsupported config format")
 	}
 	return &cfg, nil
-}
-
-func ValidateClientConfig(cfg *ClientConfig) error {
-	if cfg == nil {
-		return errors.New("config is nil")
-	}
-
-	if cfg.Server != "" {
-		if _, _, err := net.SplitHostPort(cfg.Server); err != nil {
-			return fmt.Errorf("invalid server address format %q: %v", cfg.Server, err)
-		}
-	}
-
-	return nil
 }

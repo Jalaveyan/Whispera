@@ -9,7 +9,6 @@ import (
 	"whispera/internal/util"
 )
 
-
 func (m *Marionette) applyAction(action types.Action, data []byte, params map[string]interface{}) ([]byte, time.Duration) {
 	switch action.Type {
 	case "resize":
@@ -350,66 +349,8 @@ func (m *Marionette) generateServiceSpecificPadding(profile string, size int) []
 	return padding
 }
 
-
 type DPIEvasion struct {
 	detectionLevel    float64
 	characteristics   map[string]float64
 	evasionTechniques map[string]bool
-}
-
-func NewDPIEvasion() *DPIEvasion {
-	return &DPIEvasion{
-		detectionLevel:  0.0,
-		characteristics: make(map[string]float64),
-		evasionTechniques: map[string]bool{
-			"ja3_evasion":               true,
-			"ja4_evasion":               true,
-			"grease_evasion":            true,
-			"alpn_evasion":              true,
-			"ech_evasion":               true,
-			"hpack_evasion":             true,
-			"qpack_evasion":             true,
-			"doh_evasion":               true,
-			"doq_evasion":               true,
-			"timing_analysis_evasion":   true,
-			"flow_analysis_evasion":     true,
-			"statistical_evasion":       true,
-			"ml_classification_evasion": true,
-		},
-	}
-}
-
-func (de *DPIEvasion) DetectDPI() {
-	de.detectionLevel = de.analyzeDPICharacteristics()
-	de.characteristics = map[string]float64{
-		"timing_patterns":     de.analyzeTimingPatterns(),
-		"protocol_signatures": de.analyzeProtocolSignatures(),
-		"flow_anomalies":      de.analyzeFlowAnomalies(),
-		"packet_sizes":        de.analyzePacketSizes(),
-		"burst_patterns":      de.analyzeBurstPatterns(),
-	}
-}
-
-func (de *DPIEvasion) analyzeDPICharacteristics() float64 {
-	return 0.5
-}
-
-func (de *DPIEvasion) analyzeTimingPatterns() float64 {
-	return 0.4
-}
-
-func (de *DPIEvasion) analyzeProtocolSignatures() float64 {
-	return 0.3
-}
-
-func (de *DPIEvasion) analyzeFlowAnomalies() float64 {
-	return 0.2
-}
-
-func (de *DPIEvasion) analyzePacketSizes() float64 {
-	return 0.5
-}
-
-func (de *DPIEvasion) analyzeBurstPatterns() float64 {
-	return 0.6
 }

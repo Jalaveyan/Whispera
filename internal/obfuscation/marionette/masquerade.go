@@ -3,7 +3,6 @@ package marionette
 import (
 	"context"
 	"encoding/binary"
-	"math"
 	"sync"
 	"time"
 
@@ -19,7 +18,6 @@ var _ = []interface{}{
 	(*Marionette).applyQPACKEvasion,
 	(*Marionette).applyDoQEvasion,
 }
-
 
 type BehavioralMimicry struct {
 	mu         sync.RWMutex
@@ -61,240 +59,6 @@ type HeartbeatProfile struct {
 	Pattern  string
 	Enabled  bool
 }
-
-func NewTrafficProfiler() *TrafficProfiler {
-	return &TrafficProfiler{
-		profiles: make(map[string]*types.TrafficProfile),
-		active:   "",
-	}
-}
-
-func NewProtocolStateMachine() *ProtocolStateMachine {
-	return &ProtocolStateMachine{
-		states:   make(map[string]*ProtocolState),
-		current:  "initial",
-		protocol: "http2",
-	}
-}
-
-func NewFTE() *FTE {
-	return &FTE{
-		Enabled: true,
-		Mode:    "default",
-	}
-}
-
-func (fte *FTE) Transform(data []byte) ([]byte, error) {
-	if !fte.Enabled {
-		return data, nil
-	}
-	return data, nil
-}
-
-func NewBehavioralMimicry() *BehavioralMimicry {
-	bm := &BehavioralMimicry{
-		FTE:             NewFTE(),
-		Marionette:      NewMarionetteAdapter(),
-		Profiler:        NewTrafficProfiler(),
-		StateMachine:    &ProtocolState{Name: "initial"},
-		useStateMachine: true,
-	}
-
-	bm.initializeRealProfiles()
-
-	return bm
-}
-
-func (bm *BehavioralMimicry) initializeRealProfiles() {
-	bm.Profiler.AddProfile("vk", &types.TrafficProfile{
-		Name:          "VKontakte",
-		PacketSizes:   types.SizeDistribution{Min: 32, Max: 8192, Mean: 512, StdDev: 256, Weights: []float64{0.4, 0.3, 0.2, 0.1}, Bins: []int{32, 128, 512, 2048}},
-		Intervals:     types.IntervalDistribution{Min: 50 * time.Millisecond, Max: 200 * time.Millisecond, Mean: 100 * time.Millisecond, StdDev: 50 * time.Millisecond, Pattern: "exponential"},
-		BurstPatterns: types.BurstProfile{Probability: 0.2, MinBurst: 2, MaxBurst: 8, BurstGap: 150 * time.Millisecond},
-		Coverage:      types.CoverageProfile{Enabled: true, Probability: 0.4, MinSize: 32, MaxSize: 512, Interval: 3 * time.Second},
-		Adaptation:    types.AdaptationProfile{Enabled: true, Sensitivity: 0.8, LearningRate: 0.15, AdaptationThreshold: 0.75},
-	})
-	bm.Profiler.AddProfile("yandex", &types.TrafficProfile{
-		Name:          "Yandex Services",
-		PacketSizes:   types.SizeDistribution{Min: 24, Max: 4096, Mean: 384, StdDev: 192, Weights: []float64{0.3, 0.4, 0.2, 0.1}, Bins: []int{24, 96, 384, 1536}},
-		Intervals:     types.IntervalDistribution{Min: 30 * time.Millisecond, Max: 120 * time.Millisecond, Mean: 75 * time.Millisecond, StdDev: 40 * time.Millisecond, Pattern: "normal"},
-		BurstPatterns: types.BurstProfile{Probability: 0.3, MinBurst: 1, MaxBurst: 6, BurstGap: 100 * time.Millisecond},
-		Coverage:      types.CoverageProfile{Enabled: true, Probability: 0.35, MinSize: 24, MaxSize: 384, Interval: 2 * time.Second},
-		Adaptation:    types.AdaptationProfile{Enabled: true, Sensitivity: 0.6, LearningRate: 0.2, AdaptationThreshold: 0.85},
-	})
-}
-
-
-func (tp *TrafficProfiler) AddProfile(name string, profile *types.TrafficProfile) {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	tp.profiles[name] = profile
-}
-
-func (tp *TrafficProfiler) GetProfile(name string) *types.TrafficProfile {
-	tp.mu.RLock()
-	defer tp.mu.RUnlock()
-	return tp.profiles[name]
-}
-
-func (tp *TrafficProfiler) SetActive(name string) {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	tp.active = name
-}
-
-func (tp *TrafficProfiler) GetActive() string {
-	tp.mu.RLock()
-	defer tp.mu.RUnlock()
-	return tp.active
-}
-
-func (tp *TrafficProfiler) SetActiveProfile(name string) {
-	tp.SetActive(name)
-}
-
-func (tp *TrafficProfiler) GetActiveProfile() string {
-	return tp.GetActive()
-}
-
-func (psm *ProtocolStateMachine) AddState(name string, state *ProtocolState) {
-	psm.mu.Lock()
-	defer psm.mu.Unlock()
-	psm.states[name] = state
-}
-
-func (psm *ProtocolStateMachine) Transition(event string) bool {
-	psm.mu.Lock()
-	defer psm.mu.Unlock()
-	switch psm.current {
-	case "initial":
-		if event == "connect" {
-			psm.current = "connected"
-			return true
-		}
-	case "connected":
-		if event == "disconnect" {
-			psm.current = "disconnected"
-			return true
-		}
-	}
-	return false
-}
-
-func (psm *ProtocolStateMachine) GetCurrent() string {
-	psm.mu.RLock()
-	defer psm.mu.RUnlock()
-	return psm.current
-}
-func (psm *ProtocolStateMachine) GetState() string             { return psm.GetCurrent() }
-func (psm *ProtocolStateMachine) GetStreamCount() int          { return 1 }
-func (psm *ProtocolStateMachine) GetWindowSize() int           { return 65535 }
-func (psm *ProtocolStateMachine) GetErrorCount() int           { return 0 }
-func (psm *ProtocolStateMachine) ProcessPacket(_ []byte) error { return nil }
-
-func (bm *BehavioralMimicry) SetApplicationProfile(name string) error {
-	bm.mu.Lock()
-	defer bm.mu.Unlock()
-	bm.Active = name
-	bm.Profiler.SetActiveProfile(name)
-	return nil
-}
-
-func (bm *BehavioralMimicry) GetApplicationProfile() string {
-	bm.mu.RLock()
-	defer bm.mu.RUnlock()
-	return bm.Active
-}
-
-func (bm *BehavioralMimicry) ProcessPacket(data []byte) ([]byte, error) {
-	bm.mu.RLock()
-	defer bm.mu.RUnlock()
-	if bm.FTE != nil {
-		obfuscated, err := bm.FTE.Transform(data)
-		if err != nil {
-			return data, err
-		}
-		data = obfuscated
-	}
-	if bm.Marionette != nil {
-		obfuscated, _, _ := bm.Marionette.ProcessPacket(data, "outbound")
-		data = obfuscated
-	}
-	if bm.useStateMachine && bm.StateMachine != nil {
-		_ = bm.StateMachine
-	}
-	return data, nil
-}
-
-func (bm *BehavioralMimicry) GenerateTimingDelay() time.Duration {
-	bm.mu.RLock()
-	defer bm.mu.RUnlock()
-	profile := bm.Profiler.GetProfile(bm.Active)
-	if profile == nil {
-		delay := 20 + (int(time.Now().UnixNano()) % 60) + 20
-		return time.Duration(delay) * time.Millisecond
-	}
-	interval := profile.Intervals
-	if interval.Min == 0 {
-		delay := 20 + (int(time.Now().UnixNano()) % 60) + 20
-		return time.Duration(delay) * time.Millisecond
-	}
-	switch interval.Pattern {
-	case "exponential":
-		lambda := 1.0 / float64(interval.Mean.Milliseconds())
-		seed := float64(int(time.Now().UnixNano()) % 1000)
-		u := math.Mod(seed*0.618033988749, 1.0)
-		delay := -math.Log(u) / lambda
-		if delay < float64(interval.Min.Milliseconds()) {
-			delay = float64(interval.Min.Milliseconds())
-		}
-		if delay > float64(interval.Max.Milliseconds()) {
-			delay = float64(interval.Max.Milliseconds())
-		}
-		return time.Duration(delay) * time.Millisecond
-	case "normal":
-		seed1 := float64(int(time.Now().UnixNano()) % 1000)
-		seed2 := float64(int(time.Now().UnixNano()*7) % 1000)
-		u1 := math.Mod(seed1*0.618033988749, 1.0)
-		u2 := math.Mod(seed2*0.618033988749, 1.0)
-		z0 := math.Sqrt(-2*math.Log(u1)) * math.Cos(2*math.Pi*u2)
-		delay := float64(interval.Mean.Milliseconds()) + z0*float64(interval.StdDev.Milliseconds())
-		if delay < float64(interval.Min.Milliseconds()) {
-			delay = float64(interval.Min.Milliseconds())
-		}
-		if delay > float64(interval.Max.Milliseconds()) {
-			delay = float64(interval.Max.Milliseconds())
-		}
-		return time.Duration(delay) * time.Millisecond
-	default:
-		rangeMs := interval.Max.Milliseconds() - interval.Min.Milliseconds()
-		seed := int64(int(time.Now().UnixNano()) % 1000)
-		delay := interval.Min.Milliseconds() + (seed % (rangeMs + 1))
-		return time.Duration(delay) * time.Millisecond
-	}
-}
-
-func (bm *BehavioralMimicry) GenerateHeartbeat() (content []byte, headers map[string]string) {
-	return []byte("heartbeat"), map[string]string{
-		"Content-Type": "application/json",
-		"User-Agent":   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-	}
-}
-
-func (bm *BehavioralMimicry) GenerateSessionEvent() map[string]interface{} {
-	return map[string]interface{}{
-		"type": "session_event", "timestamp": time.Now().Unix(), "profile": bm.Active, "state": bm.StateMachine.Name,
-	}
-}
-
-func (bm *BehavioralMimicry) GetProfileNames() []string {
-	return []string{"browser", "mobile", "desktop"}
-}
-
-func (bm *BehavioralMimicry) GetProfileInfo(name string) map[string]interface{} {
-	return map[string]interface{}{"name": name, "type": "behavioral"}
-}
-
 
 func (m *Marionette) applyMLClassificationEvasion(data []byte) []byte {
 	mlObfuscation := make([]byte, 24)
@@ -349,7 +113,6 @@ func (m *Marionette) applyMetadataProtection(data []byte) []byte {
 	}
 	return data
 }
-
 
 type EvasionPool struct {
 	ja3Chan    chan []byte
@@ -440,7 +203,6 @@ func (p *EvasionPool) GetTiming() []byte {
 		return p.marionette.applyTimingAnalysisEvasion(nil)
 	}
 }
-
 
 var realJA3Fingerprints = map[string][]byte{
 	"chrome": {
@@ -659,7 +421,6 @@ func (m *Marionette) applyTimingAnalysisEvasion(data []byte) []byte {
 	copy(res, pattern)
 	return res
 }
-
 
 func (m *Marionette) ApplyWebsiteFingerprintDefense(data []byte, profile *WebsiteFingerprintDefenseProfile) []byte {
 	if !profile.Enabled {
@@ -900,7 +661,6 @@ func (m *Marionette) insertDirectionMarkersWebsite(data, markers []byte, profile
 	}
 	return res
 }
-
 
 func (m *Marionette) ApplyAdvancedMimicry(data []byte, profile *AdvancedMimicryProfile) []byte {
 	if !profile.Enabled {

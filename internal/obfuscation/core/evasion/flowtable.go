@@ -12,13 +12,13 @@ import (
 )
 
 type FlowTableConfig struct {
-	Enabled              bool          `yaml:"enabled" json:"enabled"`
-	RotationInterval     time.Duration `yaml:"rotation_interval" json:"rotation_interval"`
-	MaxConnectionAge     time.Duration `yaml:"max_connection_age" json:"max_connection_age"`
-	FlowMultiplexing     bool          `yaml:"flow_multiplexing" json:"flow_multiplexing"`
-	MultiplexCount       int           `yaml:"multiplex_count" json:"multiplex_count"`
-	StateMachineConfusion bool         `yaml:"state_confusion" json:"state_confusion"`
-	DecorrelateDirections bool         `yaml:"decorrelate_directions" json:"decorrelate_directions"`
+	Enabled               bool          `yaml:"enabled" json:"enabled"`
+	RotationInterval      time.Duration `yaml:"rotation_interval" json:"rotation_interval"`
+	MaxConnectionAge      time.Duration `yaml:"max_connection_age" json:"max_connection_age"`
+	FlowMultiplexing      bool          `yaml:"flow_multiplexing" json:"flow_multiplexing"`
+	MultiplexCount        int           `yaml:"multiplex_count" json:"multiplex_count"`
+	StateMachineConfusion bool          `yaml:"state_confusion" json:"state_confusion"`
+	DecorrelateDirections bool          `yaml:"decorrelate_directions" json:"decorrelate_directions"`
 }
 
 func DefaultFlowTableConfig() *FlowTableConfig {
@@ -30,13 +30,13 @@ func DefaultFlowTableConfig() *FlowTableConfig {
 }
 
 type RotatingConn struct {
-	mu       sync.Mutex
-	inner    net.Conn
-	dialer   func(ctx context.Context) (net.Conn, error)
-	config   *FlowTableConfig
-	stopCh   chan struct{}
-	closed   int32
-	created  time.Time
+	mu        sync.Mutex
+	inner     net.Conn
+	dialer    func(ctx context.Context) (net.Conn, error)
+	config    *FlowTableConfig
+	stopCh    chan struct{}
+	closed    int32
+	created   time.Time
 	rotations int64
 }
 
@@ -153,8 +153,8 @@ func (rc *RotatingConn) SetWriteDeadline(t time.Time) error {
 }
 
 type MultiplexConn struct {
-	conns  []net.Conn
-	mu     sync.Mutex
+	conns    []net.Conn
+	mu       sync.Mutex
 	writeIdx uint64
 	readIdx  uint64
 	closed   int32
@@ -227,11 +227,18 @@ func (bc *BidirectionalConn) Close() error {
 	bc.readConn.Close()
 	return bc.writeConn.Close()
 }
-func (bc *BidirectionalConn) LocalAddr() net.Addr                { return bc.writeConn.LocalAddr() }
-func (bc *BidirectionalConn) RemoteAddr() net.Addr               { return bc.writeConn.RemoteAddr() }
-func (bc *BidirectionalConn) SetDeadline(t time.Time) error      { bc.readConn.SetDeadline(t); return bc.writeConn.SetDeadline(t) }
-func (bc *BidirectionalConn) SetReadDeadline(t time.Time) error  { return bc.readConn.SetReadDeadline(t) }
-func (bc *BidirectionalConn) SetWriteDeadline(t time.Time) error { return bc.writeConn.SetWriteDeadline(t) }
+func (bc *BidirectionalConn) LocalAddr() net.Addr  { return bc.writeConn.LocalAddr() }
+func (bc *BidirectionalConn) RemoteAddr() net.Addr { return bc.writeConn.RemoteAddr() }
+func (bc *BidirectionalConn) SetDeadline(t time.Time) error {
+	bc.readConn.SetDeadline(t)
+	return bc.writeConn.SetDeadline(t)
+}
+func (bc *BidirectionalConn) SetReadDeadline(t time.Time) error {
+	return bc.readConn.SetReadDeadline(t)
+}
+func (bc *BidirectionalConn) SetWriteDeadline(t time.Time) error {
+	return bc.writeConn.SetWriteDeadline(t)
+}
 
 type StateMachineConfuser struct {
 	conn   *net.TCPConn
@@ -268,10 +275,6 @@ func (smc *StateMachineConfuser) sendConfusion() {
 	rand.Read(fake)
 	smc.conn.Write(fake)
 	setTTL(smc.conn, 64)
-}
-
-func (smc *StateMachineConfuser) Stop() {
-	close(smc.stopCh)
 }
 
 func DialWithFlowTableBypass(ctx context.Context, dialer func(ctx context.Context) (net.Conn, error), cfg *FlowTableConfig) (net.Conn, error) {

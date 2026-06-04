@@ -2,8 +2,6 @@ package mtproto
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -771,123 +769,9 @@ func cryptoRandIntn(n int) int {
 }
 
 type ProbeReflector struct {
-	mu          sync.RWMutex
+	mu           sync.RWMutex
 	fingerprints map[string][]byte
 	certCache    map[string][]byte
-}
-
-func NewProbeReflector() *ProbeReflector {
-	return &ProbeReflector{
-		fingerprints: make(map[string][]byte),
-		certCache:    make(map[string][]byte),
-	}
-}
-
-func (r *ProbeReflector) HandleProbe(conn net.Conn, header []byte, domain string) {
-	defer conn.Close()
-
-	if len(header) > 0 && header[0] == 0x16 {
-		r.reflectTLS(conn, domain)
-		return
-	}
-
-	if isHTTPProbe(header) {
-		r.reflectHTTP(conn, domain)
-		return
-	}
-
-	noise := make([]byte, 64+cryptoRandIntn(192))
-	rand.Read(noise)
-	conn.Write(noise)
-}
-
-func (r *ProbeReflector) reflectTLS(conn net.Conn, domain string) {
-	r.mu.RLock()
-	cached, hasCert := r.certCache[domain]
-	r.mu.RUnlock()
-
-	if hasCert {
-		conn.Write(cached)
-		return
-	}
-
-	realConn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(context.Background(), "tcp", net.JoinHostPort(domain, "443"))
-	if err != nil {
-		return
-	}
-	defer realConn.Close()
-
-	hello := buildMinimalClientHello(domain)
-	realConn.SetDeadline(time.Now().Add(3 * time.Second))
-	realConn.Write(hello)
-
-	response := make([]byte, 8192)
-	n, err := realConn.Read(response)
-	if err != nil || n == 0 {
-		return
-	}
-
-	cert := make([]byte, n)
-	copy(cert, response[:n])
-
-	r.mu.Lock()
-	r.certCache[domain] = cert
-	r.mu.Unlock()
-
-	conn.Write(cert)
-}
-
-func (r *ProbeReflector) reflectHTTP(conn net.Conn, domain string) {
-	response := fmt.Sprintf("HTTP/1.1 301 Moved Permanently\r\nLocation: https://%s/\r\nServer: nginx\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", domain)
-	conn.Write([]byte(response))
-}
-
-func isHTTPProbe(header []byte) bool {
-	if len(header) < 4 {
-		return false
-	}
-	methods := []string{"GET ", "POST", "HEAD", "PUT ", "OPTI"}
-	s := string(header[:4])
-	for _, m := range methods {
-		if s == m {
-			return true
-		}
-	}
-	return false
-}
-
-func buildMinimalClientHello(domain string) []byte {
-	hello := make([]byte, 0, 256)
-	hello = append(hello, 0x16, 0x03, 0x01)
-
-	body := []byte{0x01, 0x00, 0x00, 0x00, 0x03, 0x03}
-	random := make([]byte, 32)
-	rand.Read(random)
-	body = append(body, random...)
-	body = append(body, 0x00)
-	body = append(body, 0x00, 0x04, 0x13, 0x01, 0x13, 0x02)
-	body = append(body, 0x01, 0x00)
-
-	sni := []byte(domain)
-	sniLen := len(sni)
-	listLen := 3 + sniLen
-	extLen := 2 + listLen
-	ext := []byte{0x00, 0x00}
-	ext = append(ext, byte(extLen>>8), byte(extLen))
-	ext = append(ext, byte(listLen>>8), byte(listLen))
-	ext = append(ext, 0x00)
-	ext = append(ext, byte(sniLen>>8), byte(sniLen))
-	ext = append(ext, sni...)
-
-	body = append(body, byte(len(ext)>>8), byte(len(ext)))
-	body = append(body, ext...)
-
-	binary.BigEndian.PutUint16(body[2:4], uint16(len(body)-4))
-
-	hello = append(hello, byte(len(body)>>8), byte(len(body)))
-	hello = append(hello, body...)
-
-	return hello
 }
 
 type TimingEngine struct {
@@ -895,90 +779,9 @@ type TimingEngine struct {
 	variance  float64
 }
 
-func NewTimingEngine(baseDelay time.Duration, variance float64) *TimingEngine {
-	return &TimingEngine{
-		baseDelay: baseDelay,
-		variance:  variance,
-	}
-}
-
-func (te *TimingEngine) Delay() time.Duration {
-	base := te.baseDelay.Milliseconds()
-	jitter := cryptoRandIntn(int(float64(base) * te.variance))
-	if cryptoRandIntn(2) == 0 {
-		return time.Duration(base+int64(jitter)) * time.Millisecond
-	}
-	result := base - int64(jitter)
-	if result < 1 {
-		result = 1
-	}
-	return time.Duration(result) * time.Millisecond
-}
-
-func (te *TimingEngine) BurstPattern(count int) []time.Duration {
-	delays := make([]time.Duration, count)
-	for i := range delays {
-		delays[i] = te.Delay()
-	}
-	for i := len(delays) - 1; i > 0; i-- {
-		j := cryptoRandIntn(i + 1)
-		delays[i], delays[j] = delays[j], delays[i]
-	}
-	return delays
-}
-
 type KeyRotator struct {
 	mu       sync.RWMutex
 	baseSeed []byte
 	epoch    uint64
 	current  []byte
-}
-
-func NewKeyRotator(seed []byte) *KeyRotator {
-	kr := &KeyRotator{
-		baseSeed: seed,
-	}
-	kr.rotate()
-	return kr
-}
-
-func (kr *KeyRotator) rotate() {
-	kr.mu.Lock()
-	defer kr.mu.Unlock()
-
-	kr.epoch++
-	h := sha256.New()
-	h.Write(kr.baseSeed)
-	epochBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(epochBytes, kr.epoch)
-	h.Write(epochBytes)
-	kr.current = h.Sum(nil)
-}
-
-func (kr *KeyRotator) Current() []byte {
-	kr.mu.RLock()
-	defer kr.mu.RUnlock()
-	key := make([]byte, len(kr.current))
-	copy(key, kr.current)
-	return key
-}
-
-func (kr *KeyRotator) Epoch() uint64 {
-	kr.mu.RLock()
-	defer kr.mu.RUnlock()
-	return kr.epoch
-}
-
-func (kr *KeyRotator) NewStream() (cipher.Stream, error) {
-	key := kr.Current()
-	if len(key) < 32 {
-		return nil, fmt.Errorf("key too short")
-	}
-	block, err := aes.NewCipher(key[:32])
-	if err != nil {
-		return nil, err
-	}
-	iv := make([]byte, aes.BlockSize)
-	rand.Read(iv)
-	return cipher.NewCTR(block, iv), nil
 }

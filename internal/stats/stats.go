@@ -103,33 +103,6 @@ func (s *TrafficStats) AddTx(userID string, bytes int64) {
 	s.log.Debug("TX: user=%s bytes=%d", userID, bytes)
 }
 
-func (s *TrafficStats) AddTraffic(userID string, bytesRx, bytesTx int64) {
-	if bytesRx > 0 {
-		s.totalBytesRx.Add(bytesRx)
-		s.totalPacketsRx.Add(1)
-	}
-	if bytesTx > 0 {
-		s.totalBytesTx.Add(bytesTx)
-		s.totalPacketsTx.Add(1)
-	}
-
-	if userID != "" {
-		s.mu.Lock()
-		user := s.getOrCreateUser(userID)
-		s.mu.Unlock()
-
-		user.BytesRx += bytesRx
-		user.BytesTx += bytesTx
-		if bytesRx > 0 {
-			user.PacketsRx++
-		}
-		if bytesTx > 0 {
-			user.PacketsTx++
-		}
-		user.LastActivity = time.Now()
-	}
-}
-
 func (s *TrafficStats) SetUserIP(userID, ip string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -237,19 +210,6 @@ func (s *TrafficStats) TakeSnapshot() {
 		s.totalBytesRx.Load(), s.totalBytesTx.Load(), len(s.userStats))
 }
 
-func (s *TrafficStats) ResetUserStats(userID string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if user, ok := s.userStats[userID]; ok {
-		user.BytesRx = 0
-		user.BytesTx = 0
-		user.PacketsRx = 0
-		user.PacketsTx = 0
-		s.log.Info("Reset stats for user %s", userID)
-	}
-}
-
 func (s *TrafficStats) countActiveUsers() int {
 	count := 0
 	cutoff := time.Now().Add(-5 * time.Minute)
@@ -295,17 +255,12 @@ func Global() *TrafficStats {
 	return globalStats
 }
 
-
 func AddRx(userID string, bytes int64) {
 	Global().AddRx(userID, bytes)
 }
 
 func AddTx(userID string, bytes int64) {
 	Global().AddTx(userID, bytes)
-}
-
-func AddTraffic(userID string, bytesRx, bytesTx int64) {
-	Global().AddTraffic(userID, bytesRx, bytesTx)
 }
 
 func GetGlobalStats() *GlobalStats {

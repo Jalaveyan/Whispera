@@ -28,8 +28,6 @@ func NewPCAPCollector(iface string, port int) *PCAPCollector {
 }
 
 func (c *PCAPCollector) Out() <-chan LabeledFlow { return c.out }
-func (c *PCAPCollector) Stop()                   { close(c.stopCh) }
-
 func (c *PCAPCollector) Start() error {
 	tp, err := afpacket.NewTPacket(
 		afpacket.OptInterface(c.iface),

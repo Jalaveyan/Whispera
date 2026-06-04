@@ -27,8 +27,8 @@ const (
 )
 
 type Config struct {
-	Type      ResolverType
-	Servers   []string
+	Type        ResolverType
+	Servers     []string
 	Timeout     time.Duration
 	CacheSize   int
 	CacheTTL    time.Duration
@@ -44,8 +44,8 @@ type Config struct {
 
 func DefaultConfig() *Config {
 	return &Config{
-		Type:      ResolverTypeDoH,
-		Servers:   []string{"https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query", "https://dns.yandex.ru/dns-query"},
+		Type:        ResolverTypeDoH,
+		Servers:     []string{"https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query", "https://dns.yandex.ru/dns-query"},
 		Timeout:     2 * time.Second,
 		CacheSize:   10000,
 		CacheTTL:    5 * time.Minute,
@@ -387,16 +387,6 @@ func (r *Resolver) putToCache(host string, ips []net.IP) {
 		IPs:       ips,
 		ExpiresAt: time.Now().Add(r.config.CacheTTL),
 	})
-}
-
-func (r *Resolver) Stats() (queries, hits, misses uint64) {
-	return atomic.LoadUint64(&r.queries),
-		atomic.LoadUint64(&r.cacheHits),
-		atomic.LoadUint64(&r.cacheMiss)
-}
-
-func (r *Resolver) ClearCache() {
-	r.cache.Purge()
 }
 
 func buildDNSQuery(host string, qtype uint16) []byte {

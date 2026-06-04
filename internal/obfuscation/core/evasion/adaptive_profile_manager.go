@@ -20,17 +20,6 @@ type AdaptiveProfileManagerImpl struct {
 	adaptationThreshold float64
 }
 
-// NewAdaptiveProfileManager создает новый менеджер адаптивных профилей
-func NewAdaptiveProfileManager() types.AdaptiveProfileManager {
-	return &AdaptiveProfileManagerImpl{
-		profiles:            make(map[string]*types.AdaptiveProfile),
-		recommendations:     make(map[string]*types.ProfileRecommendation),
-		feedback:            make(map[string]*types.AdaptationFeedback),
-		learningRate:        0.1,
-		adaptationThreshold: 0.8,
-	}
-}
-
 // SelectOptimalProfile выбирает оптимальный профиль для контекста
 func (apm *AdaptiveProfileManagerImpl) SelectOptimalProfile(context *types.TrafficContext) (string, error) {
 	apm.mutex.RLock()

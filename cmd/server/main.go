@@ -11,8 +11,8 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/url"
 	_ "net/http/pprof"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -44,13 +44,13 @@ import (
 	"whispera/internal/modules/crypto"
 	"whispera/internal/modules/dataplane"
 	"whispera/internal/modules/handshake"
-	"whispera/internal/modules/metricscollector"
-	"whispera/internal/modules/obfuscator"
 	"whispera/internal/modules/keylimits"
+	"whispera/internal/modules/metricscollector"
+	"whispera/internal/modules/mlserver"
+	"whispera/internal/modules/obfuscator"
 	"whispera/internal/modules/phantom"
 	"whispera/internal/modules/probedetector"
 	"whispera/internal/modules/relay"
-	"whispera/pkg/wiraid"
 	"whispera/internal/modules/router"
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/transport/chameleon"
@@ -73,12 +73,12 @@ import (
 	_ "whispera/internal/modules/transport/vkbot"
 	_ "whispera/internal/modules/transport/vkwebrtc"
 	ws_transport "whispera/internal/modules/transport/websocket"
-	"whispera/internal/modules/mlserver"
 	_ "whispera/internal/modules/transport/yacloud"
-	"whispera/internal/obfuscation/marionette"
-	mlpkg "whispera/internal/obfuscation/ml"
 	_ "whispera/internal/modules/transport/yadisk"
 	_ "whispera/internal/modules/transport/yatelemost"
+	"whispera/internal/obfuscation/marionette"
+	mlpkg "whispera/internal/obfuscation/ml"
+	"whispera/pkg/wiraid"
 )
 
 var log = logger.Module("server")
@@ -179,7 +179,7 @@ var globalKeyLimits = keylimits.New(keylimits.Limits{
 	MaxActiveSessions: 10,    // per-user
 	GlobalCap:         10000, // server-wide
 	SoftIPCap:         50,
-	BurstPerMinute:    0,  // disabled: connection pools reconnect at high frequency
+	BurstPerMinute:    0,                // disabled: connection pools reconnect at high frequency
 	SessionTTL:        30 * time.Minute, // safety net for leaked sessions; live sessions are cleaned by Release()
 })
 
@@ -343,17 +343,17 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		}
 
 		pCfg := &phantom.Config{
-			Enabled:            true,
-			ListenAddr:         listenAddr,
-			Dest:               inbound.StreamSettings.Phantom.Dest,
-			PrivateKey:         pPrivKey,
-			ServerNames:        inboundServerNames,
-			ShortIds:           inboundShortIds,
-			MaxTimeDiff:        inboundMaxTimeDiff,
-			Fingerprint:        serverConfig.Phantom.Fingerprint,
-			EnableObfuscation:  false,
-			ObfuscationProfile: "",
-			EnableChatFSM:      serverConfig.Phantom.EnableChatFSM,
+			Enabled:              true,
+			ListenAddr:           listenAddr,
+			Dest:                 inbound.StreamSettings.Phantom.Dest,
+			PrivateKey:           pPrivKey,
+			ServerNames:          inboundServerNames,
+			ShortIds:             inboundShortIds,
+			MaxTimeDiff:          inboundMaxTimeDiff,
+			Fingerprint:          serverConfig.Phantom.Fingerprint,
+			EnableObfuscation:    false,
+			ObfuscationProfile:   "",
+			EnableChatFSM:        serverConfig.Phantom.EnableChatFSM,
 			ChatFSMCoverInterval: time.Duration(serverConfig.Phantom.ChatFSMCoverInterval) * time.Second,
 			GetUsers: func() []phantom.UserEntry {
 				registered := apiserver.GetRegisteredUsers()
@@ -1367,12 +1367,12 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		return err
 	}
 	relayServer, err := relay.New(&relay.Config{
-		MaxStreams:      serverConfig.Relay.MaxStreams,
-		EnableTCP:       serverConfig.Relay.EnableTCP,
-		EnableUDP:       serverConfig.Relay.EnableUDP,
-		Debug:           serverConfig.Relay.Debug || *debug,
-		UpstreamProxy:   serverConfig.Relay.UpstreamProxy,
-		PaddingMaxSize:  serverConfig.Obfuscation.Padding.MaxSize,
+		MaxStreams:     serverConfig.Relay.MaxStreams,
+		EnableTCP:      serverConfig.Relay.EnableTCP,
+		EnableUDP:      serverConfig.Relay.EnableUDP,
+		Debug:          serverConfig.Relay.Debug || *debug,
+		UpstreamProxy:  serverConfig.Relay.UpstreamProxy,
+		PaddingMaxSize: serverConfig.Obfuscation.Padding.MaxSize,
 	})
 	if err != nil {
 		return err
@@ -1533,10 +1533,10 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"mode":             "bridge",
-				"upstream_alive":   globalBridge.IsUpstreamAlive(),
-				"failover_active":  globalBridge.IsFailoverActive(),
-				"active_conns":     globalBridge.GetActiveConnections(),
+				"mode":            "bridge",
+				"upstream_alive":  globalBridge.IsUpstreamAlive(),
+				"failover_active": globalBridge.IsFailoverActive(),
+				"active_conns":    globalBridge.GetActiveConnections(),
 			})
 		})
 
@@ -1761,12 +1761,12 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				log.Printf("⚠ Warning: Failed to create Telegram Bot: %v", err)
 			} else {
 				if globalWiraidEngine != nil {
-						botModule.SetWiraidEngine(globalWiraidEngine)
-					}
-					if globalBridgePool != nil {
-						botModule.SetBridgePool(globalBridgePool)
-					}
-					if err := manager.Register(botModule); err != nil {
+					botModule.SetWiraidEngine(globalWiraidEngine)
+				}
+				if globalBridgePool != nil {
+					botModule.SetBridgePool(globalBridgePool)
+				}
+				if err := manager.Register(botModule); err != nil {
 					return err
 				}
 				log.Printf("  ✓ Telegram Bot enabled (Admin ID: %d)", serverConfig.Bot.AdminID)
@@ -2055,24 +2055,6 @@ type TCPResponseWriter struct {
 	debug      bool
 	UserID     string
 }
-
-func (w *TCPResponseWriter) Write(data []byte) error {
-	payload := data
-	if w.obfuscator != nil {
-		obfuscated, _, err := w.obfuscator.Process(data, interfaces.DirectionOutbound)
-		if err != nil {
-			return fmt.Errorf("obfuscation failed: %w", err)
-		}
-		payload = obfuscated
-	}
-	n, err := w.conn.Write(payload)
-	if err == nil && n > 0 && w.UserID != "" {
-		stats.AddTx(w.UserID, int64(n))
-	}
-	return err
-}
-
-func (w *TCPResponseWriter) RemoteAddr() net.Addr { return w.conn.RemoteAddr() }
 
 func setupEventHandlers(manager *lifecycle.Manager) {
 	eventBus := manager.Events()

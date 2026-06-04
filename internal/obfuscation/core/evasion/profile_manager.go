@@ -80,18 +80,6 @@ func (pm *ProfileManager) RemoveProfile(name string) error {
 	return nil
 }
 
-func (pm *ProfileManager) GetProfileNames() []string {
-	return pm.ListProfiles()
-}
-
-func (pm *ProfileManager) SwitchProfile(targetProfile, reason string) error {
-	return pm.SetActiveProfile(targetProfile)
-}
-
-func (pm *ProfileManager) GetProfileSwitchHistory() []types.ProfileSwitch {
-	return []types.ProfileSwitch{}
-}
-
 func (pm *ProfileManager) UpdateProfile(name string, profile *types.TrafficProfile) error {
 	pm.mutex.Lock()
 	defer pm.mutex.Unlock()
@@ -262,49 +250,4 @@ type FTEProfileManager struct {
 	profiles map[string]*ProtocolProfile
 	active   string
 	mutex    sync.RWMutex
-}
-
-func NewFTEProfileManager() *FTEProfileManager {
-	return &FTEProfileManager{
-		profiles: make(map[string]*ProtocolProfile),
-	}
-}
-
-func (fpm *FTEProfileManager) AddFTEProfile(name string, profile *ProtocolProfile) {
-	fpm.mutex.Lock()
-	defer fpm.mutex.Unlock()
-	fpm.profiles[name] = profile
-}
-
-func (fpm *FTEProfileManager) GetFTEProfile(name string) (*ProtocolProfile, bool) {
-	fpm.mutex.RLock()
-	defer fpm.mutex.RUnlock()
-	profile, exists := fpm.profiles[name]
-	return profile, exists
-}
-
-func (fpm *FTEProfileManager) SetActiveFTEProfile(name string) error {
-	fpm.mutex.Lock()
-	defer fpm.mutex.Unlock()
-	if _, exists := fpm.profiles[name]; !exists {
-		return fmt.Errorf("FTE profile %s not found", name)
-	}
-	fpm.active = name
-	return nil
-}
-
-func (fpm *FTEProfileManager) GetActiveFTEProfile() string {
-	fpm.mutex.RLock()
-	defer fpm.mutex.RUnlock()
-	return fpm.active
-}
-
-func (fpm *FTEProfileManager) ListFTEProfiles() []string {
-	fpm.mutex.RLock()
-	defer fpm.mutex.RUnlock()
-	names := make([]string, 0, len(fpm.profiles))
-	for name := range fpm.profiles {
-		names = append(names, name)
-	}
-	return names
 }

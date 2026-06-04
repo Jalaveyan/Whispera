@@ -12,7 +12,6 @@ type LearningData = types.LearningData
 
 type LearningStats = types.LearningStats
 
-
 type TrafficState = types.TrafficState
 
 type TrafficProfile = types.TrafficProfile
@@ -37,18 +36,6 @@ type LearningPatternStats struct {
 	UsageCount    int64
 	LastUsed      time.Time
 	Effectiveness float64
-}
-
-func NewAdaptiveLearning() *AdaptiveLearningImpl {
-	return &AdaptiveLearningImpl{
-		learningRate:    0.1,
-		adaptationSpeed: 0.5,
-		patterns:        make(map[string]*LearningPattern),
-		recentSizes:     make([]int, 0),
-		recentIntervals: make([]time.Duration, 0),
-		threatLevel:     0.5,
-		sessionStart:    time.Now(),
-	}
 }
 
 func (al *AdaptiveLearningImpl) performAdaptiveLearning() {

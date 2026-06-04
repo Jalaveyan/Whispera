@@ -17,17 +17,6 @@ func unregisterLiveConn(c *ChatFSMConn) {
 	liveRegistry.Delete(c.id)
 }
 
-func LiveConns() []*ChatFSMConn {
-	var conns []*ChatFSMConn
-	liveRegistry.Range(func(_, v any) bool {
-		if c, ok := v.(*ChatFSMConn); ok {
-			conns = append(conns, c)
-		}
-		return true
-	})
-	return conns
-}
-
 func LiveConnByID(id uint64) *ChatFSMConn {
 	v, ok := liveRegistry.Load(id)
 	if !ok {

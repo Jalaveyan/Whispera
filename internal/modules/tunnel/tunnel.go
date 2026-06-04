@@ -22,8 +22,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sourcegraph/conc/iter"
-	"nhooyr.io/websocket"
 	"whispera/internal/bond"
 	"whispera/internal/buf"
 	"whispera/internal/core/base"
@@ -65,6 +63,9 @@ import (
 	"whispera/internal/obfuscation/marionette"
 	mlpkg "whispera/internal/obfuscation/ml"
 	"whispera/internal/obfuscation/russian"
+
+	"github.com/sourcegraph/conc/iter"
+	"nhooyr.io/websocket"
 )
 
 var log = logger.Module("tunnel")
@@ -4080,16 +4081,6 @@ func (m *Manager) HealthCheck() interfaces.HealthStatus {
 		status.Details["quality_missed_kas"] = atomic.LoadInt32(&m.missedKAs)
 	}
 	return status
-}
-
-func Factory(cfg interface{}) (interfaces.Module, error) {
-	var config *Config
-	if c, ok := cfg.(*Config); ok {
-		config = c
-	} else {
-		config = DefaultConfig()
-	}
-	return New(config)
 }
 
 func generateRandomShortId() string {

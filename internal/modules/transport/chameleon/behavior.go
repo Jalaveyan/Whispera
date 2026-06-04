@@ -68,14 +68,6 @@ func (ws *WindowScheduler) CurrentIndex() int {
 	return ws.currentIndexLocked(time.Now())
 }
 
-func (ws *WindowScheduler) NextBoundary() time.Time {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-	idx := ws.currentIndexLocked(time.Now())
-	ws.extendTo(idx + 2)
-	return ws.boundaries[idx+1]
-}
-
 func (ws *WindowScheduler) currentIndexLocked(now time.Time) int {
 	for {
 		last := len(ws.boundaries) - 1
@@ -125,4 +117,3 @@ func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte)
 		IdleSec:      5 + int(u32(8)%26),
 	}
 }
-

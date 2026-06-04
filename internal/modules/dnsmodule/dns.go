@@ -37,15 +37,8 @@ type Config struct {
 	BlockingEnabled bool
 	BlockLists      []string
 	DialContext     func(ctx context.Context, network, address string) (net.Conn, error)
-	// BypassFunc, if set, is called before resolving. When it returns true the
-	// domain is resolved via the OS resolver (system DNS) regardless of Upstream.
-	// Use this to integrate split-tunnel hostname bypass.
 	BypassFunc func(hostname string) bool
 
-	// BypassResolver, if set, is used instead of net.DefaultResolver when
-	// resolving bypass-listed domains. Set this to a resolver that always dials
-	// directly (never through the VPN tunnel) so that system DNS changes after
-	// VPN connects do not affect bypass-domain resolution.
 	BypassResolver *net.Resolver
 }
 
@@ -170,10 +163,6 @@ func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error)
 		return nil, fmt.Errorf("domain blocked: %s", domain)
 	}
 
-	// Bypass check: domains on the split-tunnel whitelist are resolved via a
-	// fixed direct resolver (BypassResolver or net.DefaultResolver) so they
-	// always get their real regional IPs even after the VPN tunnel changes
-	// the system DNS upstream.
 	if r.config.BypassFunc != nil && r.config.BypassFunc(domain) {
 		resolver := r.config.BypassResolver
 		if resolver == nil {
@@ -355,12 +344,10 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 	upstream := r.config.Upstream
 	r.cacheMu.RUnlock()
 
-	// Explicit DoH upstream: https://... → use DNS-over-HTTPS (RFC 8484).
 	if strings.HasPrefix(upstream, "https://") {
 		return r.resolveDoH(ctx, upstream, domain)
 	}
 
-	// Empty or "system" upstream → use OS resolver directly.
 	if upstream == "" || strings.EqualFold(upstream, "system") {
 		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, domain)
 		if err != nil {
@@ -373,21 +360,17 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 		return ips, nil
 	}
 
-	// When a tunnel dial function is available, we must use TCP DNS (RFC 5966)
-	// because the mux stream is TCP-like.
 	if dialFn != nil {
 		ips, err := r.resolveTCPDNS(ctx, dialFn, upstream, domain)
 		if err == nil {
 			return ips, nil
 		}
-		// TCP DNS through tunnel failed — try DoH as fallback.
 		if ips, err2 := r.resolveDoH(ctx, dohFallbackFor(upstream), domain); err2 == nil {
 			return ips, nil
 		}
 		return nil, err
 	}
 
-	// Direct UDP DNS to the configured upstream.
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -403,12 +386,9 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 	if err == nil {
 		return ips, nil
 	}
-	// UDP/53 blocked by ISP — auto-upgrade to DoH.
 	return r.resolveDoH(ctx, dohFallbackFor(upstream), domain)
 }
 
-// dohFallbackFor maps a plain DNS server address to its DoH endpoint.
-// Falls back to Cloudflare DoH for unknown servers.
 func dohFallbackFor(upstream string) string {
 	host := strings.TrimSuffix(upstream, ":53")
 	host = strings.Split(host, ":")[0]
@@ -424,10 +404,6 @@ func dohFallbackFor(upstream string) string {
 	}
 }
 
-// resolveDoH resolves a domain via DNS-over-HTTPS (RFC 8484 wire format POST).
-// If a tunnel dialFn is configured it is used as the underlying TCP dialer so
-// the DoH query travels through the tunnel; otherwise a direct HTTPS connection
-// is made (works when the ISP blocks port 53 but allows 443).
 func (r *Resolver) resolveDoH(ctx context.Context, endpoint, domain string) ([]net.IP, error) {
 	r.dialCtxMu.RLock()
 	dialFn := r.dialCtx
@@ -438,8 +414,8 @@ func (r *Resolver) resolveDoH(ctx context.Context, endpoint, domain string) ([]n
 	var transport http.RoundTripper
 	if dialFn != nil {
 		transport = &http.Transport{
-			DialContext:     dialFn,
-			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+			DialContext:       dialFn,
+			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
 			ForceAttemptHTTP2: true,
 		}
 	} else {
@@ -476,9 +452,6 @@ func (r *Resolver) resolveDoH(ctx context.Context, endpoint, domain string) ([]n
 	return parseDNSResponse(body)
 }
 
-// resolveTCPDNS sends a DNS A-query over a TCP-like connection obtained via
-// dialFn (e.g. a tunnel mux stream). RFC 5966 TCP DNS uses a 2-byte length
-// prefix before each message.
 func (r *Resolver) resolveTCPDNS(ctx context.Context, dialFn func(context.Context, string, string) (net.Conn, error), upstream, domain string) ([]net.IP, error) {
 	addr := upstream
 	if !strings.Contains(addr, ":") {
@@ -492,15 +465,12 @@ func (r *Resolver) resolveTCPDNS(ctx context.Context, dialFn func(context.Contex
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	// Build a minimal A-record query.
 	msg := buildDNSMsg(domain)
 
-	// TCP DNS: 2-byte big-endian length prefix.
 	lenBuf := [2]byte{byte(len(msg) >> 8), byte(len(msg))}
 	conn.Write(lenBuf[:])
 	conn.Write(msg)
 
-	// Read response length.
 	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
 		return nil, fmt.Errorf("tcp dns read len: %w", err)
 	}
@@ -517,28 +487,26 @@ func (r *Resolver) resolveTCPDNS(ctx context.Context, dialFn func(context.Contex
 	return parseDNSResponse(resp)
 }
 
-// buildDNSMsg constructs a minimal DNS A-query wire message (no length prefix).
 func buildDNSMsg(domain string) []byte {
 	id := [2]byte{0x12, 0x34}
 	buf := []byte{
-		id[0], id[1], // ID
-		0x01, 0x00, // Flags: standard query, recursion desired
-		0x00, 0x01, // QDCOUNT = 1
-		0x00, 0x00, // ANCOUNT = 0
-		0x00, 0x00, // NSCOUNT = 0
-		0x00, 0x00, // ARCOUNT = 0
+		id[0], id[1],
+		0x01, 0x00,
+		0x00, 0x01,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
 	}
 	for _, label := range strings.Split(strings.TrimSuffix(domain, "."), ".") {
 		buf = append(buf, byte(len(label)))
 		buf = append(buf, label...)
 	}
-	buf = append(buf, 0x00)       // root label
-	buf = append(buf, 0x00, 0x01) // QTYPE = A
-	buf = append(buf, 0x00, 0x01) // QCLASS = IN
+	buf = append(buf, 0x00)
+	buf = append(buf, 0x00, 0x01)
+	buf = append(buf, 0x00, 0x01)
 	return buf
 }
 
-// parseDNSResponse extracts A and AAAA records from a raw DNS wire-format response.
 func parseDNSResponse(response []byte) ([]net.IP, error) {
 	if len(response) < 12 {
 		return nil, fmt.Errorf("dns response too short (%d bytes)", len(response))
@@ -553,7 +521,6 @@ func parseDNSResponse(response []byte) ([]net.IP, error) {
 	}
 
 	offset := 12
-	// Skip question section.
 	for offset < len(response) {
 		if response[offset] == 0 {
 			offset++
@@ -565,11 +532,10 @@ func parseDNSResponse(response []byte) ([]net.IP, error) {
 		}
 		offset += int(response[offset]) + 1
 	}
-	offset += 4 // skip QTYPE + QCLASS
+	offset += 4
 
 	var ips []net.IP
 	for i := 0; i < ancount && offset < len(response); i++ {
-		// Skip name (may be pointer or label sequence).
 		if offset >= len(response) {
 			break
 		}
@@ -579,23 +545,23 @@ func parseDNSResponse(response []byte) ([]net.IP, error) {
 			for offset < len(response) && response[offset] != 0 {
 				offset += int(response[offset]) + 1
 			}
-			offset++ // null terminator
+			offset++
 		}
 		if offset+10 > len(response) {
 			break
 		}
 		rtype := int(response[offset])<<8 | int(response[offset+1])
-		offset += 8 // type(2) + class(2) + ttl(4)
+		offset += 8
 		rdlen := int(response[offset])<<8 | int(response[offset+1])
 		offset += 2
 		if offset+rdlen > len(response) {
 			break
 		}
-		if rtype == 1 && rdlen == 4 { // A record
+		if rtype == 1 && rdlen == 4 {
 			ip := make(net.IP, 4)
 			copy(ip, response[offset:offset+4])
 			ips = append(ips, ip)
-		} else if rtype == 28 && rdlen == 16 { // AAAA record
+		} else if rtype == 28 && rdlen == 16 {
 			ip := make(net.IP, 16)
 			copy(ip, response[offset:offset+16])
 			ips = append(ips, ip)
@@ -635,13 +601,11 @@ func (r *Resolver) cleanupCache() {
 }
 
 func (r *Resolver) SetUpstream(upstream string) {
-	// Normalize "system" to empty string (use OS resolver).
 	if strings.EqualFold(upstream, "system") {
 		upstream = ""
 	}
 	r.cacheMu.Lock()
 	r.config.Upstream = upstream
-	// Flush cache so stale entries don't shadow the new upstream.
 	r.cache = make(map[string]*cacheEntry)
 	r.cacheMu.Unlock()
 }
@@ -675,14 +639,4 @@ func (r *Resolver) HealthCheck() interfaces.HealthStatus {
 	r.blockListMu.RUnlock()
 
 	return status
-}
-
-func Factory(cfg interface{}) (interfaces.Module, error) {
-	var config *Config
-	if c, ok := cfg.(*Config); ok {
-		config = c
-	} else {
-		config = DefaultConfig()
-	}
-	return New(config)
 }

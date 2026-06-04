@@ -121,18 +121,10 @@ func (b *Buffer) WriteString(s string) (int, error) {
 	return n, nil
 }
 
-func (b *Buffer) Byte(i int) byte    { return b.v[b.start+i] }
+func (b *Buffer) Byte(i int) byte       { return b.v[b.start+i] }
 func (b *Buffer) SetByte(i int, c byte) { b.v[b.start+i] = c }
 
 type MultiBuffer []*Buffer
-
-func MergeMulti(dst, src MultiBuffer) (MultiBuffer, MultiBuffer) {
-	dst = append(dst, src...)
-	for i := range src {
-		src[i] = nil
-	}
-	return dst, src[:0]
-}
 
 func ReleaseMulti(mb MultiBuffer) MultiBuffer {
 	for i, b := range mb {
@@ -159,53 +151,6 @@ func (mb MultiBuffer) IsEmpty() bool {
 	return true
 }
 
-func SplitBytes(mb MultiBuffer, dst []byte) (MultiBuffer, int) {
-	totalBytes := 0
-	endIndex := -1
-	for i, b := range mb {
-		if b == nil || b.IsEmpty() {
-			continue
-		}
-		n, _ := b.Read(dst[totalBytes:])
-		totalBytes += n
-		if b.IsEmpty() {
-			b.Release()
-			mb[i] = nil
-		}
-		if totalBytes == len(dst) {
-			endIndex = i + 1
-			break
-		}
-	}
-	if endIndex == -1 {
-		endIndex = len(mb)
-	}
-	compact := mb[:0]
-	for _, b := range mb[:endIndex] {
-		if b != nil {
-			compact = append(compact, b)
-		}
-	}
-	compact = append(compact, mb[endIndex:]...)
-	return compact, totalBytes
-}
-
-func MergeBytes(dst MultiBuffer, src []byte) MultiBuffer {
-	for len(src) > 0 {
-		var last *Buffer
-		if len(dst) > 0 {
-			last = dst[len(dst)-1]
-		}
-		if last == nil || last.IsFull() {
-			last = New()
-			dst = append(dst, last)
-		}
-		n, _ := last.Write(src)
-		src = src[n:]
-	}
-	return dst
-}
-
 type Reader interface {
 	ReadMultiBuffer() (MultiBuffer, error)
 }
@@ -215,8 +160,6 @@ type Writer interface {
 }
 
 type ReaderFunc func() (MultiBuffer, error)
-
-func (f ReaderFunc) ReadMultiBuffer() (MultiBuffer, error) { return f() }
 
 func NewReader(r io.Reader) Reader {
 	if br, ok := r.(Reader); ok {

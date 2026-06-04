@@ -38,7 +38,7 @@ type Config struct {
 	InitialStreamWindow uint64
 	// ALPN is the TLS application-layer protocol name used in the QUIC handshake.
 	// Default: "h3" — indistinguishable from HTTP/3 traffic.
-	ALPN       string
+	ALPN string
 	// ServerName sets the SNI in the ClientHello (client-side only).
 	ServerName string
 	// CertDomains are included as SANs in the auto-generated server certificate.
@@ -278,7 +278,7 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		MaxStreamReceiveWindow:         t.config.InitialStreamWindow * 10,
 		InitialConnectionReceiveWindow: t.config.InitialStreamWindow * 10,
 		MaxConnectionReceiveWindow:     t.config.InitialStreamWindow * 50,
-		Allow0RTT: true,
+		Allow0RTT:                      true,
 	}
 
 	conn, err := quic.DialAddr(ctx, addr, tlsConf, quicConfig)
@@ -429,14 +429,4 @@ func (c *quicStreamConn) SetReadDeadline(t time.Time) error {
 func (c *quicStreamConn) SetWriteDeadline(t time.Time) error {
 	c.stream.SetWriteDeadline(t)
 	return nil
-}
-
-func Factory(cfg interface{}) (interfaces.Module, error) {
-	var config *Config
-	if c, ok := cfg.(*Config); ok {
-		config = c
-	} else {
-		config = DefaultConfig()
-	}
-	return New(config)
 }

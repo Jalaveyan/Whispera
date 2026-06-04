@@ -833,11 +833,3 @@ func (p *Provider) Validate() error {
 
 	return nil
 }
-
-func Factory(cfg interface{}) (interfaces.Module, error) {
-	var path string
-	if s, ok := cfg.(string); ok {
-		path = s
-	}
-	return New(path)
-}

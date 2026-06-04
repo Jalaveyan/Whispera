@@ -16,22 +16,22 @@ import (
 var log = logger.Module("proxy-agent")
 
 type ProbeResult struct {
-	Transport  string
-	Server     string
-	Latency    time.Duration
-	Success    bool
-	Error      string
-	Timestamp  time.Time
-	BytesUp    int64
-	BytesDown  int64
+	Transport string
+	Server    string
+	Latency   time.Duration
+	Success   bool
+	Error     string
+	Timestamp time.Time
+	BytesUp   int64
+	BytesDown int64
 }
 
 type TransportCandidate struct {
-	Name       string
-	Server     string
-	Priority   float64
-	Enabled    bool
-	Config     map[string]interface{}
+	Name     string
+	Server   string
+	Priority float64
+	Enabled  bool
+	Config   map[string]interface{}
 }
 
 type AgentState int
@@ -45,15 +45,15 @@ const (
 )
 
 type AgentConfig struct {
-	Candidates      []TransportCandidate
-	ProbeInterval   time.Duration
-	RotateInterval  time.Duration
-	FailThreshold   int
-	LearnRate       float64
-	ExploreRate     float64
-	DecayRate       float64
-	MaxHistory      int
-	ParallelProbes  int
+	Candidates     []TransportCandidate
+	ProbeInterval  time.Duration
+	RotateInterval time.Duration
+	FailThreshold  int
+	LearnRate      float64
+	ExploreRate    float64
+	DecayRate      float64
+	MaxHistory     int
+	ParallelProbes int
 }
 
 func DefaultAgentConfig() *AgentConfig {
@@ -85,11 +85,11 @@ type ProxyAgent struct {
 	mu     sync.RWMutex
 	config *AgentConfig
 
-	state       AgentState
-	arms        []*armStats
-	armIndex    map[string]int
-	history     []ProbeResult
-	currentArm  int
+	state            AgentState
+	arms             []*armStats
+	armIndex         map[string]int
+	history          []ProbeResult
+	currentArm       int
 	consecutiveFails int
 
 	onSwitch func(transport string, server string)
@@ -438,12 +438,6 @@ func (pa *ProxyAgent) emergencyRotate() {
 	pa.state = AgentConnected
 	pa.consecutiveFails = 0
 	pa.mu.Unlock()
-}
-
-func (pa *ProxyAgent) GetState() AgentState {
-	pa.mu.RLock()
-	defer pa.mu.RUnlock()
-	return pa.state
 }
 
 func (pa *ProxyAgent) Stats() map[string]interface{} {

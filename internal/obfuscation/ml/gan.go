@@ -12,16 +12,18 @@ import (
 // TrafficGAN implements a minimax GAN for traffic obfuscation.
 //
 // Discriminator D: FlowFeatures → [0,1]
-//   D(x)=1 means "looks like real browser traffic"
-//   D(x)=0 means "looks like VPN tunnel"
+//
+//	D(x)=1 means "looks like real browser traffic"
+//	D(x)=0 means "looks like VPN tunnel"
 //
 // Generator G: current tunnel flow stats → GeneratorAction
-//   G learns to produce actions that push D(transformed features) → 1
+//
+//	G learns to produce actions that push D(transformed features) → 1
 //
 // Training loop:
-//   1. Server receives LabeledFlow from PCAPCollector
-//   2. D is trained with BCE loss
-//   3. G is trained to maximize D(G(tunnel_features))
+//  1. Server receives LabeledFlow from PCAPCollector
+//  2. D is trained with BCE loss
+//  3. G is trained to maximize D(G(tunnel_features))
 type TrafficGAN struct {
 	mu sync.RWMutex
 
@@ -153,41 +155,6 @@ func (g *TrafficGAN) applyAction(x []float64, a GeneratorAction) []float64 {
 	return out
 }
 
-// ExportDiscWeights returns discriminator layer weights for sync to clients.
-func (g *TrafficGAN) ExportDiscWeights() []gnet.LayerDef {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	layers := make([]gnet.LayerDef, len(g.disc.Layers))
-	for i, l := range g.disc.Layers {
-		layers[i] = gnet.LayerDef{
-			InSize: l.InSize, OutSize: l.OutSize,
-			W: gnet.CopyF64(l.W), B: gnet.CopyF64(l.B),
-		}
-	}
-	return layers
-}
-
-// ImportDiscWeights applies federated-average update from a remote discriminator.
-func (g *TrafficGAN) ImportDiscWeights(remote []gnet.LayerDef, alpha float64) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	for i, rl := range remote {
-		if i >= len(g.disc.Layers) {
-			break
-		}
-		ll := &g.disc.Layers[i]
-		if len(rl.W) != len(ll.W) {
-			continue
-		}
-		for j := range ll.W {
-			ll.W[j] = (1-alpha)*ll.W[j] + alpha*rl.W[j]
-		}
-		for j := range ll.B {
-			ll.B[j] = (1-alpha)*ll.B[j] + alpha*rl.B[j]
-		}
-	}
-}
-
 // ── Feature normalizer ────────────────────────────────────────────────────────
 
 type ganNorm struct {
@@ -261,14 +228,6 @@ func (r *GANRunner) Start() error {
 	go r.loop()
 	go RunBrowserSim(ctx)
 	return nil
-}
-
-func (r *GANRunner) Stop() {
-	if r.simCancel != nil {
-		r.simCancel()
-	}
-	close(r.stopCh)
-	r.collector.Stop()
 }
 
 func (r *GANRunner) loop() {

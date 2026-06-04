@@ -1,6 +1,5 @@
 package probedetector
 
-
 import (
 	"net"
 	"sync"
@@ -26,9 +25,9 @@ const (
 )
 
 type ipBucket struct {
-	mu       sync.Mutex
-	opens    []time.Time
-	pending  int
+	mu      sync.Mutex
+	opens   []time.Time
+	pending int
 }
 
 type ConnGuard struct {
@@ -44,10 +43,6 @@ type ConnGuard struct {
 	firstBytesDeadline time.Duration
 
 	cleanStop chan struct{}
-}
-
-func NewConnGuard(checkMagics bool) *ConnGuard {
-	return NewConnGuardWithLimits(checkMagics, MaxConnsPerIPPerSec, MaxPendingPerIP, FirstBytesDeadline)
 }
 
 func NewConnGuardWithLimits(checkMagics bool, maxConnsPerSec, maxPending int, firstBytesDeadline time.Duration) *ConnGuard {

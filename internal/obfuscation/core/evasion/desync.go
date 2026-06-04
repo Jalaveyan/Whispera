@@ -10,7 +10,7 @@ import (
 type DesyncStrategy int
 
 const (
-	DesyncNone     DesyncStrategy = iota
+	DesyncNone DesyncStrategy = iota
 	DesyncFake
 	DesyncRST
 	DesyncRSTACK
@@ -21,22 +21,12 @@ const (
 )
 
 type DesyncConfig struct {
-	Enabled          bool           `yaml:"enabled" json:"enabled"`
-	Strategy         DesyncStrategy `yaml:"strategy" json:"strategy"`
-	TTL              int            `yaml:"ttl" json:"ttl"`
-	SplitPos         int            `yaml:"split_pos" json:"split_pos"`
-	FakePayloadSize  int            `yaml:"fake_payload_size" json:"fake_payload_size"`
-	AutoDetect       bool           `yaml:"auto_detect" json:"auto_detect"`
-}
-
-func DefaultDesyncConfig() *DesyncConfig {
-	return &DesyncConfig{
-		Enabled:         false,
-		Strategy:        DesyncSplit,
-		TTL:             1,
-		SplitPos:        3,
-		FakePayloadSize: 16,
-	}
+	Enabled         bool           `yaml:"enabled" json:"enabled"`
+	Strategy        DesyncStrategy `yaml:"strategy" json:"strategy"`
+	TTL             int            `yaml:"ttl" json:"ttl"`
+	SplitPos        int            `yaml:"split_pos" json:"split_pos"`
+	FakePayloadSize int            `yaml:"fake_payload_size" json:"fake_payload_size"`
+	AutoDetect      bool           `yaml:"auto_detect" json:"auto_detect"`
 }
 
 type DesyncConn struct {
@@ -251,9 +241,9 @@ func randByte() byte {
 }
 
 func (dc *DesyncConn) Read(p []byte) (int, error)         { return dc.inner.Read(p) }
-func (dc *DesyncConn) Close() error                        { return dc.inner.Close() }
-func (dc *DesyncConn) LocalAddr() net.Addr                 { return dc.inner.LocalAddr() }
-func (dc *DesyncConn) RemoteAddr() net.Addr                { return dc.inner.RemoteAddr() }
-func (dc *DesyncConn) SetDeadline(t time.Time) error       { return dc.inner.SetDeadline(t) }
-func (dc *DesyncConn) SetReadDeadline(t time.Time) error   { return dc.inner.SetReadDeadline(t) }
-func (dc *DesyncConn) SetWriteDeadline(t time.Time) error  { return dc.inner.SetWriteDeadline(t) }
+func (dc *DesyncConn) Close() error                       { return dc.inner.Close() }
+func (dc *DesyncConn) LocalAddr() net.Addr                { return dc.inner.LocalAddr() }
+func (dc *DesyncConn) RemoteAddr() net.Addr               { return dc.inner.RemoteAddr() }
+func (dc *DesyncConn) SetDeadline(t time.Time) error      { return dc.inner.SetDeadline(t) }
+func (dc *DesyncConn) SetReadDeadline(t time.Time) error  { return dc.inner.SetReadDeadline(t) }
+func (dc *DesyncConn) SetWriteDeadline(t time.Time) error { return dc.inner.SetWriteDeadline(t) }

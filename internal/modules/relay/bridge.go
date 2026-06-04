@@ -31,9 +31,9 @@ type Bridge struct {
 }
 
 type BridgeConfig struct {
-	ListenAddr     string
-	UpstreamServer string
-	PhantomConfig  *phantom.Config
+	ListenAddr      string
+	UpstreamServer  string
+	PhantomConfig   *phantom.Config
 	FailoverHandler func(conn net.Conn)
 }
 
@@ -80,15 +80,6 @@ func (b *Bridge) Start(listenAddr string) error {
 	go b.acceptLoop()
 	go b.healthLoop()
 	return nil
-}
-
-func (b *Bridge) Stop() {
-	atomic.StoreInt32(&b.running, 0)
-	if b.listener != nil {
-		b.listener.Close()
-	}
-	b.wg.Wait()
-	b.log.Info("Bridge stopped")
 }
 
 func (b *Bridge) acceptLoop() {

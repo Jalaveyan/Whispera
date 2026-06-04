@@ -66,32 +66,11 @@ func (m *Manager) StartInbound(inbound config.InboundConfig) error {
 	return nil
 }
 
-func (m *Manager) StopInbound(tag string) error {
-	if m.stopCallback == nil {
-		return fmt.Errorf("stop callback not set")
-	}
-
-	log.Printf("[DynamicManager] Stopping inbound %s", tag)
-	return m.stopCallback(tag)
-}
-
 func (m *Manager) IsRunning(tag string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	_, exists := m.listeners[tag]
 	return exists
-}
-
-func (m *Manager) RegisterListener(tag string, listener net.Listener) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.listeners[tag] = listener
-}
-
-func (m *Manager) UnregisterListener(tag string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.listeners, tag)
 }
 
 var Global *Manager

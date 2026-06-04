@@ -935,20 +935,3 @@ type TimedConn struct {
 	net.Conn
 	closeTimer *time.Timer
 }
-
-func NewTimedConn(conn net.Conn, d time.Duration) *TimedConn {
-	tc := &TimedConn{
-		Conn: conn,
-	}
-	tc.closeTimer = time.AfterFunc(d, func() {
-		conn.Close()
-	})
-	return tc
-}
-
-func (c *TimedConn) Close() error {
-	if c.closeTimer != nil {
-		c.closeTimer.Stop()
-	}
-	return c.Conn.Close()
-}

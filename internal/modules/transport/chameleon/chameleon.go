@@ -22,10 +22,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
+
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
-	"whispera/internal/logger"
 )
 
 var log = logger.Module("chameleon")
@@ -494,10 +495,6 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	case <-conn.done:
 	case <-r.Context().Done():
 	}
-}
-
-func DeriveSecret(psk []byte) []byte {
-	return DeriveKeys(psk).Auth[:32]
 }
 
 func resolveSecret(cfg *Config, token string, sessionID []byte) ([]byte, string) {
