@@ -260,48 +260,10 @@ jobs:
           path: whispera-ml-server-${{ matrix.triple }}${{ matrix.ext }}
           retention-days: 5
 
-  build-panel:
-    name: Build Panel
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-          cache-dependency-path: panel/package-lock.json
-
-      - name: Install & Build Panel Backend
-        working-directory: ./panel
-        run: |
-          npm ci --legacy-peer-deps
-          chmod -R +x node_modules/.bin/
-          npm run build
-          npm run bundle
-          BUNDLE_SIZE=$(wc -c < bundle/index.js)
-          echo "bundle size: $(du -sh bundle/index.js | cut -f1) (${BUNDLE_SIZE} bytes)"
-          if [[ "$BUNDLE_SIZE" -lt 1048576 ]]; then
-            echo "ERROR: bundle/index.js is ${BUNDLE_SIZE} bytes — expected at least 1 MB. Build may be incomplete."
-            exit 1
-          fi
-          sha256sum bundle/index.js > bundle/index.js.sha256
-          tar -czvf ../whispera-panel.tar.gz bundle public package.json .env.example
-          echo "whispera-panel.tar.gz: $(du -sh ../whispera-panel.tar.gz | cut -f1)"
-
-      - name: Upload Panel Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: whispera-panel
-          path: whispera-panel.tar.gz
-          retention-days: 5
-
-
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [prepare, build-server, build-panel, build-go-client, build-go-client-android, build-ml-server]
+    needs: [prepare, build-server, build-go-client, build-go-client-android, build-ml-server]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test' || startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
