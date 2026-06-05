@@ -233,15 +233,24 @@ func (r *GANRunner) Start() error {
 func (r *GANRunner) loop() {
 	logTicker := time.NewTicker(60 * time.Second)
 	defer logTicker.Stop()
+	var tun, dec, unk int
 	for {
 		select {
 		case <-r.stopCh:
 			return
 		case lf := <-r.collector.Out():
+			switch lf.Label {
+			case FlowTunnel:
+				tun++
+			case FlowDecoy:
+				dec++
+			default:
+				unk++
+			}
 			r.gan.Train(lf)
 		case <-logTicker.C:
-			log.Info("GAN: tunnel_conf=%.3f trained=%d",
-				r.gan.TunnelConfidence, r.gan.trainCount)
+			log.Info("GAN: tunnel_conf=%.3f trained=%d flows[tun=%d dec=%d unk=%d]",
+				r.gan.TunnelConfidence, r.gan.trainCount, tun, dec, unk)
 		}
 	}
 }
