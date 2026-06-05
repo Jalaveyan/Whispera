@@ -120,6 +120,7 @@ func (a *RLChunkAgent) Decide(v ChunkView) int {
 	a.pendingAction = idx
 	chunkLog.Info("frame=%dB eps=%.2f temp=%.2f rtt=%.0fms up=%.0fB/s dn=%.0fB/s steps=%d",
 		ChunkSizes[idx], a.epsilon, a.temperature, v.RTTMs, v.BytesUpSec, v.BytesDnSec, atomic.LoadInt64(&a.stepCount))
+	shadowChunkDecide(v, idx)
 	return ChunkSizes[idx]
 }
 
@@ -151,6 +152,7 @@ func (a *RLChunkAgent) RecordOutcome(quality float64) {
 
 	chunkLog.Info("outcome: quality=%.2f reward=%.2f frame=%dB eps=%.3f",
 		quality, reward, ChunkSizes[action], eps)
+	shadowChunkOutcome(reward)
 
 	if step%chunkTrainEvery == 0 {
 		go a.trainStep()
