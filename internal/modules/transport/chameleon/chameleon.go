@@ -42,13 +42,6 @@ var decoyGraph = [4][]string{
 	{"/api/v1/health", "/api/v1/status"},
 }
 
-var chromeHelloPool = []utls.ClientHelloID{
-	utls.HelloChrome_120_PQ,
-	utls.HelloChrome_131,
-	utls.HelloChrome_133,
-	utls.HelloChrome_Auto,
-}
-
 const (
 	sessionCookie       = "_s"
 	headerToken         = "Authorization"
@@ -208,7 +201,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	sni := pickSNI(cfg)
 	origin := "https://" + sni
 
-	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
+	helloID, helloSpec := pickFingerprint()
 
 	dialFn := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 		d := &net.Dialer{Timeout: 10 * time.Second}
@@ -232,7 +225,16 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
 			uCfg.ClientSessionCache = sc
 		}
-		uConn := utls.UClient(rawConn, uCfg, helloID)
+		var uConn *utls.UConn
+		if helloSpec != nil {
+			uConn = utls.UClient(rawConn, uCfg, utls.HelloCustom)
+			if err := uConn.ApplyPreset(helloSpec); err != nil {
+				rawConn.Close()
+				return nil, fmt.Errorf("chameleon: apply fingerprint: %w", err)
+			}
+		} else {
+			uConn = utls.UClient(rawConn, uCfg, helloID)
+		}
 		if err := uConn.HandshakeContext(ctx); err != nil {
 			rawConn.Close()
 			return nil, fmt.Errorf("chameleon: utls handshake: %w", err)

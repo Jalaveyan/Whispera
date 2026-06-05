@@ -39,6 +39,7 @@ import (
 	"whispera/internal/modules/proxyagent"
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/socks5"
+	"whispera/internal/modules/transport/chameleon"
 	"whispera/internal/modules/tunnel"
 	"whispera/internal/split_tunnel"
 )
@@ -375,6 +376,7 @@ func main() {
 	generateSocksAuth()
 	socksMod.SetAuthHandler(socksUser, socksPass)
 	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
+	socks5.HarvestHook = func(b []byte) { _ = chameleon.HarvestRawClientHello(b) }
 	lc.Register(socksMod)
 
 	dnsMod, _ := dnsmodule.New(&dnsmodule.Config{
