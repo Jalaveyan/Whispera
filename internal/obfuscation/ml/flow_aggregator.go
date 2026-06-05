@@ -202,7 +202,7 @@ func (a *flowAggregator) emit(key string, fa *flowAccum) {
 }
 
 func (a *flowAggregator) observe(ts float64, srcIP, dstIP string, srcPort, dstPort, size int) {
-	if srcPort != a.port && dstPort != a.port && srcPort != 80 && dstPort != 80 {
+	if srcPort != a.port && dstPort != a.port && srcPort != 80 && dstPort != 80 && srcPort != 443 && dstPort != 443 {
 		return
 	}
 	key := pcapFlowKey(srcIP, dstIP, srcPort, dstPort)
@@ -215,7 +215,7 @@ func (a *flowAggregator) observe(ts float64, srcIP, dstIP string, srcPort, dstPo
 		fa = &flowAccum{key: key, label: label, firstSeen: ts}
 		a.flows[key] = fa
 	}
-	up := dstPort == a.port || dstPort == 80
+	up := dstPort == a.port || dstPort == 80 || dstPort == 443
 	fa.packets = append(fa.packets, struct {
 		ts   float64
 		size int

@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1674,6 +1675,11 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			ganIface = "eth0"
 		}
 		ganPort := serverConfig.Chameleon.GANPort
+		if ganPort == 0 {
+			if _, p, err := net.SplitHostPort(serverConfig.Chameleon.ListenAddr); err == nil {
+				ganPort, _ = strconv.Atoi(p)
+			}
+		}
 		if ganPort == 0 {
 			ganPort = 443
 		}
