@@ -28,6 +28,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
+	"whispera/internal/buf"
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
@@ -83,8 +84,8 @@ type Config struct {
 
 	RussianServiceName string `yaml:"russian_service_name"`
 
-	EnableObfuscation    bool   `yaml:"enable_obfuscation"`
-	ObfuscationProfile   string `yaml:"obfuscation_profile"`
+	EnableObfuscation  bool   `yaml:"enable_obfuscation"`
+	ObfuscationProfile string `yaml:"obfuscation_profile"`
 
 	EnableSNIRotation bool `yaml:"enable_sni_rotation"`
 
@@ -186,9 +187,9 @@ type Handler struct {
 
 	privateKey []byte
 
-	mu             sync.RWMutex
-	activeConns    map[string]net.Conn
-	authedConns    map[string]net.Conn
+	mu          sync.RWMutex
+	activeConns map[string]net.Conn
+	authedConns map[string]net.Conn
 
 	replayMu       sync.Mutex
 	replayCache    map[string]time.Time
@@ -582,7 +583,6 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 	h.proxyToSNI(conn, clientHello, sni)
 }
 
-
 func (h *Handler) readClientHello(conn net.Conn) ([]byte, error) {
 	header := make([]byte, 5)
 	if _, err := io.ReadFull(conn, header); err != nil {
@@ -859,7 +859,6 @@ func (h *Handler) replayCacheCleanupLoop() {
 	}
 }
 
-
 func (h *Handler) proxyToSNI(clientConn net.Conn, clientHello []byte, sni string) {
 	target := h.sniProxyTarget(sni)
 	if target == "" {
@@ -882,22 +881,7 @@ func (h *Handler) proxyToSNI(clientConn net.Conn, clientHello []byte, sni string
 	clientConn.SetDeadline(deadline)
 	destConn.SetDeadline(deadline)
 
-	done := make(chan struct{}, 2)
-
-	go func() {
-		defer destConn.Close()
-		io.Copy(destConn, clientConn)
-		done <- struct{}{}
-	}()
-
-	go func() {
-		defer clientConn.Close()
-		io.Copy(clientConn, destConn)
-		done <- struct{}{}
-	}()
-
-	<-done
-	<-done
+	buf.Relay(clientConn, destConn, nil, nil)
 }
 
 func (h *Handler) sniProxyTarget(sni string) string {
@@ -1011,19 +995,7 @@ func (h *Handler) handleHTTPFallback(conn net.Conn) {
 	conn.SetDeadline(deadline)
 	destConn.SetDeadline(deadline)
 
-	done := make(chan struct{}, 2)
-	go func() {
-		defer destConn.Close()
-		io.Copy(destConn, conn)
-		done <- struct{}{}
-	}()
-	go func() {
-		defer conn.Close()
-		io.Copy(conn, destConn)
-		done <- struct{}{}
-	}()
-	<-done
-	<-done
+	buf.Relay(conn, destConn, nil, nil)
 }
 
 var _ = (*tls.Config)(nil)

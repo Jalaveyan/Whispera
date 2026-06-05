@@ -3,12 +3,12 @@ package relay
 import (
 	"context"
 	"crypto/tls"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/buf"
 	"whispera/internal/logger"
 	"whispera/internal/modules/phantom"
 )
@@ -105,13 +105,13 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 
 	clientConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
-	buf := make([]byte, 16384)
-	n, err := clientConn.Read(buf)
+	hbuf := make([]byte, 16384)
+	n, err := clientConn.Read(hbuf)
 	if err != nil {
 		b.log.Debug("Failed to read ClientHello: %v", err)
 		return
 	}
-	clientHello := buf[:n]
+	clientHello := hbuf[:n]
 	clientConn.SetReadDeadline(time.Time{})
 
 	sni := b.extractSNI(clientHello)
@@ -151,28 +151,7 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 		return
 	}
 
-	done := make(chan struct{}, 2)
-
-	go func() {
-		defer upstreamConn.Close()
-		io.Copy(upstreamConn, clientConn)
-		if tc, ok := upstreamConn.(interface{ CloseWrite() error }); ok {
-			tc.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-
-	go func() {
-		defer clientConn.Close()
-		io.Copy(clientConn, upstreamConn)
-		if tc, ok := clientConn.(interface{ CloseWrite() error }); ok {
-			tc.CloseWrite()
-		}
-		done <- struct{}{}
-	}()
-
-	<-done
-	<-done
+	buf.Relay(clientConn, upstreamConn, nil, nil)
 }
 
 func (b *Bridge) healthLoop() {

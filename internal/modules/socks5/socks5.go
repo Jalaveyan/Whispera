@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/buf"
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/proxy"
@@ -20,10 +21,6 @@ const (
 	ModuleName    = "socks5"
 	ModuleVersion = "2.0.0"
 )
-
-var copyBufPool = sync.Pool{
-	New: func() interface{} { b := make([]byte, 512*1024); return &b },
-}
 
 type Config struct {
 	ListenAddr    string
@@ -145,7 +142,6 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 	stdlog.Printf("[SOCKS5] Tunnel set")
 }
 
-
 func isTorrentPort(port uint16) bool {
 	switch port {
 	case 6969, 51413:
@@ -208,23 +204,11 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	}
 	defer stream.Close()
 
-	errCh := make(chan error, 2)
-	go func() {
-		defer stream.Close()
-		bp := copyBufPool.Get().(*[]byte)
-		_, err := io.CopyBuffer(stream, clientConn, *bp)
-		copyBufPool.Put(bp)
-		errCh <- err
-	}()
-	go func() {
-		defer clientConn.Close()
-		bp := copyBufPool.Get().(*[]byte)
-		_, err := io.CopyBuffer(clientConn, stream, *bp)
-		copyBufPool.Put(bp)
-		errCh <- err
-	}()
-	<-errCh
-	<-errCh
+	var src io.Reader = clientConn
+	if targetPort == 443 && HarvestHook != nil {
+		src = &harvestPeekReader{Reader: clientConn}
+	}
+	buf.Relay(clientConn, stream, src, nil)
 	return nil
 }
 
@@ -235,22 +219,9 @@ func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error
 		return fmt.Errorf("direct dial %s: %w", addr, err)
 	}
 	defer upstream.Close()
-	errCh := make(chan error, 2)
-	go func() {
-		defer upstream.Close()
-		_, err := io.Copy(upstream, clientConn)
-		errCh <- err
-	}()
-	go func() {
-		defer clientConn.Close()
-		_, err := io.Copy(clientConn, upstream)
-		errCh <- err
-	}()
-	<-errCh
-	<-errCh
+	buf.Relay(clientConn, upstream, nil, nil)
 	return nil
 }
-
 
 func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	defer udpConn.Close()
@@ -359,7 +330,6 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 		}
 	}
 }
-
 
 func parseUDPHeader(data []byte) (host string, port uint16, payload []byte, err error) {
 	if len(data) < 4 {

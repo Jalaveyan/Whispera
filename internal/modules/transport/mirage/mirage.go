@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"sync"
@@ -16,6 +15,7 @@ import (
 
 	utls "github.com/refraction-networking/utls"
 
+	"whispera/internal/buf"
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
@@ -81,11 +81,11 @@ type Transport struct {
 	config   *Config
 	listener net.Listener
 
-	connCount   int64
-	bytesIn     uint64
-	bytesOut    uint64
-	authFails   uint64
-	proxyFalls  uint64
+	connCount  int64
+	bytesIn    uint64
+	bytesOut   uint64
+	authFails  uint64
+	proxyFalls uint64
 }
 
 func New(cfg *Config) (*Transport, error) {
@@ -299,15 +299,15 @@ func (ml *mirageListener) Accept() (net.Conn, error) {
 func (t *Transport) handleServerConn(ctx context.Context, raw net.Conn) (net.Conn, error) {
 	raw.SetReadDeadline(time.Now().Add(5 * time.Second))
 
-	buf := make([]byte, maxHandshake)
-	n, err := raw.Read(buf)
+	hbuf := make([]byte, maxHandshake)
+	n, err := raw.Read(hbuf)
 	if err != nil {
 		raw.Close()
 		return nil, err
 	}
 	raw.SetReadDeadline(time.Time{})
 
-	clientHello := buf[:n]
+	clientHello := hbuf[:n]
 
 	authTag := t.extractAuth(clientHello)
 	if authTag != nil && t.verifyAuthTag(authTag) {
@@ -345,9 +345,9 @@ func (t *Transport) handleServerConn(ctx context.Context, raw net.Conn) (net.Con
 		go t.proxyTLSHandshake(raw, targetConn)
 
 		return &mirageServerConn{
-			clientConn:   raw,
-			targetConn:   targetConn,
-			transport:    t,
+			clientConn:    raw,
+			targetConn:    targetConn,
+			transport:     t,
 			authenticated: true,
 			handshakeDone: make(chan struct{}),
 		}, nil
@@ -369,15 +369,7 @@ func (t *Transport) handleServerConn(ctx context.Context, raw net.Conn) (net.Con
 		return nil, err
 	}
 
-	go func() {
-		defer raw.Close()
-		defer targetConn.Close()
-		go func() {
-			io.Copy(raw, targetConn)
-			raw.Close()
-		}()
-		io.Copy(targetConn, raw)
-	}()
+	go buf.Relay(raw, targetConn, nil, nil)
 
 	return nil, fmt.Errorf("mirage: proxied to real server")
 }
