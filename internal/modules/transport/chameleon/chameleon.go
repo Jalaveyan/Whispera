@@ -278,7 +278,6 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc)
 
 	go func() {
-		time.Sleep(time.Duration(5+mrand.Intn(25)) * time.Millisecond)
 		resp, err := client.Do(req)
 		if err != nil || resp.StatusCode != http.StatusOK {
 			if resp != nil {

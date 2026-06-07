@@ -107,10 +107,14 @@ func (r *segmentRouter) acquireSlot() (*segSlot, error) {
 		r.curSlot = &s
 		r.bytesInSeg = 0
 		base := DeriveSegmentSize(r.behaviorKey, r.segIdx)
-		shrink := float64(atomic.LoadInt64(&r.sess.segShrinkPerMille)) / 1000.0
-		r.segSize = base - int(float64(base)*shrink)
-		if r.segSize < base/4 {
-			r.segSize = base / 4
+		if atomic.LoadInt32(&r.sess.bulkMode) == 0 {
+			shrink := float64(atomic.LoadInt64(&r.sess.segShrinkPerMille)) / 1000.0
+			r.segSize = base - int(float64(base)*shrink)
+			if r.segSize < base/4 {
+				r.segSize = base / 4
+			}
+		} else {
+			r.segSize = base
 		}
 		r.mu.Unlock()
 		return &s, nil
@@ -161,6 +165,7 @@ type restSession struct {
 	uploadBytes       int64
 	downloadBytes     int64
 	segShrinkPerMille int64
+	bulkMode          int32
 }
 
 type restServerConn struct {
@@ -177,11 +182,22 @@ type restServerConn struct {
 	localAddr  net.Addr
 	remoteAddr net.Addr
 
-	ganDecide  GANDecideFunc
-	lastWrite  time.Time
-	iatSum     float64
-	sizeSum    float64
-	writeCount float64
+	ganDecide     GANDecideFunc
+	lastWrite     time.Time
+	iatSum        float64
+	sizeSum       float64
+	writeCount    float64
+	lastGANUpdate time.Time
+	smoothedIAT   float64
+	smoothedSize  float64
+	lastGANAction GANAction
+}
+
+func ganEMA(prev, next, alpha float64) float64 {
+	if prev == 0 {
+		return next
+	}
+	return prev*(1-alpha) + next*alpha
 }
 
 func newRestServerConn(sess *restSession, w io.Writer, local, remote net.Addr, onClose func(), ganDecide GANDecideFunc) *restServerConn {
@@ -237,31 +253,41 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 	if c.ganDecide != nil {
 		now := time.Now()
 		if !c.lastWrite.IsZero() {
-			iat := now.Sub(c.lastWrite).Seconds()
-			c.iatSum += iat
+			c.iatSum += now.Sub(c.lastWrite).Seconds()
 		}
 		c.sizeSum += float64(len(b))
 		c.writeCount++
-		iatMean := 0.0
-		if c.writeCount > 1 {
-			iatMean = c.iatSum / (c.writeCount - 1)
-		}
-		up := float64(atomic.LoadInt64(&c.sess.uploadBytes))
-		down := float64(atomic.LoadInt64(&c.sess.downloadBytes))
-		upRatio := 0.0
-		if up+down > 0 {
-			upRatio = up / (up + down)
-		}
-		action := c.ganDecide(iatMean, c.sizeSum/c.writeCount, upRatio)
-		atomic.StoreInt64(&c.sess.segShrinkPerMille, int64(action.SegShrink*1000))
-		if iatMean > 0.03 && action.SleepMs > 0.5 {
-			sleep := action.SleepMs
-			if sleep > 15 {
-				sleep = 15
+		c.lastWrite = now
+
+		const ganInterval = 100 * time.Millisecond
+		if now.Sub(c.lastGANUpdate) >= ganInterval {
+			iatMean := 0.0
+			if c.writeCount > 1 {
+				iatMean = c.iatSum / (c.writeCount - 1)
 			}
-			time.Sleep(time.Duration(sleep * float64(time.Millisecond)))
+			c.smoothedIAT = ganEMA(c.smoothedIAT, iatMean, 0.1)
+			c.smoothedSize = ganEMA(c.smoothedSize, c.sizeSum/c.writeCount, 0.1)
+			up := float64(atomic.LoadInt64(&c.sess.uploadBytes))
+			down := float64(atomic.LoadInt64(&c.sess.downloadBytes))
+			upRatio := 0.0
+			if up+down > 0 {
+				upRatio = up / (up + down)
+			}
+			c.lastGANAction = c.ganDecide(c.smoothedIAT, c.smoothedSize, upRatio)
+			atomic.StoreInt64(&c.sess.segShrinkPerMille, int64(c.lastGANAction.SegShrink*1000))
+			c.lastGANUpdate = now
 		}
-		c.lastWrite = time.Now()
+
+		if atomic.LoadInt32(&c.sess.bulkMode) == 0 {
+			a := c.lastGANAction
+			if c.smoothedIAT > 0.03 && a.SleepMs > 0.5 {
+				sleep := a.SleepMs
+				if sleep > 15 {
+					sleep = 15
+				}
+				time.Sleep(time.Duration(sleep * float64(time.Millisecond)))
+			}
+		}
 	}
 
 	n, err = c.w.Write(b)
@@ -383,8 +409,10 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 				rate := curDown - prevDown
 				prevDown = curDown
 				if rate > 2*1024*1024 {
+					atomic.StoreInt32(&sess.bulkMode, 1)
 					continue
 				}
+				atomic.StoreInt32(&sess.bulkMode, 0)
 				up := float64(atomic.LoadInt64(&sess.uploadBytes))
 				down := float64(curDown)
 				upRatio := 0.0
@@ -490,8 +518,10 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 					rate := curDown - prevDown
 					prevDown = curDown
 					if rate > 2*1024*1024 {
+						atomic.StoreInt32(&sess.bulkMode, 1)
 						continue
 					}
+					atomic.StoreInt32(&sess.bulkMode, 0)
 					up := float64(atomic.LoadInt64(&sess.uploadBytes))
 					down := float64(curDown)
 					upRatio := 0.0
