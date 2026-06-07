@@ -11,14 +11,6 @@ Masquerades as legitimate HTTPS traffic with ML-driven obfuscation, multi-transp
 sudo bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
 ```
 
-The installer will:
-1. Install Go, build the server binary
-2. Generate config at `/etc/whispera/config.yaml`
-3. Generate encryption keys
-4. Create systemd service `whispera`
-5. Set up the admin panel on port 3000
-6. Optionally configure WARP, Telegram proxy, fail2ban
-
 ### Update
 
 ```bash
@@ -26,23 +18,9 @@ bash menu
 Select item 18
 ```
 
-### Docker
-
-```bash
-docker-compose up -d
-```
-
-### Kubernetes (Helm)
-
-```bash
-helm install whispera deploy/helm/whispera \
-  --set config.adminPassword=YOUR_PASSWORD \
-  --set postgresql.auth.postgresPassword=DB_PASSWORD
-```
-
 ### Build from source
 
-Requires Go 1.25+. Pure-Go cross-compile (no CGO needed):
+Requires Go 1.25+. Pure-Go cross-compile (CGO needed):
 
 ```bash
 # Server (linux only)
