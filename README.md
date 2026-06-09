@@ -43,7 +43,7 @@ server:
     mtu: 1420
     workers: 8
     graceful_stop: 30000000000
-    private_key: eJVsYXkGmQM6rTbmB/2DkrZkVCNE5Mslcl1f2KGzLBc=
+    private_key: YOUR_PRIVATE_KEY
     uuid: ""
     public_url: ""
 transport:
@@ -99,7 +99,7 @@ obfuscation:
 api:
     enabled: true
     listen_addr: :8080
-    auth_token: QhhXMX5JJ8cE3APiCteuOvwj7RW764XGHfqPiIeIcaA=
+    auth_token: YOUR_AUTH_TOKEN
     web_root: ""
     enable_cors: true
     allowed_origins: []
