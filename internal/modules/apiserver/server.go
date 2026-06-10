@@ -2218,6 +2218,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	serverAddr := fmt.Sprintf("%s:443", serverIP)
 	serverPubKey := ""
 	phantomEnabled := false
+	matchedInboundSecurity := ""
 	sni := req.SNI
 
 	if s.registry != nil {
@@ -2242,6 +2243,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 						}
 						portMatch := req.Port > 0 && inbound.Port == req.Port
 						if matchTransports[network] || portMatch {
+							matchedInboundSecurity = inbound.StreamSettings.Security
 							port := fmt.Sprintf("%d", inbound.Port)
 							serverAddr = fmt.Sprintf("%s:%s", serverIP, port)
 							if pk := inbound.StreamSettings.Phantom.PrivateKey; pk != "" {
@@ -2312,8 +2314,8 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}()
 	}
 
-	phantomEnabled = true
-	if sni == "" {
+	phantomEnabled = serverPubKey != "" && (matchedInboundSecurity == "phantom" || matchedInboundSecurity == "reality")
+	if phantomEnabled && sni == "" {
 		sni = randomRussianSNI()
 	}
 	tlsFP := req.TLSFingerprint
