@@ -265,7 +265,7 @@ curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh |
 
 Chameleon secret (copy to master):
 ```bash
-a1b2c3...==
+a1b2c3...== # this is an example
 ```
 
 Open the config
