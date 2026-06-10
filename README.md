@@ -306,13 +306,6 @@ whispera update-checksum /etc/whispera/config.yaml
 systemctl restart whispera
 ```
 
-Check
-
-```bash
-whispera update-checksum /etc/whispera/config.yaml
-systemctl restart whispera
-```
-
 There should be something in the logs
 
 ```bash
