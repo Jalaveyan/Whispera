@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"sync"
@@ -86,6 +87,17 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 		tCfg.PhantomSNI = "google.com"
 		if sni, ok := cfg.Settings["sni"].(string); ok {
 			tCfg.PhantomSNI = sni
+		}
+	}
+
+	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(secret); err == nil && len(decoded) == 32 {
+			tCfg.EnableChameleon = true
+			tCfg.ChameleonAddr = cfg.Address
+			tCfg.ChameleonSecret = decoded
+			if sni, ok := cfg.Settings["chameleon_sni"].(string); ok && sni != "" {
+				tCfg.ChameleonSNI = sni
+			}
 		}
 	}
 
@@ -263,6 +275,17 @@ func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.Outbound
 			tCfg.PhantomSNI = sni
 		} else {
 			tCfg.PhantomSNI = "google.com"
+		}
+	}
+
+	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {
+		if decoded, err := base64.StdEncoding.DecodeString(secret); err == nil && len(decoded) == 32 {
+			tCfg.EnableChameleon = true
+			tCfg.ChameleonAddr = cfg.Address
+			tCfg.ChameleonSecret = decoded
+			if sni, ok := cfg.Settings["chameleon_sni"].(string); ok && sni != "" {
+				tCfg.ChameleonSNI = sni
+			}
 		}
 	}
 

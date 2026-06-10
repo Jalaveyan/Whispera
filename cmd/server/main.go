@@ -1759,6 +1759,11 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				}()
 			},
 		}
+		if serverConfig.Chameleon.Secret != "" {
+			if decoded, err := base64.StdEncoding.DecodeString(serverConfig.Chameleon.Secret); err == nil && len(decoded) == 32 {
+				cCfg.SharedSecret = decoded
+			}
+		}
 		go func() {
 			if err := chameleon.ListenAndServe(ctx, cCfg); err != nil {
 				log.Printf("[Chameleon] server stopped: %v", err)

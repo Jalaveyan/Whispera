@@ -383,6 +383,7 @@ type ChameleonConfig struct {
 	GANIface      string `yaml:"gan_iface" json:"gan_iface"`
 	GANPort       int    `yaml:"gan_port" json:"gan_port"`
 	GANMaxPadding int    `yaml:"gan_max_padding" json:"gan_max_padding"`
+	Secret        string `yaml:"secret" json:"secret"`
 }
 
 type ServerSettings struct {
