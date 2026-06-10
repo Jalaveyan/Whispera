@@ -484,11 +484,13 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 }
 
 func resolveSecret(cfg *ServerConfig, token string, sessionID []byte) ([]byte, string) {
-	if cfg.GetUsers == nil {
+	if len(cfg.SharedSecret) == 32 {
 		k := DeriveKeys(cfg.SharedSecret)
 		if VerifyAuthToken(k.Auth, token, sessionID) {
 			return cfg.SharedSecret, "default"
 		}
+	}
+	if cfg.GetUsers == nil {
 		return nil, ""
 	}
 	for _, u := range cfg.GetUsers() {
