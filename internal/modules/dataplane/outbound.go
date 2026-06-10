@@ -18,18 +18,33 @@ import (
 )
 
 type OutboundManager struct {
-	outbounds   map[string]*tunnel.Manager
-	mu          sync.RWMutex
-	log         *logger.Logger
-	bridgeReg   *bridgepool.Registry
-	stealthMode string
+	outbounds    map[string]*tunnel.Manager
+	outboundCfgs map[string]config.OutboundConfig
+	mu           sync.RWMutex
+	log          *logger.Logger
+	bridgeReg    *bridgepool.Registry
+	stealthMode  string
 }
 
 func NewOutboundManager() *OutboundManager {
 	return &OutboundManager{
-		outbounds: make(map[string]*tunnel.Manager),
-		log:       logger.Module("outbound"),
+		outbounds:    make(map[string]*tunnel.Manager),
+		outboundCfgs: make(map[string]config.OutboundConfig),
+		log:          logger.Module("outbound"),
 	}
+}
+
+type cascadeConn struct {
+	net.Conn
+	closeFns []func()
+}
+
+func (c *cascadeConn) Close() error {
+	err := c.Conn.Close()
+	for i := len(c.closeFns) - 1; i >= 0; i-- {
+		c.closeFns[i]()
+	}
+	return err
 }
 
 func (om *OutboundManager) SetBridgeRegistry(reg *bridgepool.Registry) {
@@ -49,6 +64,8 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	if _, exists := om.outbounds[cfg.Tag]; exists {
 		return fmt.Errorf("outbound %s already exists", cfg.Tag)
 	}
+
+	om.outboundCfgs[cfg.Tag] = cfg
 
 	russiaMode := om.stealthMode == "russia"
 
@@ -73,30 +90,10 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	}
 
 	if len(cfg.Chain) > 0 {
-		firstHop := cfg.Chain[0]
-		if len(cfg.Chain) > 1 {
-			om.log.Warn("outbound %s: chain has %d hops but only %q is dialed — for multi-hop cascade nest outbounds (each chains to one next hop)", cfg.Tag, len(cfg.Chain), firstHop)
-		}
+		hops := cfg.Chain
 		targetAddr := cfg.Address
 		tCfg.CustomDialFn = func(ctx context.Context) (net.Conn, error) {
-			om.mu.RLock()
-			hopTunnel, exists := om.outbounds[firstHop]
-			om.mu.RUnlock()
-			if exists {
-				return hopTunnel.DialStream(ctx, "tcp", targetAddr)
-			}
-
-			bridgeID := firstHop
-			if len(bridgeID) > 7 && bridgeID[:7] == "bridge:" {
-				bridgeID = bridgeID[7:]
-			}
-			if om.bridgeReg != nil {
-				if br, err := om.bridgeReg.GetBridge(bridgeID); err == nil && br.IsAlive {
-					return (&net.Dialer{}).DialContext(ctx, "tcp", br.Address)
-				}
-			}
-
-			return nil, fmt.Errorf("chain hop %q not found as outbound or bridge", firstHop)
+			return om.dialCascade(ctx, hops, targetAddr)
 		}
 	}
 
@@ -177,6 +174,135 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	return nil
 }
 
+func (om *OutboundManager) dialCascade(ctx context.Context, hops []string, finalAddr string) (net.Conn, error) {
+	om.mu.RLock()
+	firstMgr, ok := om.outbounds[hops[0]]
+	om.mu.RUnlock()
+	if !ok {
+		return om.dialBridgeHop(ctx, hops[0], finalAddr)
+	}
+
+	if len(hops) == 1 {
+		return firstMgr.DialStream(ctx, "tcp", finalAddr)
+	}
+
+	var closeFns []func()
+	currentMgr := firstMgr
+
+	for i := 1; i < len(hops); i++ {
+		om.mu.RLock()
+		nextCfg, cfgOK := om.outboundCfgs[hops[i]]
+		om.mu.RUnlock()
+		if !cfgOK {
+			om.cleanupFns(closeFns)
+			return nil, fmt.Errorf("cascade: hop %q config not found", hops[i])
+		}
+
+		rawConn, err := currentMgr.DialStream(ctx, "tcp", nextCfg.Address)
+		if err != nil {
+			om.cleanupFns(closeFns)
+			return nil, fmt.Errorf("cascade: %q→%q: %w", hops[i-1], hops[i], err)
+		}
+
+		innerMgr, err := om.newHopTunnel(ctx, nextCfg, rawConn)
+		if err != nil {
+			rawConn.Close()
+			om.cleanupFns(closeFns)
+			return nil, fmt.Errorf("cascade: tunnel to %q: %w", hops[i], err)
+		}
+
+		rc, im := rawConn, innerMgr
+		closeFns = append(closeFns, func() { im.Stop(); rc.Close() })
+		currentMgr = innerMgr
+	}
+
+	conn, err := currentMgr.DialStream(ctx, "tcp", finalAddr)
+	if err != nil {
+		om.cleanupFns(closeFns)
+		return nil, fmt.Errorf("cascade: final dial %q: %w", finalAddr, err)
+	}
+	if len(closeFns) == 0 {
+		return conn, nil
+	}
+	return &cascadeConn{Conn: conn, closeFns: closeFns}, nil
+}
+
+func (om *OutboundManager) dialBridgeHop(ctx context.Context, hopTag, finalAddr string) (net.Conn, error) {
+	bridgeID := hopTag
+	if len(bridgeID) > 7 && bridgeID[:7] == "bridge:" {
+		bridgeID = bridgeID[7:]
+	}
+	if om.bridgeReg != nil {
+		if br, err := om.bridgeReg.GetBridge(bridgeID); err == nil && br.IsAlive {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", br.Address)
+		}
+	}
+	return nil, fmt.Errorf("cascade: hop %q not found as outbound or bridge", hopTag)
+}
+
+func (om *OutboundManager) cleanupFns(fns []func()) {
+	for i := len(fns) - 1; i >= 0; i-- {
+		fns[i]()
+	}
+}
+
+func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.OutboundConfig, transport net.Conn) (*tunnel.Manager, error) {
+	tCfg := tunnel.DefaultConfig()
+	tCfg.ServerAddr = cfg.Address
+	tCfg.EnableRotation = false
+	tCfg.MaxReconnectAttempts = 1
+	tCfg.KeepaliveInterval = 30 * time.Second
+	tCfg.CustomDialFn = func(_ context.Context) (net.Conn, error) {
+		return transport, nil
+	}
+
+	if pubKey, ok := cfg.Settings["server_pub_key"].(string); ok && pubKey != "" {
+		tCfg.EnablePhantom = true
+		tCfg.PhantomServerPubKey = pubKey
+		if sni, ok := cfg.Settings["sni"].(string); ok && sni != "" {
+			tCfg.PhantomSNI = sni
+		} else {
+			tCfg.PhantomSNI = "google.com"
+		}
+	}
+
+	cryptoMod, err := crypto.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	_ = cryptoMod.Init(context.Background(), nil)
+	_ = cryptoMod.Start()
+
+	sessMod, err := session.New(&session.Config{MaxSessions: 2})
+	if err != nil {
+		return nil, err
+	}
+	_ = sessMod.Init(context.Background(), nil)
+	_ = sessMod.Start()
+
+	hsMod, err := handshake.New(&handshake.Config{RateLimit: 10})
+	if err != nil {
+		return nil, err
+	}
+	hsMod.SetDependencies(cryptoMod, sessMod)
+	_ = hsMod.Init(context.Background(), nil)
+	_ = hsMod.Start()
+
+	mgr, err := tunnel.New(tCfg)
+	if err != nil {
+		return nil, err
+	}
+	mgr.SetDependencies(nil, hsMod, nil, cryptoMod)
+	_ = mgr.Init(context.Background(), tCfg)
+	_ = mgr.Start()
+
+	if err := mgr.Connect(ctx); err != nil {
+		mgr.Stop()
+		return nil, err
+	}
+	return mgr, nil
+}
+
 func (om *OutboundManager) RemoveOutbound(tag string) {
 	om.mu.Lock()
 	defer om.mu.Unlock()
@@ -184,6 +310,7 @@ func (om *OutboundManager) RemoveOutbound(tag string) {
 	if t, exists := om.outbounds[tag]; exists {
 		t.Stop()
 		delete(om.outbounds, tag)
+		delete(om.outboundCfgs, tag)
 		om.log.Info("Removed outbound: %s", tag)
 	}
 }
@@ -253,6 +380,7 @@ func (om *OutboundManager) UpdateOutbounds(configs []config.OutboundConfig) {
 		if !current[tag] {
 			om.outbounds[tag].Stop()
 			delete(om.outbounds, tag)
+			delete(om.outboundCfgs, tag)
 			om.log.Info("Removed stale outbound: %s", tag)
 		}
 	}
