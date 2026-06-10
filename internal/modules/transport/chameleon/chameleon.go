@@ -307,6 +307,20 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 		listenAddr = ":443"
 	}
 
+	cdnCipherSuites := []uint16{
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	}
+	cdnCurves := []tls.CurveID{
+		tls.X25519,
+		tls.CurveP256,
+		tls.CurveP384,
+	}
+
 	var tlsCfg *tls.Config
 
 	if cfg.TLSCert != "" {
@@ -315,9 +329,11 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 			return fmt.Errorf("chameleon: load cert: %w", err)
 		}
 		tlsCfg = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{"h2", "http/1.1"},
-			MinVersion:   tls.VersionTLS12,
+			Certificates:     []tls.Certificate{cert},
+			NextProtos:       []string{"h2", "http/1.1"},
+			MinVersion:       tls.VersionTLS12,
+			CipherSuites:     cdnCipherSuites,
+			CurvePreferences: cdnCurves,
 		}
 		if len(cert.Certificate) > 0 {
 			if leaf, e := x509.ParseCertificate(cert.Certificate[0]); e == nil {
@@ -342,6 +358,8 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 		tlsCfg = m.TLSConfig()
 		tlsCfg.NextProtos = []string{"h2", "http/1.1"}
 		tlsCfg.MinVersion = tls.VersionTLS12
+		tlsCfg.CipherSuites = cdnCipherSuites
+		tlsCfg.CurvePreferences = cdnCurves
 		domain := cfg.Domain
 		origGet := tlsCfg.GetCertificate
 		tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
