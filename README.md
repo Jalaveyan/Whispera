@@ -287,10 +287,10 @@ outbounds:
 
   - tag: exit
     protocol: whispera
-    address: REAL_SERVER_IP:443
+    address: MASTER_SERVER_IP:443
     settings:
-      server_pub_key: "REAL_PUB_KEY"
-    chain: ["relay1", "relay2"]   # клиент → relay1 → relay2 → real
+      server_pub_key: "MASTER_PUB_KEY"
+    chain: ["relay1", "relay2"]   # client → relay1 → relay2 → master server 
 ```
 
 Apply config
