@@ -263,29 +263,15 @@ Install a whisper on each relay
 curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh | bash -s -- relay
 ```
 
-Generate a secret on each relay
-
+Chameleon secret (copy to master):
 ```bash
-whispera keygen # save key
+a1b2c3...==
 ```
 
 Open the config
 
 ```bash
 nano /etc/whispera/config.yaml
-```
-
-Add secret to the config of each relay
-
-```bash
-chameleon:
-enabled: true
-secret: "OUTPUT_KEYGEN_RELAY1" # base64 from step 2
-# other fields (listen_addr, tls_cert, etc.) are already set
-
-// update checksum and restart
-whispera update-checksum /etc/whispera/config.yaml
-systemctl restart whispera
 ```
 
 Add outbounds on the master - /etc/whispera/config.yaml
