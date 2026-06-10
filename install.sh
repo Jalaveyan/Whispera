@@ -1889,6 +1889,137 @@ EOF
     log_success "CLI wrapper installed (whispera-mgmt, menu)"
 }
 
+install_relay() {
+    check_root
+    check_os
+    print_logo
+
+    log_info "Installing Whispera relay (minimal, no panel/DB)..."
+
+    install_dependencies
+    install_go
+    clone_or_update_repo
+    build_whispera
+
+    mkdir -p "$CONF_PATH"
+
+    local RELAY_SECRET
+    RELAY_SECRET=$("$BIN_PATH/whispera" keygen 2>/dev/null)
+    if [[ -z "$RELAY_SECRET" ]]; then
+        RELAY_SECRET=$(openssl rand -base64 32 2>/dev/null | tr -d '\n')
+    fi
+
+    local CERT="$CONF_PATH/relay.crt"
+    local KEY="$CONF_PATH/relay.key"
+    if [[ ! -f "$CERT" ]]; then
+        openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$KEY" -out "$CERT" \
+            -days 3650 -subj "/CN=relay" 2>/dev/null
+        chmod 600 "$KEY"
+    fi
+
+    if [[ ! -f "$CONF_PATH/config.yaml" ]]; then
+        cat > "$CONF_PATH/config.yaml" <<EOF
+server:
+  name: whispera-relay
+  listen_addr: "0.0.0.0:8443"
+  private_key: ""
+  mtu: 1420
+  workers: 4
+
+transport:
+  udp:
+    enabled: false
+  tcp:
+    enabled: true
+    buffer_size: 65536
+
+relay:
+  max_streams: 50000
+  enable_tcp: true
+  enable_udp: false
+
+session:
+  max_sessions: 50000
+  idle_timeout: 300
+  cleanup_interval: 60
+
+api:
+  enabled: true
+  listen_addr: "127.0.0.1:8080"
+
+chameleon:
+  enabled: true
+  listen_addr: ":443"
+  tls_cert: "$CERT"
+  tls_key: "$KEY"
+  secret: "$RELAY_SECRET"
+EOF
+        refresh_config
+        log_success "Relay config saved to $CONF_PATH/config.yaml"
+    else
+        if ! grep -q "^  secret:" "$CONF_PATH/config.yaml"; then
+            sed -i "/^chameleon:/a\\  secret: \"$RELAY_SECRET\"" "$CONF_PATH/config.yaml"
+            refresh_config
+        else
+            RELAY_SECRET=$(grep "^  secret:" "$CONF_PATH/config.yaml" | awk '{print $2}' | tr -d '"')
+            log_info "Relay config already exists, using existing secret"
+        fi
+    fi
+
+    make_service_user whispera
+    ensure_integrity_key
+
+    if has_systemd; then
+        cat > /etc/systemd/system/whispera.service <<EOF
+[Unit]
+Description=Whispera Relay
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+User=whispera
+Group=whispera
+WorkingDirectory=$WORK_DIR
+EnvironmentFile=-$INTEGRITY_ENV_FILE
+ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api 127.0.0.1:8080
+Restart=always
+RestartSec=5
+LimitNOFILE=infinity
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /run
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        chown -R whispera:whispera "$CONF_PATH" 2>/dev/null || true
+        systemctl daemon-reload
+        systemctl enable whispera >/dev/null 2>&1
+        systemctl restart whispera
+        log_success "Relay service started"
+    fi
+
+    if command -v ufw &>/dev/null; then
+        ufw allow ssh >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
+        ufw --force enable >/dev/null 2>&1 || true
+    fi
+
+    install_cli_wrapper
+
+    echo ""
+    log_success "Whispera relay installed!"
+    echo ""
+    echo -e "  ${YELLOW}Chameleon secret (скопируй на мастер):${PLAIN}"
+    echo -e "  ${GREEN}${RELAY_SECRET}${PLAIN}"
+    echo ""
+    echo -e "  Используй в конфиге мастера:"
+    echo -e "  ${GREEN}chameleon_secret: \"${RELAY_SECRET}\"${PLAIN}"
+    echo ""
+}
+
 main() {
     check_root
     check_os
@@ -1965,6 +2096,9 @@ main() {
 
 
 case "${1:-}" in
+    relay)
+        install_relay
+        ;;
     keygen)
         generate_keys
         generate_config
