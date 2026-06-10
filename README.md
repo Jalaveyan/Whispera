@@ -266,7 +266,7 @@ curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh |
 Generate a secret on each relay
 
 ```bash
-whispera keygen /// save key
+whispera keygen # save key
 ```
 
 Open the config
