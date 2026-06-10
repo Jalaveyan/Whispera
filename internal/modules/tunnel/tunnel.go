@@ -172,6 +172,44 @@ func (s TunnelState) String() string {
 	}
 }
 
+type PhantomOptions struct {
+	EnablePhantom       bool
+	PhantomSNI          string
+	PhantomShortId      string
+	PhantomServerPubKey string
+	PhantomPSK          []byte
+	EnableChatFSM        bool
+	ChatFSMCoverInterval time.Duration
+}
+
+type ChameleonOptions struct {
+	EnableChameleon  bool
+	ChameleonAddr    string
+	ChameleonSNI     string
+	ChameleonSecret  []byte
+	ChameleonCertPin string
+	ChameleonMux     int
+}
+
+type MLOptions struct {
+	MLServerURL     string
+	MLTLSSkipVerify bool
+	MLToken         string
+	SNIModelDir     string
+	SNIDomainsURL   string
+}
+
+type SocialOptions struct {
+	VKToken         string
+	VKGroupID       int64
+	VKBotUserToken  string
+	VKBotGroupToken string
+	TGBotToken      string
+	TGGroupChatID   int64
+	TGSessionID     string
+	CDNWorkerURL    string
+}
+
 type Config struct {
 	ServerAddr           string
 	ServerAddrTCP        string
@@ -197,36 +235,13 @@ type Config struct {
 	ResidentialProxies []string
 	EnableJA3Randomize bool
 
-	EnablePhantom       bool
-	PhantomSNI          string
-	PhantomShortId      string
-	PhantomServerPubKey string
-	PhantomPSK          []byte
-
-	EnableChameleon      bool
-	ChameleonAddr        string
-	ChameleonSNI         string
-	ChameleonSecret      []byte
-	ChameleonCertPin     string
-	ChameleonMux         int
-
-	EnableChatFSM        bool
-	ChatFSMCoverInterval time.Duration
+	PhantomOptions
+	ChameleonOptions
+	MLOptions
+	SocialOptions
 
 	RussianService    string
 	BehavioralProfile string
-
-	VKToken   string
-	VKGroupID int64
-
-	VKBotUserToken  string
-	VKBotGroupToken string
-
-	TGBotToken    string
-	TGGroupChatID int64
-	TGSessionID   string
-
-	CDNWorkerURL string
 
 	ServerList []string
 
@@ -243,14 +258,6 @@ type Config struct {
 
 	DesyncConfig    *evasion.DesyncConfig
 	FlowTableConfig *evasion.FlowTableConfig
-
-	MLServerURL      string
-	MLTLSSkipVerify  bool
-
-	MLToken string
-
-	SNIModelDir   string
-	SNIDomainsURL string
 
 	CustomSNI   string
 	NoSNI       bool
