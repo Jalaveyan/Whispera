@@ -1456,6 +1456,7 @@ do_update() {
             log_success "relay: blocks merged"
         fi
 
+        ensure_integrity_key
         "$BIN_PATH/whispera" update-checksum "$CONF_PATH/config.yaml" && log_info "Config checksum updated" || log_warn "Config checksum update failed (non-fatal)"
     fi
 
