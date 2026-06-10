@@ -263,10 +263,10 @@ Install a whisper on each relay
 curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh | bash
 ```
 
-Generate keys on each relay
+Generate a secret on each relay
 
 ```bash
-whispera keygen /// save the public key from each relay server.
+whispera keygen /// save key
 ```
 
 Open the config
@@ -275,35 +275,51 @@ Open the config
 nano /etc/whispera/config.yaml
 ```
 
-On the master server, add this to the config.yaml file.
+Add secret to the config of each relay
+
+```bash
+chameleon:
+enabled: true
+secret: "OUTPUT_KEYGEN_RELAY1" # base64 from step 2
+# other fields (listen_addr, tls_cert, etc.) are already set
+
+// update checksum and restart
+whispera update-checksum /etc/whispera/config.yaml
+systemctl restart whispera
+```
+
+Add outbounds on the master - /etc/whispera/config.yaml
 
 ```bash
 outbounds:
   - tag: relay1
     protocol: whispera
-    address: 1.2.3.4:443          # IP first relay
+    address: IP_RELAY1:443
     settings:
-      server_pub_key: "XYZ789..."  # public_key relay1
+      chameleon_secret: "SECRET_RELAY1"
 
   - tag: relay2
     protocol: whispera
-    address: 5.6.7.8:443          # IP second relay
+    address: IP_RELAY2:443
     settings:
-      server_pub_key: "ABC123..."  # public_key relay2
+      chameleon_secret: "SECRET_RELAY2"
 
   - tag: exit
     protocol: whispera
-    address: 9.10.11.12:443       # IP master server
+    address: IP_EXIT:443
     settings:
-      server_pub_key: "MASTER..."
+      chameleon_secret: "SECRET_EXIT"
     chain: ["relay1", "relay2"]
-```
 
-Apply config
-
-```bash
+/// update checksum and restart
 whispera update-checksum /etc/whispera/config.yaml
 systemctl restart whispera
+```
+
+Check
+
+```bash
+journalctl -u whispera -n 50 --no-pager
 ```
 
 There should be something in the logs
@@ -311,6 +327,7 @@ There should be something in the logs
 ```bash
 Started outbound tunnel: relay1 (1.2.3.4:443)
 Started outbound tunnel: relay2 (5.6.7.8:443)
+Started outbound tunnel: exit (9.10.11.12:443)
 ```
 
 ## Supported platforms - windows, android, linux
