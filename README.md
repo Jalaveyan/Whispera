@@ -266,7 +266,13 @@ curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh |
 Generate keys on each relay
 
 ```bash
-whispera keygen 
+whispera keygen /// save the public key from each relay server.
+```
+
+Open the config
+
+```bash
+nano /etc/whispera/config.yaml
 ```
 
 On the master server, add this to the config.yaml file.
@@ -275,22 +281,22 @@ On the master server, add this to the config.yaml file.
 outbounds:
   - tag: relay1
     protocol: whispera
-    address: RELAY1_IP:443
+    address: 1.2.3.4:443          # IP first relay
     settings:
-      server_pub_key: "RELAY1_PUB_KEY"
+      server_pub_key: "XYZ789..."  # public_key relay1
 
   - tag: relay2
     protocol: whispera
-    address: RELAY2_IP:443
+    address: 5.6.7.8:443          # IP second relay
     settings:
-      server_pub_key: "RELAY2_PUB_KEY"
+      server_pub_key: "ABC123..."  # public_key relay2
 
   - tag: exit
     protocol: whispera
-    address: MASTER_SERVER_IP:443
+    address: 9.10.11.12:443       # IP master server
     settings:
-      server_pub_key: "MASTER_PUB_KEY"
-    chain: ["relay1", "relay2"]   # client → relay1 → relay2 → master server 
+      server_pub_key: "MASTER..."
+    chain: ["relay1", "relay2"]
 ```
 
 Apply config
@@ -298,6 +304,20 @@ Apply config
 ```bash
 whispera update-checksum /etc/whispera/config.yaml
 systemctl restart whispera
+```
+
+Check
+
+```bash
+whispera update-checksum /etc/whispera/config.yaml
+systemctl restart whispera
+```
+
+There should be something in the logs
+
+```bash
+Started outbound tunnel: relay1 (1.2.3.4:443)
+Started outbound tunnel: relay2 (5.6.7.8:443)
 ```
 
 ## Supported platforms - windows, android, linux
