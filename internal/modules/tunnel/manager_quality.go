@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	crand "crypto/rand"
 	"fmt"
 	mrand "math/rand"
 	"sync/atomic"
@@ -52,12 +53,11 @@ func (m *Manager) HealthCheck() interfaces.HealthStatus {
 }
 
 func generateRandomShortId() string {
-	const chars = "0123456789abcdef"
-	result := make([]byte, 8)
-	for i := range result {
-		result[i] = chars[int(time.Now().UnixNano()/int64(i+1))%len(chars)]
+	var b [4]byte
+	if _, err := crand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%08x", mrand.Uint32())
 	}
-	return string(result)
+	return fmt.Sprintf("%08x", uint32(b[0])<<24|uint32(b[1])<<16|uint32(b[2])<<8|uint32(b[3]))
 }
 
 func (m *Manager) getReconnectDelay() time.Duration {

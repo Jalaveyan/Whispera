@@ -38,6 +38,8 @@ var log = logger.Module("tunnel")
 
 var dohResolver = whisperdns.NewResolver(whisperdns.DefaultConfig())
 
+var _ interfaces.Module = (*Manager)(nil)
+
 func dohDialer() *net.Dialer {
 	return &net.Dialer{
 		Timeout: 10 * time.Second,
@@ -242,7 +244,8 @@ type Config struct {
 	DesyncConfig    *evasion.DesyncConfig
 	FlowTableConfig *evasion.FlowTableConfig
 
-	MLServerURL string
+	MLServerURL      string
+	MLTLSSkipVerify  bool
 
 	MLToken string
 
@@ -945,6 +948,10 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	m.activeConn = connectedPool[0]
 	m.connMu.Unlock()
 
+	for _, mc := range connectedPool {
+		mlpkg.FlowRegistry.RegisterConn(mc.LocalAddr(), mc.RemoteAddr(), mlpkg.FlowTunnel)
+	}
+
 	if !isRotation {
 		m.startKeepalive()
 		m.startRotation()
@@ -983,7 +990,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 type dialCandidate struct {
 	name   string
 	secure bool
-	fn     func(context.Context) (net.Conn, error)
+	fn     dialFn
 }
 
 func (m *Manager) enableKillSwitch(remoteAddr net.Addr) {

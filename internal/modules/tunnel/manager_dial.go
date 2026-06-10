@@ -791,9 +791,6 @@ func (m *Manager) dialWebSocket(ctx context.Context) (net.Conn, error) {
 	useTLS := m.tcfg("ws_tls") == "true" || m.tcfg("ws_tls") == "1"
 
 	target := m.config.ServerAddrTCP
-	if host != "" {
-		target = m.config.ServerAddrTCP
-	}
 
 	tr, err := ws_transport.New(&ws_transport.Config{
 		ListenAddr:   ":0",

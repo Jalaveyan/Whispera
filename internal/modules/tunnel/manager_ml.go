@@ -19,10 +19,15 @@ import (
 	"github.com/sourcegraph/conc/iter"
 )
 
-var mlHTTPClient = &http.Client{
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
+func (m *Manager) mlHTTPClient() *http.Client {
+	if !m.config.MLTLSSkipVerify {
+		return http.DefaultClient
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+		},
+	}
 }
 
 func (m *Manager) ensurePubIP() {
@@ -199,7 +204,7 @@ func (m *Manager) mlBlockmapSync(ctx context.Context) {
 			if m.config.MLToken != "" {
 				req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
 			}
-			if resp, derr := mlHTTPClient.Do(req); derr == nil {
+			if resp, derr := m.mlHTTPClient().Do(req); derr == nil {
 				resp.Body.Close()
 			}
 		}
@@ -215,7 +220,7 @@ func (m *Manager) mlBlockmapSync(ctx context.Context) {
 	if m.config.MLToken != "" {
 		req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
 	}
-	resp, err := mlHTTPClient.Do(req)
+	resp, err := m.mlHTTPClient().Do(req)
 	if err != nil {
 		return
 	}
@@ -284,7 +289,7 @@ func (m *Manager) mlFederatedSync(ctx context.Context) {
 	if m.config.MLToken != "" {
 		req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
 	}
-	resp, err := mlHTTPClient.Do(req)
+	resp, err := m.mlHTTPClient().Do(req)
 	if err == nil && resp.StatusCode == http.StatusOK {
 		resp.Body.Close()
 		log.Debug("ML federated: downloaded global delta")
@@ -304,7 +309,7 @@ func (m *Manager) mlFederatedSync(ctx context.Context) {
 	if m.config.MLToken != "" {
 		ulReq.Header.Set("Authorization", "Bearer "+m.config.MLToken)
 	}
-	ulResp, err := mlHTTPClient.Do(ulReq)
+	ulResp, err := m.mlHTTPClient().Do(ulReq)
 	if err == nil {
 		ulResp.Body.Close()
 		log.Debug("ML federated: uploaded local delta")
