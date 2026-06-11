@@ -219,7 +219,6 @@ func (s *Server) SetKeyLimits(m *keylimits.Manager) {
 
 func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/login", s.handleLogin)
-	// Alias for the whispera-ui frontend which posts to /api/auth/login.
 	s.Handle("POST /api/auth/login", s.handleLogin)
 	s.Handle("POST /api/logout", s.handleLogout)
 	s.Handle("POST /api/v2/auth/login", s.handleLoginV2)
@@ -250,7 +249,6 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("DELETE /api/v1/dhcp/lease", s.handleDHCPRelease)
 	s.Handle("GET /api/users", s.handleGetUsers)
 	s.Handle("POST /api/users/add", s.handleAddUser)
-	// REST-style alias used by whispera-ui frontend (it posts to /api/users).
 	s.Handle("POST /api/users", s.handleAddUser)
 	s.Handle("PUT /api/users/{id}", s.handleUpdateUser)
 	s.Handle("POST /api/users/delete", s.handleDeleteUser)
@@ -639,7 +637,6 @@ func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/sub/") {
 			h.Set("Content-Security-Policy", "default-src 'none'")
 		} else {
-			// SPA: allow same-origin scripts/styles/images; block external origins and inline eval.
 			h.Set("Content-Security-Policy",
 				"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'")
 		}
@@ -676,8 +673,6 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 	return false
 }
 
-// requireAdmin returns true if the request carries admin-level credentials:
-// either the master session token or a JWT with RoleAdmin.
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	authHdr := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHdr, "Bearer ") {
@@ -739,7 +734,6 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// EventSource/WebSocket can't set headers — accept ?token= query param.
 		var token string
 		auth := r.Header.Get("Authorization")
 		const prefix = "Bearer "
@@ -1527,6 +1521,20 @@ func GetRegisteredUsers() []RegisteredUser {
 	return result
 }
 
+func lookupUserPrivateKey(username string) string {
+	if username == "" {
+		return ""
+	}
+	userStoreMu.RLock()
+	defer userStoreMu.RUnlock()
+	for _, u := range userStore {
+		if u.Username == username && u.Status != "disabled" && u.PrivateKey != "" {
+			return u.PrivateKey
+		}
+	}
+	return ""
+}
+
 const sessionTokenFile = "/etc/whispera/session.token"
 const signingSecretFile = "/etc/whispera/signing.key"
 const tokenTTL = 30 * time.Minute
@@ -1565,8 +1573,6 @@ func loadOrCreateSigningSecret() []byte {
 	return secret
 }
 
-// rotateSigningSecret generates a new signing secret, persists it, and replaces
-// the in-memory JWT manager so all previously issued tokens become invalid.
 func (s *Server) rotateSigningSecret() {
 	secret := make([]byte, 32)
 	rand.Read(secret)
@@ -2034,7 +2040,6 @@ func (s *Server) deleteUserInbounds(user *User) {
 
 	tagsToDelete := append([]string(nil), user.InboundTags...)
 
-	// Если теги не сохранены — вывести из ConnectionURI по порту.
 	if len(tagsToDelete) == 0 && user.ConnectionURI != "" {
 		port := extractPortFromConnectionKey(user.ConnectionURI)
 		if port != "" {
@@ -2064,7 +2069,6 @@ func (s *Server) deleteUserInbounds(user *User) {
 	})
 }
 
-// extractPortFromConnectionKey извлекает порт из connection key формата whispera://.
 func extractPortFromConnectionKey(key string) string {
 	key = strings.TrimSpace(key)
 	if !strings.HasPrefix(key, "whispera://") {
@@ -2191,6 +2195,18 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	}
 
 	userPrivKey := req.PSK
+
+	uname := req.Username
+	if uname == "" {
+		uname = req.Name
+	}
+	if pk := lookupUserPrivateKey(uname); pk != "" {
+		if userPrivKey != "" && userPrivKey != pk {
+			log.Warn("connection key for %q: provided PSK did not match the registered user — using the user's key so chameleon auth succeeds", uname)
+		}
+		userPrivKey = pk
+	}
+
 	userPubKey := ""
 	if userPrivKey == "" {
 		keys, err := generateX25519Keys()
@@ -2200,6 +2216,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}
 		userPrivKey = keys.PrivateKey
 		userPubKey = keys.PublicKey
+		log.Warn("connection key issued with a fresh PSK not tied to any registered user — it will only authenticate if chameleon SharedSecret is configured")
 	} else {
 		userPubKey = derivePublicKeyB64(userPrivKey)
 	}
@@ -2231,7 +2248,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 						if matchTransports[network] || portMatch {
 							port := fmt.Sprintf("%d", inbound.Port)
 							serverAddr = fmt.Sprintf("%s:%s", serverIP, port)
-							// Auto-populate transport-specific params from inbound config.
 							if (network == "ws" || network == "websocket") && inbound.StreamSettings.WS.Path != "" {
 								if req.TransportConfig == nil {
 									req.TransportConfig = make(map[string]interface{})
@@ -2324,9 +2340,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 				if chmCfg.Enabled && chmCfg.ListenAddr != "" {
 					_, chmPort, _ := net.SplitHostPort(chmCfg.ListenAddr)
 					if chmPort != "" {
-						// Use domain as host when autocert is configured — clients verify
-						// TLS hostname against the host portion of chameleon_addr, and LE
-						// certs are only valid for the domain, not the bare IP.
 						host := serverIP
 						if chmCfg.Domain != "" {
 							host = chmCfg.Domain
@@ -2558,7 +2571,7 @@ func (s *Server) handleStatsLive(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // disable nginx buffering
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -2589,7 +2602,7 @@ func (s *Server) handleStatsLive(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	send() // send immediately on connect
+	send()
 	for {
 		select {
 		case <-r.Context().Done():
@@ -3132,7 +3145,6 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if passwordChanged {
-		// Invalidate all existing sessions — forces re-login for everyone including attacker
 		s.rotateSigningSecret()
 		log.Warn("admin password changed from %s — all sessions invalidated", clientIP)
 		AppendEvent(EventSecurity, SeverityWarn, "admin password changed", map[string]string{"ip": clientIP})
