@@ -418,7 +418,7 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 		serveDecoy(w, r, cfg)
 		return
 	}
-	sessionID, _, err := decodeSession(sessCookie.Value)
+	sessionID, anchor, err := decodeSession(sessCookie.Value)
 	if err != nil {
 		serveDecoy(w, r, cfg)
 		return
@@ -426,7 +426,7 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
-		log.Printf("chameleon: stream auth failed from %s", r.RemoteAddr)
+		log.Printf("chameleon: stream auth failed from %s sess_age=%.0fs ua=%q", r.RemoteAddr, time.Since(anchor).Seconds(), r.Header.Get("User-Agent"))
 		serveDecoy(w, r, cfg)
 		return
 	}
