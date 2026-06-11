@@ -124,7 +124,7 @@ relay:
 chameleon:
     ### chameleon need a tls cert!!!
     enabled: true
-    listen_addr: :9443
+    listen_addr: YOUR PORT
     tls_cert: /etc/whispera/panel.crt
     tls_key: /etc/whispera/panel.key
     domain: ""
