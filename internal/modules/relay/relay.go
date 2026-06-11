@@ -414,12 +414,15 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		stream, err := session.AcceptStream()
 		if err != nil {
 			errStr := err.Error()
-			if strings.Contains(errStr, "keepalive timeout") ||
+			isNormal := strings.Contains(errStr, "keepalive timeout") ||
 				strings.Contains(errStr, "session closed") ||
 				strings.Contains(errStr, "EOF") ||
 				strings.Contains(errStr, "client disconnected") ||
 				strings.Contains(errStr, "padded_conn:") ||
-				isNormalConnClose(err) {
+				isNormalConnClose(err)
+			if firstStream {
+				s.log.Info("Tunnel session ended before first stream from %s: %v", clientID, err)
+			} else if isNormal {
 				s.log.Debug("Tunnel session ended for %s: %v", clientID, err)
 			} else {
 				s.log.Info("Tunnel session closed for %s: %v", clientID, err)
