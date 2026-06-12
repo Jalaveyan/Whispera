@@ -221,13 +221,18 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 
 	go func() {
 		resp, err := client.Do(req)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			if resp != nil {
-				resp.Body.Close()
-			}
+		if err != nil {
+			log.Printf("chameleon: tunnel POST failed from %s: %v", cfg.ServerAddr, err)
 			pc.deliver(nil)
 			return
 		}
+		if resp.StatusCode != http.StatusOK {
+			log.Printf("chameleon: tunnel POST non-200 from %s: status=%d", cfg.ServerAddr, resp.StatusCode)
+			resp.Body.Close()
+			pc.deliver(nil)
+			return
+		}
+		log.Printf("chameleon: tunnel POST 200 OK from %s, delivering body", cfg.ServerAddr)
 		if !pc.deliver(resp.Body) {
 			resp.Body.Close()
 		}
@@ -458,6 +463,7 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	select {
 	case <-conn.done:
 	case <-r.Context().Done():
+		log.Printf("chameleon: stream request context done for %s: %v", r.RemoteAddr, r.Context().Err())
 	}
 }
 

@@ -409,7 +409,7 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	s.log.Info("Tunnel session ready for %s", clientID)
 
 	firstStream := true
-	s.log.Debug("waiting for first stream from %s", clientID)
+	s.log.Info("waiting for first stream from %s", clientID)
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {

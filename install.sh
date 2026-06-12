@@ -1500,8 +1500,7 @@ RLCONF
         log_info "Added whispera-ui to /etc/hosts"
     fi
 
-    cat > /etc/nginx/conf.d/whispera-ui.conf <<NGINX
-server {
+    local SERVER_BLOCK="server {
     listen 80;
     server_name whispera-ui ${SERVER_IP};
     return 301 https://\$host\$request_uri;
@@ -1517,7 +1516,23 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always;"
+
+    local cfg="${CONF_PATH}/config.yaml"
+    if [[ -f "$cfg" ]] && grep -qE '^[[:space:]]*enabled:[[:space:]]*true' <(sed -n '/^chameleon:/,/^[a-z]/p' "$cfg"); then
+        local chm_listen
+        chm_listen=$(sed -n '/^chameleon:/,/^[a-z]/p' "$cfg" | grep -E '^[[:space:]]*listen_addr:' | head -1 | sed -E 's/.*listen_addr:[[:space:]]*"?([^"]*)"?.*/\1/')
+        if [[ -z "$chm_listen" || "$chm_listen" == *:443 || "$chm_listen" == ":443" ]]; then
+            SERVER_BLOCK="server {
+    listen 127.0.0.1:80;
+    server_name whispera-ui ${SERVER_IP};
+    root ${DAT_PATH}/panel/public;"
+            log_info "Chameleon owns :443 — binding panel nginx to 127.0.0.1:80 (decoy backend)"
+        fi
+    fi
+
+    cat > /etc/nginx/conf.d/whispera-ui.conf <<NGINX
+${SERVER_BLOCK}
 
     location /sub/ {
         proxy_pass         http://127.0.0.1:8080;
