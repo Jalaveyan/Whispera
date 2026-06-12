@@ -1541,6 +1541,10 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			globalRelay.ServeTunnel(conn, false)
 		}
 	} else {
+		logger.Trace().Infow("raw_tcp_no_handshake",
+			"remote", addr.String(),
+			"first_byte", fmt.Sprintf("0x%02x", firstByte[0]),
+		)
 		if *debug {
 			log.Printf("[TCP] No handshake from %v (first byte=0x%02x), routing directly to smux", addr, firstByte[0])
 		}
