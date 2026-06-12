@@ -219,24 +219,39 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 
 	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc)
 
+	connected := make(chan error, 1)
 	go func() {
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Printf("chameleon: tunnel POST failed from %s: %v", cfg.ServerAddr, err)
 			pc.deliver(nil)
+			connected <- err
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
 			log.Printf("chameleon: tunnel POST non-200 from %s: status=%d", cfg.ServerAddr, resp.StatusCode)
 			resp.Body.Close()
 			pc.deliver(nil)
+			connected <- fmt.Errorf("chameleon: server returned status %d", resp.StatusCode)
 			return
 		}
 		log.Printf("chameleon: tunnel POST 200 OK from %s, delivering body", cfg.ServerAddr)
 		if !pc.deliver(resp.Body) {
 			resp.Body.Close()
 		}
+		connected <- nil
 	}()
+
+	select {
+	case err := <-connected:
+		if err != nil {
+			pc.Close()
+			return nil, fmt.Errorf("chameleon: tunnel POST not established: %w", err)
+		}
+	case <-ctx.Done():
+		pc.Close()
+		return nil, ctx.Err()
+	}
 
 	return fc, nil
 }
