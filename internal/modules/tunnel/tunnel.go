@@ -2254,7 +2254,7 @@ const (
 	chScaleShrinkPerConn = 256 * 1024
 	chScaleMaxConns      = 256
 	scaleEvalBytes       = 2 * 1024 * 1024
-	browserConnBudget    = 6
+	browserConnBudget    = 2
 	chGameLaneReserve    = 1
 	gameIdleTimeout      = 15 * time.Second
 	protoUDP             = 0x11
