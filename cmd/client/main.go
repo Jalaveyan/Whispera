@@ -695,6 +695,9 @@ func main() {
 	multiRouter := socks5.NewMultiRouter(tunnelMod)
 	globalMultiRouter = multiRouter
 	socksMod.SetTunnel(multiRouter)
+	if err := socksMod.Start(); err != nil {
+		stdlog.Fatalf("Failed to start SOCKS5: %v", err)
+	}
 
 	primaryEntry := &TransportEntry{
 		ID:               pool.NextID(),
