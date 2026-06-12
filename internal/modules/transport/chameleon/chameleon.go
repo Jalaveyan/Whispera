@@ -297,6 +297,10 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 			MinVersion:       tls.VersionTLS12,
 			CipherSuites:     cdnCipherSuites,
 			CurvePreferences: cdnCurves,
+			GetConfigForClient: func(hi *tls.ClientHelloInfo) (*tls.Config, error) {
+				log.Printf("chameleon: client_hello sni=%q from=%s", hi.ServerName, hi.Conn.RemoteAddr())
+				return nil, nil
+			},
 		}
 		if len(cert.Certificate) > 0 {
 			if leaf, e := x509.ParseCertificate(cert.Certificate[0]); e == nil {
