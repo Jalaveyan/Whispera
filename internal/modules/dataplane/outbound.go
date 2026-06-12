@@ -79,7 +79,7 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	}
 
 	if russiaMode {
-		tCfg.Transport = "vkwebrtc,yatelemost,okwebrtc,vkbot,cdnworker,russian,asn_bypass"
+		tCfg.Transport = "cdnworker,russian,asn_bypass"
 	}
 
 	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {

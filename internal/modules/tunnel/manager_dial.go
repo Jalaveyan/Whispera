@@ -12,15 +12,8 @@ import (
 	"time"
 
 	grpc_transport "whispera/internal/modules/transport/grpc"
-	"whispera/internal/modules/transport/okwebrtc"
 	quic_transport "whispera/internal/modules/transport/quic"
-	shadowtls_transport "whispera/internal/modules/transport/shadowtls"
-	"whispera/internal/modules/transport/vkbot"
-	"whispera/internal/modules/transport/vkwebrtc"
-	ws_transport "whispera/internal/modules/transport/websocket"
-	"whispera/internal/modules/transport/yacloud"
 	"whispera/internal/modules/transport/yadisk"
-	"whispera/internal/modules/transport/yatelemost"
 	"whispera/internal/mux"
 	"whispera/internal/obfuscation/core/evasion"
 	"whispera/internal/obfuscation/marionette"
@@ -40,46 +33,11 @@ type transportEntry struct {
 
 var transportEntries = []transportEntry{
 	{
-		name: "vkwebrtc", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("vkwebrtc") && m.config.VKToken != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialVKWebRTC },
-	},
-	{
-		name: "okwebrtc", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("okwebrtc") && m.tcfg("ok_token") != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialOKWebRTC },
-	},
-	{
-		name: "yatelemost", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("yatelemost") && m.tcfg("session_id") != "" && m.tcfg("conference_url") != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialYaTelemost },
-	},
-	{
 		name: "yadisk", secure: true,
 		cond: func(only func(string) bool, m *Manager) bool {
 			return only("yadisk") && m.tcfg("token") != ""
 		},
 		dial: func(m *Manager) dialFn { return m.dialYaDisk },
-	},
-	{
-		name: "yacloud", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("yacloud") && m.tcfg("gateway_url") != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialYaCloud },
-	},
-	{
-		name: "vkbot", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("vkbot") && m.config.VKBotUserToken != "" && m.config.VKGroupID != 0
-		},
-		dial: func(m *Manager) dialFn { return m.dialVKBot },
 	},
 	{
 		name: "cdnworker", secure: true,
@@ -96,26 +54,12 @@ var transportEntries = []transportEntry{
 		dial: func(m *Manager) dialFn { return m.dialASNBypass },
 	},
 	{
-		name: "shadowtls", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return m.config.Transport == "shadowtls" && m.tcfg("password") != "" && m.config.ServerAddrTCP != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialShadowTLS },
-	},
-	{
 		name: "quic", secure: true,
 		cond: func(only func(string) bool, m *Manager) bool {
 			auto := m.config.Transport == "auto" || m.config.Transport == ""
 			return only("quic") || auto
 		},
 		dial: func(m *Manager) dialFn { return m.dialQUIC },
-	},
-	{
-		name: "websocket", secure: false,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return m.config.ServerAddrTCP != "" && (only("ws") || only("websocket"))
-		},
-		dial: func(m *Manager) dialFn { return m.dialWebSocket },
 	},
 	{
 		name: "grpc", secure: false,
@@ -452,49 +396,6 @@ func (m *Manager) parallelDial(ctx context.Context, candidates []dialCandidate) 
 	return nil, fmt.Errorf("all transports failed: %s", strings.Join(errs, "; "))
 }
 
-func (m *Manager) dialVKWebRTC(ctx context.Context) (net.Conn, error) {
-	vkCfg := &vkwebrtc.Config{
-		VKToken:       m.config.VKToken,
-		VKGroupID:     m.config.VKGroupID,
-		ServerMode:    false,
-		SignalingMode: "vk",
-		ICEPolicy:     "relay",
-	}
-	tr, err := vkwebrtc.New(vkCfg)
-	if err != nil {
-		return nil, err
-	}
-	if err := tr.Start(); err != nil {
-		return nil, err
-	}
-	conn, err := tr.Dial(ctx, m.config.ServerAddr)
-	if err != nil {
-		tr.Stop()
-		return nil, err
-	}
-	return conn, nil
-}
-
-func (m *Manager) dialVKBot(ctx context.Context) (net.Conn, error) {
-	tr, err := vkbot.New(&vkbot.Config{
-		GroupID:    m.config.VKGroupID,
-		UserToken:  m.config.VKBotUserToken,
-		ServerMode: false,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := tr.Start(); err != nil {
-		return nil, err
-	}
-	conn, err := tr.Dial(ctx, m.config.ServerAddr)
-	if err != nil {
-		tr.Stop()
-		return nil, err
-	}
-	return conn, nil
-}
-
 func (m *Manager) dialCDNWorker(ctx context.Context) (net.Conn, error) {
 	wsConn, _, err := websocket.Dial(ctx, m.config.CDNWorkerURL, &websocket.DialOptions{
 		Subprotocols: []string{"whispera"},
@@ -575,31 +476,6 @@ func (m *Manager) wrapChatFSM(conn net.Conn) net.Conn {
 	return marionette.NewChatFSMConn(conn, binary.BigEndian.Uint32(chatID[:]), interval)
 }
 
-func (m *Manager) dialWebSocket(ctx context.Context) (net.Conn, error) {
-	path := m.tcfg("ws_path")
-	if path == "" {
-		path = "/ws"
-	}
-	host := m.tcfg("ws_host")
-	subproto := m.tcfg("ws_subprotocol")
-	useTLS := m.tcfg("ws_tls") == "true" || m.tcfg("ws_tls") == "1"
-
-	target := m.config.ServerAddrTCP
-
-	tr, err := ws_transport.New(&ws_transport.Config{
-		ListenAddr:   ":0",
-		Path:         path,
-		Subprotocol:  subproto,
-		HostOverride: host,
-		UseTLS:       useTLS,
-		ServerName:   m.tcfg("ws_sni"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, target)
-}
-
 func (m *Manager) dialGRPC(ctx context.Context) (net.Conn, error) {
 	serverName := m.tcfg("grpc_sni")
 	if serverName == "" {
@@ -619,55 +495,10 @@ func (m *Manager) dialGRPC(ctx context.Context) (net.Conn, error) {
 	return tr.Dial(ctx, m.config.ServerAddrTCP)
 }
 
-func (m *Manager) dialShadowTLS(ctx context.Context) (net.Conn, error) {
-	tr, err := shadowtls_transport.New(&shadowtls_transport.Config{
-		Password:     m.tcfg("password"),
-		ShadowServer: m.config.ServerAddrTCP,
-		SNI:          m.tcfg("sni"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddrTCP)
-}
-
-func (m *Manager) dialYaCloud(ctx context.Context) (net.Conn, error) {
-	tr, err := yacloud.New(&yacloud.Config{
-		GatewayURL: m.tcfg("gateway_url"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
-}
-
 func (m *Manager) dialYaDisk(ctx context.Context) (net.Conn, error) {
 	tr, err := yadisk.New(&yadisk.Config{
 		OAuthToken: m.tcfg("token"),
 		SessionID:  m.tcfg("session_id"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
-}
-
-func (m *Manager) dialYaTelemost(ctx context.Context) (net.Conn, error) {
-	tr, err := yatelemost.New(&yatelemost.Config{
-		SessionID:     m.tcfg("session_id"),
-		ConferenceURL: m.tcfg("conference_url"),
-		ICEPolicy:     "relay",
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
-}
-
-func (m *Manager) dialOKWebRTC(ctx context.Context) (net.Conn, error) {
-	tr, err := okwebrtc.New(&okwebrtc.Config{
-		OKToken: m.tcfg("ok_token"),
-		OKAppID: m.tcfg("ok_app_id"),
 	})
 	if err != nil {
 		return nil, err

@@ -55,16 +55,8 @@ import (
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/transport/chameleon"
 	_ "whispera/internal/modules/transport/grpc"
-	_ "whispera/internal/modules/transport/okwebrtc"
-	shadowtls_transport "whispera/internal/modules/transport/shadowtls"
 	"whispera/internal/modules/transport/tcp"
 	"whispera/internal/modules/transport/udp"
-	_ "whispera/internal/modules/transport/vkbot"
-	_ "whispera/internal/modules/transport/vkwebrtc"
-	ws_transport "whispera/internal/modules/transport/websocket"
-	_ "whispera/internal/modules/transport/yacloud"
-	_ "whispera/internal/modules/transport/yadisk"
-	_ "whispera/internal/modules/transport/yatelemost"
 	"whispera/internal/obfuscation/marionette"
 	mlpkg "whispera/internal/obfuscation/ml"
 	"whispera/pkg/wiraid"
@@ -256,8 +248,8 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		return nil
 	}
 
-	selfManaged := network == "ws" || network == "h2c" || network == "shadowsocks" ||
-		network == "obfs4" || network == "shadowtls"
+	selfManaged := network == "h2c" || network == "shadowsocks" ||
+		network == "obfs4"
 
 	var listener net.Listener
 	if !selfManaged {
@@ -289,108 +281,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				return fmt.Errorf("failed to create handshake handler for %s", inbound.Tag)
 			}
 		}
-	}
-
-	paramStr := func(key, fallback string) string {
-		if v, ok := inbound.StreamSettings.Params[key]; ok {
-			if s, ok := v.(string); ok && s != "" {
-				return s
-			}
-		}
-		return fallback
-	}
-
-	if network == "ws" {
-		path := inbound.StreamSettings.WS.Path
-		if path == "" {
-			path = paramStr("path", "/ws")
-		}
-		wsCfg := ws_transport.DefaultConfig()
-		wsCfg.ListenAddr = listenAddr
-		wsCfg.Path = path
-		wsTrans, err := ws_transport.New(wsCfg)
-		if err != nil {
-			if listener != nil {
-				listener.Close()
-			}
-			return fmt.Errorf("failed to create websocket transport: %w", err)
-		}
-		if listener != nil {
-			listener.Close()
-		}
-		if err := wsTrans.Listen(listenAddr); err != nil {
-			return fmt.Errorf("failed to listen ws on %s: %w", listenAddr, err)
-		}
-		log.Printf("✅ [Dynamic] Inbound %s listening on %s (WebSocket path=%s)", inbound.Tag, listenAddr, path)
-		go func() {
-			defer func() {
-				wsTrans.Close()
-				log.Printf("⏹ [Dynamic] Stopped inbound %s (WebSocket)", inbound.Tag)
-			}()
-			backoffWS := 10 * time.Millisecond
-			for {
-				conn, err := wsTrans.Accept()
-				if err != nil {
-					log.Printf("⚠ [Dynamic] WS Accept error on %s: %v", inbound.Tag, err)
-					acceptBackoff(&backoffWS)
-					continue
-				}
-				backoffWS = 10 * time.Millisecond
-				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, false)
-				} else {
-					conn.Close()
-				}
-			}
-		}()
-		return nil
-	}
-
-	if network == "shadowtls" {
-		password := paramStr("password", "")
-		if password == "" {
-			log.Printf("ℹ [Dynamic] ShadowTLS inbound %s: no password configured, skipping", inbound.Tag)
-			return nil
-		}
-		shadowHost := paramStr("shadow_server", "www.apple.com:443")
-		sni := paramStr("sni", "")
-		stCfg := &shadowtls_transport.Config{
-			Password:     password,
-			ShadowServer: shadowHost,
-			SNI:          sni,
-			ServerMode:   true,
-			Version:      3,
-		}
-		stTrans, err := shadowtls_transport.New(stCfg)
-		if err != nil {
-			return fmt.Errorf("failed to create shadowtls transport: %w", err)
-		}
-		if err := stTrans.Listen(listenAddr); err != nil {
-			return fmt.Errorf("failed to listen shadowtls on %s: %w", listenAddr, err)
-		}
-		log.Printf("✅ [Dynamic] Inbound %s listening on %s (ShadowTLS)", inbound.Tag, listenAddr)
-		go func() {
-			defer func() {
-				stTrans.Close()
-				log.Printf("⏹ [Dynamic] Stopped inbound %s (ShadowTLS)", inbound.Tag)
-			}()
-			backoffST := 10 * time.Millisecond
-			for {
-				conn, err := stTrans.Accept()
-				if err != nil {
-					log.Printf("⚠ [Dynamic] ShadowTLS Accept error on %s: %v", inbound.Tag, err)
-					acceptBackoff(&backoffST)
-					continue
-				}
-				backoffST = 10 * time.Millisecond
-				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, false)
-				} else {
-					conn.Close()
-				}
-			}
-		}()
-		return nil
 	}
 
 	activeListeners[inbound.Tag] = listener
