@@ -72,7 +72,7 @@ export const firewallPage = {
 
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary btn-sm" onclick="this.closest('.modal-backdrop').remove()">Закрыть</button>
+                <button class="btn btn-secondary" onclick="this.closest('.modal-backdrop').remove()">Закрыть</button>
             </div>
         </div>`;
         document.body.appendChild(modal);
