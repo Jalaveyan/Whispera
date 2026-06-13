@@ -2336,7 +2336,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	chameleonAddr, chameleonSNI := "", ""
+	chameleonAddr, chameleonSNI, chameleonQUICAddr := "", "", ""
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {
 			type cfgProvider interface{ GetConfig() *config.ServerConfig }
@@ -2352,6 +2352,16 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 						chameleonAddr = net.JoinHostPort(host, chmPort)
 					}
 					chameleonSNI = chmCfg.Domain
+					if chmCfg.QUICListenAddr != "" {
+						_, quicPort, _ := net.SplitHostPort(chmCfg.QUICListenAddr)
+						if quicPort != "" {
+							host := serverIP
+							if chmCfg.Domain != "" {
+								host = chmCfg.Domain
+							}
+							chameleonQUICAddr = net.JoinHostPort(host, quicPort)
+						}
+					}
 				}
 			}
 		}
@@ -2374,8 +2384,9 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		TransportConfig: req.TransportConfig,
 		MLServerURL:     mlURL,
 		MLToken:         mlToken,
-		ChameleonAddr:   chameleonAddr,
-		ChameleonSNI:    chameleonSNI,
+		ChameleonAddr:     chameleonAddr,
+		ChameleonSNI:      chameleonSNI,
+		ChameleonQUICAddr: chameleonQUICAddr,
 	}
 	ckData, err := json.Marshal(ck)
 	if err != nil {

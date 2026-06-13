@@ -553,9 +553,31 @@ fi
 if [[ -n "$PANEL_CHANGED" ]]; then
     echo "Panel files updated — redeploying static files"
     if [[ -d "panel/public" ]]; then
+        FA_BACKUP=""
+        if [[ -d "$DAT_PATH/panel/public/vendor/fa" ]]; then
+            FA_BACKUP=$(mktemp -d)
+            cp -r "$DAT_PATH/panel/public/vendor/fa" "$FA_BACKUP/fa"
+        fi
         rm -rf "$DAT_PATH/panel/public"
         mkdir -p "$DAT_PATH/panel"
         cp -r panel/public "$DAT_PATH/panel/public"
+        if [[ -n "$FA_BACKUP" ]]; then
+            mkdir -p "$DAT_PATH/panel/public/vendor"
+            cp -r "$FA_BACKUP/fa" "$DAT_PATH/panel/public/vendor/fa"
+            rm -rf "$FA_BACKUP"
+        elif [[ ! -f "$DAT_PATH/panel/public/vendor/fa/all.min.css" ]]; then
+            FA_VER="6.5.1"
+            FA_DIR="$DAT_PATH/panel/public/vendor/fa"
+            FA_BASE="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/${FA_VER}"
+            mkdir -p "$FA_DIR/webfonts"
+            if curl -fsSL "${FA_BASE}/css/all.min.css" -o "$FA_DIR/all.min.css" 2>/dev/null; then
+                for wf in fa-solid-900 fa-regular-400 fa-brands-400; do
+                    curl -fsSL "${FA_BASE}/webfonts/${wf}.woff2" -o "$FA_DIR/webfonts/${wf}.woff2" 2>/dev/null || true
+                    curl -fsSL "${FA_BASE}/webfonts/${wf}.ttf"   -o "$FA_DIR/webfonts/${wf}.ttf"   2>/dev/null || true
+                done
+                sed -i "s|../webfonts/|/vendor/fa/webfonts/|g" "$FA_DIR/all.min.css"
+            fi
+        fi
         chmod -R a+rX "$DAT_PATH/panel/public"
         chown -R whispera:whispera "$DAT_PATH/panel" 2>/dev/null || true
     fi
@@ -661,6 +683,7 @@ setup_nginx_proxy() {
     mkdir -p /etc/nginx/conf.d
     cat > /etc/nginx/conf.d/whispera-ratelimit.conf <<'RLCONF'
 limit_req_zone $binary_remote_addr zone=panel_auth:10m rate=10r/m;
+limit_req_zone $binary_remote_addr zone=panel_api:10m  rate=60r/s;
 limit_req_status 429;
 RLCONF
 
@@ -704,8 +727,35 @@ ${LISTEN_BLOCK}
         proxy_http_version 1.1;
     }
 
+    location = /api/login {
+        limit_req  zone=panel_auth burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+
+    location /api/auth/ {
+        limit_req  zone=panel_auth burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+
+    location /api/v2/auth/ {
+        limit_req  zone=panel_auth burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+
     location /api/ {
-        limit_req  zone=panel_auth burst=20 nodelay;
+        limit_req  zone=panel_api burst=200 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$remote_addr;

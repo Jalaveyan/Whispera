@@ -1493,6 +1493,7 @@ setup_nginx_proxy() {
     mkdir -p /etc/nginx/conf.d
     cat > /etc/nginx/conf.d/whispera-ratelimit.conf <<'RLCONF'
 limit_req_zone $binary_remote_addr zone=panel_auth:10m rate=10r/m;
+limit_req_zone $binary_remote_addr zone=panel_api:10m  rate=60r/s;
 limit_req_status 429;
 RLCONF
 
@@ -1543,8 +1544,35 @@ ${SERVER_BLOCK}
         proxy_http_version 1.1;
     }
 
+    location = /api/login {
+        limit_req  zone=panel_auth burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+
+    location /api/auth/ {
+        limit_req  zone=panel_auth burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+
+    location /api/v2/auth/ {
+        limit_req  zone=panel_auth burst=5 nodelay;
+        proxy_pass         http://127.0.0.1:8080;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+    }
+
     location /api/ {
-        limit_req  zone=panel_auth burst=20 nodelay;
+        limit_req  zone=panel_api burst=200 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$remote_addr;

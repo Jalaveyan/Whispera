@@ -399,7 +399,7 @@ func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfi
 			if hsHandler != nil {
 				handleTCPConnection(conn, hsHandler)
 			} else {
-				globalRelay.ServeTunnel(conn, false)
+				globalRelay.ServeTunnel(stats.WrapConn(conn, conn.RemoteAddr().String()), false)
 			}
 		} else {
 			conn.Close()
@@ -1278,8 +1278,9 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 					return
 				}
 				mlpkg.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), mlpkg.FlowTunnel)
+				tracked := stats.WrapConn(conn, userID)
 				go func() {
-					globalRelay.ServeTunnelRaw(conn, false)
+					globalRelay.ServeTunnelRaw(tracked, false)
 					mlpkg.FlowRegistry.DeleteConn(conn.LocalAddr(), conn.RemoteAddr())
 				}()
 			},
@@ -1289,6 +1290,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				cCfg.SharedSecret = decoded
 			}
 		}
+		cCfg.QUICListenAddr = serverConfig.Chameleon.QUICListenAddr
 		go func() {
 			if err := chameleon.ListenAndServe(ctx, cCfg); err != nil {
 				log.Printf("[Chameleon] server stopped: %v", err)
@@ -1552,7 +1554,7 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			}
 		}
 		if globalRelay != nil {
-			globalRelay.ServeTunnel(conn, false)
+			globalRelay.ServeTunnel(stats.WrapConn(conn, addr.String()), false)
 		}
 	} else {
 		logger.Trace().Infow("raw_tcp_no_handshake",
@@ -1563,7 +1565,7 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			log.Printf("[TCP] No handshake from %v (first byte=0x%02x), routing directly to smux", addr, firstByte[0])
 		}
 		if globalRelay != nil {
-			globalRelay.ServeTunnel(&prependConn{Conn: conn, prepend: []byte{firstByte[0]}}, false)
+			globalRelay.ServeTunnel(stats.WrapConn(&prependConn{Conn: conn, prepend: []byte{firstByte[0]}}, addr.String()), false)
 		}
 	}
 }

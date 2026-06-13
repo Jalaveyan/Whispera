@@ -3,13 +3,13 @@ import { api } from '../services/api.js';
 export const firewallPage = {
     async showFirewallModal() {
         const modal = document.createElement('div');
-        modal.className = 'modal active';
+        modal.className = 'modal-backdrop active';
         modal.style.zIndex = '10000';
         modal.innerHTML = `
-        <div class="modal-content" style="max-width:680px;">
+        <div class="modal" style="max-width:680px;">
             <div class="modal-header">
                 <h3><i class="fas fa-fire-alt" style="margin-right:8px;color:#f59e0b;"></i>Управление Firewall (UFW)</h3>
-                <button class="modal-close modal-close-icon" onclick="this.closest('.modal').remove()"><i class="fas fa-times"></i></button>
+                <button class="modal-close modal-close-icon" onclick="this.closest('.modal-backdrop').remove()"><i class="fas fa-times"></i></button>
             </div>
             <div class="modal-body" style="display:flex;flex-direction:column;gap:20px;">
 
@@ -72,7 +72,7 @@ export const firewallPage = {
 
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary btn-sm" onclick="this.closest('.modal').remove()">Закрыть</button>
+                <button class="btn btn-secondary btn-sm" onclick="this.closest('.modal-backdrop').remove()">Закрыть</button>
             </div>
         </div>`;
         document.body.appendChild(modal);

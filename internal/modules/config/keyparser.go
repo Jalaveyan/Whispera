@@ -39,8 +39,9 @@ type ConnectionKey struct {
 
 	RussianService string `json:"russian_service,omitempty"`
 
-	ChameleonAddr string `json:"chameleon_addr,omitempty"`
-	ChameleonSNI  string `json:"chameleon_sni,omitempty"`
+	ChameleonAddr     string `json:"chameleon_addr,omitempty"`
+	ChameleonSNI      string `json:"chameleon_sni,omitempty"`
+	ChameleonQUICAddr string `json:"chameleon_quic_addr,omitempty"`
 
 	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
 
@@ -253,8 +254,9 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		Transport:       ck.Transport,
 		MLServerURL:     ck.MLServerURL,
 		MLToken:         ck.MLToken,
-		ChameleonAddr:   ck.ChameleonAddr,
-		ChameleonSNI:    ck.ChameleonSNI,
+		ChameleonAddr:     ck.ChameleonAddr,
+		ChameleonSNI:      ck.ChameleonSNI,
+		ChameleonQUICAddr: ck.ChameleonQUICAddr,
 	}
 
 	switch ck.Transport {

@@ -434,21 +434,6 @@ class WhisperaApp {
             this.handleSaveServerSettings();
         });
 
-        const stealthSelect = document.getElementById('stealth-mode-select');
-        if (stealthSelect) {
-            stealthSelect.addEventListener('change', () => this._updateStealthHint(stealthSelect.value));
-            this._updateStealthHint(stealthSelect.value);
-        }
-        document.getElementById('save-stealth-mode-btn')?.addEventListener('click', async () => {
-            const mode = document.getElementById('stealth-mode-select')?.value || '';
-            try {
-                await api.updateStealthMode(mode);
-                this.showNotification(mode === 'russia' ? 'Режим «Россия» активирован' : 'Режим транспорта сброшен в Авто', 'success');
-            } catch (e) {
-                this.showNotification('Ошибка сохранения: ' + e.message, 'error');
-            }
-        });
-
         document.getElementById('force-reload-btn')?.addEventListener('click', async () => {
             if (await this.showConfirm('Вы уверены? Это приведет к перезапуску ядра сервера.')) {
                 try {
@@ -681,7 +666,7 @@ class WhisperaApp {
     showConfirm(message) {
         return new Promise((resolve) => {
             const modal = document.createElement('div');
-            modal.className = 'modal active';
+            modal.className = 'modal-backdrop active';
             modal.style.zIndex = '10000';
 
             const lang = localStorage.getItem('whispera_lang') || 'ru';
@@ -690,7 +675,7 @@ class WhisperaApp {
             const title = lang === 'ru' ? 'Подтверждение' : 'Confirmation';
 
             modal.innerHTML = `
-    <div class="modal-content" style="max-width: 400px;">
+    <div class="modal" style="max-width: 400px;">
                     <div class="modal-header" style="border-bottom: none; padding-bottom: 8px;">
                         <h3 style="margin: 0; font-size: 20px;">${title}</h3>
                     </div>

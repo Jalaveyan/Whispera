@@ -30,19 +30,6 @@ export const settingsPage = {
         } catch (e) {
         }
     },
-    _updateStealthHint(mode) {
-        const hint = document.getElementById('stealth-mode-hint');
-        if (!hint) return;
-        if (mode === 'russia') {
-            hint.innerHTML = '<b>🇷🇺 Россия:</b> VK WebRTC → Яндекс.Телемост → ОК WebRTC → VK Bot → CDN Worker → остальные.<br>Приоритет — транспорты через российскую инфраструктуру, блокировка которых невозможна без масштабных коллатеральных потерь.';
-            hint.style.borderColor = 'rgba(239,68,68,0.4)';
-            hint.style.background = 'rgba(239,68,68,0.06)';
-        } else {
-            hint.innerHTML = '<b>Авто:</b> Все доступные транспорты конкурируют в параллельном режиме. Побеждает первый успешно установивший соединение.';
-            hint.style.borderColor = 'rgba(99,102,241,0.2)';
-            hint.style.background = 'rgba(99,102,241,0.08)';
-        }
-    },
     async handleSaveServerSettings() {
         const port = document.getElementById('server-port').value;
         const domain = document.getElementById('server-domain').value;
@@ -136,15 +123,10 @@ export const settingsPage = {
 
         try {
             const cfg = await api.request('/api/v1/config');
-            const sel = document.getElementById('stealth-mode-select');
-            if (sel) {
-                sel.value = cfg.stealth_mode || '';
-                this._updateStealthHint(sel.value);
-            }
             const puInput = document.getElementById('public-url');
             if (puInput) puInput.value = cfg.public_url || '';
         } catch (e) {
-            console.log('Failed to load stealth mode / config');
+            console.log('Failed to load config');
         }
 
         this._loadProbeStats();

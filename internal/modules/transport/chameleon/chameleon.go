@@ -24,6 +24,8 @@ import (
 
 	"whispera/internal/logger"
 
+	quicgo "github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
@@ -53,6 +55,21 @@ const (
 	h2StreamWindow = 64 << 20
 	h2ConnWindow   = 256 << 20
 )
+
+func chromeLikeQUICConfig() *quicgo.Config {
+	return &quicgo.Config{
+		MaxIdleTimeout:                 30 * time.Second,
+		HandshakeIdleTimeout:           10 * time.Second,
+		InitialStreamReceiveWindow:     6 * 1024 * 1024,
+		MaxStreamReceiveWindow:         6 * 1024 * 1024,
+		InitialConnectionReceiveWindow: 15 * 1024 * 1024,
+		MaxConnectionReceiveWindow:     15 * 1024 * 1024,
+		KeepAlivePeriod:                15 * time.Second,
+		MaxIncomingStreams:              300,
+		MaxIncomingUniStreams:           100,
+		Allow0RTT:                      true,
+	}
+}
 
 func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net.Conn, error)) *http2.Transport {
 	stub := &http.Transport{
@@ -197,7 +214,12 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 
 	pr, pw := io.Pipe()
 	bpw := newBufferedPipeWriter(pw)
-	url := fmt.Sprintf("https://%s%s", cfg.ServerAddr, path)
+
+	tunnelAddr := cfg.ServerAddr
+	if cfg.EnableQUIC && cfg.QUICAddr != "" {
+		tunnelAddr = cfg.QUICAddr
+	}
+	url := fmt.Sprintf("https://%s%s", tunnelAddr, path)
 
 	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
 
@@ -214,18 +236,40 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	applyBrowserHeaders(req, origin)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: encodeSession(sessionID, anchor)})
 
-	local := staticAddr{"tcp", cfg.ServerAddr}
-	remote := staticAddr{"tcp", cfg.ServerAddr}
+	network := "tcp"
+	local := staticAddr{network, tunnelAddr}
+	remote := staticAddr{network, tunnelAddr}
 
 	pc := newPipelinedConn(pr, bpw, tunnelCancel, local, remote)
 
 	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	client := &http.Client{Transport: h2Transport, CheckRedirect: noRedirect}
+
+	var tunnelTransport http.RoundTripper
+	if cfg.EnableQUIC {
+		tlsCfgQUIC := &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+		}
+		if cfg.ServerCertPin != "" {
+			tlsCfgQUIC.VerifyPeerCertificate = pinVerifier(cfg.ServerCertPin)
+		}
+		tunnelTransport = &http3.Transport{
+			TLSClientConfig:    tlsCfgQUIC,
+			QUICConfig:         chromeLikeQUICConfig(),
+			DisableCompression: true,
+		}
+	} else {
+		tunnelTransport = h2Transport
+	}
+
+	client := &http.Client{Transport: tunnelTransport, CheckRedirect: noRedirect}
 	decoyClient := &http.Client{Transport: decoyTransport, CheckRedirect: noRedirect}
 
 	fc := NewFrameConn(pc)
 
-	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc)
+	if !cfg.EnableQUIC {
+		go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc)
+	}
 
 	connected := make(chan error, 1)
 	go func() {
@@ -366,7 +410,34 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		cfg.proxy = newDecoyProxy(cfg.DecoyOrigin)
 	}
 
-	go func() { <-ctx.Done(); srv.Close() }()
+	var h3srv *http3.Server
+	if cfg.QUICListenAddr != "" && cfg.TLSCert != "" {
+		_, port, _ := net.SplitHostPort(cfg.QUICListenAddr)
+		if port == "" {
+			port = "443"
+		}
+		cfg.altSvcHeader = fmt.Sprintf(`h3=":%s"; ma=2592000`, port)
+		h3srv = &http3.Server{
+			Addr:       cfg.QUICListenAddr,
+			Handler:    mux,
+			TLSConfig:  http3.ConfigureTLSConfig(tlsCfg.Clone()),
+			QUICConfig: chromeLikeQUICConfig(),
+		}
+		go func() {
+			if err := h3srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey); err != nil {
+				log.Printf("chameleon: quic: %v", err)
+			}
+		}()
+		log.Printf("Chameleon QUIC/HTTP3 listening on %s", cfg.QUICListenAddr)
+	}
+
+	go func() {
+		<-ctx.Done()
+		if h3srv != nil {
+			h3srv.Close()
+		}
+		srv.Close()
+	}()
 
 	rawLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 	if err != nil {
@@ -548,6 +619,9 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	}
 	w.Header().Set("Server", "nginx/1.24.0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if cfg != nil && cfg.altSvcHeader != "" {
+		w.Header().Set("Alt-Svc", cfg.altSvcHeader)
+	}
 
 	path := r.URL.Path
 	var ct, body string

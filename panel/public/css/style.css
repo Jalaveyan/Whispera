@@ -143,8 +143,9 @@ img, svg { display: block; }
 
 /* ─── App shell ──────────────────────────────────────────────────────── */
 #main-app {
+  display: flex;
   width: 100%;
-  min-height: 100vh;
+  height: 100vh;
   flex-direction: row;
   align-items: stretch;
 }
@@ -243,7 +244,7 @@ img, svg { display: block; }
   margin-left: var(--sidebar-w);
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
 }
 
 /* ─── Topbar ─────────────────────────────────────────────────────────── */
@@ -407,18 +408,18 @@ img, svg { display: block; }
 /* ─── Stat cards ─────────────────────────────────────────────────────── */
 .stats-row {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
   margin-bottom: 24px;
 }
 .stat-card {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 20px;
+  padding: 16px 20px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   transition: border-color .2s;
 }
 .stat-card:hover { border-color: rgba(99,102,241,.2); }
@@ -441,7 +442,7 @@ img, svg { display: block; }
 
 .stat-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .stat-value {
-  font-size: 28px;
+  font-size: 22px;
   font-weight: 700;
   line-height: 1;
   color: var(--text-primary);
@@ -591,6 +592,13 @@ img, svg { display: block; }
   color: var(--text-secondary);
 }
 .btn-ghost:hover { background: var(--bg-hover); border-color: rgba(255,255,255,.12); color: var(--text-primary); }
+
+.btn-secondary {
+  background: var(--bg-hover);
+  border: 1px solid rgba(255,255,255,.1);
+  color: var(--text-secondary);
+}
+.btn-secondary:hover { background: #1f1f38; border-color: rgba(255,255,255,.18); color: var(--text-primary); }
 
 .btn-danger {
   background: transparent;

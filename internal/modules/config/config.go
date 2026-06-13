@@ -344,10 +344,11 @@ type ChameleonConfig struct {
 	Domain        string `yaml:"domain" json:"domain"`
 	ACMEDir       string `yaml:"acme_dir" json:"acme_dir"`
 	DecoyOrigin   string `yaml:"decoy_origin" json:"decoy_origin"`
-	GANIface      string `yaml:"gan_iface" json:"gan_iface"`
-	GANPort       int    `yaml:"gan_port" json:"gan_port"`
-	GANMaxPadding int    `yaml:"gan_max_padding" json:"gan_max_padding"`
-	Secret        string `yaml:"secret" json:"secret"`
+	GANIface       string `yaml:"gan_iface" json:"gan_iface"`
+	GANPort        int    `yaml:"gan_port" json:"gan_port"`
+	GANMaxPadding  int    `yaml:"gan_max_padding" json:"gan_max_padding"`
+	Secret         string `yaml:"secret" json:"secret"`
+	QUICListenAddr string `yaml:"quic_listen_addr" json:"quic_listen_addr"`
 }
 
 type ServerSettings struct {

@@ -172,10 +172,11 @@ func (s TunnelState) String() string {
 
 type ChameleonOptions struct {
 	EnableChameleon  bool
-	ChameleonAddr    string
-	ChameleonSNI     string
-	ChameleonSecret  []byte
-	ChameleonCertPin string
+	ChameleonAddr     string
+	ChameleonSNI      string
+	ChameleonSecret   []byte
+	ChameleonCertPin  string
+	ChameleonQUICAddr string
 	ChameleonMux     int
 }
 
@@ -2294,6 +2295,8 @@ func (m *Manager) chameleonDial() (func(context.Context) (net.Conn, error), bool
 		ServerCertPin: m.config.ChameleonCertPin,
 		SessionCache:  m.chameleonSessionCache,
 		TCPDialer:     tcpDialer,
+		EnableQUIC:    m.config.ChameleonQUICAddr != "",
+		QUICAddr:      m.config.ChameleonQUICAddr,
 	}
 	return func(ctx context.Context) (net.Conn, error) {
 		return chameleon.Client(ctx, cCfg)

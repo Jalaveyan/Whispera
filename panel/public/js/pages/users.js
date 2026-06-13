@@ -278,13 +278,13 @@ export const usersPage = {
             </div>`;
 
         const modal = document.createElement('div');
-        modal.className = 'modal active';
+        modal.className = 'modal-backdrop active';
         modal.style.zIndex = '10000';
         modal.innerHTML = `
-        <div class="modal-content" style="max-width:460px;">
+        <div class="modal" style="max-width:460px;">
             <div class="modal-header">
                 <h3>Редактировать пользователя</h3>
-                <button class="modal-close modal-close-icon" onclick="this.closest('.modal').remove()"><i class="fas fa-times"></i></button>
+                <button class="modal-close modal-close-icon" onclick="this.closest('.modal-backdrop').remove()"><i class="fas fa-times"></i></button>
             </div>
             <div class="modal-body" style="display:flex;flex-direction:column;gap:14px;max-height:70vh;overflow-y:auto;padding-right:4px;">
                 ${field('Email', `<input id="eu-username" class="form-control" type="text" value="${escapeHtml(user.username || '')}">`)}
@@ -350,7 +350,7 @@ export const usersPage = {
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Отмена</button>
+                <button class="btn btn-secondary" onclick="this.closest('.modal-backdrop').remove()">Отмена</button>
                 <button class="btn btn-primary" onclick="app.saveUserEdit(${userId}, this.closest('.modal'))">Сохранить</button>
             </div>
         </div>`;
@@ -396,7 +396,7 @@ export const usersPage = {
     },
     showKeyModal(email, privKey, connectionURI) {
         const modal = document.createElement('div');
-        modal.className = 'modal active';
+        modal.className = 'modal-backdrop active';
         modal.style.zIndex = '10000';
 
         const uri = connectionURI || privKey;
@@ -420,10 +420,10 @@ export const usersPage = {
             </div>`;
 
         modal.innerHTML = `
-    <div class="modal-content" style="max-width:540px;">
+    <div class="modal" style="max-width:540px;">
         <div class="modal-header">
             <h3>Пользователь создан</h3>
-            <button class="modal-close modal-close-icon" onclick="this.closest('.modal').remove()"><i class="fas fa-times"></i></button>
+            <button class="modal-close modal-close-icon" onclick="this.closest('.modal-backdrop').remove()"><i class="fas fa-times"></i></button>
         </div>
         <div class="modal-body" style="display:flex;flex-direction:column;gap:4px;">
             <p style="margin:0 0 8px;">Пользователь: <strong>${email}</strong></p>
@@ -455,7 +455,7 @@ export const usersPage = {
             </p>
         </div>
         <div class="modal-footer">
-            <button class="btn btn-primary" onclick="this.closest('.modal').remove()">Готово</button>
+            <button class="btn btn-primary" onclick="this.closest('.modal-backdrop').remove()">Готово</button>
         </div>
     </div>`;
         document.body.appendChild(modal);

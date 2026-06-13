@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-// ClientConfig contains only the fields relevant to the outgoing tunnel client.
 type ClientConfig struct {
 	ServerAddr    string
 	ServerName    string
@@ -16,9 +15,11 @@ type ClientConfig struct {
 	ServerCertPin string
 	SessionCache  any
 	TCPDialer     func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	EnableQUIC bool
+	QUICAddr   string
 }
 
-// ServerConfig contains only the fields relevant to the server listener.
 type ServerConfig struct {
 	ListenAddr    string
 	TLSCert       string
@@ -28,6 +29,8 @@ type ServerConfig struct {
 	DecoyOrigin   string
 	AsymBiasRatio float64
 	SharedSecret  []byte
+
+	QUICListenAddr string
 
 	GetUsers  func() []UserEntry
 	OnConn    func(conn net.Conn, userID string)
@@ -40,6 +43,8 @@ type ServerConfig struct {
 
 	seenTokensMu sync.Mutex
 	seenTokens   map[string]int64
+
+	altSvcHeader string
 }
 
 func (cfg *ServerConfig) consumeToken(token string) bool {

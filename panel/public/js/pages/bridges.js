@@ -494,16 +494,16 @@ export const bridgesPage = {
                 this.showNotification(`Подключение к мосту ${title} — конфигурация получена`, 'success');
 
                 const configModal = document.createElement('div');
-                configModal.className = 'modal active';
+                configModal.className = 'modal-backdrop active';
                 configModal.innerHTML = `
-                    <div class="modal-content" style="max-width:500px;">
+                    <div class="modal" style="max-width:500px;">
                         <div class="modal-header"><h3>Конфигурация подключения</h3></div>
                         <div class="modal-body">
                             <pre style="background:rgba(0,0,0,0.3);padding:12px;border-radius:8px;font-size:0.82em;overflow-x:auto;color:#7ef7c8;">${configStr}</pre>
                             <p style="font-size:0.82em;color:#888;margin-top:8px;">Используйте эти данные в клиенте Whisp для подключения.</p>
                         </div>
                         <div class="modal-footer">
-                            <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Закрыть</button>
+                            <button class="btn btn-secondary" onclick="this.closest('.modal-backdrop').remove()">Закрыть</button>
                             <button class="btn btn-primary" data-act="copy" data-copy="${escapeHtml(configStr)}">Копировать</button>
                         </div>
                     </div>`;

@@ -90,6 +90,9 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 			if sni, ok := cfg.Settings["chameleon_sni"].(string); ok && sni != "" {
 				tCfg.ChameleonSNI = sni
 			}
+			if qa, ok := cfg.Settings["chameleon_quic_addr"].(string); ok && qa != "" {
+				tCfg.ChameleonQUICAddr = qa
+			}
 		}
 	}
 
@@ -267,6 +270,9 @@ func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.Outbound
 			tCfg.ChameleonSecret = decoded
 			if sni, ok := cfg.Settings["chameleon_sni"].(string); ok && sni != "" {
 				tCfg.ChameleonSNI = sni
+			}
+			if qa, ok := cfg.Settings["chameleon_quic_addr"].(string); ok && qa != "" {
+				tCfg.ChameleonQUICAddr = qa
 			}
 		}
 	}

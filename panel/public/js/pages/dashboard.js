@@ -20,6 +20,9 @@ export const dashboardPage = {
     },
     startLiveStats() {
         this.stopLiveStats();
+        this._prevRx = null;
+        this._prevTx = null;
+        this._prevTs = null;
         const base = (typeof api !== 'undefined' && api.baseURL) ? api.baseURL.replace(/\/$/, '') : '';
         const token = (typeof api !== 'undefined' && api.token) ? encodeURIComponent(api.token) : '';
         const url = base + '/api/stats/live' + (token ? '?token=' + token : '');
@@ -35,12 +38,22 @@ export const dashboardPage = {
                 if (el('stat-memory')) el('stat-memory').textContent = d.memory_usage || '-';
                 if (el('stat-cpu')) el('stat-cpu').textContent = d.cpu_load != null ? d.cpu_load.toFixed(1) + '%' : '-';
                 if (el('server-uptime')) el('server-uptime').textContent = this.formatUptime(d.uptime ?? 0);
-                this.updateTrafficChart(d.total_download ?? 0, d.total_upload ?? 0);
+
+                const now = Date.now();
+                const rx = d.total_download ?? 0;
+                const tx = d.total_upload ?? 0;
+                if (this._prevRx !== null && this._prevTs !== null) {
+                    const dt = (now - this._prevTs) / 1000;
+                    const dlMBs = Math.max(0, (rx - this._prevRx) / dt / (1024 * 1024));
+                    const ulMBs = Math.max(0, (tx - this._prevTx) / dt / (1024 * 1024));
+                    this.updateTrafficChart(dlMBs, ulMBs);
+                }
+                this._prevRx = rx;
+                this._prevTx = tx;
+                this._prevTs = now;
             } catch (_) {}
         };
-        this._liveStatsESrc.onerror = () => {
-            // EventSource reconnects automatically; no extra handling needed
-        };
+        this._liveStatsESrc.onerror = () => {};
     },
     stopLiveStats() {
         if (this._liveStatsESrc) {
@@ -82,8 +95,12 @@ export const dashboardPage = {
                 },
                 scales: {
                     y: {
+                        min: 0,
                         grid: { color: '#334155' },
-                        ticks: { color: '#94a3b8' }
+                        ticks: {
+                            color: '#94a3b8',
+                            callback: (v) => v.toFixed(2)
+                        }
                     },
                     x: {
                         grid: { display: false }
