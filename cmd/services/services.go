@@ -62,13 +62,9 @@ func main() {
 	flag.Parse()
 
 	if *printVersion {
-		log.Printf("Whispera Auth Service v%s", Version)
+		log.Printf("Whispera v%s", Version)
 		os.Exit(0)
 	}
-
-	log.Printf("╔══════════════════════════════════════════════════════════════╗")
-	log.Printf("║           Whispera Auth Service v%s                       ║", Version)
-	log.Printf("╚══════════════════════════════════════════════════════════════╝")
 
 	manager := lifecycle.NewManager(lifecycle.Config{
 		ShutdownTimeout: 10_000_000_000,

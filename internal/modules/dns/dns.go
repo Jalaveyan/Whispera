@@ -1,4 +1,4 @@
-package dnsmodule
+package dns
 
 import (
 	"bytes"
@@ -13,7 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"whispera/internal/adblock"
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
@@ -241,9 +240,6 @@ func (r *Resolver) ClearCache() {
 }
 
 func (r *Resolver) isBlocked(domain string) bool {
-	if adblock.Global.IsBlockedDNS(domain) {
-		return true
-	}
 
 	if !r.config.BlockingEnabled {
 		return false

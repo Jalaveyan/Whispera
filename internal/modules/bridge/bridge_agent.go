@@ -178,13 +178,11 @@ func (a *Agent) Start() {
 		go a.serveClusterHTTP(a.config.ClusterListenAddr)
 	}
 
-	log.Printf("Bridge agent started (id=%s)", a.config.BridgeID)
 }
 
 func (a *Agent) Stop() {
 	close(a.stopCh)
 	a.wg.Wait()
-	log.Printf("Bridge agent stopped")
 }
 
 func (a *Agent) initMiniNets() {
@@ -309,7 +307,6 @@ func (a *Agent) fetchMLToken() {
 
 	resp, err := a.post("/api/ml/config", body)
 	if err != nil {
-		log.Printf("ML token fetch failed: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -329,7 +326,6 @@ func (a *Agent) fetchMLToken() {
 	}
 	a.mlMu.Unlock()
 
-	log.Printf("ML token acquired from upstream")
 }
 
 func (a *Agent) mlPost(path string, body interface{}) (*http.Response, error) {
@@ -409,7 +405,6 @@ func (a *Agent) mlGet(path string) (*http.Response, error) {
 func (a *Agent) syncMLWeights() {
 	resp, err := a.mlGet("/federated/download")
 	if err != nil {
-		log.Printf("ML weights sync failed: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -441,7 +436,6 @@ func (a *Agent) syncMLWeights() {
 	if len(delta.Transport) > 0 {
 		a.transportNet.LoadWeights(delta.Transport)
 	}
-	log.Printf("ML weights synced from server")
 }
 
 func (a *Agent) uploadSamples() {
@@ -471,7 +465,6 @@ func (a *Agent) uploadSamples() {
 		return
 	}
 	resp.Body.Close()
-	log.Printf("ML samples uploaded: %d", len(samples))
 }
 
 func (a *Agent) heartbeatLoop() {
@@ -574,7 +567,6 @@ func (a *Agent) sendHeartbeat() {
 
 	resp, err := a.post("/api/bridge-heartbeat", body)
 	if err != nil {
-		log.Printf("Heartbeat failed: %v", err)
 		if a.onAlert != nil {
 			a.onAlert("heartbeat_failed", err.Error())
 		}
@@ -638,7 +630,6 @@ func (a *Agent) sendMetrics() {
 	}
 	resp, err := a.post("/api/bridge-metrics", body)
 	if err != nil {
-		log.Printf("Metrics send failed: %v", err)
 		return
 	}
 	resp.Body.Close()
@@ -671,7 +662,6 @@ func (a *Agent) pollConfig() {
 		if a.onConfigUpdate != nil {
 			a.onConfigUpdate(result.Config)
 		}
-		log.Printf("Config updated to version %s", result.ConfigVersion)
 	}
 }
 
@@ -805,7 +795,6 @@ func (a *Agent) runPeerElection() {
 	if a.masterID != elected.id {
 		a.masterTerm++
 		a.electedAt = time.Now()
-		log.Printf("Peer election: new master %s @ %s (term %d)", elected.id, elected.address, a.masterTerm)
 	}
 	a.masterID = elected.id
 	a.masterAddr = elected.address
@@ -843,8 +832,6 @@ func (a *Agent) serveClusterHTTP(addr string) {
 		fmt.Fprintf(w, `{"id":%q,"alive":true}`, a.config.BridgeID)
 	})
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	log.Printf("Bridge cluster HTTP listening on %s", addr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Printf("Cluster HTTP server error: %v", err)
 	}
 }

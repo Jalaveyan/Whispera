@@ -138,7 +138,6 @@ func New(cfg *Config) (*Manager, error) {
 		byAddr:      make(map[string]uint32),
 		eventChans:  make([]chan interfaces.SessionEvent, 0),
 		cleanupStop: make(chan struct{}),
-		cache:       cache.Global(),
 	}
 
 	for i := 0; i < numShards; i++ {
