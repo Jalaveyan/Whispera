@@ -346,6 +346,10 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 		serveDecoy(w, r, cfg)
 		return
 	}
+	if !cfg.consumeToken(token) {
+		serveDecoy(w, r, cfg)
+		return
+	}
 
 	log.Printf("chameleon: REST authenticated user=%s from %s", userID, r.RemoteAddr)
 
@@ -459,6 +463,10 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
 		log.Printf("chameleon: HLS auth failed from %s", r.RemoteAddr)
+		serveDecoy(w, r, cfg)
+		return
+	}
+	if !cfg.consumeToken(token) {
 		serveDecoy(w, r, cfg)
 		return
 	}

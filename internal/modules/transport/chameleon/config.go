@@ -37,6 +37,30 @@ type ServerConfig struct {
 	sessions    sync.Map
 	sessionMu   sync.Mutex
 	sessionCond *sync.Cond
+
+	seenTokensMu sync.Mutex
+	seenTokens   map[string]int64
+}
+
+func (cfg *ServerConfig) consumeToken(token string) bool {
+	now := time.Now().Unix()
+	cfg.seenTokensMu.Lock()
+	defer cfg.seenTokensMu.Unlock()
+	if cfg.seenTokens == nil {
+		cfg.seenTokens = make(map[string]int64)
+	}
+	if t, ok := cfg.seenTokens[token]; ok && now-t < 90 {
+		return false
+	}
+	cfg.seenTokens[token] = now
+	if len(cfg.seenTokens) > 1000 {
+		for k, t := range cfg.seenTokens {
+			if now-t >= 90 {
+				delete(cfg.seenTokens, k)
+			}
+		}
+	}
+	return true
 }
 
 func (cfg *ServerConfig) initCond() {

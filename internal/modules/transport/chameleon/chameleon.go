@@ -462,6 +462,10 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 		serveDecoy(w, r, cfg)
 		return
 	}
+	if !cfg.consumeToken(token) {
+		serveDecoy(w, r, cfg)
+		return
+	}
 
 	startedAt := time.Now()
 	log.Printf("chameleon: stream authenticated user=%s from %s proto=%s contentLength=%d", userID, r.RemoteAddr, r.Proto, r.ContentLength)

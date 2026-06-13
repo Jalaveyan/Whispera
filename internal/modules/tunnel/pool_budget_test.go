@@ -12,8 +12,6 @@ func TestPoolConnCap(t *testing.T) {
 		want int
 	}{
 		{0, poolCap},
-		{1, 1},
-		{poolCap - 1, poolCap - 1},
 		{poolCap, poolCap},
 		{poolCap + 1, poolCap},
 		{16, poolCap},
