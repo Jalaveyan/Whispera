@@ -452,8 +452,9 @@ type APIConfig struct {
 	AllowedOrigins []string `yaml:"allowed_origins"`
 	TLSCert        string   `yaml:"tls_cert"`
 	TLSKey         string   `yaml:"tls_key"`
-	AdminUsername  string   `yaml:"admin_username"`
-	AdminPassword  string   `yaml:"admin_password"`
+	AdminUsername      string `yaml:"admin_username"`
+	AdminPassword      string `yaml:"admin_password"`
+	AdminPasswordHash  string `yaml:"admin_password_hash"`
 	LoginRateLimit int      `yaml:"login_rate_limit"`
 }
 

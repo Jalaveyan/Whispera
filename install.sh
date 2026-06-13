@@ -1339,6 +1339,7 @@ generate_config() {
     local ADMIN_PASS=$(gen_password 30)
     echo "$ADMIN_PASS" > "$CONF_PATH/admin.pass"
     chmod 600 "$CONF_PATH/admin.pass"
+    local ADMIN_HASH=$("$BIN_PATH/whispera" hash-password "$ADMIN_PASS" 2>/dev/null || echo "")
 
     if [[ -n "$PG_PASS" ]]; then
         log_info "Creating admin user in database..."
@@ -1394,7 +1395,7 @@ api:
   listen_addr: ":8080"
   web_root: ""
   admin_username: "admin"
-  admin_password: "$ADMIN_PASS"
+  admin_password_hash: "$ADMIN_HASH"
   enable_cors: true
   login_rate_limit: 5
 

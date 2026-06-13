@@ -40,6 +40,7 @@ import (
 	"whispera/internal/stats"
 
 	"github.com/quic-go/quic-go/http3"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/curve25519"
 )
 
@@ -74,8 +75,9 @@ type Config struct {
 	AllowedOrigins []string
 	TLSCert        string
 	TLSKey         string
-	AdminUsername  string
-	AdminPassword  string
+	AdminUsername     string
+	AdminPassword     string
+	AdminPasswordHash string
 	LoginRateLimit int
 	TLSFingerprint string
 }
@@ -97,12 +99,14 @@ func (c *Config) Validate() error {
 	if c.ListenAddr == "" {
 		c.ListenAddr = ":8081"
 	}
-	if p := c.AdminPassword; p != "" {
-		if len(p) < 12 {
-			return fmt.Errorf("admin_password is too short (minimum 12 characters) — generate one with: openssl rand -base64 16")
-		}
-		if _, weak := weakPasswords[strings.ToLower(p)]; weak {
-			return fmt.Errorf("admin_password %q is a known default — change it in config.yaml", p)
+	if c.AdminPasswordHash == "" {
+		if p := c.AdminPassword; p != "" {
+			if len(p) < 12 {
+				return fmt.Errorf("admin_password is too short (minimum 12 characters) — generate one with: openssl rand -base64 16")
+			}
+			if _, weak := weakPasswords[strings.ToLower(p)]; weak {
+				return fmt.Errorf("admin_password %q is a known default — change it in config.yaml", p)
+			}
 		}
 	}
 	return nil
@@ -1017,28 +1021,31 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		log.Warn("no admin_username configured, falling back to 'admin'")
 	}
 
-	if expectedPassword != "" {
-		usernameMatch := subtle.ConstantTimeCompare([]byte(req.Username), []byte(expectedUsername)) == 1
-		passwordMatch := subtle.ConstantTimeCompare([]byte(req.Password), []byte(expectedPassword)) == 1
+	usernameMatch := subtle.ConstantTimeCompare([]byte(req.Username), []byte(expectedUsername)) == 1
+	var passwordMatch bool
+	if s.config.AdminPasswordHash != "" {
+		passwordMatch = usernameMatch && bcrypt.CompareHashAndPassword([]byte(s.config.AdminPasswordHash), []byte(req.Password)) == nil
+	} else if expectedPassword != "" {
+		passwordMatch = subtle.ConstantTimeCompare([]byte(req.Password), []byte(expectedPassword)) == 1
+	}
 
-		if usernameMatch && passwordMatch {
-			s.clearLoginAttempts(clientIP)
+	if usernameMatch && passwordMatch {
+		s.clearLoginAttempts(clientIP)
 
-			token := s.issueTimedToken(req.Username)
-			log.Info("successful login from %s user=%s", clientIP, req.Username)
-			AppendEvent(EventAuth, SeverityInfo, "login success", map[string]string{"ip": clientIP, "user": req.Username})
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success":    true,
-				"token":      token,
-				"expires_in": 1800,
-				"user": map[string]string{
-					"username": req.Username,
-					"role":     "admin",
-				},
-			})
-			return
-		}
+		token := s.issueTimedToken(req.Username)
+		log.Info("successful login from %s user=%s", clientIP, req.Username)
+		AppendEvent(EventAuth, SeverityInfo, "login success", map[string]string{"ip": clientIP, "user": req.Username})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":    true,
+			"token":      token,
+			"expires_in": 1800,
+			"user": map[string]string{
+				"username": req.Username,
+				"role":     "admin",
+			},
+		})
+		return
 	}
 
 	log.Warn("failed login attempt from %s user=%s", clientIP, req.Username)
@@ -3129,12 +3136,23 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	passwordChanged := req.Password != "" && req.Password != s.config.AdminPassword
+	passwordChanged := req.Password != ""
+
+	var newHash string
+	if req.Password != "" {
+		h, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			s.jsonError(w, http.StatusInternalServerError, "failed to hash password: "+err.Error())
+			return
+		}
+		newHash = string(h)
+	}
 
 	if err := cfgProvider.Update(func(cfg *config.ServerConfig) {
 		cfg.API.AdminUsername = req.Username
-		if req.Password != "" {
-			cfg.API.AdminPassword = req.Password
+		if newHash != "" {
+			cfg.API.AdminPasswordHash = newHash
+			cfg.API.AdminPassword = ""
 		}
 	}); err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "failed to save: "+err.Error())
@@ -3142,8 +3160,9 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.config.AdminUsername = req.Username
-	if req.Password != "" {
-		s.config.AdminPassword = req.Password
+	if newHash != "" {
+		s.config.AdminPasswordHash = newHash
+		s.config.AdminPassword = ""
 	}
 
 	clientIP := r.Header.Get("X-Forwarded-For")

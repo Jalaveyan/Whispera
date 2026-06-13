@@ -22,6 +22,7 @@ import (
 	"time"
 
 	_ "go.uber.org/automaxprocs"
+	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/net/proxy"
 
@@ -495,6 +496,18 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Printf("User %s is now an admin\n", *email)
+			os.Exit(0)
+		case "hash-password":
+			if len(os.Args) < 3 || os.Args[2] == "" {
+				fmt.Fprintln(os.Stderr, "Usage: whispera hash-password <password>")
+				os.Exit(1)
+			}
+			h, err := bcrypt.GenerateFromPassword([]byte(os.Args[2]), bcrypt.DefaultCost)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			fmt.Println(string(h))
 			os.Exit(0)
 		case "wiraid":
 			runWiraidCLI(os.Args[2:])
@@ -1048,8 +1061,9 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			AuthToken:      serverConfig.API.AuthToken,
 			WebRoot:        serverConfig.API.WebRoot,
 			EnableCORS:     true,
-			AdminUsername:  serverConfig.API.AdminUsername,
-			AdminPassword:  serverConfig.API.AdminPassword,
+			AdminUsername:     serverConfig.API.AdminUsername,
+			AdminPassword:     serverConfig.API.AdminPassword,
+			AdminPasswordHash: serverConfig.API.AdminPasswordHash,
 			LoginRateLimit: serverConfig.API.LoginRateLimit,
 		})
 		if err != nil {
