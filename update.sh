@@ -1116,7 +1116,7 @@ show_extras_menu() {
                 log_success "Panel password updated. User: admin / Password: ${NEW_PASS}"
                 ;;
             24)
-                _check_panel_integrity
+                log_info "Panel is static — no bundle integrity check needed"
                 ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
@@ -1129,8 +1129,6 @@ show_extras_menu() {
     done
 }
 
-
-PANEL_BUNDLE_MIN_BYTES=1048576
 
 _verify_panel_archive() {
     local archive="$1"       # path to panel-release.tar.gz
@@ -1171,75 +1169,12 @@ _verify_panel_archive() {
     return 0
 }
 
-_verify_panel_bundle() {
-    local panel_dir="${1:-$DAT_PATH/panel}"
-    local bundle="$panel_dir/bundle/index.js"
-    [[ -f "$bundle" ]] || { log_err "Panel bundle missing: $bundle"; return 1; }
-
-    local bytes
-    bytes=$(stat -c%s "$bundle" 2>/dev/null || stat -f%z "$bundle" 2>/dev/null || echo 0)
-    if [[ "$bytes" -lt "$PANEL_BUNDLE_MIN_BYTES" ]]; then
-        log_err "Panel bundle is suspiciously small (${bytes} bytes < 1 MB) — possible tampering!"
-        return 1
-    fi
-
-    sha256sum "$bundle" > "$CONF_PATH/panel-bundle.sha256" 2>/dev/null
-    log_info "Panel bundle OK ($(( bytes / 1024 )) KB), hash recorded"
-    return 0
-}
-
-_check_panel_integrity() {
-    local panel_dir="${1:-$DAT_PATH/panel}"
-    local bundle="$panel_dir/bundle/index.js"
-    local stored="$CONF_PATH/panel-bundle.sha256"
-
-    if [[ ! -f "$stored" ]]; then
-        log_warn "No stored panel hash — run update to establish baseline"
-        return 0
-    fi
-    if ! sha256sum --check "$stored" --status 2>/dev/null; then
-        log_err "Panel bundle hash MISMATCH — file may have been tampered with!"
-        sha256sum "$bundle" 2>/dev/null
-        echo "Expected:"
-        cat "$stored"
-        return 1
-    fi
-    log_success "Panel integrity OK"
-    return 0
-}
-
-_repair_panel_bundle() {
-    local panel_dir="${1:-$DAT_PATH/panel}"
-    if [[ -f "$panel_dir/bundle/index.js" ]]; then
-        return
-    fi
-    log_warn "bundle/index.js missing — attempting repair"
-    if [[ -f "$panel_dir/dist/main.js" ]]; then
-        local node_bin
-        node_bin=$(command -v node || echo /usr/bin/node)
-        if "$node_bin" -e "require('@vercel/ncc')" 2>/dev/null; then
-            cd "$panel_dir"
-            npx @vercel/ncc build dist/main.js -o bundle/ --minify --no-source-map-register \
-                && log_success "Panel bundle rebuilt" \
-                || { mkdir -p bundle; cp dist/main.js bundle/index.js; log_warn "ncc failed — copied dist/main.js"; }
-            cd - >/dev/null
-        else
-            mkdir -p "$panel_dir/bundle"
-            cp "$panel_dir/dist/main.js" "$panel_dir/bundle/index.js"
-            log_warn "ncc not available — copied dist/main.js as bundle/index.js"
-        fi
-    else
-        log_warn "Neither bundle/index.js nor dist/main.js found — panel needs reinstall"
-    fi
-}
 
 do_update() {
     trap 'systemctl is-active --quiet whispera 2>/dev/null || { systemctl daemon-reload 2>/dev/null; systemctl start whispera 2>/dev/null || true; }' EXIT
 
     mkdir -p "$WORK_DIR"
     cd "$WORK_DIR" || exit 1
-
-    _repair_panel_bundle
 
     if command -v whispera-backup &>/dev/null; then
         log_info "Creating pre-update backup..."
