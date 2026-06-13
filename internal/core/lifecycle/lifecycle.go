@@ -125,9 +125,6 @@ func (m *Manager) Stop() error {
 
 	m.cancel()
 
-	// Каждый onShutdown callback ограничиваем 5s. Раньше любой зависший
-	// callback (например, net.Close на активном соединении) держал shutdown
-	// дольше systemd TimeoutStopSec → SIGKILL.
 	for i, cb := range m.onShutdown {
 		done := make(chan struct{})
 		go func(c func()) { defer close(done); defer recoverPanic(i); c() }(cb)

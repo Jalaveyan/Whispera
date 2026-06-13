@@ -682,7 +682,7 @@ func (ae *AdversarialEngine) applyFGSM(data []byte, features [featureDims]float6
 	return result
 }
 
-func (ae *AdversarialEngine) applyPGD(data []byte, features [featureDims]float64, epsilon float64, steps int) []byte {
+func (ae *AdversarialEngine) applyPGD(data []byte, _ [featureDims]float64, epsilon float64, steps int) []byte {
 	result := make([]byte, len(data))
 	copy(result, data)
 

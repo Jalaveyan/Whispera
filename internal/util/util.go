@@ -3,13 +3,10 @@ package util
 import (
 	"sync/atomic"
 	"time"
-
-	"whispera/internal/logger"
 )
 
 func SafeClose(name string, closer func() error) {
 	if err := closer(); err != nil {
-		logger.Warn("Failed to close %s: %v", name, err)
 	}
 }
 

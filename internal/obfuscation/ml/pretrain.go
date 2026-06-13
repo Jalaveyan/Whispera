@@ -10,8 +10,7 @@ func (e *NativeMLEngine) PretrainFromPatterns() (int, float64) {
 		return 0, 0
 	}
 
-	log.Info("Pre-training model from protocol patterns (no saved weights found)...")
-	start := time.Now()
+	_ = time.Now()
 
 	var samples []TrainingSample
 
@@ -41,9 +40,9 @@ func (e *NativeMLEngine) PretrainFromPatterns() (int, float64) {
 			data := g.gen()
 			features := e.ExtractFeatures(data)
 			samples = append(samples, TrainingSample{
-				Features: features,
-				ClassID:  g.classID,
-				DPIType:  g.dpiType,
+				Features:  features,
+				ClassID:   g.classID,
+				DPIType:   g.dpiType,
 				IsLabeled: true,
 			})
 		}
@@ -65,14 +64,12 @@ func (e *NativeMLEngine) PretrainFromPatterns() (int, float64) {
 
 	n, acc := e.Train(100)
 
-	log.Info("Pre-training complete: %d samples, accuracy=%.3f, took %s", n, acc, time.Since(start))
 	return n, acc
 }
 
 func (e *NativeMLEngine) ShouldPretrain() bool {
 	return e.lastTrained.IsZero() && e.accuracy <= 0.5
 }
-
 
 func genTLSHandshake() []byte {
 	size := 100 + mrand.Intn(400)
@@ -197,4 +194,3 @@ func fillCryptoRandom(b []byte) {
 		b[i] = byte(mrand.Intn(256))
 	}
 }
-

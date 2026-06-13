@@ -133,7 +133,6 @@ func (dc *DataCollector) loadLatestFromDisk() {
 	dc.samples = append(dc.samples, loaded...)
 	dc.mu.Unlock()
 
-	log.Info("[data_collector] restored %d samples from %s", len(loaded), latestFile)
 }
 
 func NewFeatureStatistics(numFeatures int) *FeatureStatistics {
@@ -390,7 +389,6 @@ func (dc *DataCollector) SaveToDisk() error {
 	dc.lastSave = time.Now()
 	dc.mu.Unlock()
 
-	log.Info("Saved %d samples to %s", len(samples), filename)
 	return nil
 }
 
@@ -400,7 +398,6 @@ func (dc *DataCollector) backgroundSaveLoop() {
 
 	for range ticker.C {
 		if err := dc.SaveToDisk(); err != nil {
-			log.Warn("Save error: %v", err)
 		}
 	}
 }
@@ -484,7 +481,6 @@ func (dc *DataCollector) UploadToMLServer() error {
 	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNoContent {
 		atomic.AddUint64(&dc.uploadedCount, uint64(len(batch)))
 		dc.lastUpload = time.Now()
-		log.Info("Uploaded %d samples + weights to ML server (%d total)", len(batch), atomic.LoadUint64(&dc.uploadedCount))
 	}
 	return nil
 }
@@ -522,7 +518,6 @@ func (dc *DataCollector) downloadAggregatedModel() error {
 	}
 	if result.Weights != nil && nativeEngine != nil {
 		nativeEngine.ImportModelState(result.Weights, 0.7)
-		log.Info("Applied aggregated ML model weights from server (FedAvg α=0.7)")
 	}
 	return nil
 }
@@ -532,7 +527,6 @@ func (dc *DataCollector) backgroundUploadLoop() {
 	defer ticker.Stop()
 	for range ticker.C {
 		if err := dc.UploadToMLServer(); err != nil {
-			log.Warn("ML upload error: %v", err)
 		}
 	}
 }
@@ -541,13 +535,11 @@ func (dc *DataCollector) backgroundDownloadLoop() {
 	// First download after 2 minutes (give server time to aggregate).
 	time.Sleep(2 * time.Minute)
 	if err := dc.downloadAggregatedModel(); err != nil {
-		log.Warn("ML model download error: %v", err)
 	}
 	ticker := time.NewTicker(30 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
 		if err := dc.downloadAggregatedModel(); err != nil {
-			log.Warn("ML model download error: %v", err)
 		}
 	}
 }

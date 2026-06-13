@@ -35,11 +35,9 @@ func shadowChunkDecide(v ChunkView, realIdx int) {
 	if greedy == realIdx {
 		shadowAgree++
 	}
-	agree, total := shadowAgree, shadowTotal
+	_, total := shadowAgree, shadowTotal
 	shadowMu.Unlock()
 	if total%200 == 0 {
-		chunkLog.Info("shadow chunk parity: %.1f%% (%d/%d) greedy=%d real=%d",
-			100*float64(agree)/float64(total), agree, total, greedy, realIdx)
 	}
 }
 

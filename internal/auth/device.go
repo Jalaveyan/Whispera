@@ -39,14 +39,12 @@ func LoadOrCreateDeviceID() ([16]byte, error) {
 		}
 	}
 
-	// Generate new UUID v4
 	if _, err := rand.Read(id[:]); err != nil {
 		return id, fmt.Errorf("failed to generate device ID: %w", err)
 	}
-	id[6] = (id[6] & 0x0f) | 0x40 // version 4
-	id[8] = (id[8] & 0x3f) | 0x80 // variant bits
+	id[6] = (id[6] & 0x0f) | 0x40
+	id[8] = (id[8] & 0x3f) | 0x80
 
-	// Persist (non-fatal if dir can't be created)
 	if mkErr := os.MkdirAll(filepath.Dir(path), 0700); mkErr == nil {
 		_ = os.WriteFile(path, []byte(hex.EncodeToString(id[:])+"\n"), 0600)
 	}

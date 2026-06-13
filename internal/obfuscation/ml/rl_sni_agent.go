@@ -1,9 +1,8 @@
 package ml
 
 import (
-	"encoding/json"
-	"fmt"
 	"context"
+	"encoding/json"
 	"io"
 	"math"
 	mrand "math/rand"
@@ -49,11 +48,11 @@ type RLSNIAgent struct {
 	adam      *AdamState
 	worldAdam *AdamState
 
-	prb        *PrioritizedReplayBuffer
-	thompson   *ThompsonSampler
-	sticky     StickyExplorer
-	curriculum CurriculumTracker
-	diversity  DiversityTracker
+	prb         *PrioritizedReplayBuffer
+	thompson    *ThompsonSampler
+	sticky      StickyExplorer
+	curriculum  CurriculumTracker
+	diversity   DiversityTracker
 	temperature float64
 
 	epsilon    float64
@@ -156,12 +155,10 @@ func (a *RLSNIAgent) fetchAndUpdatePool(url string) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
-		sniLog.Warn("auto-fetch domains: bad URL: %v", err)
 		return
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		sniLog.Warn("auto-fetch domains failed: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -196,7 +193,6 @@ func (a *RLSNIAgent) fetchAndUpdatePool(url string) {
 
 	if len(newPool) > oldLen {
 		a.SetPool(newPool)
-		sniLog.Info("auto-fetch: pool updated %d → %d domains", oldLen, len(newPool))
 	}
 }
 
@@ -227,20 +223,17 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 		a.pendingState = nil
 		a.pendingAction = -1
 		idx := mrand.Intn(len(pool))
-		sniLog.Info("warmup → %s (pool=%d)", pool[idx], len(pool))
 		return pool[idx], idx
 	}
 
 	n := len(pool)
 	var idx int
-	var mode string
 
 	if stickyIdx, exploring := a.sticky.Explore(a.epsilon, n); exploring {
 		idx = stickyIdx
 		if idx >= n {
 			idx = mrand.Intn(n)
 		}
-		mode = "explore-sticky"
 	} else {
 		qvals := a.qNet.Forward(state)
 		wvals := a.worldNet.Forward(state)
@@ -254,20 +247,14 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 					idx = i
 				}
 			}
-			mode = "thompson"
 		} else {
 			scores := make([]float64, n)
 			for i := 0; i < n && i < len(qvals) && i < len(wvals); i++ {
 				scores[i] = sniQWeight*qvals[i] + sniWorldWeight*wvals[i]
 			}
 			idx = boltzmannSample(scores, a.temperature)
-			mode = fmt.Sprintf("boltzmann Q=%.3f W=%.3f", qvals[idx], wvals[idx])
 		}
 	}
-
-	sniLog.Info("%s → %s (eps=%.2f temp=%.2f pool=%d steps=%d train=%d)",
-		mode, pool[idx], a.epsilon, a.temperature, n,
-		atomic.LoadInt64(&a.stepCount), atomic.LoadInt64(&a.trainCount))
 
 	a.pendingState = state
 	a.pendingAction = idx
@@ -285,7 +272,6 @@ func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 
 	reward := ComputeReward(success, latencyMs)
-	sniLog.Info("outcome: success=%v reward=%.2f latency=%.0fms", success, reward, latencyMs)
 
 	if success {
 		atomic.StoreInt32(&a.consecutiveFails, 0)
@@ -293,7 +279,6 @@ func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 		fails := atomic.AddInt32(&a.consecutiveFails, 1)
 		if fails >= 3 {
 			atomic.StoreInt32(&a.rotateSignal, 1)
-			sniLog.Warn("rotate signal: %d consecutive failures — triggering SNI rotation", fails)
 		}
 	}
 
@@ -391,17 +376,15 @@ func (a *RLSNIAgent) trainStep() {
 
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	temp := a.temperature
-	eps := a.epsilon
+	_ = a.temperature
+	_ = a.epsilon
 	a.mu.Unlock()
 
 	if cnt%50 == 0 {
-		sniLog.Info("train#%d eps=%.3f temp=%.3f steps=%d (saving policy)", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 		a.mu.Lock()
 		a.saveLocked()
 		a.mu.Unlock()
 	} else if cnt%10 == 0 {
-		sniLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }
 
@@ -431,7 +414,6 @@ func (a *RLSNIAgent) load(pool []string) {
 	a.epsilon = st.Epsilon
 	atomic.StoreInt64(&a.stepCount, st.Steps)
 	a.mu.Unlock()
-	sniLog.Info("loaded policy (steps=%d eps=%.3f world=%v)", st.Steps, st.Epsilon, len(st.WorldLayers) > 0)
 }
 
 func (a *RLSNIAgent) saveLocked() {

@@ -65,8 +65,8 @@ type KillSwitch struct {
 
 	onStateChange func(State)
 	onError       func(error)
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
 type Platform interface {
@@ -101,9 +101,6 @@ func New(cfg *Config) (*KillSwitch, error) {
 
 	ks.detectLocalIPs()
 
-	log.Info("Kill switch initialized (platform: %s, supported: %v)",
-		impl.Name(), impl.IsSupported())
-
 	return ks, nil
 }
 
@@ -113,7 +110,6 @@ func (ks *KillSwitch) SetVPNServer(ip net.IP, port int) {
 
 	ks.vpnIP = ip
 	ks.vpnPort = port
-	log.Debug("VPN server set: %s:%d", ip, port)
 }
 
 func (ks *KillSwitch) Enable() error {
@@ -150,9 +146,6 @@ func (ks *KillSwitch) Enable() error {
 	ks.state = StateActive
 	ks.notifyStateChange(StateActive)
 
-	log.Info("Kill switch activated (VPN: %s:%d, LAN: %v, DNS: %v)",
-		ks.vpnIP, ks.vpnPort, ks.config.AllowLAN, ks.config.AllowDNS)
-
 	return nil
 }
 
@@ -171,7 +164,6 @@ func (ks *KillSwitch) Disable() error {
 	ks.state = StateDisabled
 	ks.notifyStateChange(StateDisabled)
 
-	log.Info("Kill switch deactivated")
 	return nil
 }
 
@@ -223,7 +215,6 @@ func (ks *KillSwitch) UpdateConfig(cfg *Config) error {
 		}
 	}
 
-	log.Info("Kill switch config updated")
 	return nil
 }
 
@@ -247,13 +238,11 @@ func (ks *KillSwitch) Shutdown() error {
 
 	if !ks.config.PersistRules {
 		if err := ks.impl.Cleanup(); err != nil {
-			log.Warn("Failed to cleanup kill switch rules: %v", err)
 			return err
 		}
 	}
 
 	ks.state = StateDisabled
-	log.Info("Kill switch shutdown complete")
 	return nil
 }
 
@@ -265,7 +254,6 @@ func (ks *KillSwitch) detectLocalIPs() {
 
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		log.Warn("Failed to get network interfaces: %v", err)
 		return
 	}
 
@@ -294,7 +282,6 @@ func (ks *KillSwitch) detectLocalIPs() {
 		}
 	}
 
-	log.Debug("Detected %d local IPs for LAN exception", len(ks.localIPs))
 }
 
 func (ks *KillSwitch) notifyStateChange(state State) {

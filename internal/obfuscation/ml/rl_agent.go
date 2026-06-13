@@ -141,14 +141,12 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 	}
 
 	var idx int
-	var mode string
 
 	if stickyIdx, exploring := a.sticky.Explore(a.epsilon, RLActionSize); exploring {
 		found := false
 		for _, name := range pool {
 			if a.transportIndex[name] == stickyIdx {
 				idx = stickyIdx
-				mode = "explore-sticky"
 				found = true
 				break
 			}
@@ -156,7 +154,6 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 		if !found {
 			pidx := mrand.Intn(len(pool))
 			idx = a.transportIndex[pool[pidx]]
-			mode = "explore-random"
 		}
 	} else {
 		qvals := a.qNet.Forward(state)
@@ -175,7 +172,6 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 					idx = i
 				}
 			}
-			mode = "thompson"
 		} else {
 			scores := make([]float64, len(pool))
 			pIdxs := make([]int, len(pool))
@@ -188,7 +184,6 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 			}
 			best := boltzmannSample(scores, a.temperature)
 			idx = pIdxs[best]
-			mode = "boltzmann"
 		}
 	}
 
@@ -203,8 +198,6 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 		name = pool[0]
 		idx = a.transportIndex[name]
 	}
-
-	trLog.Info("%s → %s (eps=%.2f temp=%.2f steps=%d)", mode, name, a.epsilon, a.temperature, atomic.LoadInt64(&a.stepCount))
 
 	a.pendingState = state
 	a.pendingAction = idx
@@ -229,7 +222,6 @@ func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 		fails := atomic.AddInt32(&a.consecutiveFails, 1)
 		if fails >= 3 {
 			atomic.StoreInt32(&a.rotateSignal, 1)
-			trLog.Warn("rotate signal: %d consecutive transport failures — switching transport", fails)
 		}
 	}
 
@@ -251,8 +243,6 @@ func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 		}
 	}
 	a.mu.Unlock()
-
-	trLog.Info("outcome: success=%v reward=%.2f latency=%.0fms", success, reward, latencyMs)
 
 	nextState := make([]float64, len(state))
 	copy(nextState, state)
@@ -303,16 +293,13 @@ func (a *RLTransportAgent) SelectTransport(state []float64) (transport string, a
 
 	if mrand.Float64() < eps {
 		idx := mrand.Intn(len(a.transportNames))
-		trLog.Info("explore → %s (eps=%.2f steps=%d buf=%d)", a.transportNames[idx], eps, atomic.LoadInt64(&a.stepCount), a.prb.Size())
 		return a.transportNames[idx], idx, true
 	}
 
 	best := boltzmannSample(qvals, temp)
 	if best < len(a.transportNames) {
-		trLog.Info("boltzmann → %s (eps=%.2f temp=%.2f steps=%d buf=%d)", a.transportNames[best], eps, temp, atomic.LoadInt64(&a.stepCount), a.prb.Size())
 		return a.transportNames[best], best, false
 	}
-	trLog.Info("fallback → %s (eps=%.2f steps=%d)", a.transportNames[0], eps, atomic.LoadInt64(&a.stepCount))
 	return a.transportNames[0], 0, false
 }
 
@@ -397,17 +384,13 @@ func (a *RLTransportAgent) trainStep() {
 
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	temp := a.temperature
-	eps := a.epsilon
 	a.mu.Unlock()
 
 	if cnt%100 == 0 {
-		trLog.Info("train#%d eps=%.3f temp=%.3f steps=%d (saving policy)", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 		a.mu.Lock()
 		a.savePolicyLocked()
 		a.mu.Unlock()
 	} else if cnt%20 == 0 {
-		trLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }
 

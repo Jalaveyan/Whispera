@@ -35,8 +35,8 @@ func (s *Server) handleGetBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	backup := map[string]interface{}{
-		"version":   "1",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"version":       "1",
+		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 		"users":         readRawJSON(userDataFile),
 		"subscriptions": readRawJSON(subDataFile),
 		"bridges":       readRawJSON(bridgesDataFile),
@@ -93,7 +93,6 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
-			log.Printf("[API] Backup restore: failed to write %s: %v", path, err)
 			failed = append(failed, key)
 		} else {
 			restored = append(restored, key)
@@ -153,7 +152,6 @@ func (s *Server) handleGetBackupFull(w http.ResponseWriter, r *http.Request) {
 	pgURL := s.getPostgresURL()
 	if pgURL != "" {
 		if data, err := dumpPostgres(pgURL); err != nil {
-			log.Printf("[backup] pg_dump failed: %v", err)
 			backup["database_error"] = err.Error()
 		} else if data != nil {
 			backup["database_dump_size"] = len(data)
@@ -237,23 +235,18 @@ func (s *Server) createBackupSnapshot() {
 		dumpFile := filepath.Join(backupStorageDir, fmt.Sprintf("pgdump-%s.dump", ts))
 		cmd := exec.CommandContext(context.Background(), "pg_dump", "--no-owner", "--no-acl", "--format=custom", "-f", dumpFile, pgURL)
 		if err := cmd.Run(); err != nil {
-			log.Printf("[backup] scheduled pg_dump failed: %v", err)
 		} else {
 			backup["database_dump"] = dumpFile
-			log.Printf("[backup] database dumped to %s", dumpFile)
 		}
 	}
 
 	data, err := json.MarshalIndent(backup, "", "  ")
 	if err != nil {
-		log.Printf("[backup] marshal error: %v", err)
 		return
 	}
 	if err := os.WriteFile(filename, data, 0600); err != nil {
-		log.Printf("[backup] write error: %v", err)
 		return
 	}
-	log.Printf("[backup] snapshot saved: %s", filename)
 
 	s.rotateBackups()
 }

@@ -37,8 +37,6 @@ func (sm *tunnelStateMachine) Set(state TunnelState) {
 	}
 }
 
-// CompareAndSet sets newState only if current state is NOT in blockedStates.
-// Returns (currentState, wasBlocked). If wasBlocked==true, nothing was changed.
 func (sm *tunnelStateMachine) CompareAndSet(newState TunnelState, blockedStates ...TunnelState) (current TunnelState, wasBlocked bool) {
 	sm.mu.Lock()
 	current = sm.state

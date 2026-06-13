@@ -59,11 +59,11 @@ type RLBackoffAgent struct {
 	target   *gnet.GorgoniaNet
 	adam     *AdamState
 
-	prb        *PrioritizedReplayBuffer
-	thompson   *ThompsonSampler
-	sticky     StickyExplorer
-	curriculum CurriculumTracker
-	diversity  DiversityTracker
+	prb         *PrioritizedReplayBuffer
+	thompson    *ThompsonSampler
+	sticky      StickyExplorer
+	curriculum  CurriculumTracker
+	diversity   DiversityTracker
 	temperature float64
 
 	epsilon    float64
@@ -133,8 +133,6 @@ func (a *RLBackoffAgent) Decide(v BackoffView) time.Duration {
 
 	a.pendingState = state
 	a.pendingAction = idx
-	boLog.Info("delay=%v fails=%d errType=%d eps=%.2f temp=%.2f steps=%d",
-		BackoffDelays[idx], v.ConsecutiveFails, v.LastErrType, a.epsilon, a.temperature, atomic.LoadInt64(&a.stepCount))
 	return BackoffDelays[idx]
 }
 
@@ -167,11 +165,8 @@ func (a *RLBackoffAgent) RecordOutcome(success bool) {
 		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	eps := a.epsilon
+	_ = a.epsilon
 	a.mu.Unlock()
-
-	boLog.Info("outcome: success=%v reward=%.2f delay=%v eps=%.3f",
-		success, reward, BackoffDelays[action], eps)
 
 	if step%boTrainEvery == 0 {
 		go a.trainStep()
@@ -225,13 +220,12 @@ func (a *RLBackoffAgent) trainStep() {
 	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, boNumActions, boGamma, 0.005, defaultEntropyCoeff)
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	temp := a.temperature
-	eps := a.epsilon
+	_ = a.temperature
+	_ = a.epsilon
 	if cnt%100 == 0 {
 		saveRLMiniPolicy(a.modelDir, "rl_bo.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
-		boLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

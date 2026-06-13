@@ -6,16 +6,8 @@ import (
 	"net"
 )
 
-// EncapsulatedConfig возвращает копию innerCfg, у которой CustomDialFn
-// направляет соединение через уже поднятый outer Manager (tunnel-in-tunnel).
-//
-// Схема трафика:
-//
-//	Client → [innerTunnel: обфускация/крипто] → [outerTunnel: транспорт] → Bridge → Server
-//
-// Требования: outer должен быть в состоянии Connected до вызова DialStream.
 func EncapsulatedConfig(innerCfg *Config, outer *Manager) *Config {
-	cfg := *innerCfg // shallow copy полей
+	cfg := *innerCfg
 	serverAddr := innerCfg.ServerAddr
 
 	cfg.CustomDialFn = func(ctx context.Context) (net.Conn, error) {

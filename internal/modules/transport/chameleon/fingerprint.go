@@ -43,9 +43,6 @@ func AddHarvestedFingerprint(spec *utls.ClientHelloSpec) {
 
 func pickFingerprint() (utls.ClientHelloID, *utls.ClientHelloSpec) {
 	harvestOnce.Do(initHarvest)
-	detectOnce.Do(func() {
-		detectedBrowserID = detectDefaultBrowserID()
-	})
 
 	harvestMu.RLock()
 	defer harvestMu.RUnlock()

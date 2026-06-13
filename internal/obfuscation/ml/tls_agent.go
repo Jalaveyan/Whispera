@@ -50,11 +50,11 @@ type RLTLSAgent struct {
 	target   *gnet.GorgoniaNet
 	adam     *AdamState
 
-	prb        *PrioritizedReplayBuffer
-	thompson   *ThompsonSampler
-	sticky     StickyExplorer
-	curriculum CurriculumTracker
-	diversity  DiversityTracker
+	prb         *PrioritizedReplayBuffer
+	thompson    *ThompsonSampler
+	sticky      StickyExplorer
+	curriculum  CurriculumTracker
+	diversity   DiversityTracker
 	temperature float64
 
 	epsilon    float64
@@ -138,8 +138,6 @@ func (a *RLTLSAgent) Decide(v TLSView) string {
 	if profile == "" {
 		profile = "go-default"
 	}
-	tlsLog.Info("profile=%s transport=%s tlsErrs=%d eps=%.2f temp=%.2f steps=%d",
-		profile, v.TransportName, v.ConsecutiveTLSErrors, a.epsilon, a.temperature, atomic.LoadInt64(&a.stepCount))
 	return TLSProfiles[idx]
 }
 
@@ -173,11 +171,8 @@ func (a *RLTLSAgent) RecordOutcome(success bool) {
 		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	eps := a.epsilon
+	_ = a.epsilon
 	a.mu.Unlock()
-
-	tlsLog.Info("outcome: success=%v reward=%.1f profile=%s eps=%.3f",
-		success, reward, profile, eps)
 
 	if step%tlsTrainEvery == 0 {
 		go a.trainStep()
@@ -205,13 +200,10 @@ func (a *RLTLSAgent) trainStep() {
 	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, tlsNumActions, tlsGamma, 0.005, defaultEntropyCoeff)
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	temp := a.temperature
-	eps := a.epsilon
 	if cnt%100 == 0 {
 		saveRLMiniPolicy(a.modelDir, "rl_tls.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
-		tlsLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

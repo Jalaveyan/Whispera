@@ -50,11 +50,11 @@ type RLKeepaliveAgent struct {
 	target   *gnet.GorgoniaNet
 	adam     *AdamState
 
-	prb        *PrioritizedReplayBuffer
-	thompson   *ThompsonSampler
-	sticky     StickyExplorer
-	curriculum CurriculumTracker
-	diversity  DiversityTracker
+	prb         *PrioritizedReplayBuffer
+	thompson    *ThompsonSampler
+	sticky      StickyExplorer
+	curriculum  CurriculumTracker
+	diversity   DiversityTracker
 	temperature float64
 
 	epsilon    float64
@@ -124,8 +124,6 @@ func (a *RLKeepaliveAgent) Decide(v KeepaliveView) time.Duration {
 
 	a.pendingState = state
 	a.pendingAction = idx
-	kaLog.Info("interval=%v eps=%.2f temp=%.2f rtt=%.0fms missed=%d steps=%d",
-		KeepaliveIntervals[idx], a.epsilon, a.temperature, v.RTTMs, v.MissedKAs, atomic.LoadInt64(&a.stepCount))
 	return KeepaliveIntervals[idx]
 }
 
@@ -151,11 +149,7 @@ func (a *RLKeepaliveAgent) RecordOutcome(quality float64) {
 		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	eps := a.epsilon
 	a.mu.Unlock()
-
-	kaLog.Info("outcome: quality=%.2f reward=%.2f interval=%v eps=%.3f",
-		quality, reward, KeepaliveIntervals[action], eps)
 
 	if step%kaTrainEvery == 0 {
 		go a.trainStep()
@@ -183,13 +177,10 @@ func (a *RLKeepaliveAgent) trainStep() {
 	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, kaNumActions, kaGamma, 0.001, defaultEntropyCoeff)
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	temp := a.temperature
-	eps := a.epsilon
 	if cnt%100 == 0 {
 		saveRLMiniPolicy(a.modelDir, "rl_ka.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
-		kaLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

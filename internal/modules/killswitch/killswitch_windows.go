@@ -63,29 +63,23 @@ func (w *WindowsKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, al
 		for i, cidr := range lanRanges {
 			ruleName := fmt.Sprintf("%s-%d", ruleAllowLAN, i)
 			if err := w.addRule(ruleName+"-In", "in", "allow", fmt.Sprintf("remoteip=%s", cidr)); err != nil {
-				log.Warn("Failed to add LAN rule for %s: %v", cidr, err)
 			}
 			if err := w.addRule(ruleName+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", cidr)); err != nil {
-				log.Warn("Failed to add LAN rule for %s: %v", cidr, err)
 			}
 		}
 	}
 	if allowDNS {
 		if err := w.addRule(ruleAllowDNS+"-UDP-Out", "out", "allow", "protocol=udp remoteport=53"); err != nil {
-			log.Warn("Failed to add DNS UDP rule: %v", err)
 		}
 		if err := w.addRule(ruleAllowDNS+"-TCP-Out", "out", "allow", "protocol=tcp remoteport=53"); err != nil {
-			log.Warn("Failed to add DNS TCP rule: %v", err)
 		}
 	}
 	for i, ip := range allowedIPs {
 		ruleName := fmt.Sprintf("%s-Custom-%d", rulePrefix, i)
 		ipStr := ip.String()
 		if err := w.addRule(ruleName+"-In", "in", "allow", fmt.Sprintf("remoteip=%s", ipStr)); err != nil {
-			log.Warn("Failed to add custom IP rule for %s: %v", ipStr, err)
 		}
 		if err := w.addRule(ruleName+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", ipStr)); err != nil {
-			log.Warn("Failed to add custom IP rule for %s: %v", ipStr, err)
 		}
 	}
 	if err := w.addBlockAllRule(ruleBlockAll+"-In", "in"); err != nil {
@@ -96,7 +90,6 @@ func (w *WindowsKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, al
 	}
 
 	w.rulesActive = true
-	log.Info("Windows Firewall kill switch rules activated")
 	return nil
 }
 
@@ -107,7 +100,6 @@ func (w *WindowsKillSwitch) Disable() error {
 	w.cleanupRules()
 	w.rulesActive = false
 
-	log.Info("Windows Firewall kill switch rules removed")
 	return nil
 }
 
@@ -139,7 +131,6 @@ func (w *WindowsKillSwitch) addRule(name, direction, action, extra string) error
 		return fmt.Errorf("netsh failed: %v, output: %s", err, string(output))
 	}
 
-	log.Debug("Added firewall rule: %s", name)
 	return nil
 }
 func (w *WindowsKillSwitch) addBlockAllRule(name, direction string) error {
@@ -160,7 +151,6 @@ func (w *WindowsKillSwitch) addBlockAllRule(name, direction string) error {
 		return fmt.Errorf("netsh failed: %v, output: %s", err, string(output))
 	}
 
-	log.Debug("Added block-all rule: %s", name)
 	return nil
 }
 
@@ -168,7 +158,6 @@ func (w *WindowsKillSwitch) cleanupRules() {
 	cmd := exec.CommandContext(context.Background(), "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
 	output, err := cmd.Output()
 	if err != nil {
-		log.Warn("Failed to list firewall rules: %v", err)
 		return
 	}
 
@@ -189,8 +178,6 @@ func (w *WindowsKillSwitch) cleanupRules() {
 func (w *WindowsKillSwitch) deleteRule(name string) {
 	cmd := exec.CommandContext(context.Background(), "netsh", "advfirewall", "firewall", "delete", "rule", fmt.Sprintf("name=%s", name))
 	if err := cmd.Run(); err != nil {
-		log.Debug("Failed to delete rule %s: %v", name, err)
 	} else {
-		log.Debug("Deleted firewall rule: %s", name)
 	}
 }

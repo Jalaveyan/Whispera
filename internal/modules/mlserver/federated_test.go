@@ -11,8 +11,6 @@ import (
 	"testing"
 )
 
-// newTestServer РїРѕРґРЅРёРјР°РµС‚ MLServer Р±РµР· СЃРµС‚Рё РЅР° in-memory mux Рё РІРѕР·РІСЂР°С‰Р°РµС‚
-// httptest.Server РґР»СЏ СѓРґРѕР±РЅС‹С… HTTP-РІС‹Р·РѕРІРѕРІ. Р‘РµР· TLS Рё Р±РµР· auth-token.
 func newTestServer(t *testing.T) (*MLServer, *httptest.Server) {
 	t.Helper()
 	dir := t.TempDir()
@@ -25,7 +23,6 @@ func newTestServer(t *testing.T) (*MLServer, *httptest.Server) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// New() СѓР¶Рµ РІС‹Р·С‹РІР°РµС‚ registerRoutes(); РїРѕРІС‚РѕСЂРЅС‹Р№ РІС‹Р·РѕРІ РїР°РЅРєРЅРµС‚ РЅР° ServeMux dup.
 	ts := httptest.NewServer(srv.mux)
 	t.Cleanup(ts.Close)
 	return srv, ts
@@ -73,15 +70,9 @@ func mustPost(t *testing.T, url string, payload interface{}) []byte {
 	return body
 }
 
-// РџРѕР»РЅС‹Р№ happy-path:
-//   feedback Г— N в†’ /federated/export (РІРёРґРёС‚ stats) в†’ /federated/import
-//   (СѓСЃСЂРµРґРЅРёР») в†’ /federated/losses (РІРёРґРёС‚ loss).
-// Р•СЃР»Рё РєР°РєРѕР№-С‚Рѕ РёР· endpoints РІРѕР·РІСЂР°С‰Р°РµС‚ РїСѓСЃС‚РѕС‚Сѓ/РѕС€РёР±РєСѓ вЂ” СЃС‚Р°РЅРѕРІРёС‚СЃСЏ РїРѕРЅСЏС‚РЅРѕ
-// РєР°РєРѕР№ РёРјРµРЅРЅРѕ СЃР»РѕРјР°РЅ Рё user СЃСЂР°Р·Сѓ РІРёРґРёС‚ СЌС‚РѕС‚ С‚РµСЃС‚ РІ CI.
 func TestFederatedRoundTrip(t *testing.T) {
 	srv, ts := newTestServer(t)
 
-	// 1. РџРѕРґСЃС‹РїР°РµРј feedback РґР»СЏ РґРІСѓС… transport'РѕРІ.
 	feedbacks := []struct {
 		Transport  string  `json:"transport"`
 		Success    bool    `json:"success"`
@@ -100,7 +91,6 @@ func TestFederatedRoundTrip(t *testing.T) {
 		t.Fatalf("transportStats want 2, got %d", got)
 	}
 
-	// 2. Export вЂ” РґРѕР»Р¶РµРЅ СЃРѕРґРµСЂР¶Р°С‚СЊ РѕР±Рµ transport'Р°.
 	exportBody := mustGet(t, ts.URL+"/federated/export")
 	var exp struct {
 		Transports map[string]TransportStats `json:"transports"`
@@ -120,7 +110,6 @@ func TestFederatedRoundTrip(t *testing.T) {
 		t.Errorf("stealth-http.Fail = %d want 1", exp.Transports["stealth-http"].Fail)
 	}
 
-	// 3. Import вЂ” РѕС‚РґР°С‘Рј 'remote' РїРѕР»РѕРІРёРЅСѓ. РџРѕСЃР»Рµ import local РґРѕР»Р¶РµРЅ СѓСЃСЂРµРґРЅРёС‚СЊ.
 	remote := map[string]*TransportStats{
 		"stealth-http": {Success: 100, Fail: 0, Total: 100, TotalLatency: 5000, Count: 100},
 	}
@@ -129,12 +118,10 @@ func TestFederatedRoundTrip(t *testing.T) {
 	srv.feedbackMu.Lock()
 	avgSuccess := srv.transportStats["stealth-http"].Success
 	srv.feedbackMu.Unlock()
-	// local Success Р±С‹Р»Рѕ 2, remote 100 в†’ avg = 51.
 	if avgSuccess != 51 {
 		t.Errorf("after federated import: stealth-http.Success = %d want 51", avgSuccess)
 	}
 
-	// 4. Losses вЂ” РґР»СЏ stealth-http РґРѕР»Р¶РЅРѕ Р±С‹С‚СЊ >0 (1 fail РёР· 3).
 	lossesBody := mustGet(t, ts.URL+"/federated/losses")
 	var lossesResp struct {
 		LocalLosses map[string]float64 `json:"local_losses"`

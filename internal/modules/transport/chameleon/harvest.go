@@ -47,6 +47,5 @@ func initHarvest() {
 		return
 	}
 	if n, err := LoadHarvestDir(dir); err == nil && n > 0 {
-		log.Printf("loaded %d harvested fingerprints from %s", n, dir)
 	}
 }

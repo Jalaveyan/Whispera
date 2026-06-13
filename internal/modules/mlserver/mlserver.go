@@ -157,20 +157,16 @@ func (s *MLServer) Start() error {
 		go func() {
 			serveErr := s.httpServer.Serve(tlsLn)
 			if serveErr != nil && serveErr != http.ErrServerClosed {
-				log.Printf("ml server error: %v", serveErr)
 			}
 		}()
 		s.addLogf("ML server started on %s (HTTPS, native Go MLP engine)", s.listenAddr)
-		log.Printf("ML server started on %s (HTTPS)", s.listenAddr)
 	} else {
 		go func() {
 			serveErr := s.httpServer.Serve(ln)
 			if serveErr != nil && serveErr != http.ErrServerClosed {
-				log.Printf("ml server error: %v", serveErr)
 			}
 		}()
 		s.addLogf("ML server started on %s (HTTP, native Go MLP engine)", s.listenAddr)
-		log.Printf("ML server started on %s (HTTP)", s.listenAddr)
 	}
 	s.SetHealthy(true, "ml server running")
 	return nil
@@ -622,7 +618,6 @@ func (s *MLServer) handleRecommendTransport(w http.ResponseWriter, r *http.Reque
 			confidence = 0.90
 			reason = fmt.Sprintf("RL-DQN selected (buffer=%d, eps=%.3f)", bufSize, rlStats["epsilon"])
 			usedRL = true
-			log.Info("RL override: %s (buf=%d eps=%.3f)", rlTransport, bufSize, rlStats["epsilon"])
 		}
 	}
 
@@ -684,7 +679,6 @@ func (s *MLServer) handleFeedbackConnection(w http.ResponseWriter, r *http.Reque
 			rlAgent.RecordExperience(state, actionIdx, reward, state, !req.Success)
 			bufSize := rlAgent.Stats()["buffer_size"].(int)
 			if bufSize == ml.RLBatchSize*4+1 {
-				log.Info("RL agent activated: buffer threshold reached (buf=%d)", bufSize)
 			}
 		}
 	}

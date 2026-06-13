@@ -33,10 +33,10 @@ type Config struct {
 	OwnPublicIPs      []string
 	SNICacheExpiry    time.Duration
 
-	EscalatingBans     bool
-	MaxBanEscalation   int
-	BurstThreshold     int
-	BurstWindow        time.Duration
+	EscalatingBans   bool
+	MaxBanEscalation int
+	BurstThreshold   int
+	BurstWindow      time.Duration
 
 	EnableReflection    bool
 	ReflectionPorts     []int
@@ -44,7 +44,7 @@ type Config struct {
 	ReflectionDelay     time.Duration
 	MaxReflectionConns  int
 
-	TarpitMode    bool
+	TarpitMode        bool
 	TarpitMinDuration time.Duration
 	TarpitMaxDuration time.Duration
 }
@@ -108,9 +108,9 @@ type Detector struct {
 
 	cleanupStop chan struct{}
 
-	reflectedTotal  uint64
-	activeReflect   int32
-	reflectHistory  map[string]time.Time
+	reflectedTotal uint64
+	activeReflect  int32
+	reflectHistory map[string]time.Time
 
 	Guard *ConnGuard
 }
@@ -156,7 +156,7 @@ func New(cfg Config) *Detector {
 		whitelist:      make(map[string]time.Time),
 		cleanupStop:    make(chan struct{}),
 		reflectHistory: make(map[string]time.Time),
-		Guard: NewConnGuardWithLimits(true, cfg.MaxConnsPerIPPerSec, cfg.MaxPendingPerIP, cfg.FirstBytesDeadline),
+		Guard:          NewConnGuardWithLimits(true, cfg.MaxConnsPerIPPerSec, cfg.MaxPendingPerIP, cfg.FirstBytesDeadline),
 	}
 
 	d.Guard.WhitelistCheck = func(ip string) bool {
@@ -232,7 +232,6 @@ func (d *Detector) Whitelist(clientAddr string) {
 	delete(d.blocked, ip)
 	delete(d.failures, ip)
 	d.mu.Unlock()
-	log.Debug("[probe] whitelisted %s (authenticated)", ip)
 }
 
 func (d *Detector) RemoveFromWhitelist(clientAddr string) {
@@ -305,7 +304,6 @@ func (d *Detector) RecordAuthFailure(clientAddr string) {
 			escalation: escalation,
 		}
 		delete(d.failures, ip)
-		log.Info("[probe] blocked %s for %v (escalation=%d): too many auth failures", ip, banDuration, escalation)
 
 		if d.cfg.EnableReflection {
 			go d.ReflectProbe(nil, ip)
@@ -322,7 +320,6 @@ func (d *Detector) RecordAuthSuccess(clientAddr string) {
 	delete(d.failures, ip)
 	d.whitelist[ip] = time.Now()
 	d.mu.Unlock()
-	log.Debug("[probe] auth success — whitelisted %s", ip)
 }
 
 func (d *Detector) CheckConnection(clientAddr, sni string) (allowed bool, reason string) {
@@ -384,7 +381,6 @@ func (d *Detector) CheckConnection(clientAddr, sni string) (allowed bool, reason
 	if d.cfg.CheckSNIOwnership && len(d.ownIPs) > 0 {
 		resolvedIPs, err := d.resolveSNI(sniNorm)
 		if err != nil {
-			log.Debug("[probe] SNI resolution failed for %q: %v — allowing", sni, err)
 		} else {
 			overlap := false
 			for _, resolved := range resolvedIPs {
@@ -425,7 +421,6 @@ func (d *Detector) BlockIP(clientAddr, reason string) {
 		reason: reason,
 	}
 	d.mu.Unlock()
-	log.Info("[probe] manually blocked %s: %s", ip, reason)
 }
 
 func (d *Detector) UnblockIP(clientAddr string) {
@@ -437,7 +432,6 @@ func (d *Detector) UnblockIP(clientAddr string) {
 	delete(d.blocked, ip)
 	delete(d.failures, ip)
 	d.mu.Unlock()
-	log.Info("[probe] unblocked %s", ip)
 }
 
 func (d *Detector) IsBlocked(clientAddr string) bool {
@@ -455,20 +449,19 @@ func (d *Detector) Stats() map[string]interface{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return map[string]interface{}{
-		"blocked_ips":       len(d.blocked),
-		"tracked_ips":       len(d.failures),
-		"whitelisted_ips":   len(d.whitelist),
-		"dns_log_size":      len(d.dnsLog),
-		"sni_cache":         len(d.sniCache),
-		"own_ips":           d.ownIPsList(),
-		"require_dns":       d.cfg.RequireDNSQuery,
-		"check_sni_own":     d.cfg.CheckSNIOwnership,
-		"escalating_bans":   d.cfg.EscalatingBans,
-		"repeat_offenders":  len(d.banHistory),
-		"reflection":        d.ReflectionStats(),
+		"blocked_ips":      len(d.blocked),
+		"tracked_ips":      len(d.failures),
+		"whitelisted_ips":  len(d.whitelist),
+		"dns_log_size":     len(d.dnsLog),
+		"sni_cache":        len(d.sniCache),
+		"own_ips":          d.ownIPsList(),
+		"require_dns":      d.cfg.RequireDNSQuery,
+		"check_sni_own":    d.cfg.CheckSNIOwnership,
+		"escalating_bans":  d.cfg.EscalatingBans,
+		"repeat_offenders": len(d.banHistory),
+		"reflection":       d.ReflectionStats(),
 	}
 }
-
 
 func (d *Detector) resolveSNI(domain string) ([]string, error) {
 	d.mu.RLock()
@@ -519,7 +512,6 @@ func (d *Detector) autoDetectOwnIPs() {
 		}
 	}
 	if len(d.ownIPs) > 0 {
-		log.Info("[probe] auto-detected own IPs: %v", d.ownIPsList())
 	}
 }
 
@@ -646,7 +638,6 @@ func (d *Detector) doReflect(ip string, probeData []byte) {
 
 		conn.Close()
 		atomic.AddUint64(&d.reflectedTotal, 1)
-		log.Debug("[probe] reflected %d noise bursts to %s", d.cfg.ReflectionBurstSize, addr)
 	}
 }
 
@@ -676,10 +667,10 @@ func (d *Detector) ReflectionStats() map[string]interface{} {
 	historySize := len(d.reflectHistory)
 	d.mu.RUnlock()
 	return map[string]interface{}{
-		"enabled":        d.cfg.EnableReflection,
+		"enabled":         d.cfg.EnableReflection,
 		"total_reflected": atomic.LoadUint64(&d.reflectedTotal),
-		"active_conns":   atomic.LoadInt32(&d.activeReflect),
-		"history_size":   historySize,
+		"active_conns":    atomic.LoadInt32(&d.activeReflect),
+		"history_size":    historySize,
 	}
 }
 

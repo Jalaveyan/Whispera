@@ -1,11 +1,9 @@
 package logger
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -147,22 +145,12 @@ func (l *Logger) GetLevel() Level {
 	return l.config.Level
 }
 
-
 // -----------------------------------------------------------------------------
 
 func (l *Logger) log(level Level, msg string, args ...interface{}) {
-	if level < l.config.Level {
+	if level < LevelError {
 		return
 	}
-
-	var out io.Writer
-	if level >= LevelError {
-		out = l.config.Stderr
-	} else {
-		out = l.config.Stdout
-	}
-
-	now := time.Now()
 
 	var formatted string
 	if len(args) > 0 {
@@ -171,6 +159,7 @@ func (l *Logger) log(level Level, msg string, args ...interface{}) {
 		formatted = msg
 	}
 
+	now := time.Now()
 	modName := ""
 	if mod, ok := l.fields["module"]; ok {
 		modName = fmt.Sprintf("%v", mod)
@@ -182,90 +171,20 @@ func (l *Logger) log(level Level, msg string, args ...interface{}) {
 		Message: formatted,
 	})
 
-	if l.config.JSONMode {
-		entry := map[string]interface{}{
-			"ts":    now.Format(time.RFC3339Nano),
-			"level": level.String(),
-			"msg":   formatted,
-		}
+	z := Err()
+	if len(l.fields) > 0 {
+		kv := make([]interface{}, 0, len(l.fields)*2)
 		for k, v := range l.fields {
-			entry[k] = v
+			kv = append(kv, k, v)
 		}
-		if l.config.ShowCaller {
-			if _, file, line, ok := runtime.Caller(2); ok {
-				parts := strings.Split(file, "/")
-				if len(parts) > 0 {
-					file = parts[len(parts)-1]
-				}
-				entry["caller"] = fmt.Sprintf("%s:%d", file, line)
-			}
-		}
-		data, _ := json.Marshal(entry)
-		data = append(data, '\n')
-		l.mu.Lock()
-		out.Write(data)
-		l.mu.Unlock()
+		z = z.With(kv...)
+	}
+
+	if level >= LevelFatal {
+		z.Fatal(formatted)
 		return
 	}
-
-	var sb strings.Builder
-
-	timestamp := now.Format(l.config.TimeFormat)
-
-	colorReset := "\033[0m"
-	if l.config.EnableColor {
-		sb.WriteString(level.Color())
-	}
-
-	if l.config.Prefix != "" {
-		sb.WriteString(l.config.Prefix)
-		sb.WriteString(" ")
-	}
-
-	sb.WriteString(fmt.Sprintf("[%s] [%-5s] ", timestamp, level.String()))
-
-	if len(l.fields) > 0 {
-		if mod, ok := l.fields["module"]; ok {
-			sb.WriteString(fmt.Sprintf("[%s] ", mod))
-		}
-	}
-
-	if l.config.ShowCaller {
-		_, file, line, ok := runtime.Caller(2)
-		if ok {
-			parts := strings.Split(file, "/")
-			if len(parts) > 0 {
-				file = parts[len(parts)-1]
-			}
-			sb.WriteString(fmt.Sprintf("(%s:%d) ", file, line))
-		}
-	}
-
-	sb.WriteString(formatted)
-
-	if len(l.fields) > 0 {
-		first := true
-		for k, v := range l.fields {
-			if k == "module" {
-				continue
-			}
-			if first {
-				sb.WriteString(" |")
-				first = false
-			}
-			sb.WriteString(fmt.Sprintf(" %s=%v", k, v))
-		}
-	}
-
-	if l.config.EnableColor {
-		sb.WriteString(colorReset)
-	}
-
-	sb.WriteString("\n")
-
-	l.mu.Lock()
-	fmt.Fprint(out, sb.String())
-	l.mu.Unlock()
+	z.Error(formatted)
 }
 
 func (l *Logger) Debug(msg string, args ...interface{}) {

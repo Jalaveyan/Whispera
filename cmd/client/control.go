@@ -17,10 +17,8 @@ import (
 	"time"
 
 	"whispera/internal/modules/config"
-	"whispera/internal/modules/dnsmodule"
-	"whispera/internal/modules/mitm"
+	"whispera/internal/modules/dns"
 	"whispera/internal/modules/proxyagent"
-	relaymod "whispera/internal/modules/relay"
 	"whispera/internal/modules/socks5"
 	"whispera/internal/modules/tunnel"
 )
@@ -73,7 +71,7 @@ type TransportPool struct {
 	counter uint64
 }
 
-var globalForceSNI atomic.Value // stores string
+var globalForceSNI atomic.Value
 
 func getGlobalSNI() string {
 	if v := globalForceSNI.Load(); v != nil {
@@ -82,7 +80,7 @@ func getGlobalSNI() string {
 	return ""
 }
 
-var globalRegion atomic.Value // stores string ("auto"|"ru"|"eu"|"us"|"cn"|...)
+var globalRegion atomic.Value
 
 func getGlobalRegion() string {
 	if v := globalRegion.Load(); v != nil {
@@ -91,7 +89,6 @@ func getGlobalRegion() string {
 	return "auto"
 }
 
-// cfgRegions is set from ClientConfig.Regions at startup.
 var cfgRegions map[string][]string
 
 var pool = &TransportPool{
@@ -106,26 +103,12 @@ var adminToken string
 
 var globalAgent *proxyagent.ProxyAgent
 
-type p2pState struct {
-	mu         sync.Mutex
-	client     *relaymod.P2PClient
-	relayAddr  string
-	registered bool
-	connected  bool
-}
-
-var globalP2P = &p2pState{}
-
-var globalDNS *dnsmodule.Resolver
-var globalMITM *mitm.Proxy
+var globalDNS *dns.Resolver
 var globalMultiRouter *socks5.MultiRouter
 var globalSubscriptionMgr *config.SubscriptionManager
 
-// globalLogBuf holds recent log lines in memory; nil when logging to file.
 var globalLogBuf *ringLogBuffer
 
-// ringLogBuffer is a fixed-capacity in-memory log ring. When full, the oldest
-// line is evicted. Nothing is ever written to disk.
 type ringLogBuffer struct {
 	mu   sync.Mutex
 	buf  []string
@@ -147,7 +130,6 @@ func (r *ringLogBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Lines returns a copy of all buffered lines (oldest first).
 func (r *ringLogBuffer) Lines() []string {
 	r.mu.Lock()
 	out := make([]string, len(r.buf))
@@ -162,9 +144,6 @@ var socksPass string
 func generateSocksAuth() {
 	if *connKey != "" {
 		socksUser = "whisp"
-		// SOCKS5 password field is 1-byte length prefix → max 255 bytes.
-		// connKey is a whispera:// URL that easily exceeds this limit.
-		// Both sides must use the same derivation: SHA256(connKey) hex = 64 bytes.
 		h := sha256.Sum256([]byte(*connKey))
 		socksPass = hex.EncodeToString(h[:])
 		return
@@ -598,122 +577,7 @@ func startControlServer(ctx context.Context) {
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	})
 
-	mux.HandleFunc("/p2p", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		globalP2P.mu.Lock()
-		defer globalP2P.mu.Unlock()
-		peerID := ""
-		if globalP2P.client != nil {
-			peerID = globalP2P.client.PeerID()
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"registered": globalP2P.registered,
-			"connected":  globalP2P.connected,
-			"relay_addr": globalP2P.relayAddr,
-			"peer_id":    peerID,
-		})
-	})
-
-	mux.HandleFunc("/p2p/register", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST only", http.StatusMethodNotAllowed)
-			return
-		}
-		var body struct {
-			RelayAddr string `json:"relay_addr"`
-			Secret    string `json:"secret"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RelayAddr == "" {
-			http.Error(w, "relay_addr required", http.StatusBadRequest)
-			return
-		}
-
-		globalP2P.mu.Lock()
-		if globalP2P.client != nil {
-			globalP2P.client.Close()
-		}
-		client := relaymod.NewP2PClient(body.RelayAddr, []byte(body.Secret))
-		globalP2P.client = client
-		globalP2P.relayAddr = body.RelayAddr
-		globalP2P.registered = false
-		globalP2P.connected = false
-		globalP2P.mu.Unlock()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := client.Register(ctx); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-
-		globalP2P.mu.Lock()
-		globalP2P.registered = true
-		globalP2P.mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"peer_id": client.PeerID()})
-	})
-
-	mux.HandleFunc("/p2p/connect", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST only", http.StatusMethodNotAllowed)
-			return
-		}
-		var body struct {
-			Target    string `json:"target"`
-			RelayAddr string `json:"relay_addr"`
-			Secret    string `json:"secret"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Target == "" {
-			http.Error(w, "target required", http.StatusBadRequest)
-			return
-		}
-
-		globalP2P.mu.Lock()
-		client := globalP2P.client
-		if client == nil || body.RelayAddr != "" {
-			client = relaymod.NewP2PClient(func() string {
-				if body.RelayAddr != "" {
-					return body.RelayAddr
-				}
-				return globalP2P.relayAddr
-			}(), []byte(body.Secret))
-			globalP2P.client = client
-			if body.RelayAddr != "" {
-				globalP2P.relayAddr = body.RelayAddr
-			}
-		}
-		globalP2P.mu.Unlock()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		conn, err := client.ConnectTo(ctx, body.Target)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
-		}
-		_ = conn
-
-		globalP2P.mu.Lock()
-		globalP2P.connected = true
-		globalP2P.mu.Unlock()
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-	})
-
-	mux.HandleFunc("/p2p/disconnect", func(w http.ResponseWriter, r *http.Request) {
-		globalP2P.mu.Lock()
-		if globalP2P.client != nil {
-			globalP2P.client.Close()
-			globalP2P.client = nil
-		}
-		globalP2P.registered = false
-		globalP2P.connected = false
-		globalP2P.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-	})
+	
 
 	mux.HandleFunc("/connections/split", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -756,27 +620,6 @@ func startControlServer(ctx context.Context) {
 			}
 		}
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-	})
-
-	mux.HandleFunc("/mitm/ca", func(w http.ResponseWriter, r *http.Request) {
-		if globalMITM == nil {
-			http.Error(w, "mitm not running", http.StatusServiceUnavailable)
-			return
-		}
-		pem := globalMITM.CACertPEM()
-		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Header().Set("Content-Disposition", `attachment; filename="whispera-ca.crt"`)
-		w.Write(pem)
-	})
-
-	mux.HandleFunc("/mitm", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		running := globalMITM != nil
-		addr := ""
-		if running {
-			addr = globalMITM.ListenAddr()
-		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"running": running, "addr": addr})
 	})
 
 	mux.HandleFunc("/subscription", func(w http.ResponseWriter, r *http.Request) {
@@ -872,8 +715,6 @@ func startControlServer(ctx context.Context) {
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	})
 
-	// /speedtest — measures VPN tunnel throughput via local SOCKS5 proxy.
-	// POST {"target":"https://host:8081","token":"...","download_mb":10,"upload_mb":5}
 	mux.HandleFunc("/speedtest", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodPost {
@@ -901,8 +742,6 @@ func startControlServer(ctx context.Context) {
 		json.NewEncoder(w).Encode(result)
 	})
 
-	// /region — get or set the preferred region for server selection.
-	// GET → {"region":"auto"}, POST {"region":"eu"} → reconnects all entries.
 	mux.HandleFunc("/region", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			json.NewEncoder(w).Encode(map[string]string{"region": getGlobalRegion()})
@@ -928,9 +767,8 @@ func startControlServer(ctx context.Context) {
 		json.NewEncoder(w).Encode(map[string]string{"region": body.Region})
 	})
 
-	// /regions — list configured regions and probe latency to each region's servers.
 	mux.HandleFunc("/regions", func(w http.ResponseWriter, r *http.Request) {
-		if cfgRegions == nil || len(cfgRegions) == 0 {
+		if len(cfgRegions) == 0 {
 			writeJSON := func(v interface{}) {
 				w.Header().Set("Content-Type", "application/json")
 				json.NewEncoder(w).Encode(v)
@@ -959,7 +797,6 @@ func startControlServer(ctx context.Context) {
 					if err != nil {
 						continue
 					}
-					// simple TCP RTT approximation
 					t := time.Now()
 					conn.Close()
 					lat := time.Since(t)
@@ -984,8 +821,6 @@ func startControlServer(ctx context.Context) {
 		})
 	})
 
-	// /global-sni — get or set the global SNI override applied to all tunnel connections.
-	// GET → {"sni":"..."}, POST {"sni":"example.com"} → reconnects all entries without a per-entry SNI.
 	mux.HandleFunc("/global-sni", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			json.NewEncoder(w).Encode(map[string]string{"sni": getGlobalSNI()})
@@ -1012,8 +847,6 @@ func startControlServer(ctx context.Context) {
 		json.NewEncoder(w).Encode(map[string]string{"sni": body.SNI})
 	})
 
-	// /logs — returns recent in-memory log lines (JSON array or plain text).
-	// When logging to a file the response explains that.
 	mux.HandleFunc("/logs", func(w http.ResponseWriter, r *http.Request) {
 		if globalLogBuf == nil {
 			http.Error(w, "logging to file — use tail on the log file instead", http.StatusNotFound)

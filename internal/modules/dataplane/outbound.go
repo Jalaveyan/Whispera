@@ -14,7 +14,6 @@ import (
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/crypto"
 	"whispera/internal/modules/handshake"
-	"whispera/internal/modules/obfuscator"
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/tunnel"
 )
@@ -115,25 +114,6 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 		return fmt.Errorf("outbound %s: crypto start: %w", cfg.Tag, err)
 	}
 
-	threatLevel := 5
-	if russiaMode {
-		threatLevel = 8
-	}
-	obfsMod, err := obfuscator.New(&obfuscator.Config{
-		DefaultProfile: "default",
-		ThreatLevel:    threatLevel,
-		EnableML:       true,
-		EnableFTE:      true,
-	})
-	if err != nil {
-		return fmt.Errorf("outbound %s: obfuscator init: %w", cfg.Tag, err)
-	}
-	if err := obfsMod.Init(context.Background(), nil); err != nil {
-		return fmt.Errorf("outbound %s: obfuscator init: %w", cfg.Tag, err)
-	}
-	if err := obfsMod.Start(); err != nil {
-		return fmt.Errorf("outbound %s: obfuscator start: %w", cfg.Tag, err)
-	}
 
 	sessMod, err := session.New(&session.Config{MaxSessions: 10})
 	if err != nil {
@@ -164,7 +144,6 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	}
 
 	tManager.SetDependencies(nil, hsMod, nil, cryptoMod)
-	tManager.SetObfuscator(obfsMod)
 
 	if err := tManager.Init(context.Background(), tCfg); err != nil {
 		return err
@@ -174,7 +153,6 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	}
 
 	om.outbounds[cfg.Tag] = tManager
-	om.log.Info("Started outbound tunnel: %s (%s)", cfg.Tag, cfg.Address)
 
 	go func() { _ = tManager.Connect(context.Background()) }()
 
@@ -234,7 +212,7 @@ func (om *OutboundManager) dialCascade(ctx context.Context, hops []string, final
 	return &cascadeConn{Conn: conn, closeFns: closeFns}, nil
 }
 
-func (om *OutboundManager) dialBridgeHop(ctx context.Context, hopTag, finalAddr string) (net.Conn, error) {
+func (om *OutboundManager) dialBridgeHop(ctx context.Context, hopTag, _ string) (net.Conn, error) {
 	bridgeID := hopTag
 	if len(bridgeID) > 7 && bridgeID[:7] == "bridge:" {
 		bridgeID = bridgeID[7:]
@@ -322,7 +300,6 @@ func (om *OutboundManager) RemoveOutbound(tag string) {
 		t.Stop()
 		delete(om.outbounds, tag)
 		delete(om.outboundCfgs, tag)
-		om.log.Info("Removed outbound: %s", tag)
 	}
 }
 
@@ -392,7 +369,6 @@ func (om *OutboundManager) UpdateOutbounds(configs []config.OutboundConfig) {
 			om.outbounds[tag].Stop()
 			delete(om.outbounds, tag)
 			delete(om.outboundCfgs, tag)
-			om.log.Info("Removed stale outbound: %s", tag)
 		}
 	}
 	om.mu.Unlock()

@@ -66,8 +66,6 @@ func (b *Bridge) Start(listenAddr string) error {
 	b.listener = listener
 	atomic.StoreInt32(&b.running, 1)
 
-	b.log.Info("Bridge started on %s -> %s", listenAddr, b.upstreamAddr)
-
 	go b.acceptLoop()
 	go b.healthLoop()
 	return nil
@@ -78,7 +76,6 @@ func (b *Bridge) acceptLoop() {
 		conn, err := b.listener.Accept()
 		if err != nil {
 			if atomic.LoadInt32(&b.running) == 1 {
-				b.log.Warn("Accept error: %v", err)
 			}
 			continue
 		}
@@ -99,7 +96,6 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 	hbuf := make([]byte, 16384)
 	n, err := clientConn.Read(hbuf)
 	if err != nil {
-		b.log.Debug("Failed to read ClientHello: %v", err)
 		return
 	}
 	clientHello := hbuf[:n]
@@ -107,7 +103,6 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 
 	sni := b.extractSNI(clientHello)
 	if sni == "" {
-		b.log.Debug("No SNI in ClientHello, rejecting")
 		return
 	}
 
@@ -116,29 +111,23 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 		handler := b.failoverHandler
 		b.failoverMu.RUnlock()
 		if handler != nil {
-			b.log.Debug("[Failover] Handling connection locally (SNI=%s)", sni)
 			handler(&prependConn{Conn: clientConn, buf: clientHello})
 			return
 		}
-		b.log.Warn("[Failover] No local handler, dropping connection (SNI=%s)", sni)
 		return
 	}
-
-	b.log.Debug("Bridge: forwarding connection with SNI=%s", sni)
 
 	upstreamConn, err := (&tls.Dialer{Config: &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"whispera"},
 	}}).DialContext(context.Background(), "tcp", b.upstreamAddr)
 	if err != nil {
-		b.log.Warn("Failed to connect to upstream %s: %v", b.upstreamAddr, err)
 		return
 	}
 	defer upstreamConn.Close()
 
 	_, err = upstreamConn.Write(clientHello)
 	if err != nil {
-		b.log.Warn("Failed to forward ClientHello: %v", err)
 		return
 	}
 
@@ -169,7 +158,6 @@ func (b *Bridge) healthLoop() {
 			if aliveCount >= aliveThresh && atomic.LoadInt32(&b.failoverActive) == 1 {
 				atomic.StoreInt32(&b.upstreamAlive, 1)
 				atomic.StoreInt32(&b.failoverActive, 0)
-				b.log.Info("[Failover] Upstream %s recovered — resuming relay mode", b.upstreamAddr)
 				b.fireFailover(false)
 			}
 		} else {
@@ -178,7 +166,6 @@ func (b *Bridge) healthLoop() {
 			if deadCount >= deadThresh && atomic.LoadInt32(&b.failoverActive) == 0 {
 				atomic.StoreInt32(&b.upstreamAlive, 0)
 				atomic.StoreInt32(&b.failoverActive, 1)
-				b.log.Warn("[Failover] Upstream %s unreachable after %d checks — entering master mode", b.upstreamAddr, deadCount)
 				b.fireFailover(true)
 			}
 		}

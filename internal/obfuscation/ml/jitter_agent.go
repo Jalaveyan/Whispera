@@ -52,11 +52,11 @@ type RLJitterAgent struct {
 	target   *gnet.GorgoniaNet
 	adam     *AdamState
 
-	prb        *PrioritizedReplayBuffer
-	thompson   *ThompsonSampler
-	sticky     StickyExplorer
-	curriculum CurriculumTracker
-	diversity  DiversityTracker
+	prb         *PrioritizedReplayBuffer
+	thompson    *ThompsonSampler
+	sticky      StickyExplorer
+	curriculum  CurriculumTracker
+	diversity   DiversityTracker
 	temperature float64
 
 	epsilon    float64
@@ -127,8 +127,6 @@ func (a *RLJitterAgent) Decide(v JitterView) float64 {
 
 	a.pendingState = state
 	a.pendingAction = idx
-	jLog.Info("jitter=±%.0f%% eps=%.2f temp=%.2f rtt=%.0fms missed=%d steps=%d",
-		JitterFractions[idx]*100, a.epsilon, a.temperature, v.RTTMs, v.MissedKAs, atomic.LoadInt64(&a.stepCount))
 	return JitterFractions[idx]
 }
 
@@ -156,11 +154,8 @@ func (a *RLJitterAgent) RecordOutcome(quality float64) {
 		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	eps := a.epsilon
+	_ = a.epsilon
 	a.mu.Unlock()
-
-	jLog.Info("outcome: quality=%.2f reward=%.2f jitter=±%.0f%% eps=%.3f",
-		quality, reward, JitterFractions[action]*100, eps)
 
 	if step%jTrainEvery == 0 {
 		go a.trainStep()
@@ -188,13 +183,10 @@ func (a *RLJitterAgent) trainStep() {
 	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, jNumActions, jGamma, 0.001, defaultEntropyCoeff)
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	temp := a.temperature
-	eps := a.epsilon
 	if cnt%100 == 0 {
 		saveRLMiniPolicy(a.modelDir, "rl_jitter.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
-		jLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

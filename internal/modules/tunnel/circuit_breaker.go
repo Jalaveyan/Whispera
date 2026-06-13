@@ -36,7 +36,6 @@ func (cb *circuitBreaker) Allow() bool {
 	case cbOpen:
 		if time.Since(cb.lastFailure) > cbResetTime {
 			cb.state = cbHalfOpen
-			log.Info("Circuit breaker: HALF-OPEN (allowing one attempt)")
 			return true
 		}
 		return false
@@ -52,7 +51,6 @@ func (cb *circuitBreaker) Fail() {
 	cb.lastFailure = time.Now()
 	if cb.state == cbHalfOpen || cb.failures >= cbThreshold {
 		cb.state = cbOpen
-		log.Warn("Circuit breaker: OPEN (failures: %d, will retry in %v)", cb.failures, cbResetTime)
 	}
 }
 
@@ -61,7 +59,6 @@ func (cb *circuitBreaker) Success() {
 	defer cb.mu.Unlock()
 	cb.failures = 0
 	cb.state = cbClosed
-	log.Info("Circuit breaker: CLOSED (connection successful)")
 }
 
 func (cb *circuitBreaker) Failures() int {

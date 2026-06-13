@@ -14,16 +14,11 @@ const (
 	speedChunkSize     = 32 * 1024
 )
 
-// GET /api/v1/speed/ping
-// No auth — returns server timestamp in ms for RTT measurement.
 func (s *Server) handleSpeedPing(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.jsonOK(w, map[string]int64{"ts": time.Now().UnixMilli()})
 }
 
-// GET /api/v1/speed/download?mb=N
-// Streams N MB of pseudo-random data (max 100 MB). Requires auth.
-// Extended write deadline: 5 min (default server timeout is 30s).
 func (s *Server) handleSpeedDownload(w http.ResponseWriter, r *http.Request) {
 	mb := 10
 	if v := r.URL.Query().Get("mb"); v != "" {
@@ -60,8 +55,6 @@ func (s *Server) handleSpeedDownload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// POST /api/v1/speed/upload
-// Reads request body, returns byte count + elapsed seconds + Mbps. Requires auth.
 func (s *Server) handleSpeedUpload(w http.ResponseWriter, r *http.Request) {
 	const maxBody = speedMaxUploadMB << 20
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)

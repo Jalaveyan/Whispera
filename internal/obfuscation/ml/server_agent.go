@@ -43,11 +43,11 @@ type RLServerAgent struct {
 	target   *gnet.GorgoniaNet
 	adam     *AdamState
 
-	prb        *PrioritizedReplayBuffer
-	thompson   *ThompsonSampler
-	sticky     StickyExplorer
-	curriculum CurriculumTracker
-	diversity  DiversityTracker
+	prb         *PrioritizedReplayBuffer
+	thompson    *ThompsonSampler
+	sticky      StickyExplorer
+	curriculum  CurriculumTracker
+	diversity   DiversityTracker
 	temperature float64
 
 	epsilon    float64
@@ -146,8 +146,6 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	a.pendingState = state
 	a.pendingAction = idx
 	chosen := sorted[idx]
-	srvLog.Info("pick[%d]=%s rtt=%v eps=%.2f temp=%.2f steps=%d (pool=%d servers)",
-		idx, chosen.Addr, chosen.Latency, a.epsilon, a.temperature, atomic.LoadInt64(&a.stepCount), n)
 	return chosen.Addr
 }
 
@@ -179,11 +177,8 @@ func (a *RLServerAgent) RecordOutcome(success bool, latencyMs float64) {
 		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	eps := a.epsilon
+	_ = a.epsilon
 	a.mu.Unlock()
-
-	srvLog.Info("outcome: success=%v reward=%.2f latency=%.0fms eps=%.3f",
-		success, reward, latencyMs, eps)
 
 	if step%srvTrainEvery == 0 {
 		go a.trainStep()
@@ -211,13 +206,12 @@ func (a *RLServerAgent) trainStep() {
 	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, srvNumActions, srvGamma, 0.005, defaultEntropyCoeff)
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	temp := a.temperature
-	eps := a.epsilon
+	_ = a.temperature
+	_ = a.epsilon
 	if cnt%100 == 0 {
 		saveRLMiniPolicy(a.modelDir, "rl_server.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
-		srvLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

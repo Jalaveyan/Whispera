@@ -67,7 +67,6 @@ func (d *DarwinKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, all
 	}
 	d.runPfctl("-e")
 	d.rulesActive = true
-	log.Info("macOS pf kill switch rules activated")
 	return nil
 }
 func (d *DarwinKillSwitch) Disable() error {
@@ -77,7 +76,6 @@ func (d *DarwinKillSwitch) Disable() error {
 	os.Remove(pfConfPath)
 
 	d.rulesActive = false
-	log.Info("macOS pf kill switch rules removed")
 	return nil
 }
 

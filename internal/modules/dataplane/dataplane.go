@@ -105,7 +105,7 @@ type natEntry struct {
 	Destination  *interfaces.Destination
 	CreatedAt    time.Time
 	LastUsed     time.Time
-	lastUsedNano int64 // atomic, avoids time.Now() per lookup
+	lastUsedNano int64
 }
 
 func New(cfg *Config) (*Processor, error) {

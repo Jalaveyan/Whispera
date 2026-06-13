@@ -83,7 +83,6 @@ func (s *TrafficStats) AddRx(userID string, bytes int64) {
 		user.LastActivity = time.Now()
 	}
 
-	s.log.Debug("RX: user=%s bytes=%d", userID, bytes)
 }
 
 func (s *TrafficStats) AddTx(userID string, bytes int64) {
@@ -100,7 +99,6 @@ func (s *TrafficStats) AddTx(userID string, bytes int64) {
 		user.LastActivity = time.Now()
 	}
 
-	s.log.Debug("TX: user=%s bytes=%d", userID, bytes)
 }
 
 func (s *TrafficStats) SetUserIP(userID, ip string) {
@@ -110,7 +108,6 @@ func (s *TrafficStats) SetUserIP(userID, ip string) {
 	user := s.getOrCreateUser(userID)
 	user.AssignedIP = ip
 
-	s.log.Info("User %s assigned IP %s", userID, ip)
 }
 
 func (s *TrafficStats) IncrementSessionCount(userID string) {
@@ -206,8 +203,6 @@ func (s *TrafficStats) TakeSnapshot() {
 		s.history = s.history[len(s.history)-s.historySize:]
 	}
 
-	s.log.Debug("Snapshot taken: rx=%d tx=%d users=%d",
-		s.totalBytesRx.Load(), s.totalBytesTx.Load(), len(s.userStats))
 }
 
 func (s *TrafficStats) countActiveUsers() int {

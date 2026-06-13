@@ -72,9 +72,6 @@ func PickRandomSNI() (string, time.Duration) {
 	return pickRandomSNI()
 }
 
-// DialTCP dials a raw TCP connection with optional TLS record fragmentation.
-// The fragmentation applies only to the first write (TLS ClientHello), making
-// SNI extraction harder for shallow DPI. Does NOT do TLS itself.
 func (d *Dialer) DialTCP(ctx context.Context, network, addr string) (net.Conn, error) {
 	conn, err := d.dialDirect(ctx, network, addr)
 	if err != nil {

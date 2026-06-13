@@ -1,6 +1,5 @@
 package yadisk
 
-
 import (
 	"bytes"
 	"context"
@@ -28,11 +27,11 @@ const (
 	ModuleName    = "transport.yadisk"
 	ModuleVersion = "1.0.0"
 
-	webdavBase    = "https://webdav.yandex.ru"
-	diskBase      = "https://cloud-api.yandex.net/v1/disk/resources"
-	pollInterval  = 50 * time.Millisecond
-	chunkTimeout  = 5 * time.Second
-	maxChunkSize  = 512 * 1024
+	webdavBase   = "https://webdav.yandex.ru"
+	diskBase     = "https://cloud-api.yandex.net/v1/disk/resources"
+	pollInterval = 50 * time.Millisecond
+	chunkTimeout = 5 * time.Second
+	maxChunkSize = 512 * 1024
 )
 
 type Config struct {
@@ -55,7 +54,7 @@ type Transport struct {
 	client *http.Client
 
 	writeSeq uint64
-	readSeq uint64
+	readSeq  uint64
 
 	writeDir string
 	readDir  string
@@ -123,7 +122,6 @@ func (t *Transport) Start() error {
 		t.writeDir,
 	} {
 		if err := t.mkdir(ctx, dir); err != nil {
-			log.Printf("yadisk: mkdir %s: %v (may already exist)", dir, err)
 		}
 	}
 
@@ -133,7 +131,6 @@ func (t *Transport) Start() error {
 	conn := &diskConn{t: t}
 	t.connCh <- conn
 
-	log.Printf("yadisk: started session %s (server=%v)", t.config.SessionID, t.config.ServerMode)
 	return nil
 }
 
@@ -176,7 +173,6 @@ func (t *Transport) sendLoop() {
 			err := t.putFile(ctx, path, data)
 			cancel()
 			if err != nil {
-				log.Printf("yadisk: PUT %s: %v", path, err)
 			}
 		}
 	}
@@ -210,7 +206,6 @@ func (t *Transport) recvLoop() {
 		}
 	}
 }
-
 
 func (t *Transport) auth(req *http.Request) {
 	req.Header.Set("Authorization", "OAuth "+t.config.OAuthToken)
@@ -280,7 +275,6 @@ func (t *Transport) mkdir(ctx context.Context, path string) error {
 	}
 	return nil
 }
-
 
 type diskConn struct {
 	t   *Transport

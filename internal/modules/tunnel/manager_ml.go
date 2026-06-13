@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"whispera/internal/network"
+	"whispera/internal/ipdetect"
 	mlpkg "whispera/internal/obfuscation/ml"
 
 	"github.com/sourcegraph/conc/iter"
@@ -33,7 +33,7 @@ func (m *Manager) mlHTTPClient() *http.Client {
 func (m *Manager) ensurePubIP() {
 	m.netCtxOnce.Do(func() {
 		go func() {
-			det := network.NewIPDetector(nil)
+			det := ipdetect.NewIPDetector(nil)
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
 			ip, err := det.DetectExternalIP(ctx)
@@ -120,7 +120,7 @@ func networkBucket(ip string) float64 {
 	return v
 }
 
-func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, confidence float64) {
+func (m *Manager) mlRecommendTransport() (transport string, confidence float64) {
 	if m.transportAgent == nil {
 		return "", 0
 	}
@@ -170,15 +170,13 @@ func (m *Manager) mlStartTransportWatchdog(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				rec, _ := m.mlRecommendTransport(ctx)
+				rec, _ := m.mlRecommendTransport()
 				if rec == "" || rec == m.config.Transport {
 					continue
 				}
 				if m.gameLaneActive() {
 					continue
 				}
-				log.Info("[RL-Transport] Watchdog: switching %s → %s (eps=%.2f)",
-					m.config.Transport, rec, m.transportAgent.Epsilon())
 				m.config.Transport = rec
 				m.rotateTransport()
 			}
@@ -292,7 +290,6 @@ func (m *Manager) mlFederatedSync(ctx context.Context) {
 	resp, err := m.mlHTTPClient().Do(req)
 	if err == nil && resp.StatusCode == http.StatusOK {
 		resp.Body.Close()
-		log.Debug("ML federated: downloaded global delta")
 	} else if resp != nil {
 		resp.Body.Close()
 	}
@@ -312,7 +309,6 @@ func (m *Manager) mlFederatedSync(ctx context.Context) {
 	ulResp, err := m.mlHTTPClient().Do(ulReq)
 	if err == nil {
 		ulResp.Body.Close()
-		log.Debug("ML federated: uploaded local delta")
 	}
 }
 
@@ -341,7 +337,6 @@ func (m *Manager) pickServer(ctx context.Context) string {
 		if err != nil {
 			return mlpkg.ServerProbe{Addr: addr, Latency: math.MaxInt64}
 		}
-		log.Info("[LATENCY] %s RTT=%v", addr, lat)
 		return mlpkg.ServerProbe{Addr: addr, Latency: lat}
 	})
 
@@ -358,10 +353,8 @@ func (m *Manager) pickServer(ctx context.Context) string {
 		}
 	}
 	if best.Latency == math.MaxInt64 {
-		log.Warn("[LATENCY] All servers unreachable during probe, using configured default")
 		return ""
 	}
-	log.Info("[LATENCY] Fastest server: %s (RTT=%v)", best.Addr, best.Latency)
 	return best.Addr
 }
 
@@ -383,7 +376,6 @@ func (m *Manager) regionCandidates() []string {
 			}
 			return out
 		}
-		log.Warn("[LATENCY] Region %q has no servers, falling back to all", region)
 	}
 
 	for _, s := range m.config.ServerList {

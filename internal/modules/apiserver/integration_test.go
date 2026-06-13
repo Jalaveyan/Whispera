@@ -32,7 +32,6 @@ func newTestServer(t *testing.T) *Server {
 		},
 		mux:            http.NewServeMux(),
 		handlers:       make(map[string]http.HandlerFunc),
-		mfaManager:     auth.NewMFAManager(),
 		jwtManager:     auth.NewJWTManager(secret),
 		bridgePool:     bridgeReg,
 		bridgeHandler:  bridgepool.NewAPIHandler(bridgeReg),

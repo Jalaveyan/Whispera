@@ -32,11 +32,11 @@ func isValidPortNum(s string) bool {
 var _ = net.ParseIP
 
 type FirewallRule struct {
-	Number    int    `json:"number"`
-	To        string `json:"to"`
-	Action    string `json:"action"`
-	From      string `json:"from"`
-	IPv6      bool   `json:"ipv6"`
+	Number int    `json:"number"`
+	To     string `json:"to"`
+	Action string `json:"action"`
+	From   string `json:"from"`
+	IPv6   bool   `json:"ipv6"`
 }
 
 type FirewallStatus struct {
@@ -184,9 +184,8 @@ func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	out, err := runUFW(args...)
+	_, err := runUFW(args...)
 	if err != nil {
-		log.Warn("ufw add rule failed: %s", strings.TrimSpace(string(out)))
 		if strings.Contains(err.Error(), "read-only filesystem") {
 			s.jsonError(w, http.StatusServiceUnavailable, "ufw is not available in this environment (read-only filesystem)")
 		} else {
@@ -209,9 +208,8 @@ func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request
 		s.jsonError(w, http.StatusBadRequest, "rule number required")
 		return
 	}
-	out, err := runUFW("--force", "delete", strconv.Itoa(req.Number))
+	_, err := runUFW("--force", "delete", strconv.Itoa(req.Number))
 	if err != nil {
-		log.Warn("ufw delete rule failed: %s", strings.TrimSpace(string(out)))
 		if strings.Contains(err.Error(), "read-only filesystem") {
 			s.jsonError(w, http.StatusServiceUnavailable, "ufw is not available in this environment (read-only filesystem)")
 		} else {
@@ -240,10 +238,8 @@ func (s *Server) handleFirewallToggle(w http.ResponseWriter, r *http.Request) {
 	} else {
 		args = []string{"--force", "disable"}
 	}
-	out, err := runUFW(args...)
+	_, err := runUFW(args...)
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		log.Warn("ufw toggle failed: %s", msg)
 		if strings.Contains(err.Error(), "read-only filesystem") {
 			s.jsonError(w, http.StatusServiceUnavailable, "ufw is not available in this environment (read-only filesystem)")
 		} else {

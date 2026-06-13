@@ -364,9 +364,6 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 			if !rule.Enabled || rule.Priority < 5 {
 				continue
 			}
-			if m.evaluateConditionFast(rule.Condition) {
-				processed, _ = m.applyAction(rule.Action, processed, rule.Parameters)
-			}
 		}
 	} else {
 		cacheKey := ruleCacheKey{
@@ -384,9 +381,6 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 			for _, rule := range rules {
 				if !rule.Enabled {
 					continue
-				}
-				if m.evaluateConditionFast(rule.Condition) {
-					processed, delay = m.applyAction(rule.Action, processed, rule.Parameters)
 				}
 			}
 			if len(processed) > 0 {

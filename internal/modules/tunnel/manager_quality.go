@@ -22,8 +22,6 @@ func (m *Manager) updateQualityRTT(rtt time.Duration) {
 
 	threshold := m.config.QualityThresholdRTT
 	if threshold > 0 && time.Duration(newEWMA) > threshold {
-		log.Warn("Quality failover: avg RTT=%v > threshold=%v, triggering reconnect",
-			time.Duration(newEWMA), threshold)
 		go m.Reconnect(m.Context())
 	}
 }
@@ -50,7 +48,6 @@ func (m *Manager) HealthCheck() interfaces.HealthStatus {
 	}
 	return status
 }
-
 
 func (m *Manager) getReconnectDelay() time.Duration {
 	attempts := atomic.LoadUint32(&m.reconnectAttempts)

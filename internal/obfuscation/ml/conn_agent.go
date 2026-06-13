@@ -17,8 +17,8 @@ var connLog = logger.Module("rl-conn")
 type ConnAction int
 
 const (
-	ConnActionKeep      ConnAction = 0
-	ConnActionOpen      ConnAction = 1
+	ConnActionKeep       ConnAction = 0
+	ConnActionOpen       ConnAction = 1
 	ConnActionCloseWorst ConnAction = 2
 )
 
@@ -75,11 +75,11 @@ type RLConnAgent struct {
 	target   *gnet.GorgoniaNet
 	adam     *AdamState
 
-	prb        *PrioritizedReplayBuffer
-	thompson   *ThompsonSampler
-	sticky     StickyExplorer
-	curriculum CurriculumTracker
-	diversity  DiversityTracker
+	prb         *PrioritizedReplayBuffer
+	thompson    *ThompsonSampler
+	sticky      StickyExplorer
+	curriculum  CurriculumTracker
+	diversity   DiversityTracker
 	temperature float64
 
 	epsilon    float64
@@ -165,10 +165,6 @@ func (a *RLConnAgent) Decide(view ConnPoolView) (ConnAction, *ConnDecision) {
 		mode += " →KEEP(maxpool)"
 	}
 
-	connLog.Info("%s → %s (pool=%d eps=%.2f temp=%.2f steps=%d train=%d)",
-		mode, action, view.Size, a.epsilon, a.temperature,
-		atomic.LoadInt64(&a.stepCount), atomic.LoadInt64(&a.trainCount))
-
 	return action, &ConnDecision{state: state, action: actionIdx}
 }
 
@@ -203,10 +199,8 @@ func (a *RLConnAgent) RecordOutcome(d *ConnDecision, quality float64) {
 		Done:      true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	eps := a.epsilon
+	_ = a.epsilon
 	a.mu.Unlock()
-
-	connLog.Info("outcome: quality=%.3f reward=%.3f eps=%.3f", quality, reward, eps)
 
 	if step%connTrainEvery == 0 {
 		go a.trainStep()
@@ -228,13 +222,12 @@ func (a *RLConnAgent) trainStep() {
 	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, connNumActions, connGamma, 0.001, defaultEntropyCoeff)
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	temp := a.temperature
-	eps := a.epsilon
+	_ = a.temperature
+	_ = a.epsilon
 	if cnt%100 == 0 {
 		saveRLMiniPolicy(a.modelDir, "rl_conn_v2.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
-		connLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

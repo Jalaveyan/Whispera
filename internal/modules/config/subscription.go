@@ -63,15 +63,13 @@ func subscriptionHTTPGet(rawURL string) (string, error) {
 		return "", fmt.Errorf("HTTP %d from subscription endpoint", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20)) // cap at 4 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", err
 	}
 	return string(body), nil
 }
 
-// SubscriptionManager periodically refreshes a subscription URL and calls
-// onChange with the new key list whenever the content changes.
 type SubscriptionManager struct {
 	url      string
 	interval time.Duration
@@ -105,7 +103,6 @@ func (s *SubscriptionManager) ForceRefresh() ([]*ConnectionKey, error) {
 }
 
 func (s *SubscriptionManager) run() {
-	// Fetch immediately on start.
 	if keys, err := s.fetch(); err == nil {
 		s.lastKeys = keys
 		if s.onChange != nil {

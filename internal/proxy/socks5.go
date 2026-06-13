@@ -123,8 +123,6 @@ func (s *SOCKS5Server) ListenAndServe() error {
 	}
 	defer listener.Close()
 
-	s.log.Info("✅ Server listening on %s - ready to accept connections", s.listenAddr)
-
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -145,14 +143,12 @@ func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 
 	if err := s.handleHandshake(conn); err != nil {
 		fmt.Printf("[SOCKS5] Handshake failed: %v\n", err)
-		s.log.Debug("Handshake failed: %v", err)
 		return
 	}
 
 	addr, port, err := s.handleRequest(conn)
 	if err != nil {
 		fmt.Printf("[SOCKS5] Request failed: %v\n", err)
-		s.log.Debug("Request failed: %v", err)
 		return
 	}
 
@@ -170,7 +166,6 @@ func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 	if err := s.handler(conn, addr, port); err != nil {
 		if err != io.EOF && err.Error() != "EOF" && !strings.Contains(err.Error(), "i/o timeout") && !strings.Contains(err.Error(), "use of closed network connection") {
 			fmt.Printf("[SOCKS5] Handler failed: %v\n", err)
-			s.log.Debug("Handler failed: %v", err)
 		}
 	}
 }
@@ -477,8 +472,6 @@ func (s *SOCKS5Server) handleUDPAssociate(conn net.Conn, atyp byte) (string, uin
 		return "", 0, err
 	}
 
-	s.log.Debug("UDP ASSOCIATE: relay listening on %s", localAddr.String())
-
 	if s.udpRelayHandler != nil {
 		go s.udpRelayHandler(udpListener, conn)
 	} else {
@@ -522,11 +515,9 @@ func (s *SOCKS5Server) handleUDPRelay(udpListener *net.UDPConn, tcpConn net.Conn
 
 		if s.packetHandler != nil {
 			if err := s.packetHandler(buf[:n], addr); err != nil {
-				s.log.Debug("Packet handler error: %v", err)
 			}
 			continue
 		}
 
-		s.log.Debug("Dropped UDP packet from %s (direct relay disabled)", addr)
 	}
 }

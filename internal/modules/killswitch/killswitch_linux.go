@@ -18,6 +18,7 @@ type LinuxKillSwitch struct {
 	rulesActive bool
 	savedRules  string
 }
+
 func NewPlatformImpl() (Platform, error) {
 	return &LinuxKillSwitch{}, nil
 }
@@ -35,7 +36,6 @@ func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allo
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := l.saveCurrentRules(); err != nil {
-		log.Warn("Failed to save current iptables rules: %v", err)
 	}
 	if err := l.createChain(); err != nil {
 		return fmt.Errorf("failed to create chain: %w", err)
@@ -66,28 +66,22 @@ func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allo
 		}
 		for _, cidr := range lanRanges {
 			if err := l.runIPTables("-A", chainName, "-d", cidr, "-j", "ACCEPT"); err != nil {
-				log.Warn("Failed to add LAN rule for %s: %v", cidr, err)
 			}
 			if err := l.runIPTables("-A", chainName, "-s", cidr, "-j", "ACCEPT"); err != nil {
-				log.Warn("Failed to add LAN rule for %s: %v", cidr, err)
 			}
 		}
 	}
 	if allowDNS {
 		if err := l.runIPTables("-A", chainName, "-p", "udp", "--dport", "53", "-j", "ACCEPT"); err != nil {
-			log.Warn("Failed to add DNS UDP rule: %v", err)
 		}
 		if err := l.runIPTables("-A", chainName, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"); err != nil {
-			log.Warn("Failed to add DNS TCP rule: %v", err)
 		}
 	}
 	for _, ip := range allowedIPs {
 		ipStr := ip.String()
 		if err := l.runIPTables("-A", chainName, "-d", ipStr, "-j", "ACCEPT"); err != nil {
-			log.Warn("Failed to add custom IP rule %s: %v", ipStr, err)
 		}
 		if err := l.runIPTables("-A", chainName, "-s", ipStr, "-j", "ACCEPT"); err != nil {
-			log.Warn("Failed to add custom IP rule %s: %v", ipStr, err)
 		}
 	}
 	tunInterfaces := []string{"tun0", "tun1", "tap0", "tap1", "wg0", "wg1"}
@@ -105,11 +99,9 @@ func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allo
 		return fmt.Errorf("failed to insert OUTPUT rule: %w", err)
 	}
 	if err := l.runIPTables("-I", "FORWARD", "1", "-j", chainName); err != nil {
-		log.Warn("Failed to insert FORWARD rule: %v", err)
 	}
 
 	l.rulesActive = true
-	log.Info("Linux iptables kill switch rules activated")
 	return nil
 }
 
@@ -123,9 +115,7 @@ func (l *LinuxKillSwitch) Disable() error {
 	_ = l.runIPTables("-X", chainName)
 
 	l.rulesActive = false
-	log.Info("Linux iptables kill switch rules removed")
 	if err := l.restoreRules(); err != nil {
-		log.Warn("Failed to restore original iptables rules: %v", err)
 	}
 
 	return nil

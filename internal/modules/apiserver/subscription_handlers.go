@@ -12,11 +12,11 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/crypto/curve25519"
+	"whispera/internal/ipdetect"
 	"whispera/internal/modules/config"
-	"whispera/internal/network"
-)
 
+	"golang.org/x/crypto/curve25519"
+)
 
 type Subscription struct {
 	ID         string    `json:"id"`
@@ -83,9 +83,7 @@ func loadSubscriptions() {
 		subNextID = p.NextID
 	}
 	subStoreMu.Unlock()
-	log.Info("loaded %d subscriptions from %s", len(p.Subscriptions), subDataFile)
 }
-
 
 func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
@@ -93,7 +91,7 @@ func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	serverIP, _ := network.DetectServerIP(ctx)
+	serverIP, _ := ipdetect.DetectServerIP(ctx)
 	publicURL := s.getPublicURL()
 
 	subStoreMu.RLock()
@@ -159,7 +157,7 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	serverIP, _ := network.DetectServerIP(ctx)
+	serverIP, _ := ipdetect.DetectServerIP(ctx)
 
 	cp := *sub
 	cp.SubURL = buildSubURL(r, serverIP, s.getPublicURL(), token)
@@ -261,7 +259,7 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	serverIP, _ := network.DetectServerIP(ctx)
+	serverIP, _ := ipdetect.DetectServerIP(ctx)
 
 	var servers []map[string]interface{}
 	if s.registry != nil {
@@ -327,7 +325,6 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Profile-Update-Interval", "24")
 	fmt.Fprint(w, base64.StdEncoding.EncodeToString(raw))
 }
-
 
 var internalPorts = map[string]bool{"3000": true, "8080": true, "8081": true, "8082": true}
 
@@ -494,9 +491,9 @@ func (s *Server) handlePingKey(w http.ResponseWriter, r *http.Request) {
 	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(r.Context(), "tcp", addr)
 	if err != nil {
 		s.jsonOK(w, map[string]interface{}{
-			"addr":    addr,
+			"addr":      addr,
 			"reachable": false,
-			"error":   err.Error(),
+			"error":     err.Error(),
 		})
 		return
 	}

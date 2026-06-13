@@ -31,11 +31,9 @@ import (
 
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/crypto"
-	"whispera/internal/modules/dnsmodule"
+	"whispera/internal/modules/dns"
 	"whispera/internal/modules/handshake"
 	"whispera/internal/modules/killswitch"
-	"whispera/internal/modules/mitm"
-	"whispera/internal/modules/obfuscator"
 	"whispera/internal/modules/proxyagent"
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/socks5"
@@ -83,8 +81,6 @@ var (
 	bypassDNS        = flag.String("bypass-dns", "77.88.8.8:53", "DNS server used for bypass resolver (never goes through tunnel)")
 )
 
-// pickServerAddress returns the best server address for the given transport,
-// respecting transport-specific overrides in ClientConfig.
 func pickServerAddress(cfg *config.ClientConfig, transport string) string {
 	switch transport {
 	case "tcp", "tls":
@@ -154,12 +150,8 @@ func resolveMLToken(cfg *config.ClientConfig) string {
 }
 
 func main() {
-	// Keep GC aggressive enough to avoid large heap on memory-constrained devices
-	// (mobile). 100 = GC when live heap doubles (Go default). 200 trades RAM for
-	// CPU — fine on desktop, bad on mobile where 150–200 MB heaps drain battery.
 	debug.SetGCPercent(100)
-	// Return OS memory promptly after GC instead of holding it speculatively.
-	debug.SetMemoryLimit(200 << 20) // soft cap: 200 MB
+	debug.SetMemoryLimit(200 << 20)
 
 	flag.Parse()
 
@@ -167,13 +159,10 @@ func main() {
 		mlpkg.SetMLServerURL(*mlServerURL, *mlTokenFlag)
 	}
 
-	// Detect systemd: JOURNAL_STREAM or INVOCATION_ID means we are a unit.
-	// In that case write to stdout so journald captures us; skip /dev/null redirect.
 	underSystemd := os.Getenv("JOURNAL_STREAM") != "" || os.Getenv("INVOCATION_ID") != ""
 
 	var logWriter io.Writer
 	if *logFilePath != "" {
-		// Explicit file requested — write there.
 		logFile, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
 			rb := newRingLogBuffer(2000)
@@ -183,11 +172,8 @@ func main() {
 			logWriter = logFile
 		}
 	} else if underSystemd {
-		// Under systemd: let journald capture our stdout. No timestamps —
-		// journald adds them. Redirect stderr too so panics are captured.
 		logWriter = os.Stdout
 	} else {
-		// Foreground / non-systemd: silence stdout/stderr, use ring buffer.
 		if null, errNull := os.OpenFile(os.DevNull, os.O_WRONLY, 0666); errNull == nil {
 			os.Stdout = null
 			os.Stderr = null
@@ -261,17 +247,6 @@ func main() {
 
 	cryptoMod, _ := crypto.New(nil)
 
-	obfsMod, _ := obfuscator.New(&obfuscator.Config{
-		ThreatLevel:              *obfsLevel,
-		EnableML:                 true,
-		EnableFTE:                true,
-		EnableJitter:             true,
-		EnableResidentialMimicry: true,
-		ConnectionBurstLimit:     8,
-		JitterMinMs:              30,
-		JitterMaxMs:              200,
-	})
-
 	sessMod, _ := session.New(&session.Config{MaxSessions: 10})
 
 	hsMod, _ := handshake.New(&handshake.Config{
@@ -291,27 +266,14 @@ func main() {
 	if *dnsUpstream != "" && !strings.EqualFold(*dnsUpstream, "system") {
 		dnsUpstreamAddr = *dnsUpstream
 	}
-	// bypassDNS is a resolver that always dials Yandex DNS (77.88.8.8) directly,
-	// never through the VPN tunnel. Yandex DNS is geo-aware for RU services and
-	// returns correct regional IPs. We use it for two purposes:
-	//   1. DNS module bypass path — so VPN tunnel DNS changes don't affect
-	//      Russian domains that must resolve locally.
-	//   2. Pre-resolve startup — capture IPs of bypass domains so that apps
-	//      that pre-resolve and send a bare IP to SOCKS5 are still routed direct.
 	bypassDNS := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 5 * time.Second}
-			// Try primary (Yandex), fallback to secondary on error is handled by
-			// the Go resolver automatically when the UDP exchange times out.
 			return d.DialContext(ctx, "udp", *bypassDNS)
 		},
 	}
 
-	// Build split-tunnel manager first — needed by both SOCKS5 bypass and DNS.
-	// Russian whitelist is always pre-loaded so that services like YaDisk /
-	// Gosuslugi resolve via system DNS and connect directly, keeping their
-	// regional IPs regardless of the configured VPN upstream.
 	stm := split_tunnel.NewSplitTunnelManager()
 	stm.AddRussianWhitelist()
 	stm.CreateDefaultRules()
@@ -326,14 +288,9 @@ func main() {
 			}
 		}
 	} else {
-		// Even without full split-tunnel enabled, still bypass Russian whitelist
-		// at DNS level so the VPN doesn't break access to Russian services.
 		stm.SetEnabled(true)
 	}
 
-	// Pre-resolve Russian bypass domains into /32 IP rules so that native apps
-	// which resolve DNS themselves (and hand a bare IP to SOCKS5) are still
-	// routed directly. Runs in the background so startup is not blocked.
 	go func() {
 		resolveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -346,10 +303,7 @@ func main() {
 		Debug:         true,
 		VPNServerAddr: cfg.Server,
 		MTU:           cfg.MTU,
-		// Route Russian services directly so they resolve to Russian IPs.
 		BypassFunc: stm.ShouldBypass,
-		// Drop BitTorrent connections — they reveal the real IP via DHT/PEX
-		// and unnecessarily consume VPN bandwidth.
 		BlockTorrents: true,
 	})
 	generateSocksAuth()
@@ -357,25 +311,22 @@ func main() {
 	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
 	socks5.HarvestHook = func(b []byte) { _ = chameleon.HarvestRawClientHello(b) }
 
-	dnsMod, _ := dnsmodule.New(&dnsmodule.Config{
+	dnsMod, _ := dns.New(&dns.Config{
 		Upstream:       dnsUpstreamAddr,
 		CacheEnabled:   true,
 		BypassFunc:     stm.ShouldBypassByHostname,
-		BypassResolver: bypassDNS, // fixed Russian DNS, never goes through VPN tunnel
+		BypassResolver: bypassDNS,
 	})
 
-	// Determine active transport (key overrides flag).
 	resolvedTransport := cfg.Transport
 	if resolvedTransport == "" {
 		resolvedTransport = *transport
 	}
 
-	// Pick the best server address for the resolved transport.
 	serverAddress := pickServerAddress(cfg, resolvedTransport)
 	if serverAddress == "" {
 		serverAddress = cfg.Server
 	}
-	// Ensure port is present; default to 8443.
 	if serverAddress != "" {
 		if _, _, err := net.SplitHostPort(serverAddress); err != nil {
 			serverAddress = net.JoinHostPort(serverAddress, "8443")
@@ -422,7 +373,6 @@ func main() {
 		stdlog.Printf("Override: Russian Service masquerading enabled: %s", cfg.RussianService)
 	}
 
-	// ForceSNI: CLI flag takes priority, then config file.
 	activeForceSNI := *forceSNIFlag
 	if activeForceSNI == "" {
 		activeForceSNI = cfg.ForceSNI
@@ -432,7 +382,6 @@ func main() {
 		stdlog.Printf("SNI override active: all connections will use SNI=%q", activeForceSNI)
 	}
 
-	// Region selection: CLI > config file > "auto"
 	activeRegion := *regionFlag
 	if activeRegion == "" {
 		activeRegion = cfg.PreferredRegion
@@ -572,11 +521,11 @@ func main() {
 			SocialOptions: tunnel.SocialOptions{
 				VKToken: *vkToken,
 			},
-			RussianService:  cfg.RussianService,
-			ServerList:      srvList,
-			RekeyInterval:   *rekeyInterval,
-			TransportConfig: tc,
-			ForceObfuscation: force,
+			RussianService:    cfg.RussianService,
+			ServerList:        srvList,
+			RekeyInterval:     *rekeyInterval,
+			TransportConfig:   tc,
+			ForceObfuscation:  force,
 			BehavioralProfile: profile,
 			CustomSNI:         customSNI,
 			ForceSNI:          getGlobalSNI(),
@@ -610,7 +559,6 @@ func main() {
 			return
 		}
 		newMgr.SetDependencies(nil, hsMod, nil, cryptoMod)
-		newMgr.SetObfuscator(obfsMod)
 		if tunnelCfg.BehavioralProfile != "" {
 			if err := newMgr.SetBehavioralProfile(tunnelCfg.BehavioralProfile); err != nil {
 				stdlog.Printf("restartEntry %s: set profile %q: %v", e.ID, tunnelCfg.BehavioralProfile, err)
@@ -690,7 +638,6 @@ func main() {
 
 	tunnelMod := newTunnelMod(transports[0])
 	tunnelMod.SetDependencies(nil, hsMod, nil, cryptoMod)
-	tunnelMod.SetObfuscator(obfsMod)
 
 	multiRouter := socks5.NewMultiRouter(tunnelMod)
 	globalMultiRouter = multiRouter
@@ -717,7 +664,6 @@ func main() {
 		tr := transports[i]
 		m := newTunnelMod(tr)
 		m.SetDependencies(nil, hsMod, nil, cryptoMod)
-		m.SetObfuscator(obfsMod)
 
 		_, connCancel := context.WithCancel(ctx)
 		entry := &TransportEntry{
@@ -781,27 +727,6 @@ func main() {
 		stdlog.Printf("IP spoofing enabled: %v", spoofList)
 	}
 
-	if *enableMITM {
-		mitmProxy, err := mitm.New(&mitm.Config{
-			ListenAddr: *mitmAddr,
-			TunnelDial: tunnelMod.DialStream,
-			MetaHook: func(meta mitm.TrafficMeta) {
-				if meta.Host != "" {
-					tunnelMod.AddRussianSNI(meta.Host)
-				}
-			},
-		})
-		if err != nil {
-			stdlog.Printf("MITM init failed: %v", err)
-		} else {
-			if err := mitmProxy.Start(); err != nil {
-				stdlog.Printf("MITM start failed: %v", err)
-			} else {
-				globalMITM = mitmProxy
-				stdlog.Printf("MITM proxy started on %s", *mitmAddr)
-			}
-		}
-	}
 
 	reconnectEntry = func(e *TransportEntry) {
 		restartEntry(e, buildBaseCfg(e))
@@ -843,7 +768,6 @@ func main() {
 			return
 		}
 		m.SetDependencies(nil, hsMod, nil, cryptoMod)
-		m.SetObfuscator(obfsMod)
 
 		entry := &TransportEntry{
 			ID:               pool.NextID(),
@@ -881,7 +805,6 @@ func main() {
 		}
 	}
 
-	// Resolve subscription URL: explicit flag overrides key's sub_url field.
 	effectiveSubURL := *subURL
 	if effectiveSubURL == "" && cfg != nil {
 		effectiveSubURL = cfg.SubscriptionURL
@@ -901,7 +824,6 @@ func main() {
 			}
 			best := keys[0]
 			stdlog.Printf("Subscription updated: %d keys available, using %q (server=%s)", len(keys), best.Name, best.Server)
-			// Update the primary tunnel's server address if it changed.
 			if best.Server != "" && best.Server != serverAddress {
 				serverAddress = best.Server
 				stdlog.Printf("Subscription: server address updated to %s", serverAddress)
@@ -992,7 +914,6 @@ func main() {
 	}
 
 	stdlog.Printf("SOCKS5 proxy listening on %s", *socksAddr)
-	log.Println("Obfuscation: FTE + Marionette + ML enabled")
 
 	go func() {
 		ticker := time.NewTicker(3 * time.Second)
@@ -1003,8 +924,6 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// Always check the current manager from the entry, not the
-				// initial tunnelMod — restartEntry replaces e.mgr on reconnect.
 				primaryEntry.mu.Lock()
 				currentMgr := primaryEntry.mgr
 				wasConnected := primaryEntry.Status == connStatusConnected
@@ -1161,12 +1080,10 @@ func main() {
 		}
 	}()
 
-	// Memory watchdog: force GC if heap grows past 150 MB to stay within the
-	// 200 MB soft cap and avoid OOM on memory-constrained mobile devices.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
-		const heapThreshold = 150 << 20 // 150 MB
+		const heapThreshold = 150 << 20
 		for {
 			select {
 			case <-ctx.Done():
@@ -1188,20 +1105,15 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		log.Println("Shutting down...")
 	}()
 
-	log.Println("Client running. Press Ctrl+C to stop.")
 	<-ctx.Done()
 }
 
-// sniModelDir возвращает путь для хранения rl_sni_policy.json.
 func sniModelDir() string {
 	return filepath.Join(mlDefaultDataDir(), "sni_model")
 }
 
-// fetchAndApplyMLWeights загружает веса с сервера и применяет их к агентам туннеля.
-// Запускается в горутине после успешного подключения. Ошибки не фатальны.
 func fetchAndApplyMLWeights(ctx context.Context, mgr *tunnel.Manager, weightsURL, token string) {
 	httpClient := &http.Client{
 		Timeout: 15 * time.Second,

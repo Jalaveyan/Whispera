@@ -36,12 +36,8 @@ type Config struct {
 	MaxConns            int
 	EnableEarlyData     bool
 	InitialStreamWindow uint64
-	// ALPN is the TLS application-layer protocol name used in the QUIC handshake.
-	// Default: "h3" — indistinguishable from HTTP/3 traffic.
 	ALPN string
-	// ServerName sets the SNI in the ClientHello (client-side only).
 	ServerName string
-	// CertDomains are included as SANs in the auto-generated server certificate.
 	CertDomains []string
 }
 
@@ -132,7 +128,6 @@ func generateTLSConfig(alpn string, domains []string) (*tls.Config, error) {
 
 	serialN, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 
-	// Use a plausible validity window: start ~90 days ago, valid for 2 years.
 	notBefore := time.Now().Add(-90 * 24 * time.Hour)
 	notAfter := notBefore.Add(2 * 365 * 24 * time.Hour)
 

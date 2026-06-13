@@ -342,7 +342,6 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
-		log.Printf("chameleon: REST auth failed from %s", r.RemoteAddr)
 		serveDecoy(w, r, cfg)
 		return
 	}
@@ -350,8 +349,6 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 		serveDecoy(w, r, cfg)
 		return
 	}
-
-	log.Printf("chameleon: REST authenticated user=%s from %s", userID, r.RemoteAddr)
 
 	sess := &restSession{
 		uploadCh: make(chan *uploadBody, 512),
@@ -367,7 +364,6 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		log.Printf("chameleon: REST ResponseWriter not a Flusher")
 		return
 	}
 
@@ -462,7 +458,6 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig
 
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
-		log.Printf("chameleon: HLS auth failed from %s", r.RemoteAddr)
 		serveDecoy(w, r, cfg)
 		return
 	}
@@ -472,7 +467,6 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig
 	}
 
 	keys := DeriveKeys(secret)
-	log.Printf("chameleon: HLS authenticated user=%s from %s", userID, r.RemoteAddr)
 
 	sess := &restSession{
 		uploadCh: make(chan *uploadBody, 512),
@@ -598,14 +592,12 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *ServerConfig)
 func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	sessCookie, err := r.Cookie(sessionCookie)
 	if err != nil {
-		log.Printf("chameleon: upload from %s: no session cookie (400)", r.RemoteAddr)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	sessionID, _, err := decodeSession(sessCookie.Value)
 	if err != nil {
-		log.Printf("chameleon: upload from %s: bad cookie (400)", r.RemoteAddr)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
@@ -614,7 +606,6 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *ServerConfig)
 
 	sess, ok := cfg.waitSession(sessionKey, 3*time.Second)
 	if !ok {
-		log.Printf("chameleon: upload from %s: session %s not found (503)", r.RemoteAddr, sessionKey[:8])
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
@@ -651,7 +642,7 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *ServerConfig)
 	}
 }
 
-func handleRESTOptions(w http.ResponseWriter, r *http.Request) {
+func handleRESTOptions(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -659,10 +650,9 @@ func handleRESTOptions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handleRESTDelete(w http.ResponseWriter, r *http.Request) {
+func handleRESTDelete(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write([]byte(`{"deleted":true}`)); err != nil {
-		log.Printf("chameleon: REST delete response: %v", err)
 	}
 }

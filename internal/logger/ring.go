@@ -91,8 +91,6 @@ func ring() *ringBuffer {
 	return globalRing
 }
 
-// Snapshot returns up to `limit` most recent log entries at or above `minLevel`.
-// Pass limit=0 for all; pass minLevel=LevelDebug for all severities.
 func Snapshot(limit int, minLevel Level) []RingEntry {
 	return ring().snapshot(limit, minLevel)
 }

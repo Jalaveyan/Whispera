@@ -67,6 +67,5 @@ func main() {
 	defer cancel()
 	<-ctx.Done()
 
-	fmt.Println("shutting down...")
 	srv.Stop()
 }

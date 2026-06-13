@@ -16,9 +16,6 @@ type ConnectionKey struct {
 	KeyID     string `json:"kid,omitempty"`
 	ExpiresAt int64  `json:"exp,omitempty"`
 	Server    string `json:"server"`
-	// ServerAlts lists additional "host:port" endpoints that accept the same
-	// key. Used for seamless port migration: operators add the new port to
-	// the list, wait for clients to pick it up, then drop the old entry.
 	ServerAlts []string `json:"server_alts,omitempty"`
 	ServerTCP  string   `json:"server_tcp,omitempty"`
 	ServerWS   string   `json:"server_ws,omitempty"`
@@ -49,8 +46,6 @@ type ConnectionKey struct {
 
 	MLToken string `json:"ml_token,omitempty"`
 
-	// SubscriptionURL points to an endpoint that returns a fresh connection key
-	// (or a newline-separated list of keys). The client refreshes it periodically.
 	SubscriptionURL string `json:"sub_url,omitempty"`
 }
 
@@ -58,13 +53,6 @@ func (ck *ConnectionKey) IsExpired() bool {
 	return ck.ExpiresAt > 0 && time.Now().Unix() > ck.ExpiresAt
 }
 
-// ParseConnectionKey parses a connection key in any supported format:
-//   - whispera://... — native Whispera format
-//   - vless://uuid@server:port?... — XRay/VLESS
-//   - vmess://base64json — V2Ray VMess
-//   - trojan://password@server:port?... — Trojan
-//   - ss://... — Shadowsocks
-//   - plain base64 JSON — native compact format
 func ParseConnectionKey(key string) (*ConnectionKey, error) {
 	key = strings.TrimSpace(key)
 
@@ -326,12 +314,6 @@ type KeyGenOptions struct {
 	TransportConfig   map[string]interface{}
 }
 
-// FetchSubscription downloads a subscription URL and returns all valid
-// connection keys found in the response. Supports:
-//   - Single key (whispera://, vless://, vmess://, etc.)
-//   - Newline-separated list of keys
-//   - Base64-encoded newline-separated list (standard Clash/Sing-box format)
-//   - JSON array of key strings
 func FetchSubscription(rawURL string) ([]*ConnectionKey, error) {
 	resp, err := subscriptionHTTPGet(rawURL)
 	if err != nil {
@@ -339,13 +321,11 @@ func FetchSubscription(rawURL string) ([]*ConnectionKey, error) {
 	}
 	body := strings.TrimSpace(resp)
 
-	// Try JSON array first.
 	var arr []string
 	if json.Unmarshal([]byte(body), &arr) == nil {
 		return parseKeyList(arr)
 	}
 
-	// Try base64-encoded block (standard VPN subscription format).
 	if decoded, err := base64.StdEncoding.DecodeString(body); err == nil {
 		body = strings.TrimSpace(string(decoded))
 	} else if decoded, err := base64.URLEncoding.DecodeString(body); err == nil {
@@ -378,7 +358,6 @@ func parseKeyList(lines []string) ([]*ConnectionKey, error) {
 	return out, nil
 }
 
-// parseVLESSKey parses vless://uuid@server:port?type=ws&security=tls&sni=...&path=/ws#name
 func parseVLESSKey(raw string) (*ConnectionKey, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -423,7 +402,6 @@ func parseVLESSKey(raw string) (*ConnectionKey, error) {
 	return ck, nil
 }
 
-// parseVMessKey parses vmess://base64json (V2Ray format).
 func parseVMessKey(raw string) (*ConnectionKey, error) {
 	b64 := strings.TrimPrefix(raw, "vmess://")
 	b64 = strings.TrimRight(b64, "#")
@@ -489,7 +467,6 @@ func parseVMessKey(raw string) (*ConnectionKey, error) {
 	return ck, nil
 }
 
-// parseTrojanKey parses trojan://password@server:port?sni=...&type=...
 func parseTrojanKey(raw string) (*ConnectionKey, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -526,8 +503,6 @@ func parseTrojanKey(raw string) (*ConnectionKey, error) {
 	return ck, nil
 }
 
-// parseSSKey parses Shadowsocks URI: ss://base64(method:password)@server:port#name
-// or ss://method:password@server:port#name
 func parseSSKey(raw string) (*ConnectionKey, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -543,20 +518,18 @@ func parseSSKey(raw string) (*ConnectionKey, error) {
 	var method, password string
 	if u.User != nil {
 		userinfo := u.User.Username()
-		// Try to decode as base64(method:password)
 		if decoded, err := base64.StdEncoding.DecodeString(userinfo); err == nil {
 			parts := strings.SplitN(string(decoded), ":", 2)
 			if len(parts) == 2 {
 				method, password = parts[0], parts[1]
 			}
 		} else {
-			// Plain method:password
 			method = userinfo
 			password, _ = u.User.Password()
 		}
 	}
 
-	_ = method // method informs cipher selection but we map to PSK for now
+	_ = method
 	return &ConnectionKey{
 		Version:    1,
 		Name:       name,
@@ -567,7 +540,6 @@ func parseSSKey(raw string) (*ConnectionKey, error) {
 	}, nil
 }
 
-// mapXRayTransport converts XRay/V2Ray transport names to Whispera transport names.
 func mapXRayTransport(t string) string {
 	switch strings.ToLower(t) {
 	case "ws", "websocket":

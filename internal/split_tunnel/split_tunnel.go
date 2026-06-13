@@ -90,9 +90,6 @@ func (stm *SplitTunnelManager) SetEnabled(enabled bool) {
 	stm.config.Enabled = enabled
 }
 
-// ShouldBypass returns true when addr (hostname or IP) should be routed directly.
-// For IP addresses it checks CIDR rules; for hostnames it checks domain rules.
-// Use this as the single entry point in BypassFunc.
 func (stm *SplitTunnelManager) ShouldBypass(addr string, port uint16) bool {
 	if !stm.config.Enabled {
 		return false
@@ -103,7 +100,6 @@ func (stm *SplitTunnelManager) ShouldBypass(addr string, port uint16) bool {
 	return stm.ShouldBypassByHostname(addr)
 }
 
-// ShouldBypassByIP returns true when the IP matches a CIDR/exact-IP rule with action "direct".
 func (stm *SplitTunnelManager) ShouldBypassByIP(ipStr string) bool {
 	if !stm.config.Enabled {
 		return false
@@ -122,9 +118,6 @@ func (stm *SplitTunnelManager) ShouldBypassByIP(ipStr string) bool {
 	return false
 }
 
-// ShouldBypassByHostname returns true when the hostname matches a domain rule
-// with action "direct". Call this BEFORE DNS resolution, while the hostname
-// is still available.
 func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
 	if !stm.config.Enabled {
 		return false
@@ -144,8 +137,6 @@ func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
 	return false
 }
 
-// matchesDomainSuffix reports whether host equals pattern or is a subdomain of it.
-// pattern may start with "*." for explicit wildcard (optional — plain suffix works too).
 func matchesDomainSuffix(host, pattern string) bool {
 	pattern = strings.TrimPrefix(pattern, "*.")
 	if host == pattern {
@@ -172,10 +163,6 @@ func (stm *SplitTunnelManager) matchesIP(ruleValue, destIP string) bool {
 	return network.Contains(ip)
 }
 
-// PreResolveAndCacheIPs resolves all bypass-listed domains using the provided
-// resolver and adds their IPs as /32 direct rules. Call this at startup before
-// VPN connects so that apps which pre-resolve a hostname (and send the bare IP
-// to SOCKS5) are still routed directly — hostname bypass alone would miss them.
 func (stm *SplitTunnelManager) PreResolveAndCacheIPs(ctx context.Context, resolver *net.Resolver) int {
 	if resolver == nil {
 		resolver = net.DefaultResolver
@@ -214,42 +201,30 @@ func (stm *SplitTunnelManager) PreResolveAndCacheIPs(ctx context.Context, resolv
 	return len(newRules)
 }
 
-// russianBypassDomains is the built-in list of Russian services that should
-// resolve via system DNS and route directly (not through the VPN) to ensure
-// they work correctly. These are either whitelisted by RKN or require a
-// Russian IP for proper operation (banking, government portals, etc.).
 var russianBypassDomains = []string{
-	// Yandex ecosystem
 	"yandex.ru", "ya.ru", "yandex.net",
 	"disk.yandex.ru", "webdav.yandex.ru",
 	"mail.yandex.ru", "passport.yandex.ru",
 	"maps.yandex.ru", "api-maps.yandex.net",
 	"mc.yandex.ru", "metrika.yandex.ru",
-	// VK / Mail.ru
 	"vk.com", "vkuseraudio.net", "vkuservideo.net",
 	"userapi.com", "vk.me",
 	"mail.ru", "ok.ru", "mycdn.me",
-	// Banking & finance (require Russian IP for 3DS, mobile bank)
 	"sberbank.ru", "online.sberbank.ru", "sberonline.ru",
 	"tinkoff.ru", "acdn.tinkoff.ru",
 	"alfabank.ru", "vtb.ru", "raiffeisen.ru",
 	"cbr.ru",
-	// Government
 	"gosuslugi.ru", "esia.gosuslugi.ru",
 	"nalog.ru", "lkfl.nalog.ru",
 	"mos.ru", "pgu.mos.ru",
 	"pfr.gov.ru", "fss.ru",
-	// Marketplaces & delivery
 	"wildberries.ru", "ozon.ru", "avito.ru",
 	"cdek.ru", "pochta.ru",
-	// Media & search
 	"rutube.ru", "dzen.ru",
 	"rbc.ru", "ria.ru", "tass.ru",
 	"hh.ru", "superjob.ru",
 }
 
-// AddRussianWhitelist adds built-in direct-routing rules for common Russian
-// services. Call after NewSplitTunnelManager() to enable YaDisk/whitelist bypass.
 func (stm *SplitTunnelManager) AddRussianWhitelist() {
 	for _, domain := range russianBypassDomains {
 		stm.AddRule(&SplitTunnelRule{

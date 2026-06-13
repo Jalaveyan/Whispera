@@ -45,8 +45,6 @@ func (m *Manager) selectNewSNILocked() string {
 		if domain != "" {
 			m.currentSNI = domain
 			m.lastRotation = time.Now()
-			log.Info("[ROTATION EVENT] RL SNI agent selected: %s (eps=%.2f)",
-				m.currentSNI, m.sniAgent.Epsilon())
 			return m.currentSNI
 		}
 	}
@@ -58,7 +56,6 @@ func (m *Manager) selectNewSNILocked() string {
 		m.currentSNI = pool[idxBig.Int64()]
 	}
 	m.lastRotation = time.Now()
-	log.Info("[ROTATION EVENT] Selected new SNI: %s (fallback crypto/rand)", m.currentSNI)
 	return m.currentSNI
 }
 
@@ -88,12 +85,10 @@ func (m *Manager) getRotationSNI() string {
 func (m *Manager) RotateSNI() {
 	oldSNI := m.currentSNI
 	oldTransport := m.config.Transport
-	newSNI := m.selectNewSNI()
-	log.Info("Initiating Seamless SNI Rotation to: %s", newSNI)
+	m.selectNewSNI()
 
 	if m.config.MLServerURL != "" {
-		if rec, conf := m.mlRecommendTransport(m.Context()); rec != "" && conf >= 0.55 && rec != oldTransport {
-			log.Info("[ML-Rotate] Transport switch during SNI rotation: %s → %s (confidence=%.2f)", oldTransport, rec, conf)
+		if rec, conf := m.mlRecommendTransport(); rec != "" && conf >= 0.55 && rec != oldTransport {
 			m.config.Transport = rec
 		}
 	}
@@ -119,12 +114,10 @@ func (m *Manager) RotateSNI() {
 	if m.config.MLServerURL != "" {
 		go m.mlSendFeedback(m.config.Transport, true, 0)
 	}
-	log.Info("SNI Rotation complete. Old connections will drain gracefully.")
 }
 
 func (m *Manager) maybePreemptiveRotate(streak int32) {
 	if streak == 2 && m.transportAgent != nil {
-		log.Info("[preemptive] %d consecutive TLS errors — rotating transport before block", streak)
 		go m.rotateTransport()
 	}
 }
@@ -140,15 +133,12 @@ func (m *Manager) rotateTransport() {
 
 	oldTransport := m.config.Transport
 	if m.config.MLServerURL != "" {
-		if rec, conf := m.mlRecommendTransport(m.Context()); rec != "" && conf >= 0.55 {
+		if rec, conf := m.mlRecommendTransport(); rec != "" && conf >= 0.55 {
 			if rec != oldTransport {
-				log.Info("[REKEY] ML recommends transport switch: %s → %s (confidence=%.2f)", oldTransport, rec, conf)
 				m.config.Transport = rec
 			}
 		}
 	}
-
-	log.Info("[REKEY] Rotating %d transport connections for PFS (transport=%s)", poolSize, m.config.Transport)
 
 	m.setState(StateReconnecting)
 	m.Reconnect(m.Context())
@@ -161,7 +151,6 @@ func (m *Manager) rotateTransport() {
 			m.connMu.RUnlock()
 			m.mlSendFeedback(m.config.Transport, success, 0)
 			if !success && m.config.Transport != oldTransport {
-				log.Warn("[REKEY] ML transport %s failed, reverting to %s", m.config.Transport, oldTransport)
 				m.config.Transport = oldTransport
 				m.Reconnect(m.Context())
 			}
@@ -190,7 +179,6 @@ func (m *Manager) startRekey() {
 			}
 		}
 	})
-	log.Info("[REKEY] Periodic rekeying started (interval=%v)", m.config.RekeyInterval)
 }
 
 func (m *Manager) stopRekey() {
@@ -211,7 +199,6 @@ func (m *Manager) performRekey() {
 
 	seed := make([]byte, 32)
 	if _, err := rand.Read(seed); err != nil {
-		log.Warn("[REKEY] Failed to generate seed: %v", err)
 		return
 	}
 
@@ -223,10 +210,8 @@ func (m *Manager) performRekey() {
 	copy(frame[FrameHeaderSize:], seed)
 
 	if err := m.Send(frame); err != nil {
-		log.Warn("[REKEY] Failed to send rekey frame: %v", err)
 		return
 	}
-	log.Info("[REKEY] Sent in-place rekey frame (PFS, seed=%x...)", seed[:4])
 }
 
 func (m *Manager) AddRussianSNI(sni string) {

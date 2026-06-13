@@ -7,8 +7,6 @@ import (
 	"whispera/internal/modules/probedetector"
 )
 
-// SetProbeDetector attaches the active-probing detector to the API server so the
-// admin panel can view and manage blocked IPs.
 func (s *Server) SetProbeDetector(d *probedetector.Detector) {
 	s.mu.Lock()
 	s.probeDetector = d

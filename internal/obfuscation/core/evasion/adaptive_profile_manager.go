@@ -10,7 +10,6 @@ import (
 
 const profileTypeProtocol = "protocol"
 
-// AdaptiveProfileManagerImpl - реализация адаптивного управления профилями
 type AdaptiveProfileManagerImpl struct {
 	profiles            map[string]*types.AdaptiveProfile
 	recommendations     map[string]*types.ProfileRecommendation
@@ -20,7 +19,6 @@ type AdaptiveProfileManagerImpl struct {
 	adaptationThreshold float64
 }
 
-// SelectOptimalProfile выбирает оптимальный профиль для контекста
 func (apm *AdaptiveProfileManagerImpl) SelectOptimalProfile(context *types.TrafficContext) (string, error) {
 	apm.mutex.RLock()
 	defer apm.mutex.RUnlock()
@@ -43,7 +41,6 @@ func (apm *AdaptiveProfileManagerImpl) SelectOptimalProfile(context *types.Traff
 	return bestProfile, nil
 }
 
-// AdaptProfile адаптирует профиль на основе обратной связи
 func (apm *AdaptiveProfileManagerImpl) AdaptProfile(profileName string, feedback *types.AdaptationFeedback) error {
 	apm.mutex.Lock()
 	defer apm.mutex.Unlock()
@@ -53,7 +50,6 @@ func (apm *AdaptiveProfileManagerImpl) AdaptProfile(profileName string, feedback
 		return fmt.Errorf("profile %s not found", profileName)
 	}
 
-	// Update effectiveness based on feedback
 	if feedback.Success {
 		profile.Effectiveness = profile.Effectiveness*(1-apm.learningRate) + 1.0*apm.learningRate
 		profile.SuccessRate = profile.SuccessRate*(1-apm.learningRate) + 1.0*apm.learningRate
@@ -66,10 +62,8 @@ func (apm *AdaptiveProfileManagerImpl) AdaptProfile(profileName string, feedback
 	profile.LastAdaptation = time.Now()
 	profile.AdaptationCount++
 
-	// Record feedback
 	apm.feedback[profileName] = feedback
 
-	// Self-adaptation logic
 	if profile.SuccessRate < apm.adaptationThreshold {
 		apm.adaptProfileParameters(profile, feedback)
 	}
@@ -77,7 +71,6 @@ func (apm *AdaptiveProfileManagerImpl) AdaptProfile(profileName string, feedback
 	return nil
 }
 
-// GetProfileRecommendations возвращает рекомендации профилей
 func (apm *AdaptiveProfileManagerImpl) GetProfileRecommendations(
 	context *types.TrafficContext,
 ) []*types.ProfileRecommendation {
@@ -101,25 +94,20 @@ func (apm *AdaptiveProfileManagerImpl) GetProfileRecommendations(
 	return recommendations
 }
 
-// calculateProfileScore вычисляет оценку профиля для контекста
 func (apm *AdaptiveProfileManagerImpl) calculateProfileScore(
 	profile *types.AdaptiveProfile, context *types.TrafficContext,
 ) float64 {
 	score := 0.0
 
-	// Type matching
 	score += apm.calculateTypeScore(profile, context)
 
-	// Effectiveness
 	score += profile.Effectiveness * 0.4
 
-	// Confidence
 	score += apm.calculateConfidence(profile, context) * 0.2
 
 	return math.Min(1.0, score)
 }
 
-// calculateTypeScore вычисляет счет на основе типа профиля
 func (apm *AdaptiveProfileManagerImpl) calculateTypeScore(
 	profile *types.AdaptiveProfile, context *types.TrafficContext,
 ) float64 {
@@ -136,11 +124,9 @@ func (apm *AdaptiveProfileManagerImpl) calculateTypeScore(
 	return 0.1
 }
 
-// calculateConfidence вычисляет уверенность в рекомендации
 func (apm *AdaptiveProfileManagerImpl) calculateConfidence(
 	profile *types.AdaptiveProfile, context *types.TrafficContext,
 ) float64 {
-	// Use context parameter for confidence calculation
 	if context.Direction != "" || context.Protocol != "" {
 		return 0.5
 	}
@@ -153,7 +139,6 @@ func (apm *AdaptiveProfileManagerImpl) calculateConfidence(
 	return 0.2
 }
 
-// getRecommendationReason возвращает причину рекомендации
 func (apm *AdaptiveProfileManagerImpl) getRecommendationReason(
 	profile *types.AdaptiveProfile, context *types.TrafficContext,
 ) string {
@@ -166,7 +151,6 @@ func (apm *AdaptiveProfileManagerImpl) getRecommendationReason(
 	return "general_suitability"
 }
 
-// adaptProfileParameters адаптирует параметры профиля
 func (apm *AdaptiveProfileManagerImpl) adaptProfileParameters(
 	profile *types.AdaptiveProfile, feedback *types.AdaptationFeedback,
 ) {
@@ -174,14 +158,11 @@ func (apm *AdaptiveProfileManagerImpl) adaptProfileParameters(
 		profile.Parameters = make(map[string]interface{})
 	}
 
-	// Adapt aggressiveness
 	apm.adaptAggressiveness(profile, feedback.Success)
 
-	// Adapt timing
 	apm.adaptDelayFactor(profile, feedback.Latency)
 }
 
-// adaptAggressiveness адаптирует агрессивность профиля
 func (apm *AdaptiveProfileManagerImpl) adaptAggressiveness(profile *types.AdaptiveProfile, success bool) {
 	val, exists := profile.Parameters["aggressiveness"]
 	if !exists {
@@ -202,7 +183,6 @@ func (apm *AdaptiveProfileManagerImpl) adaptAggressiveness(profile *types.Adapti
 	}
 }
 
-// adaptDelayFactor адаптирует фактор задержки профиля
 func (apm *AdaptiveProfileManagerImpl) adaptDelayFactor(profile *types.AdaptiveProfile, latency time.Duration) {
 	if latency <= 0 {
 		return
@@ -223,7 +203,6 @@ func (apm *AdaptiveProfileManagerImpl) adaptDelayFactor(profile *types.AdaptiveP
 	}
 }
 
-// AddProfile добавляет новый адаптивный профиль
 func (apm *AdaptiveProfileManagerImpl) AddProfile(name string, profile *types.AdaptiveProfile) {
 	apm.mutex.Lock()
 	defer apm.mutex.Unlock()
@@ -234,7 +213,6 @@ func (apm *AdaptiveProfileManagerImpl) AddProfile(name string, profile *types.Ad
 	apm.profiles[name] = profile
 }
 
-// GetProfile возвращает адаптивный профиль
 func (apm *AdaptiveProfileManagerImpl) GetProfile(name string) (*types.AdaptiveProfile, bool) {
 	apm.mutex.RLock()
 	defer apm.mutex.RUnlock()
@@ -246,7 +224,6 @@ func (apm *AdaptiveProfileManagerImpl) GetProfile(name string) (*types.AdaptiveP
 	return profile, ok
 }
 
-// GetProfileStats возвращает статистику профилей
 func (apm *AdaptiveProfileManagerImpl) GetProfileStats() map[string]*AdaptiveProfileStats {
 	apm.mutex.RLock()
 	defer apm.mutex.RUnlock()
@@ -268,7 +245,6 @@ func (apm *AdaptiveProfileManagerImpl) GetProfileStats() map[string]*AdaptivePro
 	return stats
 }
 
-// SetLearningRate устанавливает скорость обучения
 func (apm *AdaptiveProfileManagerImpl) SetLearningRate(rate float64) {
 	apm.mutex.Lock()
 	defer apm.mutex.Unlock()
@@ -276,7 +252,6 @@ func (apm *AdaptiveProfileManagerImpl) SetLearningRate(rate float64) {
 	apm.learningRate = rate
 }
 
-// SetAdaptationThreshold устанавливает порог адаптации
 func (apm *AdaptiveProfileManagerImpl) SetAdaptationThreshold(threshold float64) {
 	apm.mutex.Lock()
 	defer apm.mutex.Unlock()
@@ -284,7 +259,6 @@ func (apm *AdaptiveProfileManagerImpl) SetAdaptationThreshold(threshold float64)
 	apm.adaptationThreshold = threshold
 }
 
-// AdaptiveProfileStats - статистика адаптивного профиля
 type AdaptiveProfileStats struct {
 	Name            string        `json:"name"`
 	Type            string        `json:"type"`
@@ -297,7 +271,6 @@ type AdaptiveProfileStats struct {
 	AdaptationCount int64         `json:"adaptation_count"`
 }
 
-// LearnFromTraffic обучается на основе трафика
 func (apm *AdaptiveProfileManagerImpl) LearnFromTraffic(data []byte, profileName string, success bool) {
 	apm.mutex.Lock()
 	defer apm.mutex.Unlock()

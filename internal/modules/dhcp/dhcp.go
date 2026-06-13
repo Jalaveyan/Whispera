@@ -15,6 +15,22 @@ const (
 	ModuleVersion = "1.0.0"
 )
 
+type IPPool struct {
+	mu sync.Mutex
+
+	network   *net.IPNet
+	networkIP net.IP
+	broadcast net.IP
+
+	usedIPs     map[string]bool
+	reservedIPs map[string]bool
+
+	nextIP uint32
+
+	firstIP uint32
+	lastIP  uint32
+}
+
 type Config struct {
 	Enabled       bool          `json:"enabled" yaml:"enabled"`
 	SubnetCIDR    string        `json:"subnet_cidr" yaml:"subnet_cidr"`
@@ -98,8 +114,6 @@ func (m *Manager) ReleaseByClient(clientID string) error {
 	delete(m.leases, ipStr)
 	delete(m.clientToIP, clientID)
 
-	m.log.Info("Released IP %s from client %s", ipStr, clientID)
-
 	return nil
 }
 
@@ -130,4 +144,44 @@ func (m *Manager) GetStats() map[string]interface{} {
 		"dns_servers":    m.config.DNSServers,
 		"full_tunneling": m.config.FullTunneling,
 	}
+}
+
+
+func (p *IPPool) Release(ip net.IP) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	ipStr := ip.String()
+
+	if !p.usedIPs[ipStr] {
+		return fmt.Errorf("IP %s is not in use", ipStr)
+	}
+
+	delete(p.usedIPs, ipStr)
+	return nil
+}
+
+func (p *IPPool) AvailableCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	total := int(p.lastIP - p.firstIP + 1)
+	used := len(p.usedIPs)
+	reserved := len(p.reservedIPs)
+
+	available := total - used - reserved
+	if available < 0 {
+		available = 0
+	}
+	return available
+}
+
+func (p *IPPool) UsedCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.usedIPs)
+}
+
+func (p *IPPool) TotalCount() int {
+	return int(p.lastIP - p.firstIP + 1)
 }

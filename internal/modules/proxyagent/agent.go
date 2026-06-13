@@ -136,7 +136,6 @@ func (pa *ProxyAgent) Start() {
 	pa.wg.Add(2)
 	go pa.probeLoop()
 	go pa.rotateLoop()
-	log.Info("Proxy agent started (%d candidates, explore=%.0f%%)", len(pa.arms), pa.config.ExploreRate*100)
 }
 
 func (pa *ProxyAgent) Stop() {
@@ -190,7 +189,6 @@ func (pa *ProxyAgent) ReportResult(result ProbeResult) {
 		if pa.consecutiveFails >= pa.config.FailThreshold {
 			pa.state = AgentBlocked
 			atomic.AddUint64(&pa.totalBlocks, 1)
-			log.Warn("Agent detected block (fails=%d), triggering rotation", pa.consecutiveFails)
 			go pa.emergencyRotate()
 		}
 	} else {
@@ -394,7 +392,6 @@ func (pa *ProxyAgent) scheduledRotate() {
 	pa.mu.Unlock()
 
 	atomic.AddUint64(&pa.totalRotations, 1)
-	log.Info("Scheduled rotation: %s @ %s", transport, server)
 
 	pa.mu.RLock()
 	cb := pa.onSwitch
@@ -411,9 +408,8 @@ func (pa *ProxyAgent) scheduledRotate() {
 }
 
 func (pa *ProxyAgent) emergencyRotate() {
-	pa.mu.Lock()
+
 	pa.state = AgentRotating
-	pa.mu.Unlock()
 
 	transport, server := pa.SelectTransport()
 	if transport == "" {
@@ -424,7 +420,6 @@ func (pa *ProxyAgent) emergencyRotate() {
 	}
 
 	atomic.AddUint64(&pa.totalRotations, 1)
-	log.Warn("Emergency rotation: %s @ %s", transport, server)
 
 	pa.mu.RLock()
 	cb := pa.onSwitch

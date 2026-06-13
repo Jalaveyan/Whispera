@@ -32,10 +32,10 @@ const (
 
 type Bot struct {
 	*base.Module
-	config     *config.BotConfig
-	api        *tgbotapi.BotAPI
-	db         *db.DB
-	log        *logger.Logger
+	config       *config.BotConfig
+	api          *tgbotapi.BotAPI
+	db           *db.DB
+	log          *logger.Logger
 	bridgePool   *bridgepool.Registry
 	wiraidEngine *wiraid.Engine
 	mu           sync.Mutex
@@ -84,7 +84,6 @@ func (b *Bot) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
 	api.Debug = b.config.Debug
 	b.api = api
 
-	b.log.Printf("authorized on account %s", api.Self.UserName)
 	return nil
 }
 

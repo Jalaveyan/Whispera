@@ -44,7 +44,6 @@ type eventRing struct {
 
 var globalEventRing = &eventRing{}
 
-// AppendEvent adds an event to the in-memory ring buffer.
 func AppendEvent(kind EventKind, severity EventSeverity, msg string, fields map[string]string) {
 	globalEventRing.append(LogEvent{
 		Time:     time.Now(),
@@ -65,7 +64,6 @@ func (r *eventRing) append(e LogEvent) {
 	}
 }
 
-// Recent returns the last n events, newest first.
 func (r *eventRing) Recent(n int) []LogEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -80,7 +78,6 @@ func (r *eventRing) Recent(n int) []LogEvent {
 	return out
 }
 
-// RecentEvents returns the last n structured events from the ring buffer.
 func RecentEvents(n int) []LogEvent {
 	return globalEventRing.Recent(n)
 }

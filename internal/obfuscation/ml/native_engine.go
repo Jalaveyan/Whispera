@@ -110,19 +110,19 @@ type TransportStats struct {
 }
 
 type blockStats struct {
-	success int64
-	fail    int64
+	success  int64
+	fail     int64
 	lastSeen time.Time
 }
 
 type ModelState struct {
-	TrafficLayers   []LayerDef        `json:"traffic"`
-	DPILayers       []LayerDef        `json:"dpi"`
-	AnomalyLayers   []LayerDef        `json:"anomaly"`
-	TransportLayers []LayerDef        `json:"transport"`
+	TrafficLayers   []LayerDef         `json:"traffic"`
+	DPILayers       []LayerDef         `json:"dpi"`
+	AnomalyLayers   []LayerDef         `json:"anomaly"`
+	TransportLayers []LayerDef         `json:"transport"`
 	Normalizer      *FeatureNormalizer `json:"norm"`
-	Accuracy        float64           `json:"accuracy"`
-	Trained         int64             `json:"trained"`
+	Accuracy        float64            `json:"accuracy"`
+	Trained         int64              `json:"trained"`
 }
 
 type NativeMLEngine struct {
@@ -163,9 +163,9 @@ type NativeMLEngine struct {
 
 	blockHistory sync.Map
 
-	flowAnalyzer  *FlowAnalyzer
-	rlAgent       *RLTransportAgent
-	tspuDetector  *TSPUDetector
+	flowAnalyzer *FlowAnalyzer
+	rlAgent      *RLTransportAgent
+	tspuDetector *TSPUDetector
 
 	onDPIProfile     atomic.Value
 	lastProfileDPI   int32
@@ -362,8 +362,6 @@ func (e *NativeMLEngine) selfLearnLoop() {
 					atomic.StoreInt64(&e.samplesAfterTrain, 0)
 					atomic.AddInt64(&e.retrainCount, 1)
 					e.saveModel()
-					log.Info("Model weights persisted to disk after retraining (samples=%d, retrain_count=%d)",
-						after, atomic.LoadInt64(&e.retrainCount))
 				}()
 			}
 		}
@@ -1364,7 +1362,6 @@ done:
 
 	prevAcc := e.accuracy
 	if prevAcc > MinAccForDeploy && valAcc < prevAcc-AccDegradationWarn {
-		log.Warn("Model degradation detected: val_acc=%.3f < prev=%.3f. Rejecting update.", valAcc, prevAcc)
 		return len(samples), valAcc
 	}
 
@@ -1378,9 +1375,6 @@ done:
 	e.lastTrained = time.Now()
 	e.trainLoss = totalLoss
 	e.mu.Unlock()
-
-	log.Info("Training complete: train_acc=%.3f val_acc=%.3f loss=%.4f samples=%d val_samples=%d",
-		trainAcc, valAcc, totalLoss, len(samples), len(valSamples))
 
 	e.saveModel()
 	return len(samples), valAcc
@@ -1428,20 +1422,20 @@ func (e *NativeMLEngine) GetStats() map[string]interface{} {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return map[string]interface{}{
-		"predictions":    atomic.LoadInt64(&e.predictionCount),
-		"samples":        atomic.LoadInt64(&e.sampleCount),
-		"pseudo_labels":  atomic.LoadInt64(&e.pseudoLabelCount),
-		"retrains":       atomic.LoadInt64(&e.retrainCount),
-		"accuracy":       e.accuracy,
-		"last_trained":   e.lastTrained.Unix(),
-		"model":          "gorgonia_mlp_go",
-		"replay_buffer":  e.replayBuf.size(),
-		"train_samples":  e.replayBuf.size(),
-		"traffic_layers": netLayerSizes(e.trafficNet),
-		"dpi_layers":     netLayerSizes(e.dpiNet),
-		"anomaly_layers": netLayerSizes(e.anomalyNet),
+		"predictions":      atomic.LoadInt64(&e.predictionCount),
+		"samples":          atomic.LoadInt64(&e.sampleCount),
+		"pseudo_labels":    atomic.LoadInt64(&e.pseudoLabelCount),
+		"retrains":         atomic.LoadInt64(&e.retrainCount),
+		"accuracy":         e.accuracy,
+		"last_trained":     e.lastTrained.Unix(),
+		"model":            "gorgonia_mlp_go",
+		"replay_buffer":    e.replayBuf.size(),
+		"train_samples":    e.replayBuf.size(),
+		"traffic_layers":   netLayerSizes(e.trafficNet),
+		"dpi_layers":       netLayerSizes(e.dpiNet),
+		"anomaly_layers":   netLayerSizes(e.anomalyNet),
 		"transport_layers": netLayerSizes(e.transportNet),
-		"parameters":     netParams(e.trafficNet) + netParams(e.dpiNet) + netParams(e.anomalyNet) + netParams(e.transportNet),
+		"parameters":       netParams(e.trafficNet) + netParams(e.dpiNet) + netParams(e.anomalyNet) + netParams(e.transportNet),
 	}
 }
 
@@ -1688,7 +1682,6 @@ func (e *NativeMLEngine) loadModel() {
 	e.lastTrained = time.Unix(state.Trained, 0)
 	e.mu.Unlock()
 }
-
 
 func isDNSPacket(data []byte) bool {
 	if len(data) < 12 {

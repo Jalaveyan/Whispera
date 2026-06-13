@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"whispera/internal/adblock"
 	"whispera/internal/buf"
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
@@ -31,9 +30,6 @@ func init() {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
 }
 
-// isNormalConnClose returns true for errors that indicate a normal connection
-// termination (broken pipe, reset by peer, closed network connection).
-// These are expected in a relay and should not pollute INFO logs.
 func isNormalConnClose(err error) bool {
 	if err == nil {
 		return false
@@ -155,7 +151,6 @@ func New(cfg *Config) (*Server, error) {
 			return nil, fmt.Errorf("failed to create proxy dialer: %v", err)
 		}
 		s.proxyDialer = dialer
-		s.log.Info("Using upstream proxy: %s", u.Redacted())
 	}
 
 	s.streamManager = NewStreamManager(s.proxyDialer)
@@ -175,7 +170,6 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	s.log.Info("Server started (max streams: %d)", s.config.MaxStreams)
 	return nil
 }
 
@@ -203,8 +197,6 @@ func (s *Server) SetOutboundDial(fn func(ctx context.Context, tag, network, addr
 	s.mu.Unlock()
 }
 
-// SetProxyDialer replaces the default direct dialer used for untagged connections.
-// Use this to inject per-module routing (e.g. WirAid proxy rules).
 func (s *Server) SetProxyDialer(d proxy.Dialer) {
 	s.mu.Lock()
 	s.proxyDialer = d
@@ -233,14 +225,11 @@ func (s *Server) ProcessFrame(data []byte, session interfaces.Session, writer Re
 	frame, err := Decode(data)
 	if err != nil {
 		if s.config.Debug {
-			s.log.Debug("Failed to decode frame: %v", err)
 		}
 		return err
 	}
 
 	if s.config.Debug {
-		s.log.Debug("Received frame: type=%s streamID=%d len=%d",
-			FrameTypeName(frame.Type), frame.StreamID, len(frame.Payload))
 	}
 
 	switch frame.Type {
@@ -259,7 +248,6 @@ func (s *Server) ProcessFrame(data []byte, session interfaces.Session, writer Re
 		return s.handleRawPacket(frame, writer)
 	default:
 		if s.config.Debug {
-			s.log.Debug("Unknown frame type: %d", frame.Type)
 		}
 		return nil
 	}
@@ -274,8 +262,6 @@ func (s *Server) handleConnect(frame *Frame, writer ResponseWriter) error {
 	}
 
 	if s.config.Debug {
-		s.log.Debug("CONNECT request: streamID=%d target=%s:%d proto=%d",
-			frame.StreamID, payload.Addr, payload.Port, payload.Protocol)
 	}
 
 	if payload.Protocol == ProtoUDP && !s.config.EnableUDP {
@@ -287,15 +273,9 @@ func (s *Server) handleConnect(frame *Frame, writer ResponseWriter) error {
 		return nil
 	}
 
-	if adblock.Global.IsBlocked(payload.Addr) {
-		s.sendFrameToWriter(NewConnectFailFrame(frame.StreamID, "blocked"), writer)
-		return nil
-	}
-
 	if err := s.streamManager.HandleConnect(frame.StreamID, payload, writer); err != nil {
 		atomic.AddUint64(&s.connectFailed, 1)
 		if s.config.Debug {
-			s.log.Debug("Failed to connect stream %d: %v", frame.StreamID, err)
 		}
 		return err
 	}
@@ -332,7 +312,6 @@ func (s *Server) handleRawPacket(frame *Frame, writer ResponseWriter) error {
 	s.rawPackets[0] = writer
 	s.rawPacketsMu.Unlock()
 	if s.config.Debug {
-		s.log.Debug("Received RAW packet len=%d (No handler set)", len(rawPacket))
 	}
 	return nil
 }
@@ -401,7 +380,6 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		"stream_obf", streamObf,
 		"use_padding", usePadding,
 	)
-	s.log.Debug("Starting tunnel session for %s", clientID)
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		_ = tcpConn.SetNoDelay(true)
@@ -440,10 +418,7 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	}
 	defer session.Close()
 
-	s.log.Info("[T%d] Tunnel session ready for %s (connType=%T)", traceID, clientID, conn)
-
 	firstStream := true
-	s.log.Info("[T%d] waiting for first stream from %s", traceID, clientID)
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
@@ -466,12 +441,8 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 					"err", err.Error(),
 					"err_type", fmt.Sprintf("%T", err),
 				)
-				s.log.Info("[T%d] Tunnel session ended before first stream from %s after %s: %v (connType=%T bytesReadFromConn=%d firstBytes=%x)",
-					traceID, clientID, time.Since(startedAt).Round(time.Millisecond), err, conn, readBytes, bc.first)
 			} else if isNormal {
-				s.log.Debug("[T%d] Tunnel session ended for %s: %v", traceID, clientID, err)
 			} else {
-				s.log.Info("[T%d] Tunnel session closed for %s: %v", traceID, clientID, err)
 			}
 			return
 		}
@@ -483,7 +454,6 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 				"dur_ms", time.Since(startedAt).Milliseconds(),
 				"bytes_read", atomic.LoadInt64(&bc.n),
 			)
-			s.log.Info("[T%d] control stream (1) accepted from %s after %s (bytesReadFromConn=%d)", traceID, clientID, time.Since(startedAt).Round(time.Millisecond), atomic.LoadInt64(&bc.n))
 			if streamObf {
 				go io.Copy(io.Discard, transport.WrapStreamTLS(stream))
 			} else {
@@ -506,7 +476,6 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 				s.handleProxyStream(traceID, clientID, proxyConn)
 			}()
 		default:
-			s.log.Info("stream limit reached, dropping stream from %s", clientID)
 			proxyConn.Close()
 		}
 	}
@@ -544,7 +513,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 
 	hdr := make([]byte, 3)
 	if _, err := io.ReadFull(stream, hdr); err != nil {
-		s.log.Debug("handleProxyStream: read header failed: %v", err)
 		return
 	}
 	proto := hdr[0]
@@ -560,7 +528,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	addr := string(rest[:addrLen])
 	port := binary.BigEndian.Uint16(rest[addrLen:])
 
-	s.log.Info("proxy stream: %s:%d", addr, port)
 	streamStart := time.Now()
 	logger.Trace().Infow("proxy_stream_start",
 		"trace_id", tunnelID,
@@ -591,7 +558,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 					dialer = proxy.Direct
 				case interfaces.DestinationBlock:
 					stream.Write([]byte{0x01})
-					s.log.Info("Blocked connection to %s:%d by routing rule", addr, port)
 					return
 				default:
 					if dest.Tag != "" {
@@ -623,7 +589,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	dialDur := time.Since(dialStart)
 	if err != nil {
 		stream.Write([]byte{0x01})
-		s.log.Info("Dial %s:%d failed in %s: %v", addr, port, dialDur, err)
 		logger.Trace().Warnw("proxy_stream_dial_fail",
 			"trace_id", tunnelID,
 			"target", targetAddr,
@@ -640,16 +605,13 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		"dial_ms", dialDur.Milliseconds(),
 	)
 	if dialDur > 500*time.Millisecond {
-		s.log.Debug("slow dial %s:%d took %s", addr, port, dialDur)
 	}
 
 	ackStart := time.Now()
 	if _, err := stream.Write([]byte{0x00}); err != nil {
-		s.log.Info("ack write failed for %s:%d after %s: %v", addr, port, time.Since(ackStart), err)
 		return
 	}
 	if d := time.Since(ackStart); d > 200*time.Millisecond {
-		s.log.Debug("slow ack write %s:%d took %s", addr, port, d)
 	}
 
 	if tcpTarget, ok := target.(*net.TCPConn); ok {
@@ -762,12 +724,9 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	)
 	if firstErr != nil {
 		if isNormalConnClose(firstErr) {
-			s.log.Debug("stream done %s:%d up=%d down=%d in %s, %s closed: %v", addr, port, up, down, dur, firstDir, firstErr)
 		} else {
-			s.log.Debug("stream done %s:%d up=%d down=%d in %s, %s err: %v", addr, port, up, down, dur, firstDir, firstErr)
 		}
 	} else if dur > 5*time.Second || up+down > 0 {
-		s.log.Debug("stream done %s:%d up=%d down=%d in %s", addr, port, up, down, dur)
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"whispera/internal/modules/bridgepool"
 )
 
-// isAllowedBinaryURL ensures rollout URLs come only from the official repository.
 func isAllowedBinaryURL(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Scheme != "https" {

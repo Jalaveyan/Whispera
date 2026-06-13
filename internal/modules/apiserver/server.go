@@ -30,13 +30,12 @@ import (
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
 	"whispera/internal/db"
+	"whispera/internal/ipdetect"
 	"whispera/internal/logger"
-	"whispera/internal/modules/apiserver/handlers"
 	"whispera/internal/modules/bridgepool"
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/dhcp"
 	"whispera/internal/modules/keylimits"
-	"whispera/internal/network"
 	"whispera/internal/stats"
 
 	"github.com/quic-go/quic-go/http3"
@@ -67,19 +66,19 @@ func GetClaims(r *http.Request) *auth.Claims {
 }
 
 type Config struct {
-	Enabled        bool
-	ListenAddr     string
-	AuthToken      string
-	WebRoot        string
-	EnableCORS     bool
-	AllowedOrigins []string
-	TLSCert        string
-	TLSKey         string
+	Enabled           bool
+	ListenAddr        string
+	AuthToken         string
+	WebRoot           string
+	EnableCORS        bool
+	AllowedOrigins    []string
+	TLSCert           string
+	TLSKey            string
 	AdminUsername     string
 	AdminPassword     string
 	AdminPasswordHash string
-	LoginRateLimit int
-	TLSFingerprint string
+	LoginRateLimit    int
+	TLSFingerprint    string
 }
 
 func DefaultConfig() *Config {
@@ -124,7 +123,6 @@ type Server struct {
 	mu       sync.RWMutex
 	handlers map[string]http.HandlerFunc
 
-	mfaManager    *auth.MFAManager
 	jwtManager    *auth.JWTManager
 	bridgePool    *bridgepool.Registry
 	bridgeHandler *bridgepool.APIHandler
@@ -172,7 +170,6 @@ func New(cfg *Config) (*Server, error) {
 	}
 
 	if err := os.MkdirAll("/etc/whispera", 0755); err != nil {
-		log.Warn("failed to create /etc/whispera: %v", err)
 	}
 
 	bridgeReg := bridgepool.NewRegistry("/etc/whispera/bridges.json")
@@ -188,7 +185,6 @@ func New(cfg *Config) (*Server, error) {
 		config:         cfg,
 		mux:            http.NewServeMux(),
 		handlers:       make(map[string]http.HandlerFunc),
-		mfaManager:     auth.NewMFAManager(),
 		jwtManager:     auth.NewJWTManager(signingSecret),
 		bridgePool:     bridgeReg,
 		bridgeHandler:  bridgepool.NewAPIHandler(bridgeReg),
@@ -234,11 +230,6 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/v1/modules", s.handleModules)
 	s.Handle("GET /api/v1/config", s.handleGetConfig)
 
-	mfaHandler := handlers.NewMFAHandler(s.mfaManager)
-	s.Handle("POST /api/v1/auth/mfa/setup", mfaHandler.Setup)
-	s.Handle("POST /api/v1/auth/mfa/verify", mfaHandler.Verify)
-	s.Handle("POST /api/v1/auth/mfa/validate", mfaHandler.Validate)
-	s.Handle("POST /api/v1/auth/mfa/disable", mfaHandler.Disable)
 	s.Handle("POST /api/v1/config/update", s.handleUpdateConfig)
 	s.Handle("POST /api/v1/config/reload", s.handleReloadConfig)
 	s.Handle("GET /api/v1/sessions", s.handleGetSessions)
@@ -293,10 +284,6 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/subscriptions/delete", s.handleDeleteSubscription)
 	s.Handle("GET /sub/{token}", s.handleServeSubscription)
 
-	s.Handle("GET /api/adblock/stats", s.handleAdblockStats)
-	s.Handle("GET /api/adblock/rules", s.handleAdblockRules)
-	s.Handle("POST /api/adblock/rules/add", s.handleAdblockAddRule)
-	s.Handle("POST /api/adblock/rules/delete", s.handleAdblockDeleteRule)
 	s.Handle("POST /api/adblock/settings", s.handleAdblockSettings)
 	s.Handle("POST /api/v1/config/renew-cert", s.handleRenewCert)
 	s.Handle("GET /api/firewall/status", s.handleFirewallStatus)
@@ -453,10 +440,8 @@ func (s *Server) Start() error {
 		}
 		go func() {
 			if err := s.http3Server.ListenAndServeTLS(s.config.TLSCert, s.config.TLSKey); err != nil {
-				log.Warn("HTTP/3 server error: %v", err)
 			}
 		}()
-		log.Info("HTTP/3 (QUIC) enabled on %s", s.config.ListenAddr)
 	}
 
 	go func() {
@@ -974,7 +959,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	clientIP := s.getClientIP(r)
 	if !s.checkLoginRateLimit(clientIP) {
-		log.Warn("rate limit exceeded for IP: %s", clientIP)
 		AppendEvent(EventAuth, SeverityWarn, "rate limit exceeded", map[string]string{"ip": clientIP})
 		s.jsonError(w, http.StatusTooManyRequests, "Too many login attempts. Please wait 1 minute.")
 		return
@@ -994,7 +978,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		user, err := database.AuthenticateUser(r.Context(), req.Username, req.Password)
 		if err == nil && user.IsAdmin {
 			s.clearLoginAttempts(clientIP)
-			log.Info("successful login (db) from %s user=%s", clientIP, req.Username)
 			AppendEvent(EventAuth, SeverityInfo, "login success", map[string]string{"ip": clientIP, "user": req.Username})
 
 			token := s.issueTimedToken(req.Username)
@@ -1018,7 +1001,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if expectedUsername == "" {
 		expectedUsername = "admin"
-		log.Warn("no admin_username configured, falling back to 'admin'")
 	}
 
 	usernameMatch := subtle.ConstantTimeCompare([]byte(req.Username), []byte(expectedUsername)) == 1
@@ -1033,7 +1015,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.clearLoginAttempts(clientIP)
 
 		token := s.issueTimedToken(req.Username)
-		log.Info("successful login from %s user=%s", clientIP, req.Username)
 		AppendEvent(EventAuth, SeverityInfo, "login success", map[string]string{"ip": clientIP, "user": req.Username})
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1048,7 +1029,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Warn("failed login attempt from %s user=%s", clientIP, req.Username)
 	AppendEvent(EventAuth, SeverityWarn, "login failed", map[string]string{"ip": clientIP, "user": req.Username})
 	s.jsonError(w, http.StatusUnauthorized, "Invalid username or password")
 }
@@ -1229,7 +1209,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			IP        string `json:"ip"`
 			Port      int    `json:"port"`
 			TCPPort   int    `json:"tcpPort"`
-				PublicURL string `json:"public_url"`
+			PublicURL string `json:"public_url"`
 		} `json:"server"`
 		Obfuscation struct {
 			DefaultProfile    string `json:"defaultProfile"`
@@ -1350,7 +1330,7 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	externalIP, err := network.DetectServerIP(ctx)
+	externalIP, err := ipdetect.DetectServerIP(ctx)
 	if err != nil {
 		externalIP = "unknown"
 	}
@@ -1542,7 +1522,6 @@ func loadOrCreateSessionToken() string {
 	if err == nil {
 		token := strings.TrimSpace(string(data))
 		if token != "" {
-			log.Info("loaded existing session token")
 			return token
 		}
 	}
@@ -1553,9 +1532,7 @@ func loadOrCreateSessionToken() string {
 	}
 	token := base64.StdEncoding.EncodeToString(tokenBytes)
 	if err := os.WriteFile(sessionTokenFile, []byte(token), 0600); err != nil {
-		log.Warn("failed to save session token: %v", err)
 	} else {
-		log.Info("generated and saved new session token")
 	}
 	return token
 }
@@ -1680,7 +1657,6 @@ func (s *Server) handleLoginV2(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
-		MFACode  string `json:"mfa_code,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -1724,14 +1700,6 @@ func (s *Server) handleLoginV2(w http.ResponseWriter, r *http.Request) {
 	if !authenticated {
 		s.jsonError(w, http.StatusUnauthorized, "Invalid credentials")
 		return
-	}
-
-	if s.mfaManager.IsMFAEnabled(userID) {
-		ok, err := s.mfaManager.ValidateLogin(userID, req.MFACode)
-		if err != nil || !ok {
-			s.jsonError(w, http.StatusForbidden, "MFA verification failed")
-			return
-		}
 	}
 
 	s.clearLoginAttempts(clientIP)
@@ -1838,7 +1806,6 @@ func loadUsers() {
 		nextUserID = p.NextUserID
 	}
 	userStoreMu.Unlock()
-	log.Info("loaded %d users from %s", len(p.Users), userDataFile)
 }
 
 func (s *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
@@ -2187,7 +2154,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	serverIP, err := network.DetectServerIP(ctx)
+	serverIP, err := ipdetect.DetectServerIP(ctx)
 	if err != nil {
 		serverIP = "0.0.0.0"
 	}
@@ -2200,7 +2167,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	}
 	if pk := lookupUserPrivateKey(uname); pk != "" {
 		if userPrivKey != "" && userPrivKey != pk {
-			log.Warn("connection key for %q: provided PSK did not match the registered user — using the user's key so chameleon auth succeeds", uname)
 		}
 		userPrivKey = pk
 	}
@@ -2214,7 +2180,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}
 		userPrivKey = keys.PrivateKey
 		userPubKey = keys.PublicKey
-		log.Warn("connection key issued with a fresh PSK not tied to any registered user — it will only authenticate if chameleon SharedSecret is configured")
 	} else {
 		userPubKey = derivePublicKeyB64(userPrivKey)
 	}
@@ -2368,22 +2333,22 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	}
 
 	ck := config.ConnectionKey{
-		Version:         2,
-		KeyID:           keyID,
-		Server:          serverAddr,
-		PSK:             userPrivKey,
-		ServerPub:       serverPubKey,
-		Transport:       transport,
-		ObfsPreset:      "default",
-		ObfsProfile:     "vk",
-		EnableML:        true,
-		EnableFTE:       true,
-		EnableASNBypass: true,
-		TLSFingerprint:  tlsFP,
-		RussianService:  req.RussianService,
-		TransportConfig: req.TransportConfig,
-		MLServerURL:     mlURL,
-		MLToken:         mlToken,
+		Version:           2,
+		KeyID:             keyID,
+		Server:            serverAddr,
+		PSK:               userPrivKey,
+		ServerPub:         serverPubKey,
+		Transport:         transport,
+		ObfsPreset:        "default",
+		ObfsProfile:       "vk",
+		EnableML:          true,
+		EnableFTE:         true,
+		EnableASNBypass:   true,
+		TLSFingerprint:    tlsFP,
+		RussianService:    req.RussianService,
+		TransportConfig:   req.TransportConfig,
+		MLServerURL:       mlURL,
+		MLToken:           mlToken,
 		ChameleonAddr:     chameleonAddr,
 		ChameleonSNI:      chameleonSNI,
 		ChameleonQUICAddr: chameleonQUICAddr,
@@ -2431,7 +2396,6 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 	s.revokedKeysMu.Unlock()
 
 	s.persistRevokedKeys()
-	log.Info("key revoked: %s reason=%s", req.KeyID, req.Reason)
 	AppendEvent(EventKey, SeverityWarn, "key revoked", map[string]string{"key_id": req.KeyID, "reason": req.Reason})
 	s.jsonOK(w, map[string]interface{}{"success": true, "key_id": req.KeyID})
 }
@@ -2794,9 +2758,10 @@ func (s *Server) handleAddRoutingRule(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	if req.Type == "domain" {
+	switch req.Type {
+	case "domain":
 		rule.Conditions[0].Operator = "contains"
-	} else if req.Type == "ip" {
+	case "ip":
 		if strings.Contains(req.Condition, "/") {
 			rule.Conditions[0].Operator = "cidr"
 		} else {
@@ -2996,7 +2961,7 @@ func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	externalIP, _ := network.DetectServerIP(ctx)
+	externalIP, _ := ipdetect.DetectServerIP(ctx)
 	if externalIP == "" {
 		externalIP = "unknown"
 	}
@@ -3174,7 +3139,6 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 
 	if passwordChanged {
 		s.rotateSigningSecret()
-		log.Warn("admin password changed from %s — all sessions invalidated", clientIP)
 		AppendEvent(EventSecurity, SeverityWarn, "admin password changed", map[string]string{"ip": clientIP})
 	}
 

@@ -44,11 +44,11 @@ type RLChunkAgent struct {
 	target   *gnet.GorgoniaNet
 	adam     *AdamState
 
-	prb        *PrioritizedReplayBuffer
-	thompson   *ThompsonSampler
-	sticky     StickyExplorer
-	curriculum CurriculumTracker
-	diversity  DiversityTracker
+	prb         *PrioritizedReplayBuffer
+	thompson    *ThompsonSampler
+	sticky      StickyExplorer
+	curriculum  CurriculumTracker
+	diversity   DiversityTracker
 	temperature float64
 
 	epsilon    float64
@@ -118,8 +118,6 @@ func (a *RLChunkAgent) Decide(v ChunkView) int {
 
 	a.pendingState = state
 	a.pendingAction = idx
-	chunkLog.Info("frame=%dB eps=%.2f temp=%.2f rtt=%.0fms up=%.0fB/s dn=%.0fB/s steps=%d",
-		ChunkSizes[idx], a.epsilon, a.temperature, v.RTTMs, v.BytesUpSec, v.BytesDnSec, atomic.LoadInt64(&a.stepCount))
 	shadowChunkDecide(v, idx)
 	return ChunkSizes[idx]
 }
@@ -147,11 +145,9 @@ func (a *RLChunkAgent) RecordOutcome(quality float64) {
 		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	eps := a.epsilon
+	_ = a.epsilon
 	a.mu.Unlock()
 
-	chunkLog.Info("outcome: quality=%.2f reward=%.2f frame=%dB eps=%.3f",
-		quality, reward, ChunkSizes[action], eps)
 	shadowChunkOutcome(reward)
 
 	if step%chunkTrainEvery == 0 {
@@ -180,13 +176,12 @@ func (a *RLChunkAgent) trainStep() {
 	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, chunkNumActions, chunkGamma, 0.001, defaultEntropyCoeff)
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	temp := a.temperature
-	eps := a.epsilon
+	_ = a.temperature
+	_ = a.epsilon
 	if cnt%100 == 0 {
 		saveRLMiniPolicy(a.modelDir, "rl_chunk.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
-		chunkLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }
