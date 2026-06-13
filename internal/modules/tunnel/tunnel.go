@@ -1,4 +1,4 @@
-package tunnel
+﻿package tunnel
 
 import (
 	"bufio"
@@ -12,6 +12,7 @@ import (
 	mrand "math/rand"
 	"net"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,7 +30,6 @@ import (
 	"whispera/internal/mux"
 	"whispera/internal/obfuscation/core/evasion"
 	mlpkg "whispera/internal/obfuscation/ml"
-	"whispera/internal/obfuscation/russian"
 )
 
 var log = logger.Module("tunnel")
@@ -53,7 +53,6 @@ func dohDialer() *net.Dialer {
 		},
 	}
 }
-
 
 func safeGo(name string, fn func()) {
 	go func() {
@@ -171,13 +170,13 @@ func (s TunnelState) String() string {
 }
 
 type ChameleonOptions struct {
-	EnableChameleon  bool
+	EnableChameleon   bool
 	ChameleonAddr     string
 	ChameleonSNI      string
 	ChameleonSecret   []byte
 	ChameleonCertPin  string
 	ChameleonQUICAddr string
-	ChameleonMux     int
+	ChameleonMux      int
 }
 
 type MLOptions struct {
@@ -247,8 +246,6 @@ type Config struct {
 	CustomDialFn func(ctx context.Context) (net.Conn, error)
 
 	DesyncConfig    *evasion.DesyncConfig
-	FlowTableConfig *evasion.FlowTableConfig
-
 	CustomSNI   string
 	NoSNI       bool
 	BridgeAddr  string
@@ -369,9 +366,9 @@ type Manager struct {
 	*base.Module
 	config *Config
 
-	sm        *tunnelStateMachine
-	cb        *circuitBreaker
-	activeConn *managedConn
+	sm            *tunnelStateMachine
+	cb            *circuitBreaker
+	activeConn    *managedConn
 	activePool    []*managedConn
 	drainingConns []*managedConn
 	streamConns   map[uint16]*managedConn
@@ -414,37 +411,35 @@ type Manager struct {
 	transportSecureOverride int32
 	forceObfuscation        int32
 
-	russianSNIs    []string
-	russianSNIsMu  sync.RWMutex
-	currentSNI     string
-	lastRotation   time.Time
-	sniAgent       *mlpkg.RLSNIAgent
-	connAgent      *mlpkg.RLConnAgent
-	connAgentStop  chan struct{}
+	russianSNIs     []string
+	russianSNIsMu   sync.RWMutex
+	currentSNI      string
+	lastRotation    time.Time
+	sniAgent        *mlpkg.RLSNIAgent
+	connAgent       *mlpkg.RLConnAgent
+	connAgentStop   chan struct{}
 	rateSamplerStop chan struct{}
-	gpLastDn       uint64
-	gpLastUp       uint64
-	gpLastSample   time.Time
-	scaleAccBytes  uint64
-	scaleLastEval  time.Time
-	scaleMu        sync.Mutex
-	chScaleOpening int32
-	gameLn         gameLane
-	transportAgent *mlpkg.RLTransportAgent
-	kaAgent        *mlpkg.RLKeepaliveAgent
-	boAgent        *mlpkg.RLBackoffAgent
-	jitterAgent    *mlpkg.RLJitterAgent
-	serverAgent    *mlpkg.RLServerAgent
-	chunkAgent     *mlpkg.RLChunkAgent
-	tlsAgent       *mlpkg.RLTLSAgent
-	tspuDetector   *mlpkg.TSPUDetector
+	gpLastDn        uint64
+	gpLastUp        uint64
+	gpLastSample    time.Time
+	scaleAccBytes   uint64
+	scaleLastEval   time.Time
+	scaleMu         sync.Mutex
+	chScaleOpening  int32
+	gameLn          gameLane
+	transportAgent  *mlpkg.RLTransportAgent
+	kaAgent         *mlpkg.RLKeepaliveAgent
+	boAgent         *mlpkg.RLBackoffAgent
+	jitterAgent     *mlpkg.RLJitterAgent
+	serverAgent     *mlpkg.RLServerAgent
+	chunkAgent      *mlpkg.RLChunkAgent
+	tlsAgent        *mlpkg.RLTLSAgent
+	tspuDetector    *mlpkg.TSPUDetector
 
 	boFailCount     int32
 	boLastSuccessAt int64
 	boLastErrType   int32
 	tlsErrStreak    int32
-
-	russianTunneler *russian.RussianTunneler
 
 	goroutineLimiter *base.GoroutineLimiter
 
@@ -555,7 +550,6 @@ func New(cfg *Config) (*Manager, error) {
 		}
 
 		m.asnBypassDialer = asnbypass.NewDialer(asnConfig)
-		log.Info("ASN Bypass initialized (Strategy: %v)", cfg.ASNBypassStrategy)
 	}
 
 	if cfg.KillSwitchEnabled {
@@ -568,7 +562,6 @@ func New(cfg *Config) (*Manager, error) {
 
 		ks, err := killswitch.New(ksConfig)
 		if err != nil {
-			log.Warn("Failed to initialize kill switch: %v", err)
 		} else {
 			m.killSwitch = ks
 			ks.OnStateChange(func(state killswitch.State) {
@@ -579,42 +572,18 @@ func New(cfg *Config) (*Manager, error) {
 		}
 	}
 
-	rt := russian.NewRussianTunneler()
-	m.russianTunneler = rt
-	if cfg.RussianService != "" {
-		if err := rt.SetActiveService(cfg.RussianService); err != nil {
-			log.Warn("Failed to set active Russian service %s: %v", cfg.RussianService, err)
-		} else {
-			log.Info("Active Russian Service: %s", cfg.RussianService)
-		}
-	}
-
-	services := rt.GetAvailableServices()
-	for _, svcName := range services {
-		if info, err := rt.GetServiceInfo(svcName); err == nil {
-			m.russianSNIs = append(m.russianSNIs, info.Domain)
-		}
-	}
-	if len(m.russianSNIs) > 0 {
-		log.Info("Initialized %d Russian SNIs for rotation", len(m.russianSNIs))
-	}
-
 	sniPool := m.russianSNIs
 	if len(sniPool) == 0 {
 		sniPool = defaultSNIPool
 	}
 	m.sniAgent = mlpkg.NewRLSNIAgent(cfg.SNIModelDir, sniPool)
-	log.Info("RL SNI agent initialized (pool=%d, eps=%.2f)", len(sniPool), m.sniAgent.Epsilon())
 	if cfg.SNIDomainsURL != "" {
 		m.sniAgent.StartAutoFetch(cfg.SNIDomainsURL)
-		log.Info("RL SNI agent auto-fetch started: %s", cfg.SNIDomainsURL)
 	}
 
 	m.connAgent = mlpkg.NewRLConnAgent(cfg.SNIModelDir)
-	log.Info("RL Conn agent initialized")
 
 	m.transportAgent = mlpkg.NewRLTransportAgent(cfg.SNIModelDir, nil)
-	log.Info("RL Transport agent initialized (eps=%.2f)", m.transportAgent.Epsilon())
 
 	m.kaAgent = mlpkg.NewRLKeepaliveAgent(cfg.SNIModelDir)
 	m.boAgent = mlpkg.NewRLBackoffAgent(cfg.SNIModelDir)
@@ -623,7 +592,6 @@ func New(cfg *Config) (*Manager, error) {
 	m.chunkAgent = mlpkg.NewRLChunkAgent(cfg.SNIModelDir)
 	m.tlsAgent = mlpkg.NewRLTLSAgent(cfg.SNIModelDir)
 	m.tspuDetector = mlpkg.NewTSPUDetector()
-	log.Info("RL agents initialized: keepalive, backoff, jitter, server, chunk, tls, tspu")
 
 	go m.runWeightSnapshotLoop()
 
@@ -682,7 +650,6 @@ func (m *Manager) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
 	if tunnelCfg, ok := cfg.(*Config); ok {
 		m.config = tunnelCfg
 		if m.config.VKToken != "" || m.config.Transport == "vk" {
-			log.Info("VK Transport detected: Disabling SNI Rotation (incompatible)")
 			m.config.EnableRotation = false
 		}
 	}
@@ -695,7 +662,6 @@ func (m *Manager) Start() error {
 	}
 	m.SetHealthy(true, "tunnel manager running")
 	m.PublishEvent(events.EventTypeModuleStarted, nil)
-	log.Info("[TUNNEL] Starting Tunnel Manager (Build: Zero-Copy Final v3)...")
 
 	safeGo("Reconnect", func() { m.Reconnect(m.Context()) })
 
@@ -711,15 +677,12 @@ func (m *Manager) Stop() error {
 }
 
 func (m *Manager) PreWarm() {
-	log.Info("[TUNNEL] Pre-warming connection in background...")
 	safeGo("PreWarm", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		if err := m.Connect(ctx); err != nil {
-			log.Warn("[TUNNEL] Pre-warm failed: %v (will retry on explicit connect)", err)
 		} else {
-			log.Info("[TUNNEL] Pre-warm successful - connection ready for instant use")
 		}
 	})
 }
@@ -739,16 +702,13 @@ func (m *Manager) SetDependencies(
 func (m *Manager) SetObfuscator(o interfaces.Obfuscator) {
 	m.obfuscator = o
 	if o != nil {
-		log.Info("Obfuscation enabled for tunnel traffic")
 	}
 }
 
 func (m *Manager) Connect(ctx context.Context) error {
 	if current, blocked := m.sm.CompareAndSet(StateConnecting, StateConnecting, StateConnected); blocked {
 		if current == StateConnected {
-			log.Warn("[Connect] Already connected, ignoring duplicate Connect call")
 		} else {
-			log.Warn("[Connect] Connection already in progress, ignoring duplicate call")
 		}
 		return nil
 	}
@@ -765,7 +725,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 	if m.config.MLServerURL != "" {
 		m.mlStartFederatedSync(ctx)
 		m.mlStartTransportWatchdog(ctx)
-		if rec, conf := m.mlRecommendTransport(ctx); rec != "" && conf >= 0.55 {
+		if rec, conf := m.mlRecommendTransport(); rec != "" && conf >= 0.55 {
 			m.config.Transport = rec
 		}
 	}
@@ -774,11 +734,6 @@ func (m *Manager) Connect(ctx context.Context) error {
 }
 
 func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
-	op := "Connect"
-	if isRotation {
-		op = "Rotate"
-	}
-	log.Info("[%s] Initiating connection sequence...", op)
 
 	if !isRotation {
 		m.setState(StateConnecting)
@@ -786,24 +741,18 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.setState(StateRotating)
 	}
 
-	start := time.Now()
-
 	targetPoolSize := 2
 	if m.config.EnableChameleon {
 		targetPoolSize = 1
 	}
 	var connectedPool []*managedConn
 	var poolMu sync.Mutex
-
 	firstConnReady := make(chan *managedConn, 1)
 	firstConnErr := make(chan error, targetPoolSize)
 
-	log.Info("[%s] Spawning pool of %d connections (lazy mode)...", op, targetPoolSize)
-
 	spawnConnection := func(idx int) {
-		mc, err := m.dialManagedConn(ctx, fmt.Sprintf("pool-%d-%d", start.Unix(), idx))
+		mc, err := m.dialManagedConn(ctx, fmt.Sprintf("pool-%d-%d", time.Now().Unix(), idx))
 		if err != nil {
-			log.Warn("[%s] Failed to dial connection %d: %v", op, idx, err)
 			select {
 			case firstConnErr <- err:
 			default:
@@ -821,28 +770,16 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		if isFirst {
 			select {
 			case firstConnReady <- mc:
-				log.Info("[%s] First connection ready! (Latency: %v)", op, time.Since(start))
 			default:
 			}
 			return
 		}
 
 		m.connMu.Lock()
-		inPool := false
-		for _, c := range m.activePool {
-			if c == mc {
-				inPool = true
-				break
-			}
-		}
-		if !inPool {
+		if !slices.Contains(m.activePool, mc) {
 			m.activePool = append(m.activePool, mc)
 		}
-		size := len(m.activePool)
 		m.connMu.Unlock()
-		if !inPool {
-			log.Info("[%s] Late conn %d joined pool (size=%d)", op, idx, size)
-		}
 	}
 
 	for i := 0; i < targetPoolSize; i++ {
@@ -893,8 +830,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		}
 	}
 
-	log.Info("[%s] Lazy connect complete. First connection ready in %v", op, time.Since(start))
-
 	if m.killSwitch != nil && m.config.KillSwitchEnabled {
 		m.enableKillSwitch(connectedPool[0].RemoteAddr())
 	}
@@ -902,7 +837,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	m.connMu.Lock()
 	if isRotation && m.activePool != nil {
 		m.drainingConns = append(m.drainingConns, m.activePool...)
-		log.Info("[%s] Old pool moved to draining (Total draining: %d)", op, len(m.drainingConns))
 		for _, c := range m.activePool {
 			go m.monitorDrainingConn(c)
 		}
@@ -945,7 +879,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.PublishEvent("tunnel.rotated", map[string]interface{}{
 			"id": connectedPool[0].id,
 		})
-		log.Info("[%s] Rotation complete.", op)
 	}
 
 	return nil
@@ -954,7 +887,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 type dialCandidate struct {
 	name   string
 	secure bool
-	fn     dialFn
 }
 
 func (m *Manager) enableKillSwitch(remoteAddr net.Addr) {
@@ -1074,7 +1006,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	}()
 
 	if !m.circuitBreakerAllow() {
-		log.Warn("Circuit breaker OPEN - skipping reconnect attempt")
 		return fmt.Errorf("circuit breaker open")
 	}
 
@@ -1119,8 +1050,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			!transportFallbackActivated {
 			transportFallbackActivated = true
 			m.config.Transport = "auto"
-			log.Warn("Transport fallback: %d failures on '%s', switching to auto (racing all transports)",
-				fallbackAfterAttempts, originalTransport)
 		}
 
 		m.Disconnect()
@@ -1131,7 +1060,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			if zeroRTTTransport != "" {
 				m.config.Transport = zeroRTTTransport
 			}
-			log.Info("0-RTT reconnect: using last-good SNI=%s transport=%s", zeroRTTSNI, zeroRTTTransport)
 		} else {
 			m.currentSNI = ""
 		}
@@ -1162,7 +1090,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			m.circuitBreakerSuccess()
 			if transportFallbackActivated {
 				m.config.Transport = originalTransport
-				log.Info("Transport fallback: connection restored, reverting to '%s'", originalTransport)
 			}
 			return nil
 		}
@@ -1174,7 +1101,7 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 				go m.RotateSNI()
 			}
 		}
-		if m.tspuDetector != nil && err != nil {
+		if m.tspuDetector != nil {
 			errStr := err.Error()
 			dialDur := time.Duration(dialLatency) * time.Millisecond
 			if strings.Contains(errStr, "reset") {
@@ -1197,8 +1124,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			}
 			if dpiType, conf := m.tspuDetector.DetectTSPU(); dpiType != mlpkg.DPITypeNone && conf >= 0.65 {
 				if cm := mlpkg.TSPUCountermeasure(dpiType); cm != "" && cm != m.config.Transport {
-					log.Warn("[TSPU] %s detected (conf=%.2f) → switching transport: %s → %s",
-						mlpkg.DPITypeName(dpiType), conf, m.config.Transport, cm)
 					m.config.Transport = cm
 				}
 			}
@@ -1210,15 +1135,11 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		if m.serverAgent != nil {
 			m.serverAgent.RecordOutcome(false, dialLatency)
 		}
-		log.Warn("Reconnect attempt %d failed (transport=%s): %s", attempts, m.config.Transport, ClassifyConnError(err))
 		m.circuitBreakerFail()
 
 		var backoffDelay time.Duration
 		if m.boAgent != nil {
 			errStr := ""
-			if err != nil {
-				errStr = err.Error()
-			}
 			lastSuc := atomic.LoadInt64(&m.boLastSuccessAt)
 			secSince := 0.0
 			if lastSuc > 0 {
@@ -1248,9 +1169,9 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	}
 }
 
-func (m *Manager) circuitBreakerAllow() bool   { return m.cb.Allow() }
-func (m *Manager) circuitBreakerFail()          { m.cb.Fail() }
-func (m *Manager) circuitBreakerSuccess()        { m.cb.Success() }
+func (m *Manager) circuitBreakerAllow() bool { return m.cb.Allow() }
+func (m *Manager) circuitBreakerFail()       { m.cb.Fail() }
+func (m *Manager) circuitBreakerSuccess()    { m.cb.Success() }
 
 func (m *Manager) readLoop(mc *managedConn) {
 	defer func() {
@@ -1292,7 +1213,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 			if tlsDrainCount < maxTLSDrain && peek[0] >= 0x14 && peek[0] <= 0x17 && peek[1] <= 0x04 {
 				tlsLen := int(peek[3])<<8 | int(peek[4])
-				log.Debug("Detected TLS data (type=0x%02x, ver=0x%02x, len=%d)", peek[0], peek[1], tlsLen)
 
 				if _, err := reader.Discard(5); err != nil {
 					m.handleReadError(mc, err)
@@ -1316,8 +1236,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 								fType := processBuf[2]
 
 								if fType <= 0x0A && int(pLen) <= 65535 && FrameHeaderSize+int(pLen) <= len(processBuf) {
-									log.Debug("Unwrapped TLS ApplicationData containing valid Frame (Layer %d, StreamID=%d, Type=%d, Len=%d)",
-										layer, binary.BigEndian.Uint16(processBuf[0:2]), fType, pLen)
 									isWrappedFrame = true
 
 									offset := 0
@@ -1331,12 +1249,10 @@ func (m *Manager) readLoop(mc *managedConn) {
 										frameTotal := FrameHeaderSize + int(pLen)
 
 										if fType > 0x0A || offset+frameTotal > len(processBuf) {
-											log.Warn("Invalid frame in TLS batch at offset %d (Type=%d, Len=%d)", offset, fType, pLen)
 											break
 										}
 
 										if fType == 0x00 {
-											log.Debug("Skipping Padding frame (Len=%d)", pLen)
 											offset += frameTotal
 											continue
 										}
@@ -1366,7 +1282,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 							if len(processBuf) > 5 && processBuf[0] == 0x17 && processBuf[1] == 0x03 {
 								innerLen := int(processBuf[3])<<8 | int(processBuf[4])
 								if innerLen+5 <= len(processBuf) {
-									log.Debug("Detected nested TLS record inside AppData (Layer %d), unwrapping %d bytes...", layer, innerLen)
 									processBuf = processBuf[5 : 5+innerLen]
 									continue
 								}
@@ -1383,7 +1298,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 							if len(headerPeek) > 16 {
 								headerPeek = headerPeek[:16]
 							}
-							log.Warn("Failed to unwrap TLS AppData (Len=%d). First 16 bytes: %x", len(tlsPayload), headerPeek)
 						}
 					}
 
@@ -1426,7 +1340,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 		payloadLen := binary.BigEndian.Uint32(header[4:8])
 
 		if payloadLen > 131072 {
-			log.Warn("Frame too large (%d bytes), header: %x. Attempting RESYNC...", payloadLen, header)
 
 			foundOffset := -1
 			for i := 1; i <= FrameHeaderSize-3; i++ {
@@ -1437,7 +1350,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 			}
 
 			if foundOffset != -1 {
-				log.Warn("RESYNC: Found TLS header signature at offset %d inside invalid frame. Recovering...", foundOffset)
 
 				tlsHeader := make([]byte, 5)
 				available := FrameHeaderSize - foundOffset
@@ -1450,7 +1362,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 					}
 				}
 				tlsLen := int(tlsHeader[3])<<8 | int(tlsHeader[4])
-				log.Warn("RESYNC: Recovered TLS packet (len=%d). Draining...", tlsLen)
 
 				payloadBytesInHeader := FrameHeaderSize - (foundOffset + 5)
 				if payloadBytesInHeader < 0 {
@@ -1501,7 +1412,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 				rttMs = float64(rtt.Milliseconds())
 			}
 			atomic.StoreInt32(&m.missedKAs, 0)
-			log.Debug("Received PONG from server (RTT=%v)", time.Since(m.lastKeepalive))
 			if m.kaAgent != nil || m.jitterAgent != nil {
 				quality := math.Max(0, 1.0-rttMs/500.0)
 				if m.kaAgent != nil {
@@ -1516,7 +1426,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 		}
 
 		if len(frameData) >= 3 && frameData[2] == FrameTypeRekey {
-			log.Info("[REKEY] Received rekey acknowledgement from server")
 			m.lastPong = time.Now()
 			b.Release()
 			continue
@@ -1535,7 +1444,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 				m.feedScale(len(frameData))
 				m.UpdateActivity()
 			default:
-				log.Warn("Stream %d buffer full, dropping frame", streamID)
 				b.Release()
 			}
 		} else {
@@ -1562,7 +1470,6 @@ func (m *Manager) handleReadError(mc *managedConn, err error) {
 	m.connMu.RUnlock()
 
 	if isActive && m.GetState() == StateConnected {
-		log.Warn("Active connection read error: %v. Triggering Reconnect...", err)
 		m.sm.SetError(err)
 		if m.GetState() == StateConnected {
 			go m.Reconnect(m.Context())
@@ -1587,7 +1494,6 @@ func (m *Manager) Receive(dst []byte) (int, error) {
 }
 
 func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
-	log.Debug("[OpenStream] called: %s:%d (proto=0x%02x)", addr, port, proto)
 	for {
 		m.connMu.RLock()
 		pool := m.activePool
@@ -1792,7 +1698,6 @@ func (m *Manager) Send(data []byte) error {
 				if frameType == FrameTypeData {
 					return fmt.Errorf("not connected")
 				}
-				log.Debug("Send: waiting for reconnect (attempt %d/%d)", attempt+1, maxRetries)
 				delay := m.getReconnectDelay()
 				time.Sleep(delay)
 				continue
@@ -1814,13 +1719,11 @@ func (m *Manager) Send(data []byte) error {
 				state := m.GetState()
 
 				if state == StateConnected {
-					log.Warn("Send: connection unexpectedly closed/reset. Triggering Reconnect... (Err: %v)", err)
 					m.handleReadError(conn, err)
 				}
 
 				state = m.GetState()
 				if state == StateReconnecting || state == StateRotating || state == StateConnecting {
-					log.Debug("Send: connection closed during reconnect (attempt %d/%d). Waiting...", attempt+1, maxRetries)
 					time.Sleep(500 * time.Millisecond)
 					continue
 				}
@@ -1844,7 +1747,6 @@ func (m *Manager) monitorDrainingConn(mc *managedConn) {
 	hardDeadline := time.Now().Add(m.config.DrainingTimeout)
 	graceUntil := time.Now().Add(minGrace)
 
-	reason := "Timeout"
 	for {
 		now := time.Now()
 		if now.After(hardDeadline) {
@@ -1852,25 +1754,22 @@ func (m *Manager) monitorDrainingConn(mc *managedConn) {
 		}
 
 		if now.After(graceUntil) {
-			m.connMu.RLock()
 			active := 0
 			for _, c := range m.streamConns {
 				if c == mc {
 					active++
 				}
 			}
-			m.connMu.RUnlock()
 			if active == 0 {
-				reason = "Idle"
 				break
 			}
 		}
 
 		select {
 		case <-mc.closing:
-			reason = "RemoteClose"
 			goto closeNow
 		case <-time.After(pollInterval):
+			return
 		}
 	}
 
@@ -1890,7 +1789,6 @@ closeNow:
 	m.connMu.Unlock()
 
 	mc.Close()
-	log.Info("Draining connection closed (%s)", reason)
 }
 
 func (m *Manager) startConnRateSampler() {
@@ -2006,7 +1904,6 @@ func (m *Manager) startRotation() {
 	m.rotationCancel = cancel
 
 	const safetyInterval = 6 * time.Hour
-	log.Info("Starting SNI rotation watchdog (safety interval: %s, RL-agent controls active rotation)", safetyInterval)
 	m.rotationTicker = time.NewTicker(safetyInterval)
 
 	go func() {
@@ -2015,7 +1912,6 @@ func (m *Manager) startRotation() {
 			case <-ctx.Done():
 				return
 			case <-m.rotationTicker.C:
-				log.Info("SNI safety-net rotation triggered (no agent signal for %s)", safetyInterval)
 				m.RotateSNI()
 			}
 		}
@@ -2100,11 +1996,9 @@ func (m *Manager) connAgentTick() {
 	}
 
 	if needsRotation {
-		log.Info("[connAgent] Chameleon connection reached max age, rotating")
 		ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
 		defer cancel()
 		if err := m.connectInternal(ctx, true); err != nil {
-			log.Warn("[connAgent] Rotation failed: %v", err)
 		}
 		return
 	}
@@ -2148,12 +2042,10 @@ func (m *Manager) connAgentTick() {
 
 	switch action {
 	case mlpkg.ConnActionOpen:
-		log.Info("[CONN-AGENT] OPEN: adding connection to pool (current=%d)", poolSize)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
 			defer cancel()
 			if err := m.openPoolConn(ctx); err != nil {
-				log.Warn("[CONN-AGENT] OPEN failed: %v", err)
 				m.connAgent.RecordOutcome(decision, 0.0)
 			} else {
 				quality := m.connQuality()
@@ -2162,7 +2054,6 @@ func (m *Manager) connAgentTick() {
 		}()
 
 	case mlpkg.ConnActionCloseWorst:
-		log.Info("[CONN-AGENT] CLOSE_WORST: removing connection from pool (current=%d)", poolSize)
 		closed := m.closeWorstPoolConn()
 		if closed {
 			m.connAgent.RecordOutcome(decision, m.connQuality())
@@ -2196,7 +2087,7 @@ func (m *Manager) connQuality() float64 {
 	return quality
 }
 
-func (m *Manager) openPoolConn(ctx context.Context) error {
+func (m *Manager) openPoolConn(_ context.Context) error {
 	capN := 0
 	if m.config.EnableChameleon {
 		capN = m.poolConnCap()
@@ -2209,22 +2100,7 @@ func (m *Manager) openPoolConn(ctx context.Context) error {
 			return nil
 		}
 	}
-	id := fmt.Sprintf("agent-%d", time.Now().UnixNano())
-	mc, err := m.dialManagedConn(ctx, id)
-	if err != nil {
-		return err
-	}
-	m.connMu.Lock()
-	if capN > 0 && len(m.activePool) >= capN {
-		m.connMu.Unlock()
-		mc.Close()
-		return nil
-	}
-	m.activePool = append(m.activePool, mc)
-	size := len(m.activePool)
-	m.connMu.Unlock()
-	safeGo("readLoop", func() { m.readLoop(mc) })
-	log.Info("[CONN-AGENT] Pool expanded to %d connections", size)
+
 	return nil
 }
 
@@ -2246,7 +2122,6 @@ func (m *Manager) closeWorstPoolConn() bool {
 	m.drainingConns = append(m.drainingConns, worst)
 	go m.monitorDrainingConn(worst)
 
-	log.Info("[CONN-AGENT] Pool shrunk to %d connections (closed oldest conn)", len(m.activePool))
 	return true
 }
 
@@ -2436,8 +2311,6 @@ func (m *Manager) evalScale() {
 		if poolSize+grow > ceiling {
 			grow = ceiling - poolSize
 		}
-		log.Info("[CH-SCALE] saturated: %.0f Mbit/s over %d conns (%.0f/conn) → +%d",
-			rate*8/1e6, poolSize, perConn*8/1e6, grow)
 		atomic.StoreInt32(&m.chScaleOpening, int32(grow))
 		for i := 0; i < grow; i++ {
 			safeGo("chScaleOpen", func() {
@@ -2445,13 +2318,11 @@ func (m *Manager) evalScale() {
 				ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
 				defer cancel()
 				if err := m.openPoolConn(ctx); err != nil {
-					log.Warn("[CH-SCALE] grow failed: %v", err)
 				}
 			})
 		}
 	case perConn < chScaleShrinkPerConn && poolSize > base:
 		if m.closeIdlePoolConn(base) {
-			log.Info("[CH-SCALE] underutilized → shrink pool")
 		}
 	}
 }
@@ -2495,7 +2366,6 @@ func (m *Manager) setError(err error) {
 }
 
 func (m *Manager) onStateTransition(old, new TunnelState) {
-	log.Debug("[setState] %v", new)
 	if m.onStateChange != nil {
 		m.onStateChange(new)
 	}
@@ -2708,7 +2578,6 @@ func (m *Manager) sendKeepalive() {
 		silentDuration := time.Since(m.lastPong)
 		maxSilence := 90 * time.Second
 		if silentDuration > maxSilence {
-			log.Warn("No data received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
 			go m.Reconnect(m.Context())
 			return
 		}
@@ -2723,7 +2592,6 @@ func (m *Manager) sendKeepalive() {
 			}
 			threshold := m.config.QualityMissedKeepalives
 			if threshold > 0 && int(missed) >= threshold {
-				log.Warn("Quality failover: %d consecutive keepalives unanswered, reconnecting", missed)
 				atomic.StoreInt32(&m.missedKAs, 0)
 				go m.Reconnect(m.Context())
 				return
@@ -2751,7 +2619,6 @@ func (m *Manager) sendKeepalive() {
 	select {
 	case err := <-done:
 		if err != nil {
-			log.Warn("Keepalive send failed: %v", err)
 			if m.GetState() == StateConnected {
 				go m.Reconnect(m.Context())
 			}
@@ -2759,11 +2626,8 @@ func (m *Manager) sendKeepalive() {
 			m.lastKeepalive = time.Now()
 		}
 	case <-time.After(sendTimeout):
-		log.Warn("Keepalive send blocked >%s, triggering reconnect", sendTimeout)
 		if m.GetState() == StateConnected {
 			go m.Reconnect(m.Context())
 		}
 	}
 }
-
-

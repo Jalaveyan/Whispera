@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"whispera/internal/modules/config"
-	"whispera/internal/server/dynamic"
+	"whispera/internal/server"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -62,13 +62,9 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 	}
 	var req config.InboundConfig
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("[API] Failed to decode inbound request: %v", err)
 		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-
-	log.Printf("[API] Received inbound add request: tag=%s, port=%d, security=%s",
-		req.Tag, req.Port, req.StreamSettings.Security)
 
 	if req.Protocol == "" {
 		req.Protocol = "whispera"
@@ -86,12 +82,8 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 		req.StreamSettings.Security = "none"
 	}
 
-	log.Printf("[API] Normalized inbound config: tag=%s, port=%d, network=%s, security=%s",
-		req.Tag, req.Port, req.StreamSettings.Network, req.StreamSettings.Security)
-
 	module, ok := s.registry.Get("config.provider")
 	if !ok {
-		log.Printf("[API] Config provider not found in registry")
 		s.jsonError(w, http.StatusInternalServerError, "Config provider not found")
 		return
 	}
@@ -112,7 +104,6 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 		}
 		for i, in := range cfg.Inbounds {
 			if in.Tag == req.Tag {
-				log.Printf("[API] Tag %s already exists. Overwriting.", req.Tag)
 				foundIndex = i
 				break
 			}
@@ -121,7 +112,6 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 				inNet = "tcp"
 			}
 			if in.Port == req.Port && inNet == reqNet {
-				log.Printf("[API] Port %d/%s already in use by inbound %s. Overwriting.", req.Port, reqNet, in.Tag)
 				foundIndex = i
 				break
 			}
@@ -133,52 +123,39 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 			cfg.Inbounds = append(cfg.Inbounds, req)
 		}
 
-		log.Printf("[API] ✓ Added/Updated inbound %s (port %d) to config. Total inbounds: %d",
-			req.Tag, req.Port, len(cfg.Inbounds))
 	})
 
 	if err != nil {
-		log.Printf("[API] Failed to update config: %v", err)
 		s.jsonError(w, http.StatusInternalServerError, "Failed to update config: "+err.Error())
 		return
 	}
 
-	log.Printf("[API] ✓ Inbound %s saved to config.yaml successfully", req.Tag)
-
 	if err := openFirewallPort(req.Port); err != nil {
-		log.Printf("[API] ⚠️ Warning: Failed to open firewall port %d: %v", req.Port, err)
 	}
 
 	if portOccupiedByExistingInbound(cfgProvider, req) {
-		log.Printf("[API] Port %d already has an active inbound with network=%s, restart required",
-			req.Port, req.StreamSettings.Network)
 		s.jsonOK(w, map[string]interface{}{
-			"success":         true,
-			"message":         fmt.Sprintf("Inbound saved. Port %d already in use — restart required to activate.", req.Port),
+			"success":          true,
+			"message":          fmt.Sprintf("Inbound saved. Port %d already in use — restart required to activate.", req.Port),
 			"restart_required": true,
-			"inbound":         req,
+			"inbound":          req,
 		})
 		return
 	}
 
 	if err := startDynamicInbound(req); err != nil {
 		if isAddrInUseErr(err) {
-			log.Printf("[API] Port %d busy (likely same-port multiport config), restart to activate", req.Port)
 		} else {
-			log.Printf("[API] ⚠️ Warning: Inbound saved but failed to start dynamically: %v", err)
 		}
-		log.Printf("[API] → Run 'systemctl restart whispera' to activate")
 
 		s.jsonOK(w, map[string]interface{}{
-			"success":         true,
-			"message":         "Inbound saved, restart required to activate",
+			"success":          true,
+			"message":          "Inbound saved, restart required to activate",
 			"restart_required": true,
-			"inbound":         req,
+			"inbound":          req,
 		})
 		return
 	}
-
-	log.Printf("[API] 🚀 Inbound %s started dynamically on port %d!", req.Tag, req.Port)
 
 	s.jsonCreated(w, map[string]interface{}{
 		"success": true,
@@ -223,7 +200,7 @@ func isAddrInUseErr(err error) bool {
 }
 
 func startDynamicInbound(inbound config.InboundConfig) error {
-	return dynamic.Global.StartInbound(inbound)
+	return server.Global.StartInbound(inbound)
 }
 func (s *Server) handleUpdateInbound(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
@@ -332,30 +309,24 @@ func (s *Server) handleGetInboundPublicKey(w http.ResponseWriter, r *http.Reques
 	}
 
 	if foundInbound != nil {
-		log.Printf("[API] Found inbound for port %d", port)
 	} else {
-		log.Printf("[API] Inbound for port %d NOT found in current config (Total inbounds: %d)", port, len(cfg.Inbounds))
-		for _, in := range cfg.Inbounds {
-			log.Printf("[API] - Available port: %d", in.Port)
+		for range cfg.Inbounds {
 		}
 	}
 
 	if privateKey == "" {
 		privateKey = cfg.Server.PrivateKey
 		if privateKey != "" {
-			log.Printf("[API] Using global server key for port %d", port)
 		}
 	}
 
 	if privateKey == "" {
-		log.Printf("[API] Error: No key found for port %d. Inbound found: %v", port, foundInbound != nil)
 		s.jsonError(w, http.StatusNotFound, "No private key configured for this port or server")
 		return
 	}
 
 	privKeyBytes, err := decodeBase64OrHex(privateKey)
 	if err != nil || len(privKeyBytes) != 32 {
-		log.Printf("[API] Invalid private key format for port %d", port)
 		s.jsonError(w, http.StatusInternalServerError, "Invalid private key format")
 		return
 	}
@@ -367,8 +338,6 @@ func (s *Server) handleGetInboundPublicKey(w http.ResponseWriter, r *http.Reques
 	curve25519.ScalarBaseMult(&pubKey, &privKey)
 
 	publicKeyB64 := base64Encode(pubKey[:])
-
-	log.Printf("[API] ✓ Returned public key for port %d: %s...", port, publicKeyB64[:16])
 
 	s.jsonOK(w, map[string]interface{}{
 		"success":    true,
@@ -389,8 +358,6 @@ func openFirewallPort(port int) error {
 		return fmt.Errorf("invalid port %d", port)
 	}
 
-	log.Printf("[Firewall] Attempting to auto-configure UFW for port %d...", port)
-
 	if _, err := exec.LookPath("ufw"); err != nil {
 		return fmt.Errorf("ufw not found in PATH, skipping firewall config")
 	}
@@ -401,6 +368,5 @@ func openFirewallPort(port int) error {
 		return fmt.Errorf("failed to allow TCP: %v (output: %s)", err, string(out))
 	}
 
-	log.Printf("[Firewall] ✓ Successfully allowed port %d (TCP+UDP) in UFW", port)
 	return nil
 }
