@@ -722,7 +722,7 @@ ${LISTEN_BLOCK}
     location /sub/ {
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
         proxy_http_version 1.1;
     }
@@ -731,7 +731,7 @@ ${LISTEN_BLOCK}
         limit_req  zone=panel_auth burst=5 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
         proxy_http_version 1.1;
     }
@@ -740,7 +740,7 @@ ${LISTEN_BLOCK}
         limit_req  zone=panel_auth burst=5 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
         proxy_http_version 1.1;
     }
@@ -749,7 +749,7 @@ ${LISTEN_BLOCK}
         limit_req  zone=panel_auth burst=5 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
         proxy_http_version 1.1;
     }
@@ -758,7 +758,7 @@ ${LISTEN_BLOCK}
         limit_req  zone=panel_api burst=200 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto https;
         proxy_http_version 1.1;
     }
