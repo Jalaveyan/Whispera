@@ -876,7 +876,7 @@ textarea {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding-top: 16px;
+  padding: 16px 20px 20px;
 }
 
 /* ─── Hint box ───────────────────────────────────────────────────────── */
