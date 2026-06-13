@@ -207,7 +207,7 @@ export const usersPage = {
             users.forEach(u => { this._usersById[u.id] = u; });
 
             if (users.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center">Нет пользователей</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center">Нет пользователей</td></tr>';
                 return;
             }
 
@@ -216,32 +216,18 @@ export const usersPage = {
           <td>${this.escapeHtml(user.username || '-')}</td>
           <td>${user.trafficLimit ? (user.trafficLimit / 1073741824).toFixed(0) + ' GB' : 'Free'}</td>
           <td>${this.formatBytes(user.upload || 0)} / ${this.formatBytes(user.download || 0)}</td>
-          <td><span class="status ${user.status === 'active' ? 'active' : 'inactive'}">${user.status === 'active' ? 'Active' : 'Inactive'}</span></td>
+          <td><span class="status ${user.status === 'active' ? 'active' : 'inactive'}">${user.status === 'active' ? 'Активен' : 'Неактивен'}</span></td>
           <td>
-            <div style="display: flex; align-items: center; gap: 5px;">
-                <input type="text" value="${user.publicKey || '-'}" readonly style="width: 120px; font-size: 0.85em; border: 1px solid var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-highest); color: var(--md-sys-color-on-surface); padding: 4px 8px; border-radius: 4px;">
-                <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${user.publicKey || ''}').then(() => app.showNotification('Key copied', 'success'))" style="padding: 4px 8px;" title="Копировать публичный ключ">
-                    <i class="fas fa-copy"></i>
-                </button>
-            </div>
-          </td>
-          <td>
-            <div style="display: flex; gap: 4px;">
-                ${user.privateKey ? `<button class="btn btn-secondary btn-sm" onclick="app.generateKeyForUser(${user.id})" style="padding: 4px 8px;" title="Получить ключ подключения">
-                    <i class="fas fa-key"></i>
-                </button>` : ''}
-                <button class="btn btn-secondary btn-sm" onclick="app.showEditUserModal(${user.id})" style="padding: 4px 8px;" title="Редактировать">
-                    <i class="fas fa-pen"></i>
-                </button>
-                <button class="btn btn-danger btn-sm" data-act="deleteUser" data-arg="${escapeHtml(String(user.id))}" title="Удалить">
-                    <i class="fas fa-trash"></i>
-                </button>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                ${user.privateKey ? `<button class="btn btn-secondary btn-sm" onclick="app.generateKeyForUser(${user.id})"><i class="fas fa-key"></i> Ключ</button>` : ''}
+                <button class="btn btn-secondary btn-sm" onclick="app.showEditUserModal(${user.id})"><i class="fas fa-pen"></i> Изменить</button>
+                <button class="btn btn-danger btn-sm" data-act="deleteUser" data-arg="${escapeHtml(String(user.id))}"><i class="fas fa-trash"></i> Удалить</button>
             </div>
           </td>
         </tr>
     `).join('');
         } catch (error) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center">Ошибка загрузки</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center">Ошибка загрузки</td></tr>';
         }
     },
     async generateKeyForUser(userId) {
@@ -403,54 +389,41 @@ export const usersPage = {
         const uriEsc = uri.replace(/'/g, "\\'").replace(/"/g, '&quot;');
         const pkEsc = privKey.replace(/'/g, "\\'").replace(/"/g, '&quot;');
 
-        const copyBtn = (text, label) => `
-            <div class="form-group">
-                <label style="font-size:0.8em;text-transform:uppercase;opacity:0.7;letter-spacing:0.05em;">${label}</label>
-                <div style="display:flex;gap:6px;align-items:center;">
-                    <input type="text" value="${text}" readonly
-                        style="flex:1;font-family:monospace;font-size:0.82em;padding:8px 10px;
-                               background:var(--bg-secondary,#1a1a2e);border:1px solid var(--border,#333);
-                               border-radius:6px;color:inherit;min-width:0;">
-                    <button onclick="navigator.clipboard.writeText('${text}').then(()=>app.showNotification('Скопировано','success'))"
-                        style="flex-shrink:0;padding:8px 12px;border-radius:6px;border:none;
-                               background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-size:13px;">
-                        <i class="fas fa-copy"></i>
-                    </button>
+        const copyField = (value, label, onCopy) => `
+            <div class="field-group">
+                <label>${label}</label>
+                <div class="copy-row">
+                    <input type="text" value="${value}" readonly>
+                    <button class="btn btn-primary btn-sm" onclick="${onCopy}"><i class="fas fa-copy"></i> Копировать</button>
                 </div>
             </div>`;
 
         modal.innerHTML = `
-    <div class="modal" style="max-width:540px;">
+    <div class="modal" style="max-width:520px;">
         <div class="modal-header">
             <h3>Пользователь создан</h3>
             <button class="modal-close modal-close-icon" onclick="this.closest('.modal-backdrop').remove()"><i class="fas fa-times"></i></button>
         </div>
-        <div class="modal-body" style="display:flex;flex-direction:column;gap:4px;">
-            <p style="margin:0 0 8px;">Пользователь: <strong>${email}</strong></p>
-            ${connectionURI ? copyBtn(uriEsc, 'Ключ подключения (импортируйте в клиент)') : copyBtn(pkEsc, 'Приватный ключ')}
-            ${connectionURI ? `<div id="key-modal-qr-wrap" style="display:flex;flex-direction:column;align-items:center;gap:6px;margin:8px 0;">
-                <img id="key-modal-qr" style="border-radius:8px;background:#fff;padding:8px;width:220px;height:220px;" />
-                <span style="font-size:0.78em;opacity:0.5;">Сканируйте QR-кодом в клиенте</span>
-            </div>` : ''}
+        <div class="modal-body">
+            <p style="margin:0 0 12px;">Пользователь: <strong>${email}</strong></p>
+            ${connectionURI
+                ? copyField(uriEsc, 'Ключ подключения (импортируйте в клиент)', `navigator.clipboard.writeText('${uriEsc}').then(()=>app.showNotification('Скопировано','success'))`)
+                : copyField(pkEsc, 'Приватный ключ', `navigator.clipboard.writeText('${pkEsc}').then(()=>app.showNotification('Скопировано','success'))`)
+            }
+            <div id="key-modal-qr-wrap" style="display:none;flex-direction:column;align-items:center;gap:6px;margin:8px 0 12px;">
+                <img id="key-modal-qr" style="border-radius:8px;background:#fff;padding:8px;width:200px;height:200px;" />
+                <span class="field-hint">Сканируйте QR-кодом в клиенте</span>
+            </div>
             ${connectionURI && privKey ? `
-            <div style="margin-top:4px;padding:10px 12px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.25);border-radius:8px;">
-                <div style="font-size:0.78em;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;opacity:0.7;margin-bottom:6px;">
-                    <i class="fas fa-brain" style="margin-right:4px;color:#6366f1;"></i>ML Токен (для режима ML в клиенте)
+            <div class="field-group" style="padding:10px 12px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.25);border-radius:var(--radius);">
+                <label><i class="fas fa-brain" style="color:#6366f1;margin-right:4px;"></i>ML Токен (для режима ML в клиенте)</label>
+                <div class="copy-row">
+                    <input type="text" value="${pkEsc}" readonly>
+                    <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${pkEsc}').then(()=>app.showNotification('ML токен скопирован','success'))"><i class="fas fa-copy"></i> Копировать</button>
                 </div>
-                <div style="display:flex;gap:6px;align-items:center;">
-                    <input type="text" value="${pkEsc}" readonly
-                        style="flex:1;font-family:monospace;font-size:0.78em;padding:6px 10px;
-                               background:var(--bg-secondary,#1a1a2e);border:1px solid rgba(99,102,241,0.3);
-                               border-radius:6px;color:inherit;min-width:0;">
-                    <button onclick="navigator.clipboard.writeText('${pkEsc}').then(()=>app.showNotification('ML токен скопирован','success'))"
-                        style="flex-shrink:0;padding:6px 10px;border-radius:6px;border:none;
-                               background:rgba(99,102,241,0.3);color:#fff;cursor:pointer;font-size:12px;">
-                        <i class="fas fa-copy"></i>
-                    </button>
-                </div>
-                <div style="font-size:0.75em;opacity:0.5;margin-top:4px;">Вставьте в поле «ML Токен» в разделе Режим ML клиента whisp</div>
+                <span class="field-hint">Вставьте в поле «ML Токен» в разделе Режим ML клиента whisp</span>
             </div>` : ''}
-            <p style="margin-top:4px;font-size:0.82em;opacity:0.6;">
+            <p class="field-hint" style="margin-top:8px;">
                 <i class="fas fa-info-circle"></i> Ключ содержит все параметры подключения. Сохраните — он больше не будет показан.
             </p>
         </div>
@@ -461,24 +434,19 @@ export const usersPage = {
         document.body.appendChild(modal);
 
         if (connectionURI) {
-            setTimeout(() => {
-                const img = modal.querySelector('#key-modal-qr');
-                const qrWrap = modal.querySelector('#key-modal-qr-wrap');
-                if (img) {
-                    fetch('/api/qr?data=' + encodeURIComponent(connectionURI))
-                        .then(r => r.json())
-                        .then(d => {
-                            if (d.url) {
-                                img.src = d.url;
-                            } else if (qrWrap) {
-                                qrWrap.innerHTML = '<span style="font-size:0.8em;opacity:0.5;text-align:center;">QR недоступен — скопируйте ключ вручную</span>';
-                            }
-                        })
-                        .catch(() => {
-                            if (qrWrap) qrWrap.innerHTML = '<span style="font-size:0.8em;opacity:0.5;text-align:center;">QR недоступен — скопируйте ключ вручную</span>';
-                        });
-                }
-            }, 0);
+            const qrWrap = modal.querySelector('#key-modal-qr-wrap');
+            const img = modal.querySelector('#key-modal-qr');
+            if (img && qrWrap) {
+                fetch('/api/qr?data=' + encodeURIComponent(connectionURI))
+                    .then(r => r.json())
+                    .then(d => {
+                        if (d.url) {
+                            img.src = d.url;
+                            qrWrap.style.display = 'flex';
+                        }
+                    })
+                    .catch(() => {});
+            }
         }
     }
 };

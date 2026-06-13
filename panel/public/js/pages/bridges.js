@@ -109,12 +109,8 @@ export const bridgesPage = {
             : '<span style="color:#444;font-size:0.8em;">—</span>';
 
         const blacklistBtn = blacklisted
-            ? `<button class="btn btn-icon btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="true" title="Снять блокировку" style="color:#facc15;">
-                <i class="fas fa-ban"></i>
-               </button>`
-            : `<button class="btn btn-icon btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="false" title="Заблокировать мост" style="color:#555;">
-                <i class="fas fa-ban"></i>
-               </button>`;
+            ? `<button class="btn btn-secondary btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="true" style="color:#facc15;"><i class="fas fa-ban"></i> Разблок</button>`
+            : `<button class="btn btn-secondary btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="false"><i class="fas fa-ban"></i> Блок</button>`;
 
         const rowStyle = blacklisted ? ' style="opacity:0.45;"' : '';
 
@@ -129,16 +125,10 @@ export const bridgesPage = {
             <td>${mlBadge}</td>
             <td style="font-size:0.82em;color:#888;">${lastCheckStr}</td>
             <td style="text-align:right;white-space:nowrap;">
-                <button class="btn btn-icon btn-sm bridge-check-btn" data-id="${id}" title="Проверить сейчас">
-                    <i class="fas fa-stethoscope"></i>
-                </button>
-                <button class="btn btn-icon btn-sm bridge-ping-btn" data-id="${id}" title="TCP Ping (5 пакетов)">
-                    <i class="fas fa-satellite-dish"></i>
-                </button>
+                <button class="btn btn-secondary btn-sm bridge-check-btn" data-id="${id}"><i class="fas fa-stethoscope"></i> Проверить</button>
+                <button class="btn btn-secondary btn-sm bridge-ping-btn" data-id="${id}"><i class="fas fa-satellite-dish"></i> Пинг</button>
                 ${blacklistBtn}
-                <button class="btn btn-icon btn-sm bridge-delete-btn" data-id="${id}" title="Удалить" style="color:#f87171;">
-                    <i class="fas fa-trash-alt"></i>
-                </button>
+                <button class="btn btn-danger btn-sm bridge-delete-btn" data-id="${id}"><i class="fas fa-trash-alt"></i> Удалить</button>
             </td>
         </tr>`;
     },
@@ -497,7 +487,7 @@ export const bridgesPage = {
                 configModal.className = 'modal-backdrop active';
                 configModal.innerHTML = `
                     <div class="modal" style="max-width:500px;">
-                        <div class="modal-header"><h3>Конфигурация подключения</h3></div>
+                        <div class="modal-header"><h3>Конфигурация подключения</h3><button class="modal-close modal-close-icon" onclick="this.closest('.modal-backdrop').remove()"><i class="fas fa-times"></i></button></div>
                         <div class="modal-body">
                             <pre style="background:rgba(0,0,0,0.3);padding:12px;border-radius:8px;font-size:0.82em;overflow-x:auto;color:#7ef7c8;">${configStr}</pre>
                             <p style="font-size:0.82em;color:#888;margin-top:8px;">Используйте эти данные в клиенте Whisp для подключения.</p>

@@ -675,19 +675,16 @@ class WhisperaApp {
             const title = lang === 'ru' ? 'Подтверждение' : 'Confirmation';
 
             modal.innerHTML = `
-    <div class="modal" style="max-width: 400px;">
-                    <div class="modal-header" style="border-bottom: none; padding-bottom: 8px;">
-                        <h3 style="margin: 0; font-size: 20px;">${title}</h3>
-                    </div>
-                    <div class="modal-body" style="padding: 0 24px 24px; font-size: 16px; color: var(--md-sys-color-on-surface-variant); line-height: 1.5;">
-                        ${message}
-                    </div>
-                    <div class="modal-footer" style="padding: 8px 24px 24px; display: flex; justify-content: flex-end; gap: 12px; border-top: none;">
-                        <button class="btn btn-secondary" id="confirm-cancel">${textNo}</button>
-                        <button class="btn btn-danger" id="confirm-ok">${textYes}</button>
-                    </div>
-                </div>
-    `;
+    <div class="modal" style="max-width:380px;">
+        <div class="modal-head">
+            <span class="modal-title">${title}</span>
+        </div>
+        <div class="modal-body" style="font-size:15px;line-height:1.5;">${message}</div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" id="confirm-cancel">${textNo}</button>
+            <button class="btn btn-danger-solid" id="confirm-ok">${textYes}</button>
+        </div>
+    </div>`;
 
             document.body.appendChild(modal);
 
