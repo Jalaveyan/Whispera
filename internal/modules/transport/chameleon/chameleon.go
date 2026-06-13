@@ -65,8 +65,8 @@ func chromeLikeQUICConfig() *quicgo.Config {
 		InitialConnectionReceiveWindow: 15 * 1024 * 1024,
 		MaxConnectionReceiveWindow:     15 * 1024 * 1024,
 		KeepAlivePeriod:                15 * time.Second,
-		MaxIncomingStreams:              300,
-		MaxIncomingUniStreams:           100,
+		MaxIncomingStreams:             300,
+		MaxIncomingUniStreams:          100,
 		Allow0RTT:                      true,
 	}
 }
@@ -98,7 +98,6 @@ type UserEntry struct {
 	PSK    []byte
 }
 
-
 func encodeSession(sessionID []byte, anchor time.Time) string {
 	buf := make([]byte, 24)
 	copy(buf, sessionID)
@@ -116,11 +115,29 @@ func decodeSession(s string) (sessionID []byte, anchor time.Time, err error) {
 	return
 }
 
+var defaultSNIPool = []string{
+	"yandex.ru", "ya.ru", "mail.ru", "vk.com", "ok.ru",
+	"rutube.ru", "dzen.ru", "avito.ru", "ozon.ru", "wildberries.ru",
+}
+
+func validSNI(s string) bool {
+	return s != "" && net.ParseIP(s) == nil
+}
+
 func pickSNI(cfg *ClientConfig) string {
-	if len(cfg.ServerNames) > 0 {
-		return cfg.ServerNames[mrand.Intn(len(cfg.ServerNames))]
+	pool := make([]string, 0, len(cfg.ServerNames)+1)
+	for _, s := range cfg.ServerNames {
+		if validSNI(s) {
+			pool = append(pool, s)
+		}
 	}
-	return cfg.ServerName
+	if len(pool) == 0 && validSNI(cfg.ServerName) {
+		pool = append(pool, cfg.ServerName)
+	}
+	if len(pool) == 0 {
+		pool = defaultSNIPool
+	}
+	return pool[mrand.Intn(len(pool))]
 }
 
 func SPKIPin(cert *x509.Certificate) string {
@@ -180,7 +197,6 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			tcpConn.SetKeepAlive(true)
 			tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 			tcpConn.SetNoDelay(true)
-			tcpFastKeepalive(tcpConn)
 		}
 		uCfg := &utls.Config{
 			ServerName:         sni,
@@ -275,19 +291,16 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	go func() {
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Printf("chameleon: tunnel POST failed from %s: %v", cfg.ServerAddr, err)
 			pc.deliver(nil)
 			connected <- err
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
-			log.Printf("chameleon: tunnel POST non-200 from %s: status=%d", cfg.ServerAddr, resp.StatusCode)
 			resp.Body.Close()
 			pc.deliver(nil)
 			connected <- fmt.Errorf("chameleon: server returned status %d", resp.StatusCode)
 			return
 		}
-		log.Printf("chameleon: tunnel POST 200 OK from %s, delivering body", cfg.ServerAddr)
 		if !pc.deliver(resp.Body) {
 			resp.Body.Close()
 		}
@@ -348,14 +361,8 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 			CipherSuites:     cdnCipherSuites,
 			CurvePreferences: cdnCurves,
 			GetConfigForClient: func(hi *tls.ClientHelloInfo) (*tls.Config, error) {
-				log.Printf("chameleon: client_hello sni=%q from=%s", hi.ServerName, hi.Conn.RemoteAddr())
 				return nil, nil
 			},
-		}
-		if len(cert.Certificate) > 0 {
-			if leaf, e := x509.ParseCertificate(cert.Certificate[0]); e == nil {
-				log.Printf("Chameleon server SPKI pin: %s", SPKIPin(leaf))
-			}
 		}
 	} else if cfg.Domain != "" {
 		cacheDir := cfg.ACMEDir
@@ -369,7 +376,6 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		}
 		go func() {
 			if err := http.ListenAndServe(":80", m.HTTPHandler(nil)); err != nil {
-				log.Printf("chameleon: acme http-01 listener: %v", err)
 			}
 		}()
 		tlsCfg = m.TLSConfig()
@@ -387,7 +393,6 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 			}
 			return origGet(hello)
 		}
-		log.Printf("Chameleon: autocert for %s (cache: %s)", cfg.Domain, cacheDir)
 	} else {
 		return fmt.Errorf("chameleon: neither TLSCert nor Domain configured")
 	}
@@ -425,10 +430,8 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		}
 		go func() {
 			if err := h3srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey); err != nil {
-				log.Printf("chameleon: quic: %v", err)
 			}
 		}()
-		log.Printf("Chameleon QUIC/HTTP3 listening on %s", cfg.QUICListenAddr)
 	}
 
 	go func() {
@@ -444,7 +447,6 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		return fmt.Errorf("chameleon: listen: %w", err)
 	}
 	tlsLn := tls.NewListener(&noDelayListener{TCPListener: rawLn.(*net.TCPListener)}, tlsCfg)
-	log.Printf("Chameleon listening on %s", listenAddr)
 	return srv.Serve(tlsLn)
 }
 
@@ -460,7 +462,6 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 	tc.SetKeepAlive(true)
 	tc.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 	tc.SetNoDelay(true)
-	tcpFastKeepalive(tc)
 	return tc, nil
 }
 
@@ -470,10 +471,10 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 
 	switch r.Method {
 	case http.MethodOptions:
-		handleRESTOptions(w, r)
+		handleRESTOptions(w)
 		return
 	case http.MethodDelete:
-		handleRESTDelete(w, r)
+		handleRESTDelete(w)
 		return
 	case http.MethodGet:
 		path := r.URL.Path
@@ -521,7 +522,7 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 		serveDecoy(w, r, cfg)
 		return
 	}
-	sessionID, anchor, err := decodeSession(sessCookie.Value)
+	sessionID, _, err := decodeSession(sessCookie.Value)
 	if err != nil {
 		serveDecoy(w, r, cfg)
 		return
@@ -529,7 +530,6 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
-		log.Printf("chameleon: stream auth failed from %s sess_age=%.0fs ua=%q", r.RemoteAddr, time.Since(anchor).Seconds(), r.Header.Get("User-Agent"))
 		serveDecoy(w, r, cfg)
 		return
 	}
@@ -539,7 +539,6 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	}
 
 	startedAt := time.Now()
-	log.Printf("chameleon: stream authenticated user=%s from %s proto=%s contentLength=%d", userID, r.RemoteAddr, r.Proto, r.ContentLength)
 	traceLog.Infow("client_stream_authenticated",
 		"user", userID,
 		"remote", r.RemoteAddr,
