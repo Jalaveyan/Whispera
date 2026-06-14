@@ -888,7 +888,7 @@ func main() {
 			}
 		} else {
 			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
-				stdlog.Printf("VPN server IP for routing: %s", host)
+				stdlog.Printf("proxy server IP for routing: %s", host)
 			}
 		}
 	}
