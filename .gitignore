@@ -10,7 +10,7 @@
 *.out
 /server
 /client
-!/internal/server/
+!/core/server/
 
 
 # Tauri / Frontend
@@ -94,7 +94,7 @@ venv/
 # Data directories
 data/
 metrics/
-!internal/metrics/
+!common/metrics/
 reports/
 
 whisp/

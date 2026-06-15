@@ -1,0 +1,1122 @@
+﻿package main
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
+	"flag"
+	"io"
+	stdlog "log"
+	mrand "math/rand"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"time"
+	"whispera/app/auth"
+	bridge "whispera/core/selector"
+	"whispera/common/runtime/lifecycle"
+	"whispera/common/log"
+	config2 "whispera/core/modules/config"
+	"whispera/core/modules/crypto"
+	"whispera/core/modules/dns"
+	"whispera/core/modules/handshake"
+	"whispera/core/modules/killswitch"
+	"whispera/core/modules/proxyagent"
+	"whispera/core/modules/session"
+	socks6 "whispera/core/modules/socks5"
+	tunnel2 "whispera/core/modules/tunnel"
+	"whispera/core/protocol"
+	"whispera/common/split_tunnel"
+	"whispera/neural"
+
+	_ "go.uber.org/automaxprocs"
+)
+
+var log = logger.Module("client")
+
+var Version = "2.0.0"
+
+var (
+	configPath       = flag.String("config", "", "Path to configuration file")
+	serverAddr       = flag.String("server", "", "Server address (host:port)")
+	socksAddr        = flag.String("socks", "127.0.0.1:10800", "SOCKS5 listen address for hev-socks5-tunnel")
+	connKey          = flag.String("key", "", "Connection key (whispera://...)")
+	transport        = flag.String("transport", "tcp", "Transport mode: auto|tcp|udp")
+	asnBypass        = flag.Bool("asn-bypass", false, "Enable ASN bypass for VPN/datacenter IP evasion")
+	tlsFingerprint   = flag.String("tls-fingerprint", "chrome", "TLS fingerprint for ASN bypass: chrome, firefox, safari, ios, android")
+	enableKillSwitch = flag.Bool("kill-switch", false, "Enable kill switch to prevent traffic leaks")
+	allowLAN         = flag.Bool("allow-lan", true, "Allow LAN traffic when kill switch is enabled")
+	userKey          = flag.String("user-key", "", "User private key (base64) for ML-mode auth — sets PSK without a full connection key")
+	noInternalTun    = flag.Bool("no-tun", true, "Disable internal TUN (use external like Mihomo)")
+	russianService   = flag.String("russian-service", "", "Enable Russian Service masquerading (e.g. vk_video)")
+	serverList       = flag.String("servers", "", "Comma-separated server addresses for latency-based routing")
+	rekeyInterval    = flag.Duration("rekey", 10*time.Minute, "Session rekeying interval (0 = disabled)")
+	mlServerURL      = flag.String("ml-server", "", "ML server URL (e.g. https://127.0.0.1:8000)")
+	mlTokenFlag      = flag.String("ml-token", "", "ML API auth token")
+	controlPort      = flag.String("control-port", "10801", "Control server port (default 10801)")
+	dnsUpstream      = flag.String("dns", "", "DNS upstream: host:port for UDP (8.8.8.8:53), https://... for DoH (https://1.1.1.1/dns-query). Empty = 1.1.1.1:53. 'system' = ISP resolver")
+	spoofIPs         = flag.String("spoof-ips", "", "Comma-separated source IPs for IP spoofing (requires multiple local IPs)")
+	adminTokenFlag   = flag.String("admin-token", "", "Admin token required for privileged control endpoints (e.g. /spoof). Empty = no auth")
+	tlsFragSize      = flag.Int("tls-fragment", 0, "TLS ClientHello fragment size in bytes (0=default 40, range 16-200). Smaller = harder for DPI but more RTT")
+	logFilePath      = flag.String("log-file", "", "Write logs to file (default: in-memory only, no disk storage)")
+	forceSNIFlag     = flag.String("sni", "", "Force custom SNI in TLS ClientHello for all connections (e.g. www.google.com). Overrides asn-bypass SNI")
+	regionFlag       = flag.String("region", "", "Preferred server region: auto|ru|eu|us|cn (overrides config)")
+	subURL           = flag.String("sub-url", "", "Subscription URL for automatic key refresh (checked every 24h)")
+	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
+	weightsURL       = flag.String("weights-url", "", "Server weights URL for warm-start (e.g. https://server:8080/api/ml/weights)")
+	bypassDNS        = flag.String("bypass-dns", "77.88.8.8:53", "DNS server used for bypass resolver (never goes through tunnel)")
+)
+
+func pickServerAddress(cfg *config2.ClientConfig, transport string) string {
+	switch transport {
+	case "tcp", "tls":
+		if cfg.ServerTCP != "" {
+			return cfg.ServerTCP
+		}
+	case "ws", "websocket":
+		if cfg.ServerWS != "" {
+			return cfg.ServerWS
+		}
+		if cfg.ServerTCP != "" {
+			return cfg.ServerTCP
+		}
+	}
+	if cfg.Server != "" {
+		return cfg.Server
+	}
+	return cfg.ServerTCP
+}
+
+func mlDefaultDataDir() string {
+	if exe, err := os.Executable(); err == nil {
+		exeDir := strings.TrimSuffix(exe, "/"+strings.Split(exe, "/")[len(strings.Split(exe, "/"))-1])
+		if fi, err := os.Stat(exeDir + "/data/api_token"); err == nil && !fi.IsDir() {
+			return exeDir + "/data"
+		}
+	}
+	switch {
+	case strings.EqualFold(os.Getenv("OS"), "Windows_NT") || os.PathSeparator == '\\':
+		if appdata := os.Getenv("APPDATA"); appdata != "" {
+			return appdata + `\Whispera`
+		}
+	default:
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			return xdg + "/whispera"
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			return home + "/.config/whispera"
+		}
+	}
+	return "data"
+}
+
+func resolveMLToken(cfg *config2.ClientConfig) string {
+	if cfg.MLServerURL == "" {
+		return ""
+	}
+	if cfg.MLToken != "" {
+		return cfg.MLToken
+	}
+
+	candidates := []string{mlDefaultDataDir() + string(os.PathSeparator) + "api_token"}
+	if cfg.MLTokenFile != "" {
+		candidates = append([]string{cfg.MLTokenFile}, candidates...)
+	}
+
+	for _, path := range candidates {
+		if data, err := os.ReadFile(path); err == nil {
+			if tok := strings.TrimSpace(string(data)); tok != "" {
+				return tok
+			}
+		}
+	}
+
+	stdlog.Printf("WARNING: MLServerURL set but no API token found — requests may be rejected (401)")
+	return ""
+}
+
+func main() {
+	debug.SetGCPercent(100)
+	debug.SetMemoryLimit(200 << 20)
+
+	flag.Parse()
+
+	if *mlServerURL != "" {
+		neural.SetMLServerURL(*mlServerURL, *mlTokenFlag)
+	}
+
+	underSystemd := os.Getenv("JOURNAL_STREAM") != "" || os.Getenv("INVOCATION_ID") != ""
+
+	var logWriter io.Writer
+	if *logFilePath != "" {
+		logFile, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			rb := newRingLogBuffer(2000)
+			globalLogBuf = rb
+			logWriter = rb
+		} else {
+			logWriter = logFile
+		}
+	} else if underSystemd {
+		logWriter = os.Stdout
+	} else {
+		if null, errNull := os.OpenFile(os.DevNull, os.O_WRONLY, 0666); errNull == nil {
+			os.Stdout = null
+			os.Stderr = null
+		}
+		rb := newRingLogBuffer(2000)
+		globalLogBuf = rb
+		logWriter = rb
+	}
+	stdlog.SetOutput(logWriter)
+	log.SetOutput(logWriter)
+	log = logger.Module("client")
+	stdlog.Printf("Whispera Client v%s starting...", Version)
+
+	var cfg *config2.ClientConfig
+
+	if *connKey != "" {
+		key, err := config2.ParseConnectionKey(*connKey)
+		if err != nil {
+			stdlog.Fatalf("Failed to parse connection key: %v", err)
+		}
+		cfg = key.ToClientConfig()
+		stdlog.Printf("Loaded config from key: %s", key.Name)
+		stdlog.Printf("Server: %s (transport: %s, obfuscation: %s)", key.GetPrimaryServer(), key.Transport, key.ObfsPreset)
+	} else if *configPath != "" {
+		var loadErr error
+		cfg, loadErr = config2.LoadClient(*configPath)
+		if loadErr != nil {
+			stdlog.Fatalf("Failed to load config: %v", loadErr)
+		}
+	} else {
+		cfg = &config2.ClientConfig{
+			Server: *serverAddr,
+		}
+	}
+
+	if *connKey == "" && *serverAddr != "" {
+		cfg.Server = *serverAddr
+	}
+
+	if *mlServerURL != "" {
+		cfg.MLServerURL = *mlServerURL
+	}
+	if *mlTokenFlag != "" {
+		cfg.MLToken = *mlTokenFlag
+	}
+
+	if *userKey != "" && cfg.PSK == "" {
+		cfg.PSK = *userKey
+		stdlog.Printf("ML mode: user-key PSK set")
+	}
+
+	if cfg.Server == "" && cfg.ServerTCP == "" {
+		stdlog.Fatalf("No server address specified. Use -server, -key, or -config")
+	}
+
+	stdlog.Printf("Starting Whispera Client v%s", Version)
+	stdlog.Printf("Server: %s", cfg.Server)
+	if cfg.ServerTCP != "" {
+		stdlog.Printf("TCP Fallback: %s", cfg.ServerTCP)
+	}
+	if cfg.ObfsPreset != "" {
+		stdlog.Printf("Obfuscation: %s", cfg.ObfsPreset)
+	}
+
+	lc := lifecycle.NewManager(lifecycle.Config{
+		ShutdownTimeout: 30 * time.Second,
+		GracefulStop:    true,
+	})
+
+	ctx := lc.Context()
+
+	cryptoMod, _ := crypto.New(nil)
+
+	sessMod, _ := session.New(&session.Config{MaxSessions: 10})
+
+	hsMod, _ := handshake.New(&handshake.Config{
+		RateLimit: 100,
+		RateBurst: 50,
+		Timeout:   10 * time.Second,
+	})
+	hsMod.SetDependencies(cryptoMod, sessMod)
+	if deviceID, devErr := auth.LoadOrCreateDeviceID(); devErr == nil {
+		hsMod.SetDeviceID(deviceID)
+		stdlog.Printf("Device ID: %x", deviceID[:8])
+	} else {
+		stdlog.Printf("WARNING: Could not load/create device ID: %v", devErr)
+	}
+
+	dnsUpstreamAddr := ""
+	if *dnsUpstream != "" && !strings.EqualFold(*dnsUpstream, "system") {
+		dnsUpstreamAddr = *dnsUpstream
+	}
+	bypassDNS := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 1 * time.Second}
+			return d.DialContext(ctx, "udp", *bypassDNS)
+		},
+	}
+
+	stm := split_tunnel.NewSplitTunnelManager()
+	stm.AddRussianWhitelist()
+	stm.CreateDefaultRules()
+	if cfg.SplitTunnel {
+		stm.SetEnabled(true)
+		if cfg.SplitTunnelMode != "" {
+			stm.SetMode(cfg.SplitTunnelMode)
+		}
+		if cfg.SplitTunnelRules != "" {
+			if err := stm.LoadConfig(cfg.SplitTunnelRules); err != nil {
+				stdlog.Printf("WARNING: split tunnel config load failed: %v", err)
+			}
+		}
+	} else {
+		stm.SetEnabled(true)
+	}
+
+	go func() {
+		resolveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		n := stm.PreResolveAndCacheIPs(resolveCtx, bypassDNS)
+		stdlog.Printf("[split-tunnel] pre-resolved %d Russian bypass IPs", n)
+	}()
+
+	socksMod, _ := socks6.New(&socks6.Config{
+		ListenAddr:    *socksAddr,
+		Debug:         true,
+		VPNServerAddr: cfg.Server,
+		MTU:           cfg.MTU,
+		BypassFunc:    stm.ShouldBypass,
+		BlockTorrents: true,
+	})
+	generateSocksAuth()
+	socksMod.SetAuthHandler(socksUser, socksPass)
+	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
+	socks6.HarvestHook = func(b []byte) { _ = protocol.HarvestRawClientHello(b) }
+
+	dnsMod, _ := dns.New(&dns.Config{
+		Upstream:       dnsUpstreamAddr,
+		CacheEnabled:   true,
+		BypassFunc:     stm.ShouldBypassByHostname,
+		BypassResolver: bypassDNS,
+	})
+
+	resolvedTransport := cfg.Transport
+	if resolvedTransport == "" {
+		resolvedTransport = *transport
+	}
+
+	serverAddress := pickServerAddress(cfg, resolvedTransport)
+	if serverAddress == "" {
+		serverAddress = cfg.Server
+	}
+	if serverAddress != "" {
+		if _, _, err := net.SplitHostPort(serverAddress); err != nil {
+			serverAddress = net.JoinHostPort(serverAddress, "8443")
+		}
+	}
+
+	var globalBridgeSel *bridge.Selector
+	if cfg.BridgeDiscoveryURL != "" {
+		globalBridgeSel = bridge.NewSelectorWithURL(cfg.BridgeDiscoveryURL)
+		fetchCtx, fetchCancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := globalBridgeSel.FetchBridges(fetchCtx); err != nil {
+			stdlog.Printf("Bridge discovery failed (%v) — connecting directly to %s", err, serverAddress)
+		} else {
+			globalBridgeSel.TestAllBridges(fetchCtx)
+			if best := globalBridgeSel.SelectBest(); best != nil {
+				stdlog.Printf("Bridge selected: %s (%s, %dms)", best.ID, best.Address, best.Latency)
+				serverAddress = best.Address
+			} else {
+				stdlog.Printf("No reachable bridges — connecting directly to %s", serverAddress)
+			}
+		}
+		fetchCancel()
+		globalBridgeSel.StartRefresh(ctx)
+	}
+	asnBypassEnabled := *asnBypass
+	asnBypassFingerprint := *tlsFingerprint
+	if cfg.ASNBypass != nil && cfg.ASNBypass.Enabled {
+		asnBypassEnabled = true
+		if cfg.ASNBypass.TLSFingerprint != "" {
+			asnBypassFingerprint = cfg.ASNBypass.TLSFingerprint
+		}
+	}
+
+	var chameleonSecret []byte
+
+	if cfg.ChameleonAddr != "" && cfg.PSK != "" {
+		if pskBytes, err := base64.StdEncoding.DecodeString(cfg.PSK); err == nil && len(pskBytes) == 32 {
+			chameleonSecret = pskBytes
+		}
+	}
+
+	if *russianService != "" {
+		cfg.RussianService = *russianService
+		stdlog.Printf("Override: Russian Service masquerading enabled: %s", cfg.RussianService)
+	}
+
+	activeForceSNI := *forceSNIFlag
+	if activeForceSNI == "" {
+		activeForceSNI = cfg.ForceSNI
+	}
+	if activeForceSNI != "" {
+		globalForceSNI.Store(activeForceSNI)
+		stdlog.Printf("SNI override active: all connections will use SNI=%q", activeForceSNI)
+	}
+
+	activeRegion := *regionFlag
+	if activeRegion == "" {
+		activeRegion = cfg.PreferredRegion
+	}
+	if activeRegion == "" {
+		activeRegion = "auto"
+	}
+	globalRegion.Store(activeRegion)
+	if len(cfg.Regions) > 0 {
+		cfgRegions = cfg.Regions
+	}
+	if activeRegion != "auto" {
+		stdlog.Printf("Region: %s", activeRegion)
+	}
+
+	fallbackTCP := cfg.ServerTCP
+	if fallbackTCP == "" {
+		fallbackTCP = cfg.Server
+	}
+
+	var srvList []string
+	if *serverList != "" {
+		for _, s := range strings.Split(*serverList, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				srvList = append(srvList, s)
+			}
+		}
+	}
+	for _, alt := range cfg.ServerAlts {
+		if alt = strings.TrimSpace(alt); alt != "" {
+			srvList = append(srvList, alt)
+		}
+	}
+
+	activeTransport := cfg.Transport
+	if activeTransport == "" {
+		activeTransport = *transport
+	}
+
+	var transports []string
+	for _, t := range strings.Split(activeTransport, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			transports = append(transports, t)
+		}
+	}
+	if len(transports) == 0 {
+		transports = []string{"tcp"}
+	}
+	mrand.Shuffle(len(transports), func(i, j int) {
+		transports[i], transports[j] = transports[j], transports[i]
+	})
+
+	newTunnelMod := func(tr string) *tunnel2.Manager {
+		m, _ := tunnel2.New(&tunnel2.Config{
+			ServerAddr:              serverAddress,
+			ServerAddrTCP:           fallbackTCP,
+			Transport:               tr,
+			TransportWhitelist:      cfg.TransportWhitelist,
+			TransportBlacklist:      cfg.TransportBlacklist,
+			KeepaliveInterval:       30 * time.Second,
+			QualityMissedKeepalives: 3,
+			EnableASNBypass:         asnBypassEnabled,
+			TLSFingerprint:          asnBypassFingerprint,
+			EnableJA3Randomize:      true,
+			ChameleonOptions: tunnel2.ChameleonOptions{
+				EnableChameleon:  len(chameleonSecret) == 32,
+				ChameleonSecret:  chameleonSecret,
+				ChameleonAddr:    cfg.ChameleonAddr,
+				ChameleonSNI:     cfg.ChameleonSNI,
+				ChameleonCertPin: cfg.ChameleonCertPin,
+			},
+			ServerList:      srvList,
+			RekeyInterval:   *rekeyInterval,
+			TransportConfig: cfg.TransportConfig,
+			MLOptions: tunnel2.MLOptions{
+				MLServerURL: cfg.MLServerURL,
+				MLToken:     resolveMLToken(cfg),
+			},
+			ForceSNI:        getGlobalSNI(),
+			Regions:         cfgRegions,
+			PreferredRegion: getGlobalRegion(),
+		})
+		return m
+	}
+
+	var spoofList []string
+
+	buildBaseCfg := func(e *TransportEntry) *tunnel2.Config {
+		e.mu.Lock()
+		tr := e.Transport
+		force := e.ForceObfuscation
+		profile := e.BehavioralProfile
+		customSNI := e.SNI
+		noSNI := e.NoSNI
+		bridgeAddr := e.Bridge
+		rateLimitKB := e.RateLimitKB
+		e.mu.Unlock()
+
+		if customSNI == "" {
+			customSNI = getGlobalSNI()
+		}
+
+		tc := cfg.TransportConfig
+		if customSNI != "" && !noSNI {
+			tc = make(map[string]interface{})
+			for k, v := range cfg.TransportConfig {
+				tc[k] = v
+			}
+			tc["sni"] = customSNI
+		}
+
+		return &tunnel2.Config{
+			ServerAddr:              serverAddress,
+			ServerAddrTCP:           fallbackTCP,
+			Transport:               tr,
+			KeepaliveInterval:       30 * time.Second,
+			QualityMissedKeepalives: 3,
+			EnableASNBypass:         asnBypassEnabled,
+			TLSFingerprint:          asnBypassFingerprint,
+			EnableJA3Randomize:      true,
+			ChameleonOptions: tunnel2.ChameleonOptions{
+				EnableChameleon:  len(chameleonSecret) == 32,
+				ChameleonSecret:  chameleonSecret,
+				ChameleonAddr:    cfg.ChameleonAddr,
+				ChameleonSNI:     cfg.ChameleonSNI,
+				ChameleonCertPin: cfg.ChameleonCertPin,
+			},
+			MLOptions: tunnel2.MLOptions{
+				MLServerURL: cfg.MLServerURL,
+				MLToken:     resolveMLToken(cfg),
+				SNIModelDir: sniModelDir(),
+			},
+			ServerList:        srvList,
+			RekeyInterval:     *rekeyInterval,
+			TransportConfig:   tc,
+			ForceObfuscation:  force,
+			BehavioralProfile: profile,
+			CustomSNI:         customSNI,
+			ForceSNI:          getGlobalSNI(),
+			NoSNI:             noSNI,
+			Regions:           cfgRegions,
+			PreferredRegion:   getGlobalRegion(),
+			BridgeAddr:        bridgeAddr,
+			RateLimitKB:       rateLimitKB,
+			EnableIPSpoof:     len(spoofList) > 0,
+			SpoofSourceIPs:    spoofList,
+			TLSFragmentSize:   *tlsFragSize,
+		}
+	}
+
+	restartEntry := func(e *TransportEntry, tunnelCfg *tunnel2.Config) {
+		e.mu.Lock()
+		if e.cancel != nil {
+			e.cancel()
+		}
+		e.Status = connStatusConnecting
+		e.Error = ""
+		e.mu.Unlock()
+
+		newMgr, err := tunnel2.New(tunnelCfg)
+		if err != nil {
+			stdlog.Printf("restartEntry %s build failed: %v", e.ID, err)
+			e.mu.Lock()
+			e.Status = connStatusFailed
+			e.Error = err.Error()
+			e.mu.Unlock()
+			return
+		}
+		newMgr.SetDependencies(nil, hsMod, nil, cryptoMod)
+		if tunnelCfg.BehavioralProfile != "" {
+			if err := newMgr.SetBehavioralProfile(tunnelCfg.BehavioralProfile); err != nil {
+				stdlog.Printf("restartEntry %s: set profile %q: %v", e.ID, tunnelCfg.BehavioralProfile, err)
+			}
+		}
+
+		newCtx, newCancel := context.WithCancel(ctx)
+		e.mgr = newMgr
+		e.cancel = newCancel
+
+		connStart := time.Now()
+		if err := newMgr.Connect(newCtx); err != nil {
+			stdlog.Printf("restartEntry %s connect failed: %v", e.ID, err)
+			e.mu.Lock()
+			e.Status = connStatusFailed
+			e.Error = err.Error()
+			tr := e.Transport
+			e.mu.Unlock()
+			if globalAgent != nil {
+				globalAgent.ReportResult(proxyagent.ProbeResult{
+					Transport: tr,
+					Server:    tunnelCfg.ServerAddr,
+					Latency:   time.Since(connStart),
+					Success:   false,
+					Error:     err.Error(),
+					Timestamp: time.Now(),
+				})
+			}
+		} else {
+			e.mu.Lock()
+			e.Status = connStatusConnected
+			e.ConnectedAt = time.Now()
+			e.mu.Unlock()
+			stdlog.Printf("restartEntry %s connected (encap=%v)", e.ID, tunnelCfg.CustomDialFn != nil)
+			if globalAgent != nil {
+				globalAgent.ReportResult(proxyagent.ProbeResult{
+					Transport: tunnelCfg.Transport,
+					Server:    tunnelCfg.ServerAddr,
+					Latency:   time.Since(connStart),
+					Success:   true,
+					Timestamp: time.Now(),
+				})
+			}
+		}
+	}
+
+	wireEncapsulate := func(e *TransportEntry) {
+		e.onEncapsulate = func(outerID string) {
+			baseCfg := buildBaseCfg(e)
+			var finalCfg *tunnel2.Config
+			if outerID == "" {
+				finalCfg = baseCfg
+			} else {
+				outer, ok := pool.Get(outerID)
+				if !ok {
+					stdlog.Printf("encapsulate %s: outer %s not found", e.ID, outerID)
+					return
+				}
+				outer.mu.Lock()
+				outerMgr := outer.mgr
+				outer.mu.Unlock()
+				if outerMgr == nil || !outerMgr.IsConnected() {
+					stdlog.Printf("encapsulate %s: outer %s manager not connected", e.ID, outerID)
+					return
+				}
+				finalCfg = tunnel2.EncapsulatedConfig(baseCfg, outerMgr)
+			}
+			restartEntry(e, finalCfg)
+		}
+	}
+
+	if asnBypassEnabled {
+		stdlog.Printf("ASN bypass enabled (fingerprint: %s)", asnBypassFingerprint)
+	}
+
+	tunnelMod := newTunnelMod(transports[0])
+	tunnelMod.SetDependencies(nil, hsMod, nil, cryptoMod)
+
+	multiRouter := socks6.NewMultiRouter(tunnelMod)
+	globalMultiRouter = multiRouter
+	socksMod.SetTunnel(multiRouter)
+	if err := socksMod.Start(); err != nil {
+		stdlog.Fatalf("Failed to start SOCKS5: %v", err)
+	}
+
+	primaryEntry := &TransportEntry{
+		ID:               pool.NextID(),
+		Transport:        transports[0],
+		Server:           serverAddress,
+		Enabled:          true,
+		Obfuscated:       true,
+		ForceObfuscation: true,
+		Status:           connStatusConnecting,
+		mgr:              tunnelMod,
+	}
+	pool.Add(primaryEntry)
+	wireEncapsulate(primaryEntry)
+
+	extraTunnels := make([]*tunnel2.Manager, 0, len(transports)-1)
+	for i := 1; i < len(transports); i++ {
+		tr := transports[i]
+		m := newTunnelMod(tr)
+		m.SetDependencies(nil, hsMod, nil, cryptoMod)
+
+		_, connCancel := context.WithCancel(ctx)
+		entry := &TransportEntry{
+			ID:               pool.NextID(),
+			Transport:        tr,
+			Server:           serverAddress,
+			Enabled:          true,
+			Obfuscated:       true,
+			ForceObfuscation: true,
+			Status:           connStatusStandby,
+			mgr:              m,
+			cancel:           connCancel,
+		}
+		pool.Add(entry)
+		wireEncapsulate(entry)
+		extraTunnels = append(extraTunnels, m)
+	}
+
+	agentCfg := proxyagent.DefaultAgentConfig()
+	agentCfg.ExploreRate = 0.1
+	agentCfg.FailThreshold = 5
+	for _, tr := range transports {
+		agentCfg.Candidates = append(agentCfg.Candidates, proxyagent.TransportCandidate{
+			Name:     tr,
+			Server:   serverAddress,
+			Enabled:  true,
+			Priority: 1.0,
+		})
+	}
+	knownTransports := map[string]bool{}
+	for _, tr := range transports {
+		knownTransports[tr] = true
+	}
+	for _, extra := range []string{"tcp", "udp", "websocket", "grpc", "quic"} {
+		if !knownTransports[extra] {
+			agentCfg.Candidates = append(agentCfg.Candidates, proxyagent.TransportCandidate{
+				Name:     extra,
+				Server:   serverAddress,
+				Enabled:  false,
+				Priority: 0.5,
+			})
+		}
+	}
+	globalAgent = proxyagent.NewProxyAgent(agentCfg)
+	globalAgent.Start()
+	defer globalAgent.Stop()
+
+	controlAddr = "127.0.0.1:" + *controlPort
+	adminToken = *adminTokenFlag
+	globalDNS = dnsMod
+
+	if *spoofIPs != "" {
+		for _, ip := range strings.Split(*spoofIPs, ",") {
+			if ip = strings.TrimSpace(ip); ip != "" {
+				spoofList = append(spoofList, ip)
+			}
+		}
+	}
+	if len(spoofList) > 0 {
+		tunnelMod.SetSpoofIPs(spoofList)
+		stdlog.Printf("IP spoofing enabled: %v", spoofList)
+	}
+
+	reconnectEntry = func(e *TransportEntry) {
+		restartEntry(e, buildBaseCfg(e))
+	}
+
+	newMultiBridgeTunnel = func(bridgeCtx context.Context, bridgeID, bridgeAddr string, rules []string) {
+		m, err := tunnel2.New(&tunnel2.Config{
+			ServerAddr:              bridgeAddr,
+			ServerAddrTCP:           bridgeAddr,
+			Transport:               transports[0],
+			KeepaliveInterval:       30 * time.Second,
+			QualityMissedKeepalives: 3,
+			EnableASNBypass:         asnBypassEnabled,
+			TLSFingerprint:          asnBypassFingerprint,
+			EnableJA3Randomize:      true,
+			ChameleonOptions: tunnel2.ChameleonOptions{
+				EnableChameleon:  len(chameleonSecret) == 32,
+				ChameleonSecret:  chameleonSecret,
+				ChameleonAddr:    cfg.ChameleonAddr,
+				ChameleonSNI:     cfg.ChameleonSNI,
+				ChameleonCertPin: cfg.ChameleonCertPin,
+			},
+			MLOptions: tunnel2.MLOptions{
+				MLServerURL: cfg.MLServerURL,
+				MLToken:     resolveMLToken(cfg),
+			},
+			RekeyInterval:   *rekeyInterval,
+			TransportConfig: cfg.TransportConfig,
+			ForceSNI:        getGlobalSNI(),
+			Regions:         cfgRegions,
+			PreferredRegion: getGlobalRegion(),
+		})
+		if err != nil {
+			stdlog.Printf("[multi-bridge] build tunnel %s failed: %v", bridgeID, err)
+			return
+		}
+		m.SetDependencies(nil, hsMod, nil, cryptoMod)
+
+		entry := &TransportEntry{
+			ID:               pool.NextID(),
+			Transport:        transports[0],
+			Server:           bridgeAddr,
+			Enabled:          true,
+			Obfuscated:       true,
+			ForceObfuscation: true,
+			Status:           connStatusConnecting,
+			mgr:              m,
+		}
+		pool.Add(entry)
+
+		connCtx, connCancel := context.WithCancel(bridgeCtx)
+		entry.mu.Lock()
+		entry.cancel = connCancel
+		entry.mu.Unlock()
+
+		if err := m.Connect(connCtx); err != nil {
+			stdlog.Printf("[multi-bridge] connect %s (%s) failed: %v", bridgeID, bridgeAddr, err)
+			entry.mu.Lock()
+			entry.Status = connStatusFailed
+			entry.Error = err.Error()
+			entry.mu.Unlock()
+			connCancel()
+			return
+		}
+		entry.mu.Lock()
+		entry.Status = connStatusConnected
+		entry.ConnectedAt = time.Now()
+		entry.mu.Unlock()
+		stdlog.Printf("[multi-bridge] bridge %s connected (%s), rules: %v", bridgeID, bridgeAddr, rules)
+		if err := multiRouter.AttachBridgeTunnel(bridgeID, m); err != nil {
+			stdlog.Printf("[multi-bridge] bridge %s attach error: %v", bridgeID, err)
+		}
+	}
+
+	effectiveSubURL := *subURL
+	if effectiveSubURL == "" && cfg != nil {
+		effectiveSubURL = cfg.SubscriptionURL
+	}
+	if effectiveSubURL == "" && *connKey != "" {
+		if ck, err := config2.ParseConnectionKey(*connKey); err == nil {
+			effectiveSubURL = ck.SubscriptionURL
+		}
+	}
+
+	var globalSubMgr *config2.SubscriptionManager
+	if effectiveSubURL != "" {
+		stdlog.Printf("Subscription URL: %s (refresh every %s)", effectiveSubURL, *subInterval)
+		globalSubMgr = config2.NewSubscriptionManager(effectiveSubURL, *subInterval, func(keys []*config2.ConnectionKey) {
+			if len(keys) == 0 {
+				return
+			}
+			best := keys[0]
+			stdlog.Printf("Subscription updated: %d keys available, using %q (server=%s)", len(keys), best.Name, best.Server)
+			if best.Server != "" && best.Server != serverAddress {
+				serverAddress = best.Server
+				stdlog.Printf("Subscription: server address updated to %s", serverAddress)
+			}
+		})
+		globalSubMgr.Start()
+		defer globalSubMgr.Stop()
+		globalSubscriptionMgr = globalSubMgr
+	}
+
+	startControlServer(ctx)
+
+	if err := lc.Start(); err != nil {
+		stdlog.Fatalf("Failed to start: %v", err)
+	}
+
+	stdlog.Printf("Connecting to VPN server: %s via %s", serverAddress, transports[0])
+
+	var ks *killswitch.KillSwitch
+	if *enableKillSwitch {
+		var err error
+		ks, err = killswitch.New(&killswitch.Config{
+			Enabled:  true,
+			AllowLAN: *allowLAN,
+			AllowDNS: true,
+		})
+		if err != nil {
+			stdlog.Printf("WARNING: Failed to create kill switch: %v", err)
+		}
+	}
+
+	if err := tunnelMod.Connect(ctx); err != nil {
+		stdlog.Printf("WARNING: Failed to connect to proxy server via:")
+		primaryEntry.mu.Lock()
+		primaryEntry.Status = connStatusFailed
+		primaryEntry.Error = err.Error()
+		primaryEntry.mu.Unlock()
+
+		for i, m := range extraTunnels {
+			if pool.AnyConnected() {
+				socksMod.SetTunnel(m)
+				stdlog.Printf("Switched to transport %s", transports[i+1])
+				break
+			}
+		}
+		if !pool.AnyConnected() {
+			stdlog.Printf("Running in local proxy mode (traffic NOT encrypted)")
+		}
+	} else {
+		primaryEntry.mu.Lock()
+		primaryEntry.Status = connStatusConnected
+		primaryEntry.ConnectedAt = time.Now()
+		primaryEntry.mu.Unlock()
+		stdlog.Printf("Connected to proxy server via %s", transports[0])
+
+		if *weightsURL != "" {
+			go fetchAndApplyMLWeights(ctx, tunnelMod, *weightsURL, *mlTokenFlag)
+		}
+
+		dnsMod.SetDialContext(tunnelMod.DialStream)
+		stdlog.Printf("DNS now routed through tunnel")
+
+		if *noInternalTun {
+			stdlog.Printf("External TUN mode: Mihomo will handle TUN/routing")
+			stdlog.Printf("SOCKS5 proxy ready for Mihomo at %s", *socksAddr)
+			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
+				proxyServerIP := net.ParseIP(host)
+				proxyPort := 8443
+				if p, err := net.DefaultResolver.LookupPort(context.Background(), "tcp", "8443"); err == nil {
+					proxyPort = p
+				}
+
+				if ks != nil && proxyServerIP != nil {
+					ks.SetVPNServer(proxyServerIP, proxyPort)
+					if err := ks.Enable(); err != nil {
+						stdlog.Printf("WARNING: Failed to enable kill switch: %v", err)
+					} else {
+						stdlog.Printf("Kill Switch ENABLED - traffic blocked except to %s", host)
+					}
+				}
+			}
+		} else {
+			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
+				stdlog.Printf("proxy server IP for routing: %s", host)
+			}
+		}
+	}
+
+	stdlog.Printf("SOCKS5 proxy listening on %s", *socksAddr)
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		var primaryReconnecting int32
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				primaryEntry.mu.Lock()
+				currentMgr := primaryEntry.mgr
+				wasConnected := primaryEntry.Status == connStatusConnected
+				primaryEntry.mu.Unlock()
+
+				if currentMgr != nil && currentMgr.IsConnected() {
+					continue
+				}
+
+				isRST := wasConnected && (currentMgr == nil || !currentMgr.IsConnected())
+				if isRST {
+					primaryEntry.Status = connStatusRST
+					primaryEntry.Error = "connection reset by peer"
+					stdlog.Printf("Transport watchdog: primary %s got RST", transports[0])
+				}
+
+				activated := false
+				entries := pool.List()
+				for _, e := range entries {
+					status := e.Status
+					mgr := e.mgr
+					if status == connStatusConnected && mgr != nil && mgr.IsConnected() && mgr != currentMgr {
+						socksMod.SetTunnel(mgr)
+						stdlog.Printf("Transport watchdog: switched SOCKS to %s", e.Transport)
+						activated = true
+						break
+					}
+				}
+
+				if !activated {
+					for _, e := range entries {
+						e.mu.Lock()
+						status := e.Status
+						mgr := e.mgr
+						tr := e.Transport
+						e.mu.Unlock()
+
+						if status == connStatusStandby && mgr != nil {
+
+							stdlog.Printf("Transport watchdog: activating standby transport %s", tr)
+
+							go func(entry *TransportEntry) {
+
+								entry.Status = connStatusConnecting
+								restartEntry(entry, buildBaseCfg(entry))
+
+								if entry.Status == connStatusConnected && entry.mgr != nil && entry.mgr.IsConnected() {
+									socksMod.SetTunnel(entry.mgr)
+									stdlog.Printf("Transport watchdog: standby %s now active", entry.Transport)
+								}
+								entry.mu.Unlock()
+							}(e)
+							break
+						}
+					}
+				}
+
+				enabled := primaryEntry.Enabled
+
+				if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
+					go func() {
+						defer atomic.StoreInt32(&primaryReconnecting, 0)
+						time.Sleep(1 * time.Second)
+
+						if globalAgent != nil {
+							if recTr, _ := globalAgent.SelectTransport(); recTr != "" {
+								primaryEntry.mu.Lock()
+								if primaryEntry.Transport != recTr {
+									stdlog.Printf("ProxyAgent: %s → %s for reconnect", primaryEntry.Transport, recTr)
+									primaryEntry.Transport = recTr
+								}
+								primaryEntry.mu.Unlock()
+							}
+						}
+
+						stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
+
+						targetCfg := buildBaseCfg(primaryEntry)
+						if globalBridgeSel != nil && globalBridgeSel.HasBridges() {
+							queryCtx, qcancel := context.WithTimeout(ctx, 5*time.Second)
+							if master := globalBridgeSel.GetClusterMaster(queryCtx); master != nil && master.MasterAddress != "" {
+								targetCfg.ServerAddr = master.MasterAddress
+								targetCfg.ServerAddrTCP = master.MasterAddress
+							}
+							qcancel()
+						}
+
+						restartEntry(primaryEntry, targetCfg)
+						primaryEntry.mu.Lock()
+						if primaryEntry.Status == connStatusConnected && primaryEntry.mgr != nil {
+							socksMod.SetTunnel(primaryEntry.mgr)
+							stdlog.Printf("Transport watchdog: primary reconnected, SOCKS restored")
+						}
+						primaryEntry.mu.Unlock()
+					}()
+				}
+			}
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				eng := neural.GetNativeEngine()
+				allMgrs := []*tunnel2.Manager{tunnelMod}
+				for _, e := range pool.List() {
+
+					m := e.mgr
+
+					if m != nil && m != tunnelMod {
+						allMgrs = append(allMgrs, m)
+					}
+				}
+
+				dpiType, conf := eng.GetCurrentDPILevel()
+				if conf > 0.5 {
+					var profile string
+					switch {
+					case dpiType >= 6:
+						profile = "high_threat"
+					case dpiType >= 3:
+						profile = "telegram"
+					default:
+						profile = "default"
+					}
+					for _, m := range allMgrs {
+						if m.IsConnected() {
+							if err := m.SetBehavioralProfile(profile); err == nil && dpiType >= 3 {
+								stdlog.Printf("[ML] DPI type=%d conf=%.2f → obfuscation profile switched to %q", dpiType, conf, profile)
+							}
+						}
+					}
+				}
+			}
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		const heapThreshold = 150 << 20
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				if ms.HeapAlloc > heapThreshold {
+					runtime.GC()
+					debug.FreeOSMemory()
+					stdlog.Printf("[mem] heap=%dMB — forced GC (threshold %dMB)",
+						ms.HeapAlloc>>20, heapThreshold>>20)
+				}
+			}
+		}
+	}()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	select {
+	case <-sigChan:
+	case <-ctx.Done():
+	}
+}
+
+func sniModelDir() string {
+	return filepath.Join(mlDefaultDataDir(), "sni_model")
+}
+
+func fetchAndApplyMLWeights(ctx context.Context, mgr *tunnel2.Manager, weightsURL, token string) {
+	httpClient := &http.Client{
+		Timeout: 1 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, weightsURL, nil)
+	if err != nil {
+		stdlog.Printf("[ml-sync] bad weights URL: %v", err)
+		return
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		stdlog.Printf("[ml-sync] fetch failed: %v", err)
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		stdlog.Printf("[ml-sync] server returned %d", resp.StatusCode)
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		stdlog.Printf("[ml-sync] read body: %v", err)
+		return
+	}
+
+	var snap neural.WeightSnapshot
+	if err := json.Unmarshal(body, &snap); err != nil {
+		stdlog.Printf("[ml-sync] parse: %v", err)
+		return
+	}
+
+	mgr.ImportMLWeights(&snap)
+	stdlog.Printf("[ml-sync] weights applied (v%d)", snap.Version)
+}
