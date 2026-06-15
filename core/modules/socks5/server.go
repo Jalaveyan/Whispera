@@ -1,4 +1,4 @@
-﻿package proxy
+package socks5
 
 import (
 	"context"
@@ -40,6 +40,10 @@ const (
 
 type AuthHandler func(username, password string) bool
 
+type PacketHandler func(data []byte, from net.Addr) error
+
+type UDPRelayHandler func(udpConn *net.UDPConn, tcpConn net.Conn)
+
 func mapErrorToReplyCode(err error) byte {
 	if err == nil {
 		return socks5ReplySuccess
@@ -79,10 +83,6 @@ type SOCKS5Server struct {
 	mu              sync.RWMutex
 	log             *logger.Logger
 }
-
-type PacketHandler func(data []byte, from net.Addr) error
-
-type UDPRelayHandler func(udpConn *net.UDPConn, tcpConn net.Conn)
 
 func NewSOCKS5Server(addr string, handler func(net.Conn, string, uint16) error) *SOCKS5Server {
 	return &SOCKS5Server{
@@ -501,6 +501,5 @@ func (s *SOCKS5Server) handleUDPRelay(udpListener *net.UDPConn, tcpConn net.Conn
 			}
 			continue
 		}
-
 	}
 }

@@ -13,7 +13,6 @@ import (
 	"whispera/common/buf"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/interfaces"
-	"whispera/core/proxy"
 )
 
 const (
@@ -37,7 +36,7 @@ type Config struct {
 type Module struct {
 	*base.Module
 	config   *Config
-	server   *proxy.SOCKS5Server
+	server   *SOCKS5Server
 	listener net.Listener
 	tunnel   TunnelManager
 	mu       sync.RWMutex
@@ -76,7 +75,7 @@ func (m *Module) Start() error {
 		return err
 	}
 
-	m.server = proxy.NewSOCKS5Server(m.config.ListenAddr, m.handleConnection)
+	m.server = NewSOCKS5Server(m.config.ListenAddr, m.handleConnection)
 	if m.authUser != "" {
 		m.server.SetAuthHandler(func(u, p string) bool {
 			return u == m.authUser && p == m.authPass
