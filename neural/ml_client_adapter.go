@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/core/obfuscation/types"
+	"whispera/neural/types"
 )
 
 var nativeEngine *NativeMLEngine

@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"sync"
 	"time"
-	"whispera/core/obfuscation/types"
+	"whispera/neural/types"
 )
 
 type ProfileManager struct {

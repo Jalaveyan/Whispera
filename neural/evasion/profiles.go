@@ -3,7 +3,7 @@ package evasion
 import (
 	"fmt"
 	"time"
-	"whispera/core/obfuscation/types"
+	"whispera/neural/types"
 )
 
 const profileDefault = "default"

@@ -5,7 +5,7 @@ import (
 	"math"
 	"sync"
 	"time"
-	"whispera/core/obfuscation/types"
+	"whispera/neural/types"
 )
 
 const profileTypeProtocol = "protocol"

@@ -152,6 +152,9 @@ func (r *Resolver) Stop() error {
 }
 
 func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error) {
+	if ip := net.ParseIP(domain); ip != nil {
+		return []net.IP{ip}, nil
+	}
 	atomic.AddUint64(&r.queries, 1)
 	r.UpdateActivity()
 	if r.isBlocked(domain) {

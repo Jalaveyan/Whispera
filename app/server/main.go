@@ -43,7 +43,7 @@ import (
 	"whispera/core/modules/session"
 	"whispera/core/modules/transport/tcp"
 	"whispera/core/modules/transport/udp"
-	"whispera/core/obfuscation/evasion"
+	"whispera/neural/evasion"
 	protocol2 "whispera/core/protocol"
 	server "whispera/core/manager"
 	"whispera/common/stats"

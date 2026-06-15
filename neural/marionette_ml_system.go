@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"time"
-	"whispera/core/obfuscation/types"
+	"whispera/neural/types"
 	"whispera/common/util"
 )
 

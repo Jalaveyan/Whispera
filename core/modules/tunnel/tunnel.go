@@ -24,7 +24,7 @@ import (
 	"whispera/common/runtime/interfaces"
 	asnbypass "whispera/core/asn_bypass"
 	"whispera/core/modules/killswitch"
-	"whispera/core/obfuscation/evasion"
+	"whispera/neural/evasion"
 	"whispera/core/protocol"
 	"whispera/neural"
 )

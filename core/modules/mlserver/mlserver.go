@@ -19,7 +19,7 @@ import (
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"
-	"whispera/core/obfuscation/evasion"
+	"whispera/neural/evasion"
 	"whispera/neural"
 )
 

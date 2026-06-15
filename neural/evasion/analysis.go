@@ -4,7 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 	"whispera/common/util"
-	"whispera/core/obfuscation/types"
+	"whispera/neural/types"
 )
 
 func (m *Marionette) loadRealTrafficData(_ string) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 	"time"
-	"whispera/core/obfuscation/types"
+	"whispera/neural/types"
 )
 
 const testProfileName = "test_profile"

@@ -3,7 +3,7 @@ package _interface
 import (
 	"context"
 	"time"
-	"whispera/core/obfuscation/types"
+	"whispera/neural/types"
 )
 
 type ObfuscationEngine interface {

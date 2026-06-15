@@ -3,7 +3,7 @@ package evasion
 import (
 	"math"
 	"time"
-	"whispera/core/obfuscation/types"
+	"whispera/neural/types"
 )
 
 type LearningPattern = types.LearningPattern
