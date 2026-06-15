@@ -542,7 +542,7 @@ echo "Changed files:"
 echo "$CHANGED"
 
 GO_CHANGED=$(echo "$CHANGED" | grep -E '\.(go)$|^go\.(mod|sum)$' || true)
-ML_PY_CHANGED=$(echo "$CHANGED" | grep -E '^(internal/obfuscation/ml|ml_engine)/.*\.py$' || true)
+ML_PY_CHANGED=$(echo "$CHANGED" | grep -E '^(neural|ml_engine)/.*\.py$' || true)
 PANEL_CHANGED=$(echo "$CHANGED" | grep -E '^panel/' || true)
 
 if [[ -n "$ML_PY_CHANGED" ]]; then
@@ -587,7 +587,7 @@ fi
 if [[ -n "$GO_CHANGED" ]]; then
     echo "Go files updated — rebuilding whispera-server"
     export PATH=$PATH:/usr/local/go/bin
-    go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server 2>/dev/null
+    go build -trimpath -ldflags "-w -s" -o whispera-server ./app/server 2>/dev/null
     if [[ -f whispera-server ]]; then
         cp whispera-server "$BIN_PATH/whispera"
         systemctl restart whispera
@@ -1246,7 +1246,7 @@ do_update() {
             git reset --hard origin/$BRANCH --quiet
         fi
 
-        go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server || true
+        go build -trimpath -ldflags "-w -s" -o whispera-server ./app/server || true
     fi
     
     if [[ ! -f "whispera-server" ]]; then

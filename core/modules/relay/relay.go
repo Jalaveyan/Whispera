@@ -1,4 +1,4 @@
-﻿package relay
+package relay
 
 import (
 	"context"
@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	mrand "math/rand"
 	"net"
 	"net/url"
 	"strconv"
@@ -386,13 +385,11 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	kaBase := 30 + mrand.Intn(61)
 	muxCfg := &mux2.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     1 << 28,
 		MaxStreamBuffer:      1 << 26,
-		KeepAliveInterval:    time.Duration(kaBase) * time.Second,
-		KeepAliveTimeout:     120 * time.Second,
+		DisableKeepAlive:     true,
 		MaxConcurrentStreams: s.config.MaxConcurrentStreams,
 	}
 

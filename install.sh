@@ -1044,7 +1044,7 @@ clone_or_update_repo() {
     else
         SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         
-        if [[ -f "$SCRIPT_DIR/cmd/server/main.go" ]]; then
+        if [[ -f "$SCRIPT_DIR/app/server/main.go" ]]; then
             log_info "Installing from local source..."
             if [[ "$SCRIPT_DIR" != "$WORK_DIR" ]]; then
                 rm -rf "$WORK_DIR"/*
@@ -1126,11 +1126,11 @@ build_whispera() {
     
     rm -f whispera-server
     
-    if garble -literals -tiny -seed=random build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server 2>/dev/null; then
+    if garble -literals -tiny -seed=random build -trimpath -ldflags "-w -s" -o whispera-server ./app/server 2>/dev/null; then
         log_success "Obfuscated build successful"
     else
         log_info "Garble build failed or not found, using standard Go build..."
-        go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server
+        go build -trimpath -ldflags "-w -s" -o whispera-server ./app/server
     fi
     
     if [[ ! -f "whispera-server" ]]; then

@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"context"
@@ -21,20 +21,20 @@ import (
 	"syscall"
 	"time"
 	"whispera/app/auth"
-	bridge "whispera/core/selector"
-	"whispera/common/runtime/lifecycle"
+	"whispera/common/dns"
 	"whispera/common/log"
+	"whispera/common/runtime/lifecycle"
+	"whispera/common/split_tunnel"
+	"whispera/core/modules/agent"
 	config2 "whispera/core/modules/config"
 	"whispera/core/modules/crypto"
-	"whispera/common/dns"
 	"whispera/core/modules/handshake"
 	"whispera/core/modules/killswitch"
-	"whispera/core/modules/proxyagent"
 	"whispera/core/modules/session"
 	socks6 "whispera/core/modules/socks5"
 	tunnel2 "whispera/core/modules/tunnel"
 	"whispera/core/protocol"
-	"whispera/common/split_tunnel"
+	bridge "whispera/core/selector"
 	"whispera/neural"
 
 	_ "go.uber.org/automaxprocs"
@@ -564,7 +564,7 @@ func main() {
 			tr := e.Transport
 			e.mu.Unlock()
 			if globalAgent != nil {
-				globalAgent.ReportResult(proxyagent.ProbeResult{
+				globalAgent.ReportResult(agent.ProbeResult{
 					Transport: tr,
 					Server:    tunnelCfg.ServerAddr,
 					Latency:   time.Since(connStart),
@@ -580,7 +580,7 @@ func main() {
 			e.mu.Unlock()
 			stdlog.Printf("restartEntry %s connected (encap=%v)", e.ID, tunnelCfg.CustomDialFn != nil)
 			if globalAgent != nil {
-				globalAgent.ReportResult(proxyagent.ProbeResult{
+				globalAgent.ReportResult(agent.ProbeResult{
 					Transport: tunnelCfg.Transport,
 					Server:    tunnelCfg.ServerAddr,
 					Latency:   time.Since(connStart),
@@ -666,11 +666,11 @@ func main() {
 		extraTunnels = append(extraTunnels, m)
 	}
 
-	agentCfg := proxyagent.DefaultAgentConfig()
+	agentCfg := agent.DefaultAgentConfig()
 	agentCfg.ExploreRate = 0.1
 	agentCfg.FailThreshold = 5
 	for _, tr := range transports {
-		agentCfg.Candidates = append(agentCfg.Candidates, proxyagent.TransportCandidate{
+		agentCfg.Candidates = append(agentCfg.Candidates, agent.TransportCandidate{
 			Name:     tr,
 			Server:   serverAddress,
 			Enabled:  true,
@@ -683,7 +683,7 @@ func main() {
 	}
 	for _, extra := range []string{"tcp", "udp", "websocket", "grpc", "quic"} {
 		if !knownTransports[extra] {
-			agentCfg.Candidates = append(agentCfg.Candidates, proxyagent.TransportCandidate{
+			agentCfg.Candidates = append(agentCfg.Candidates, agent.TransportCandidate{
 				Name:     extra,
 				Server:   serverAddress,
 				Enabled:  false,
@@ -691,7 +691,7 @@ func main() {
 			})
 		}
 	}
-	globalAgent = proxyagent.NewProxyAgent(agentCfg)
+	globalAgent = agent.NewProxyAgent(agentCfg)
 	globalAgent.Start()
 	defer globalAgent.Stop()
 
@@ -940,11 +940,9 @@ func main() {
 						e.mu.Unlock()
 
 						if status == connStatusStandby && mgr != nil {
-
 							stdlog.Printf("Transport watchdog: activating standby transport %s", tr)
 
 							go func(entry *TransportEntry) {
-
 								entry.Status = connStatusConnecting
 								restartEntry(entry, buildBaseCfg(entry))
 
@@ -1013,7 +1011,6 @@ func main() {
 				eng := neural.GetNativeEngine()
 				allMgrs := []*tunnel2.Manager{tunnelMod}
 				for _, e := range pool.List() {
-
 					m := e.mgr
 
 					if m != nil && m != tunnelMod {

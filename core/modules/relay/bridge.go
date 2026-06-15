@@ -1,7 +1,6 @@
-﻿package relay
+package relay
 
 import (
-	"whispera/common/log"
 	"context"
 	"crypto/tls"
 	"net"
@@ -9,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 	"whispera/common/buf"
+	"whispera/common/log"
 )
 
 type Bridge struct {

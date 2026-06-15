@@ -20,6 +20,7 @@ type Config struct {
 	KeepAliveInterval    time.Duration
 	KeepAliveTimeout     time.Duration
 	MaxConcurrentStreams int
+	DisableKeepAlive     bool
 }
 
 func DefaultConfig() *Config {
@@ -37,11 +38,15 @@ func (c *Config) toYamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.LogOutput = io.Discard
 
-	if c.KeepAliveInterval > 0 {
-		cfg.KeepAliveInterval = c.KeepAliveInterval
-	}
-	if c.KeepAliveTimeout > 0 {
-		cfg.ConnectionWriteTimeout = c.KeepAliveTimeout
+	if c.DisableKeepAlive {
+		cfg.EnableKeepAlive = false
+	} else {
+		if c.KeepAliveInterval > 0 {
+			cfg.KeepAliveInterval = c.KeepAliveInterval
+		}
+		if c.KeepAliveTimeout > 0 {
+			cfg.ConnectionWriteTimeout = c.KeepAliveTimeout
+		}
 	}
 	if c.MaxStreamBuffer > 0 {
 		maxWin := uint32(c.MaxStreamBuffer)

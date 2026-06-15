@@ -1,4 +1,4 @@
-﻿package neural
+package neural
 
 import (
 	"encoding/json"
@@ -8,11 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"whispera/common/log"
 	"whispera/neural/gnet"
 )
-
-var trLog = logger.Module("rl-transport")
 
 const (
 	RLStateSize    = 16

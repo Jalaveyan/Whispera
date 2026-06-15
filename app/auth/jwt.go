@@ -159,7 +159,6 @@ func (m *JWTManager) ValidateAccessToken(tokenStr string) (*Claims, error) {
 }
 
 func (m *JWTManager) RevokeAccessToken(tokenStr string) {
-
 	claims, err := m.decode(tokenStr)
 
 	if err != nil {
@@ -188,7 +187,6 @@ func (m *JWTManager) RevokeAllUserTokens(userID string) {
 }
 
 func (m *JWTManager) encode(claims *Claims) (string, error) {
-
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	payload, err := json.Marshal(claims)
 
@@ -283,7 +281,6 @@ func HasPermission(role Role, perm string) bool {
 	}
 
 	for _, p := range perms {
-
 		if p == "*" {
 			return true
 		}
@@ -293,7 +290,6 @@ func HasPermission(role Role, perm string) bool {
 		}
 
 		if strings.HasSuffix(p, ".*") {
-
 			prefix := strings.TrimSuffix(p, ".*")
 
 			if strings.HasPrefix(perm, prefix+".") {

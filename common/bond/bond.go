@@ -133,7 +133,6 @@ func (c *Conn) AddMember(m net.Conn) bool {
 func (c *Conn) Width() int { return len(c.loadMembers()) }
 
 func (c *Conn) QueuePressure() (avgPct, maxPct, minPct int, fallbackHits uint64) {
-
 	wq := c.loadWQ()
 
 	if len(wq) == 0 {
@@ -194,8 +193,7 @@ func (c *Conn) shutdown(err error, graceful bool) error {
 	}
 	go func() {
 		if graceful {
-			done := make(chan struct{})
-			go func() { c.writerWg.Wait(); close(done) }()
+			c.writerWg.Wait()
 		}
 
 		for _, m := range c.loadMembers() {
@@ -204,18 +202,13 @@ func (c *Conn) shutdown(err error, graceful bool) error {
 			}
 		}
 
-		readDone := make(chan struct{})
-
-		go func() { c.readerWg.Wait(); close(readDone) }()
-
 		c.ro.setClosed(c.loadErr())
 	}()
 
 	return nil
 }
 
-func (c *Conn) writeLoop(i int, m net.Conn, q chan *[]byte) {
-
+func (c *Conn) writeLoop(_ int, m net.Conn, q chan *[]byte) {
 	defer c.writerWg.Done()
 
 	write := func(bp *[]byte) bool {
@@ -251,8 +244,7 @@ func (c *Conn) writeLoop(i int, m net.Conn, q chan *[]byte) {
 	}
 }
 
-func (c *Conn) readLoop(i int, m net.Conn) {
-
+func (c *Conn) readLoop(_ int, m net.Conn) {
 	defer c.readerWg.Done()
 
 	var hdr [hdrSize]byte
@@ -284,7 +276,6 @@ func (c *Conn) readLoop(i int, m net.Conn) {
 }
 
 func (c *Conn) Write(p []byte) (int, error) {
-
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 
@@ -292,11 +283,11 @@ func (c *Conn) Write(p []byte) (int, error) {
 	case <-c.closed:
 		return 0, c.loadErr()
 	default:
+		/// todo
 	}
 	total := 0
 
 	for len(p) > 0 {
-
 		n := len(p)
 
 		if n > maxChunk {
@@ -414,7 +405,6 @@ type reorderer struct {
 }
 
 func (r *reorderer) fireStall() {
-
 	stuck := !r.closed && r.bufBytes > 0
 	if stuck && r.onStall != nil {
 		r.onStall()

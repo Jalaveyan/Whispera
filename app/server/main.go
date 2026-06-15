@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"bytes"
@@ -20,17 +20,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"whispera/app/db"
+	"whispera/common/log"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/lifecycle"
-	"whispera/app/db"
-	"whispera/common/log"
+	"whispera/common/stats"
+	"whispera/common/update"
+	server "whispera/core/manager"
 	"whispera/core/modules/apiserver"
-	bridgemod "whispera/core/modules/bridge"
-	"whispera/core/modules/config"
 	"whispera/core/modules/bot"
+	bridgemod "whispera/core/modules/bridge"
 	"whispera/core/modules/bridgepool"
+	"whispera/core/modules/config"
 	"whispera/core/modules/crypto"
 	"whispera/core/modules/dataplane"
 	"whispera/core/modules/handshake"
@@ -43,12 +46,9 @@ import (
 	"whispera/core/modules/session"
 	"whispera/core/modules/transport/tcp"
 	"whispera/core/modules/transport/udp"
-	"whispera/neural/evasion"
 	protocol2 "whispera/core/protocol"
-	server "whispera/core/manager"
-	"whispera/common/stats"
-	"whispera/common/update"
 	"whispera/neural"
+	"whispera/neural/evasion"
 	"whispera/wiraid"
 
 	_ "go.uber.org/automaxprocs"
@@ -122,19 +122,19 @@ var globalKeyLimits = keylimits.New(keylimits.Limits{
 })
 
 var (
-	globalHandshake      *handshake.Handler
-	globalDataPlane      *dataplane.Processor
-	globalSessionMgr     *session.Manager
-	globalUDPTransport   *udp.Transport
-	globalRelay          *relay2.Server
-	globalObfuscator     interfaces.Obfuscator
-	globalCryptoProvider interfaces.CryptoProvider
-	globalServerConfig   *config.ServerConfig
-	globalBridgeAgent    *bridgemod.Agent
-	globalBridge         *relay2.Bridge
-	globalRouter         *router.Engine
-	globalCorrelation    *evasion.CorrelationDefense
-	globalUpdater        *update.Updater
+	globalHandshake    *handshake.Handler
+	globalDataPlane    *dataplane.Processor
+	globalSessionMgr   *session.Manager
+	globalUDPTransport *udp.Transport
+	globalRelay        *relay2.Server
+	globalObfuscator   interfaces.Obfuscator
+
+	globalServerConfig *config.ServerConfig
+	globalBridgeAgent  *bridgemod.Agent
+	globalBridge       *relay2.Bridge
+	globalRouter       *router.Engine
+	globalCorrelation  *evasion.CorrelationDefense
+	globalUpdater      *update.Updater
 
 	activeListeners = make(map[string]net.Listener)
 	listenersMutex  sync.RWMutex
@@ -195,7 +195,7 @@ func StartInbound(inbound config.InboundConfig, serverConfig *config.ServerConfi
 		}
 	}
 
-	listener, err := net.Listen("tcp", listenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", listenAddr, err)
 	}
@@ -315,9 +315,7 @@ func acceptBackoff(d *time.Duration) {
 }
 
 func main() {
-
 	if len(os.Args) > 1 {
-
 		cmd := strings.TrimSpace(os.Args[1])
 
 		switch cmd {
@@ -488,11 +486,8 @@ func main() {
 	}
 
 	if globalServerConfig != nil && globalServerConfig.Bridge.AutoRegister && globalServerConfig.UpstreamServer != "" {
-
 		go func() {
-
 			time.Sleep(1 * time.Second)
-
 			registerBridgeWithMainServer()
 		}()
 	}
@@ -510,7 +505,6 @@ func main() {
 	if err := manager.Run(); err != nil {
 		log.Fatalf("Application error: %v", err)
 	}
-
 }
 
 func createModules(manager *lifecycle.Manager, ctx context.Context) error {
@@ -589,7 +583,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	}
 
 	if serverConfig.RelayMode == "bridge" {
-
 		bridgeCfg := &relay2.BridgeConfig{
 			ListenAddr:     serverConfig.Server.ListenAddr,
 			UpstreamServer: serverConfig.UpstreamServer,
@@ -648,7 +641,6 @@ func initCore(m *lifecycle.Manager, sc *config.ServerConfig) error {
 	if err != nil {
 		return err
 	}
-	globalCryptoProvider = cryptoProvider
 	if err := m.Register(cryptoProvider); err != nil {
 		return err
 	}
@@ -1099,11 +1091,9 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 }
 
 func handlePacket(data []byte, addr net.Addr) {
-
 	ctx := context.Background()
 
 	if len(data) >= 32 && len(data) <= 96 && globalHandshake != nil {
-
 		if !udpIPRateAllow(addr) {
 			return
 		}
@@ -1111,7 +1101,6 @@ func handlePacket(data []byte, addr net.Addr) {
 		sess, err := globalHandshake.HandleHandshake(ctx, data, addr)
 
 		if err == nil && sess != nil {
-
 			if response := globalHandshake.BuildResponse(sess); response != nil {
 				if globalUDPTransport != nil {
 					if _, err := globalUDPTransport.WriteTo(response, addr); err != nil {
@@ -1132,7 +1121,6 @@ func handlePacket(data []byte, addr net.Addr) {
 	payload := data
 
 	if globalObfuscator != nil {
-
 		deobfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionInbound)
 
 		if err == nil && len(deobfuscated) > 0 {
@@ -1141,7 +1129,6 @@ func handlePacket(data []byte, addr net.Addr) {
 	}
 
 	if globalCorrelation != nil {
-
 		payload = globalCorrelation.ProcessInbound(payload)
 
 		if len(payload) == 0 {
@@ -1154,15 +1141,12 @@ func handlePacket(data []byte, addr net.Addr) {
 	}
 
 	if len(payload) >= 8 && globalRelay != nil {
-
 		frameType := payload[2]
 
 		if frameType >= 0x01 && frameType <= 0x08 {
-
 			dataLen := uint32(payload[4])<<24 | uint32(payload[5])<<16 | uint32(payload[6])<<8 | uint32(payload[7])
 
 			if int(dataLen) <= len(payload)-8 {
-
 				writer := &UDPResponseWriter{
 					transport:  globalUDPTransport,
 					addr:       addr,
@@ -1198,7 +1182,6 @@ func handlePacket(data []byte, addr net.Addr) {
 }
 
 func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
-
 	defer conn.Close()
 
 	addr := conn.RemoteAddr()
@@ -1213,7 +1196,6 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 	conn.SetReadDeadline(time.Time{})
 
 	if hsHandler != nil && firstByte[0] == byte(handshake.HandshakeTypeInit) {
-
 		rest := make([]byte, 63)
 
 		if _, err := io.ReadFull(conn, rest); err != nil {
@@ -1225,7 +1207,6 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 		buf := append(firstByte[:], rest...)
 
 		if padLen > 0 && padLen <= 32 {
-
 			extra := make([]byte, padLen)
 
 			if _, err := io.ReadFull(conn, extra); err == nil {
@@ -1268,11 +1249,9 @@ type UDPResponseWriter struct {
 }
 
 func (w *UDPResponseWriter) Write(data []byte) error {
-
 	payload := data
 
 	if w.obfuscator != nil {
-
 		obfuscated, _, err := w.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err != nil {
 			return fmt.Errorf("obfuscation failed: %w", err)
@@ -1297,7 +1276,6 @@ func (w *UDPResponseWriter) Write(data []byte) error {
 func (w *UDPResponseWriter) RemoteAddr() net.Addr { return w.addr }
 
 func registerBridgeWithMainServer() {
-
 	cfg := globalServerConfig
 
 	if cfg == nil {
@@ -1307,11 +1285,8 @@ func registerBridgeWithMainServer() {
 	port := "443"
 
 	if len(cfg.Inbounds) > 0 {
-
 		port = fmt.Sprintf("%d", cfg.Inbounds[0].Port)
-
 	} else if cfg.Server.ListenAddr != "" {
-
 		if _, p, err := net.SplitHostPort(cfg.Server.ListenAddr); err == nil {
 			port = p
 		}
@@ -1342,26 +1317,25 @@ func registerBridgeWithMainServer() {
 
 	requestContentType.Header.Set("Content-Type", "application/json")
 
-	responce, err := client.Do(requestContentType)
+	response, err := client.Do(requestContentType)
 
 	if err != nil {
-
 		url = fmt.Sprintf("http://%s/api/bridge-register", cfg.UpstreamServer)
 
 		newRequest, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
 
 		newRequest.Header.Set("Content-Type", "application/json")
 
-		responce, err = client.Do(newRequest)
+		response, err = client.Do(newRequest)
 	}
 
 	if err != nil {
 		return
 	}
 
-	defer responce.Body.Close()
+	defer response.Body.Close()
 
-	if responce.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusOK {
 		return
 	}
 }
@@ -1371,17 +1345,14 @@ type wiraidProxyDialer struct {
 }
 
 func (d *wiraidProxyDialer) Dial(network, addr string) (net.Conn, error) {
-
 	host, portStr, err := net.SplitHostPort(addr)
 
 	if err == nil {
-
 		var port64 uint64
 
 		fmt.Sscanf(portStr, "%d", &port64)
 
 		if socksAddr, ok := d.eng.MatchRoute(host, uint16(port64)); ok {
-
 			socks, errSocks := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 
 			if errSocks == nil {

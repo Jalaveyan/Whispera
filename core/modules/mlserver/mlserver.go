@@ -1,7 +1,6 @@
-﻿package mlserver
+package mlserver
 
 import (
-	"whispera/common/log"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -19,8 +18,8 @@ import (
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"
-	"whispera/neural/evasion"
 	"whispera/neural"
+	"whispera/neural/evasion"
 )
 
 func init() {
@@ -31,8 +30,6 @@ const (
 	ModuleName    = "mlserver"
 	ModuleVersion = "2.0.0"
 )
-
-var log = logger.Module("mlserver")
 
 type MLServer struct {
 	*base.Module

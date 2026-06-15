@@ -55,7 +55,7 @@ func (m *Manager) StartInbound(inbound config.InboundConfig) error {
 		if err := m.startCallback(derived); err != nil {
 			for _, tag := range startedTags {
 				if m.stopCallback != nil {
-					m.stopCallback(tag)
+					_ = m.stopCallback(tag)
 				}
 			}
 			return fmt.Errorf("port %d: %w", p, err)

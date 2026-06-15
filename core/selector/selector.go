@@ -249,7 +249,6 @@ func (s *Selector) fetchFromDNS(ctx context.Context, domain string) ([]*BridgeIn
 			}
 
 			for _, ans := range dr.Answer {
-
 				data := strings.Trim(ans.Data, `"`)
 
 				if !strings.HasPrefix(data, "v=whispera-bridges") {
@@ -282,7 +281,6 @@ func (s *Selector) fetchFromDNS(ctx context.Context, domain string) ([]*BridgeIn
 }
 
 func (s *Selector) TestLatency(ctx context.Context, b *BridgeInfo) (time.Duration, error) {
-
 	ctx, cancel := context.WithTimeout(ctx, s.config.TestTimeout)
 
 	defer cancel()
@@ -327,16 +325,12 @@ func (s *Selector) TestAllBridges(ctx context.Context) {
 
 	for _, b := range bridges {
 		go func(bridge *BridgeInfo) {
-
 			latency, err := s.TestLatency(ctx, bridge)
 
 			if err != nil {
-
 				log.Printf("[BridgeSelector] Bridge %s (%s): FAILED - %v", bridge.ID, bridge.Address, err)
 				s.MarkFailed(bridge.ID)
-
 			} else {
-
 				bridge.Latency = int(latency.Milliseconds())
 				log.Printf("[BridgeSelector] Bridge %s (%s): %dms", bridge.ID, bridge.Address, bridge.Latency)
 
@@ -390,7 +384,6 @@ func (s *Selector) MarkFailed(id string) {
 }
 
 func (s *Selector) isFailed(id string) bool {
-
 	failedAt, exists := s.failedIDs[id]
 
 	if !exists {

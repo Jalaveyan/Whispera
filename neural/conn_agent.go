@@ -1,17 +1,13 @@
-﻿package neural
+package neural
 
 import (
-	"fmt"
 	"math"
 	mrand "math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 	"whispera/neural/gnet"
 )
-
-var connLog = logger.Module("rl-conn")
 
 type ConnAction int
 
@@ -48,8 +44,6 @@ const (
 	connTargetSync   = 100
 	connTrainEvery   = 4
 	connMaxPoolSize  = 16
-	// connGoodputScale normalizes goodput (bytes/sec) into [0,1] for state and
-	// reward. 1e8 B/s ≈ 800 Mbit/s saturates the signal.
 	connGoodputScale = 1e8
 )
 
@@ -59,9 +53,6 @@ type ConnPoolView struct {
 	ErrorRate  float64
 	MissedKAs  int
 	CBFailures int
-	// BytesDnSec/BytesUpSec are the measured aggregate goodput across the pool
-	// at decision time. They drive the agent toward more parallelism while the
-	// path still yields throughput, instead of shrinking on RTT alone.
 	BytesDnSec float64
 	BytesUpSec float64
 }
@@ -136,19 +127,15 @@ func (a *RLConnAgent) Decide(view ConnPoolView) (ConnAction, *ConnDecision) {
 	defer a.mu.Unlock()
 
 	var actionIdx int
-	var mode string
 
 	if idx, exploring := a.sticky.Explore(a.epsilon, connNumActions); exploring {
 		actionIdx = idx
-		mode = "explore-sticky"
 	} else {
 		qvals := a.qNet.Forward(state)
 		if mrand.Float64() < 0.30 {
 			actionIdx = a.thompson.Sample(connNumActions)
-			mode = "thompson"
 		} else {
 			actionIdx = boltzmannSample(qvals, a.temperature)
-			mode = fmt.Sprintf("boltzmann Q=%.3f", qvals[actionIdx])
 		}
 	}
 
@@ -156,12 +143,10 @@ func (a *RLConnAgent) Decide(view ConnPoolView) (ConnAction, *ConnDecision) {
 
 	if action == ConnActionCloseWorst && view.Size <= 1 {
 		action = ConnActionKeep
-		mode += " →KEEP(min1)"
 	}
 
 	if action == ConnActionOpen && view.Size >= connMaxPoolSize {
 		action = ConnActionKeep
-		mode += " →KEEP(maxpool)"
 	}
 
 	return action, &ConnDecision{state: state, action: actionIdx}
@@ -177,11 +162,6 @@ func (a *RLConnAgent) RecordOutcome(d *ConnDecision, quality float64) {
 	connCountNorm := state[0]
 	goodputNorm := state[6]
 	errNorm := state[2]
-	// Throughput dominates: the agent is rewarded for goodput, so it grows the
-	// pool while the path keeps yielding more. quality (RTT/keepalive health)
-	// keeps it from chasing throughput on a dying link. The connection-count
-	// term is a small regularizer to avoid pointless growth when goodput is
-	// flat — it must never outweigh a real throughput gain.
 	reward := 0.6*goodputNorm + 0.4*quality - 0.02*connCountNorm - 0.4*errNorm + GlobalFlowObserver.KLReward()
 
 	a.mu.Lock()

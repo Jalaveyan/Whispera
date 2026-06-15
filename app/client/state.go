@@ -10,9 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/core/modules/config"
 	"whispera/common/dns"
-	"whispera/core/modules/proxyagent"
+	"whispera/core/modules/agent"
+	"whispera/core/modules/config"
 	"whispera/core/modules/socks5"
 	"whispera/core/modules/tunnel"
 )
@@ -95,7 +95,7 @@ var controlAddr = "127.0.0.1:10801"
 
 var adminToken string
 
-var globalAgent *proxyagent.ProxyAgent
+var globalAgent *agent.ProxyAgent
 
 var globalDNS *dns.Resolver
 var globalMultiRouter *socks5.MultiRouter

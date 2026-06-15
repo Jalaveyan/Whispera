@@ -131,7 +131,6 @@ func (dc *DataCollector) loadLatestFromDisk() {
 	dc.mu.Lock()
 	dc.samples = append(dc.samples, loaded...)
 	dc.mu.Unlock()
-
 }
 
 func NewFeatureStatistics(numFeatures int) *FeatureStatistics {

@@ -25,7 +25,6 @@ func TestFlowObserver_ConcurrentRecordPacket(t *testing.T) {
 		}()
 	}
 
-	// Concurrent readers — they race against writers and the periodic reset.
 	stop := make(chan struct{})
 	var readerWG sync.WaitGroup
 	for i := 0; i < 4; i++ {
@@ -47,7 +46,6 @@ func TestFlowObserver_ConcurrentRecordPacket(t *testing.T) {
 	close(stop)
 	readerWG.Wait()
 
-	// Total should be exactly writers*perW; resets don't touch f.total.
 	if got := atomic.LoadInt64(&f.total); got != int64(writers*perW) {
 		t.Fatalf("total = %d, want %d", got, writers*perW)
 	}

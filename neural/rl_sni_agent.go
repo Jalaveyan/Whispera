@@ -1,4 +1,4 @@
-﻿package neural
+package neural
 
 import (
 	"context"
@@ -13,11 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 	"whispera/neural/gnet"
 )
-
-var sniLog = logger.Module("rl-sni")
 
 const (
 	sniStateSize    = 7

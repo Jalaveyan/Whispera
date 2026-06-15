@@ -1,7 +1,6 @@
-﻿package proxyagent
+﻿package agent
 
 import (
-	"whispera/common/log"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -11,8 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 )
-
-var log = logger.Module("proxy-agent")
 
 type ProbeResult struct {
 	Transport string
@@ -407,7 +404,6 @@ func (pa *ProxyAgent) scheduledRotate() {
 }
 
 func (pa *ProxyAgent) emergencyRotate() {
-
 	pa.state = AgentRotating
 
 	transport, server := pa.SelectTransport()

@@ -104,9 +104,6 @@ func (dc *DesyncConn) applyFake(p []byte) (int, error) {
 		return dc.applySplit(p)
 	}
 
-	origTTL := 64
-	setTTL(tcpConn, dc.config.TTL)
-
 	fake := make([]byte, dc.config.FakePayloadSize)
 	rand.Read(fake)
 	if len(fake) >= 3 {
@@ -115,8 +112,6 @@ func (dc *DesyncConn) applyFake(p []byte) (int, error) {
 		fake[2] = 0x01
 	}
 	tcpConn.Write(fake)
-
-	setTTL(tcpConn, origTTL)
 
 	return dc.inner.Write(p)
 }
@@ -127,13 +122,8 @@ func (dc *DesyncConn) applyRST(p []byte) (int, error) {
 		return dc.applySplit(p)
 	}
 
-	origTTL := 64
-	setTTL(tcpConn, dc.config.TTL)
-
 	rst := []byte{0x04}
 	tcpConn.Write(rst)
-
-	setTTL(tcpConn, origTTL)
 
 	return dc.inner.Write(p)
 }
@@ -199,10 +189,7 @@ func (dc *DesyncConn) applyDisorder(p []byte) (int, error) {
 		return dc.applySplit(p)
 	}
 
-	setTTL(tcpConn, dc.config.TTL)
 	tcpConn.Write(p[:pos])
-
-	setTTL(tcpConn, 64)
 
 	n2, err := dc.inner.Write(p[pos:])
 	if err != nil {
@@ -232,12 +219,6 @@ func (dc *DesyncConn) applyDisorder2(p []byte) (int, error) {
 
 func isTLSClientHello(p []byte) bool {
 	return len(p) > 5 && p[0] == 0x16 && p[1] == 0x03 && p[5] == 0x01
-}
-
-func randByte() byte {
-	var b [1]byte
-	rand.Read(b[:])
-	return b[0]
 }
 
 func (dc *DesyncConn) Read(p []byte) (int, error)         { return dc.inner.Read(p) }

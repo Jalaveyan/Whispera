@@ -1,7 +1,6 @@
-﻿package bridge
+package bridge
 
 import (
-	"whispera/common/log"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -16,8 +15,6 @@ import (
 	"time"
 	"whispera/neural/gnet"
 )
-
-var log = logger.Module("bridge")
 
 type AgentConfig struct {
 	BridgeID           string        `yaml:"bridge_id"`
@@ -176,7 +173,6 @@ func (a *Agent) Start() {
 	if a.config.ClusterListenAddr != "" {
 		go a.serveClusterHTTP(a.config.ClusterListenAddr)
 	}
-
 }
 
 func (a *Agent) Stop() {
@@ -262,7 +258,7 @@ func (a *Agent) RecommendTransport() *mlRecommendation {
 	probs := softmax(raw)
 	idx, confidence := argmax(probs)
 
-	transports := []string{"tcp", "tls", "grpc", "http2", "noise_ik", "dtls", "vkwebrtc", "mirage"}
+	transports := []string{"tcp", "tls", "grpc"}
 	transport := "tcp"
 	if idx < len(transports) {
 		transport = transports[idx]
@@ -324,7 +320,6 @@ func (a *Agent) fetchMLToken() {
 		a.config.MLServerURL = result.ServerURL
 	}
 	a.mlMu.Unlock()
-
 }
 
 func (a *Agent) mlPost(path string, body interface{}) (*http.Response, error) {

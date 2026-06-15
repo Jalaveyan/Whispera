@@ -1,4 +1,4 @@
-﻿package neural
+package neural
 
 import (
 	"math"
@@ -7,11 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 	"whispera/neural/gnet"
 )
-
-var tlsLog = logger.Module("rl-tls")
 
 var TLSProfiles = []string{
 	"",
@@ -137,7 +134,7 @@ func (a *RLTLSAgent) Decide(v TLSView) string {
 	if profile == "" {
 		profile = "go-default"
 	}
-	return TLSProfiles[idx]
+	return profile
 }
 
 func (a *RLTLSAgent) RecordOutcome(success bool) {
@@ -154,11 +151,6 @@ func (a *RLTLSAgent) RecordOutcome(success bool) {
 		reward = 1.0
 	}
 	reward += GlobalFlowObserver.KLReward()
-	profile := TLSProfiles[action]
-	if profile == "" {
-		profile = "go-default"
-	}
-
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus

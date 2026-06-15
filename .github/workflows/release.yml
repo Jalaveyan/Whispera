@@ -108,7 +108,7 @@ jobs:
           BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
           GIT_COMMIT: ${{ needs.prepare.outputs.git_commit }}
         run: |
-          go build -ldflags "-s -w -X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME -X main.GitCommit=$GIT_COMMIT" -o whispera-server ./cmd/server
+          go build -ldflags "-s -w -X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME -X main.GitCommit=$GIT_COMMIT" -o whispera-server ./app/server
 
       - name: Archive Server
         run: tar -czvf ${{ matrix.asset_name }}.tar.gz whispera-server
@@ -164,7 +164,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -ldflags "-s -w -X main.Version=$VERSION" \
-            -o whispera-go-client-${{ matrix.triple }}${{ matrix.ext }} ./cmd/client
+            -o whispera-go-client-${{ matrix.triple }}${{ matrix.ext }} ./app/client
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -194,7 +194,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -ldflags "-s -w -X main.Version=$VERSION" \
-            -o whispera-go-client-aarch64-linux-android ./cmd/client
+            -o whispera-go-client-aarch64-linux-android ./app/client
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -251,7 +251,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -ldflags "-s -w -X main.Version=$VERSION" \
-            -o whispera-ml-server-${{ matrix.triple }}${{ matrix.ext }} ./cmd/mlserver
+            -o whispera-ml-server-${{ matrix.triple }}${{ matrix.ext }} ./app/mlserver
 
       - name: Upload
         uses: actions/upload-artifact@v4

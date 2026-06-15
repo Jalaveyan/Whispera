@@ -1,3 +1,5 @@
+//go:build linux
+
 package neural
 
 import (
@@ -22,6 +24,8 @@ func NewGANRunner(iface string, port int, savePath string) *GANRunner {
 	}
 }
 
+func (r *GANRunner) Out() <-chan LabeledFlow { return r.collector.Out() }
+
 func (r *GANRunner) GAN() *TrafficGAN { return r.gan }
 
 func (r *GANRunner) Start() error {
@@ -32,10 +36,9 @@ func (r *GANRunner) Start() error {
 	if err := r.collector.Start(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	_, cancel := context.WithCancel(context.Background())
 	r.simCancel = cancel
 	go r.loop()
-	go RunBrowserSim(ctx)
 	return nil
 }
 
@@ -61,7 +64,7 @@ func (r *GANRunner) loop() {
 		select {
 		case <-r.stopCh:
 			return
-		case lf := <-r.collector.Out():
+		case lf := <-r.Out():
 			switch lf.Label {
 			case FlowTunnel:
 				tun++

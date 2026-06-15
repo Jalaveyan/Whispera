@@ -1,4 +1,4 @@
-﻿package neural
+package neural
 
 import (
 	"math"
@@ -6,11 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 	"whispera/neural/gnet"
 )
-
-var kaLog = logger.Module("rl-ka")
 
 var KeepaliveIntervals = []time.Duration{
 	5 * time.Second,

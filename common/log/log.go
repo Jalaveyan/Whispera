@@ -1,4 +1,4 @@
-﻿package logger
+package logger
 
 import (
 	"io"
@@ -87,7 +87,6 @@ func ParseLevel(s string) Level {
 	}
 }
 
-// atomicWriter lets SetOutput swap the destination without rebuilding the core.
 type atomicWriter struct {
 	w atomic.Pointer[io.Writer]
 }
@@ -102,7 +101,6 @@ func (a *atomicWriter) Write(p []byte) (int, error) { return (*a.w.Load()).Write
 func (a *atomicWriter) Sync() error                 { return nil }
 func (a *atomicWriter) set(w io.Writer)             { a.w.Store(&w) }
 
-// Entry is an in-memory log record stored in the ring buffer.
 type Entry struct {
 	Time    time.Time `json:"time"`
 	Level   string    `json:"level"`

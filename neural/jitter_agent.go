@@ -1,4 +1,4 @@
-﻿package neural
+package neural
 
 import (
 	"math"
@@ -6,21 +6,16 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 	"whispera/neural/gnet"
 )
 
-var jLog = logger.Module("rl-jitter")
-
-// JitterFractions — доля от базового интервала keepalive, добавляемая как ±jitter.
-// 0.10 = ±10%, 0.70 = ±70%.
 var JitterFractions = []float64{0.10, 0.20, 0.40, 0.70}
 
 const (
 	jStateSize    = 5
 	jHidden1      = 10
 	jHidden2      = 6
-	jNumActions   = 4 // len(JitterFractions)
+	jNumActions   = 4
 	jBufferSize   = 5000
 	jBatchSize    = 8
 	jGamma        = 0.95
@@ -31,18 +26,12 @@ const (
 	jTrainEvery   = 4
 )
 
-// JitterView — снимок состояния сети для агента джиттера.
 type JitterView struct {
 	RTTMs     float64
 	MissedKAs int
 	ErrorRate float64
 }
 
-// RLJitterAgent выбирает оптимальный уровень временно́го джиттера для keepalive.
-//
-// State (5): rtt_norm, missed_ka_norm, error_rate, hour_sin, hour_cos
-// Actions: ±10% / ±20% / ±40% / ±70% от базового интервала
-// Reward: стабильность соединения − штраф за высокий джиттер
 type RLJitterAgent struct {
 	mu sync.RWMutex
 
@@ -102,10 +91,9 @@ func (a *RLJitterAgent) encodeState(v JitterView) []float64 {
 	return s
 }
 
-// Decide возвращает долю джиттера (0.10–0.70).
 func (a *RLJitterAgent) Decide(v JitterView) float64 {
 	if atomic.LoadInt64(&a.stepCount) < 30 {
-		return JitterFractions[2] // 0.40 ≈ ±40% — поведение по умолчанию
+		return JitterFractions[2]
 	}
 
 	state := a.encodeState(v)
@@ -129,7 +117,6 @@ func (a *RLJitterAgent) Decide(v JitterView) float64 {
 	return JitterFractions[idx]
 }
 
-// RecordOutcome: quality=1 соединение стабильно, 0 — пропущен keepalive/обрыв.
 func (a *RLJitterAgent) RecordOutcome(quality float64) {
 	a.mu.Lock()
 	state := a.pendingState

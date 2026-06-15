@@ -59,29 +59,6 @@ func (m *Manager) selectNewSNILocked() string {
 	return m.currentSNI
 }
 
-func (m *Manager) getRotationSNI() string {
-	if m.config.NoSNI {
-		return ""
-	}
-
-	m.connMu.RLock()
-	sni := m.currentSNI
-	m.connMu.RUnlock()
-
-	if sni != "" {
-		return sni
-	}
-
-	m.connMu.Lock()
-	defer m.connMu.Unlock()
-
-	if m.currentSNI != "" {
-		return m.currentSNI
-	}
-
-	return m.selectNewSNILocked()
-}
-
 func (m *Manager) RotateSNI() {
 	oldSNI := m.currentSNI
 	oldTransport := m.config.Transport
@@ -113,12 +90,6 @@ func (m *Manager) RotateSNI() {
 
 	if m.config.MLServerURL != "" {
 		go m.mlSendFeedback(m.config.Transport, true, 0)
-	}
-}
-
-func (m *Manager) maybePreemptiveRotate(streak int32) {
-	if streak == 2 && m.transportAgent != nil {
-		go m.rotateTransport()
 	}
 }
 

@@ -1,4 +1,4 @@
-﻿package neural
+package neural
 
 import (
 	"math"
@@ -7,11 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 	"whispera/neural/gnet"
 )
-
-var srvLog = logger.Module("rl-server")
 
 const (
 	srvMaxServers   = 8

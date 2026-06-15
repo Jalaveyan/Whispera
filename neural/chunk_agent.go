@@ -1,4 +1,4 @@
-﻿package neural
+package neural
 
 import (
 	"math"
@@ -6,11 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 	"whispera/neural/gnet"
 )
-
-var chunkLog = logger.Module("rl-chunk")
 
 var ChunkSizes = []int{8192, 16384, 32768, 65535}
 
@@ -117,7 +114,6 @@ func (a *RLChunkAgent) Decide(v ChunkView) int {
 
 	a.pendingState = state
 	a.pendingAction = idx
-	shadowChunkDecide(v, idx)
 	return ChunkSizes[idx]
 }
 
@@ -146,8 +142,6 @@ func (a *RLChunkAgent) RecordOutcome(quality float64) {
 	step := atomic.AddInt64(&a.stepCount, 1)
 	_ = a.epsilon
 	a.mu.Unlock()
-
-	shadowChunkOutcome(reward)
 
 	if step%chunkTrainEvery == 0 {
 		go a.trainStep()

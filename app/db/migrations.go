@@ -126,7 +126,6 @@ func (db *DB) Migrate(ctx context.Context) error {
 			continue
 		}
 
-
 		tx, err := db.pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin transaction for migration %d: %w", m.Version, err)

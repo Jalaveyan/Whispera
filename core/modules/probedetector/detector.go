@@ -1,7 +1,6 @@
-﻿package probedetector
+package probedetector
 
 import (
-	"whispera/common/log"
 	"context"
 	"crypto/rand"
 	"fmt"
@@ -13,8 +12,6 @@ import (
 	"sync/atomic"
 	"time"
 )
-
-var log = logger.Module("probedetector")
 
 type Config struct {
 	MaxAuthFailures int

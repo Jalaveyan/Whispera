@@ -14,8 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/neural/types"
 	"whispera/neural/gnet"
+	"whispera/neural/types"
 
 	"gorgonia.org/gorgonia"
 	"gorgonia.org/tensor"

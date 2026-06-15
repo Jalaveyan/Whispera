@@ -10,16 +10,13 @@ import (
 )
 
 func wiraidBaseDir() string {
-
 	if v := os.Getenv("WHISPERA_WIRAID_DIR"); v != "" {
 		return v
 	}
 	return "/var/lib/whispera/wiraid"
-
 }
 
 func runWiraidCLI(args []string) {
-
 	if len(args) == 0 {
 		printWiraidUsage()
 		return
@@ -95,7 +92,6 @@ func runWiraidCLI(args []string) {
 				os.Exit(2)
 			}
 		} else {
-
 			rep, err := eng.Validate(target)
 
 			if err != nil {
@@ -231,7 +227,6 @@ func runWiraidCLI(args []string) {
 }
 
 func runValidateManifest(path string) {
-
 	m, err := wiraid.LoadManifest(filepath.Dir(path))
 
 	if err != nil {
@@ -461,7 +456,6 @@ func printValidateReport(rep *wiraid.ValidateReport) {
 }
 
 func printLiveReport(rep *wiraid.LiveReport) {
-
 	printValidateReport(rep.ValidateReport)
 
 	fmt.Printf("\n  live.started_ok  %v\n", rep.StartedOK)
@@ -493,7 +487,6 @@ func init() {
 }
 
 func printWiraidUsage() {
-
 	fmt.Fprintln(os.Stderr, `Usage: whispera wiraid <command>
 
 Module authoring:

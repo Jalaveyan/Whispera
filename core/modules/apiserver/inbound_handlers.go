@@ -121,7 +121,6 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 		} else {
 			cfg.Inbounds = append(cfg.Inbounds, req)
 		}
-
 	})
 
 	if err != nil {
@@ -187,11 +186,6 @@ func portOccupiedByExistingInbound(cfgProvider *config.Provider, incoming config
 		}
 	}
 	return false
-}
-
-func isAddrInUseErr(err error) bool {
-	return err != nil && (strings.Contains(err.Error(), "address already in use") ||
-		strings.Contains(err.Error(), "bind: address already in use"))
 }
 
 func startDynamicInbound(inbound config.InboundConfig) error {

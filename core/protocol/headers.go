@@ -60,7 +60,6 @@ func uaForFingerprint(id utls.ClientHelloID) string {
 }
 
 func applyBrowserHeaders(req *http.Request, origin string) {
-
 	ua := uaForFingerprint(detectedBrowserID)
 	lang := acceptLanguages[rand.Intn(len(acceptLanguages))]
 

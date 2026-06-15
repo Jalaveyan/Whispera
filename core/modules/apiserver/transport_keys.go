@@ -3,12 +3,9 @@ package apiserver
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
-
-	"golang.org/x/crypto/curve25519"
 )
 
 type TransportCredentials struct {
@@ -107,37 +104,4 @@ func randomBase64(n int) (string, error) {
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(b), nil
-}
-
-func randomHex(n int) (string, error) {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
-}
-
-func generateX25519Hex() (privHex, pubHex string, err error) {
-	priv := make([]byte, 32)
-	if _, err = rand.Read(priv); err != nil {
-		return
-	}
-	pub, err := curve25519.X25519(priv, curve25519.Basepoint)
-	if err != nil {
-		return
-	}
-	privHex = hex.EncodeToString(priv)
-	pubHex = hex.EncodeToString(pub)
-	return
-}
-
-func generateUUID() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }

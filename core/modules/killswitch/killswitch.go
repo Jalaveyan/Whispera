@@ -1,15 +1,12 @@
-﻿package killswitch
+package killswitch
 
 import (
-	"whispera/common/log"
 	"context"
 	"fmt"
 	"net"
 	"sync"
 	"time"
 )
-
-var log = logger.Module("killswitch")
 
 type State int
 
@@ -280,7 +277,6 @@ func (ks *KillSwitch) detectLocalIPs() {
 			}
 		}
 	}
-
 }
 
 func (ks *KillSwitch) notifyStateChange(state State) {

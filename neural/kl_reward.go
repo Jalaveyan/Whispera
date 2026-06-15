@@ -7,45 +7,31 @@ import (
 	"time"
 )
 
-// Fallback reference distributions used until enough real decoy traffic is observed.
-// Bins: [0-64], [65-256], [257-512], [513-1024], [1025-1280], [1281-1400], [1401+]
 var defaultRefSizeDist = [7]float64{0.04, 0.02, 0.02, 0.04, 0.08, 0.35, 0.45}
 
-// Bins (ms): [0-1], [1-5], [5-20], [20-100], [100+]
 var defaultRefIATDist = [5]float64{0.55, 0.25, 0.10, 0.07, 0.03}
 
-// minRefSamples is the number of real decoy packets needed before switching
-// from the fallback hardcoded distribution to the learned one.
 const minRefSamples = 500
 
 const (
-	klWindowSize    = 512  // packets in rolling window
-	klMinSamples    = 32   // minimum before computing reward
-	klMaxReward     = 0.30 // maximum KL bonus added to agent reward
-	klDecayPerReset = 200  // reset histogram every N packets to stay fresh
+	klWindowSize    = 512
+	klMinSamples    = 32
+	klMaxReward     = 0.30
+	klDecayPerReset = 200
 )
 
-// FlowObserver collects packet size and IAT statistics over a rolling window
-// and computes a KL-divergence reward bonus measuring similarity to the
-// reference HTTPS streaming distribution.
-//
-// The reference distribution is learned from real decoy (FlowDecoy) traffic
-// observed by PCAPCollector. Until minRefSamples are seen, the hardcoded
-// fallback distribution is used.
 type FlowObserver struct {
 	mu sync.Mutex
 
-	// Observed tunnel traffic (used to compute KL reward).
 	sizeCounts [7]int64
 	iatCounts  [5]int64
 	total      int64
 
-	// Reference distribution learned from real FlowDecoy traffic.
 	refSizeCounts [7]int64
 	refIATCounts  [5]int64
 	refTotal      int64
 
-	lastPacketAt int64 // UnixNano, atomic
+	lastPacketAt int64
 }
 
 func (f *FlowObserver) sizeBucket(n int) int {
@@ -82,12 +68,6 @@ func (f *FlowObserver) iatBucket(ms float64) int {
 	}
 }
 
-// RecordPacket records an outbound packet for KL reward computation.
-// Call this on every packet/chunk sent through the tunnel.
-//
-// Lock-free fast path: per-bucket atomic increments. Mutex is taken only on
-// the periodic reset (every klDecayPerReset packets) and when readers
-// (KLReward, UpdateReference) need a consistent snapshot.
 func (f *FlowObserver) RecordPacket(sizeBytes int) {
 	now := time.Now().UnixNano()
 	prev := atomic.SwapInt64(&f.lastPacketAt, now)
@@ -116,10 +96,6 @@ func (f *FlowObserver) RecordPacket(sizeBytes int) {
 	}
 }
 
-// UpdateReference records a single packet from real decoy traffic (FlowDecoy label).
-// Called by PCAPCollector on Linux when it observes a completed decoy flow.
-// Once minRefSamples are accumulated, KLReward() uses this learned distribution
-// instead of the hardcoded fallback.
 func (f *FlowObserver) UpdateReference(sizeBytes int, iatMs float64) {
 	f.mu.Lock()
 	f.refSizeCounts[f.sizeBucket(sizeBytes)]++
@@ -127,7 +103,6 @@ func (f *FlowObserver) UpdateReference(sizeBytes int, iatMs float64) {
 		f.refIATCounts[f.iatBucket(iatMs)]++
 	}
 	f.refTotal++
-	// Keep rolling: drop oldest half when window is full to stay fresh.
 	if f.refTotal > 0 && f.refTotal%4096 == 0 {
 		for i := range f.refSizeCounts {
 			f.refSizeCounts[i] /= 2
@@ -140,8 +115,6 @@ func (f *FlowObserver) UpdateReference(sizeBytes int, iatMs float64) {
 	f.mu.Unlock()
 }
 
-// refDistributions returns the active reference distributions.
-// Uses learned data if enough samples exist, falls back to hardcoded defaults.
 func (f *FlowObserver) refDistributions() (sizeDist [7]float64, iatDist [5]float64) {
 	if f.refTotal >= minRefSamples {
 		for i, c := range f.refSizeCounts {
@@ -163,9 +136,6 @@ func (f *FlowObserver) refDistributions() (sizeDist [7]float64, iatDist [5]float
 	return defaultRefSizeDist, defaultRefIATDist
 }
 
-// KLReward returns a reward bonus in [0, +0.30] based on how closely
-// the current tunnel traffic distribution matches the reference profile.
-// Returns 0 when there are not enough tunnel samples yet.
 func (f *FlowObserver) KLReward() float64 {
 	f.mu.Lock()
 	total := atomic.LoadInt64(&f.total) % klDecayPerReset
@@ -205,13 +175,11 @@ func (f *FlowObserver) KLReward() float64 {
 	klSize := klDiv(obsSizeDist[:], sizeDist[:])
 	klIAT := klDiv(obsIATDist[:], iatDist[:])
 
-	// Weighted combination: packet size matters more for ML DPI classifiers.
 	kl := 0.65*klSize + 0.35*klIAT
 
 	return klMaxReward * math.Exp(-3.0*kl)
 }
 
-// klDiv computes KL(P || Q) with Laplace smoothing to avoid log(0).
 func klDiv(p, q []float64) float64 {
 	const eps = 1e-9
 	var kl float64
@@ -229,7 +197,4 @@ func klDiv(p, q []float64) float64 {
 	return kl
 }
 
-// GlobalFlowObserver is the shared instance used by all 7 RL agents.
-// The tunnel's Send() path calls RecordPacket(); agents read KLReward()
-// inside RecordOutcome() to get a reward component.
 var GlobalFlowObserver = &FlowObserver{}

@@ -30,7 +30,6 @@ var ErrBadHandshake = errors.New("bond: bad handshake")
 type bondID [16]byte
 
 func writeHandshake(c net.Conn, id bondID) error {
-
 	var b [handshakeSize]byte
 
 	binary.BigEndian.PutUint32(b[0:4], handshakeMagic)
@@ -41,7 +40,6 @@ func writeHandshake(c net.Conn, id bondID) error {
 }
 
 func readHandshake(c net.Conn) (id bondID, err error) {
-
 	var b [handshakeSize]byte
 
 	if _, err = io.ReadFull(c, b[:]); err != nil {
@@ -177,15 +175,18 @@ func (co *Coordinator) Offer(conn net.Conn) (*Conn, net.Conn, error) {
 	var id bondID
 	copy(id[:], b[4:20])
 
-	if live, ok := co.live[id]; ok {
-		co.mu.Unlock()
-		if live.AddMember(conn) {
-			return nil, nil, nil
-		}
-		return co.create(id, conn), nil, nil
+	co.mu.Lock()
+	live, ok := co.live[id]
+	co.mu.Unlock()
+
+	if ok && live.AddMember(conn) {
+		return nil, nil, nil
 	}
 
-	return co.create(id, conn), nil, nil
+	co.mu.Lock()
+	result := co.create(id, conn)
+	co.mu.Unlock()
+	return result, nil, nil
 }
 
 func (c *prefixConn) Read(p []byte) (int, error) {
@@ -198,20 +199,15 @@ func (c *prefixConn) Read(p []byte) (int, error) {
 }
 
 func (co *Coordinator) create(id bondID, conn net.Conn) *Conn {
-
 	b := newConn(id, conn)
-
 	co.live[id] = b
-
 	go func() {
 		<-b.Done()
-	}()
-
-	go func() {
+		co.mu.Lock()
 		if co.live[id] == b {
 			delete(co.live, id)
 		}
+		co.mu.Unlock()
 	}()
-
 	return b
 }

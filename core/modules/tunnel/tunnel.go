@@ -1,4 +1,4 @@
-﻿package tunnel
+package tunnel
 
 import (
 	"bufio"
@@ -24,9 +24,9 @@ import (
 	"whispera/common/runtime/interfaces"
 	asnbypass "whispera/core/asn_bypass"
 	"whispera/core/modules/killswitch"
-	"whispera/neural/evasion"
 	"whispera/core/protocol"
 	"whispera/neural"
+	"whispera/neural/evasion"
 )
 
 var log = logger.Module("tunnel")
@@ -253,26 +253,11 @@ func (m *Manager) streamLoad(streamID uint16) (chan *buf.Buffer, bool) {
 	return ch, ok
 }
 
-func (m *Manager) streamStore(streamID uint16, ch chan *buf.Buffer) {
-	s := &m.streamShards[streamID&streamShardMask]
-	s.mu.Lock()
-	s.m[streamID] = ch
-	s.mu.Unlock()
-}
-
 func (m *Manager) streamDelete(streamID uint16) {
 	s := &m.streamShards[streamID&streamShardMask]
 	s.mu.Lock()
 	delete(s.m, streamID)
 	s.mu.Unlock()
-}
-
-func (m *Manager) streamExists(streamID uint16) bool {
-	s := &m.streamShards[streamID&streamShardMask]
-	s.mu.RLock()
-	_, ok := s.m[streamID]
-	s.mu.RUnlock()
-	return ok
 }
 
 func (m *Manager) initStreamShards() {
@@ -614,7 +599,6 @@ func (m *Manager) Connect(ctx context.Context) error {
 }
 
 func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
-
 	if !isRotation {
 		m.setState(StateConnecting)
 	} else {
@@ -761,11 +745,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	}
 
 	return nil
-}
-
-type dialCandidate struct {
-	name   string
-	secure bool
 }
 
 func (m *Manager) enableKillSwitch(remoteAddr net.Addr) {
@@ -1203,7 +1182,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 		payloadLen := binary.BigEndian.Uint32(header[4:8])
 
 		if payloadLen > 131072 {
-
 			foundOffset := -1
 			for i := 1; i <= FrameHeaderSize-3; i++ {
 				if header[i] >= 0x14 && header[i] <= 0x17 && header[i+1] == 0x03 && header[i+2] <= 0x04 {
@@ -1213,7 +1191,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 			}
 
 			if foundOffset != -1 {
-
 				tlsHeader := make([]byte, 5)
 				available := FrameHeaderSize - foundOffset
 				copy(tlsHeader, header[foundOffset:])
@@ -1766,7 +1743,6 @@ func (m *Manager) startConnAgent() {
 			case <-stop:
 				return
 			case <-ticker.C:
-
 			}
 		}
 	}()

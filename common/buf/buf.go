@@ -216,7 +216,6 @@ func (sw *singleWriter) WriteMultiBuffer(mb MultiBuffer) error {
 	}
 
 	if len(mb) == 1 {
-
 		b := mb[0]
 
 		for !b.IsEmpty() {
@@ -229,7 +228,6 @@ func (sw *singleWriter) WriteMultiBuffer(mb MultiBuffer) error {
 		return nil
 	}
 	if _, ok := sw.w.(*net.TCPConn); ok {
-
 		bufs := make(net.Buffers, 0, len(mb))
 
 		for _, b := range mb {
@@ -249,7 +247,6 @@ func (sw *singleWriter) WriteMultiBuffer(mb MultiBuffer) error {
 	}
 	for _, b := range mb {
 		for !b.IsEmpty() {
-
 			n, err := sw.w.Write(b.Bytes())
 
 			if err != nil {
@@ -265,7 +262,6 @@ func (sw *singleWriter) WriteMultiBuffer(mb MultiBuffer) error {
 func Copy(reader Reader, writer Writer) (int64, error) {
 	var total int64
 	for {
-
 		mb, err := reader.ReadMultiBuffer()
 
 		if !mb.IsEmpty() {

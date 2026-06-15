@@ -136,8 +136,8 @@ jobs:
 
     - name: Build
       run: |
-        CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o client ./cmd/client
-        CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o server ./cmd/server
+        CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o client ./app/client
+        CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o server ./app/server
 
     - name: Test build artifacts
       run: |

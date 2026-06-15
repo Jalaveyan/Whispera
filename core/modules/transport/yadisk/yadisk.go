@@ -1,7 +1,6 @@
-﻿package yadisk
+package yadisk
 
 import (
-	"whispera/common/log"
 	"bytes"
 	"context"
 	"fmt"
@@ -19,8 +18,6 @@ import (
 func init() {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
 }
-
-var log = logger.Module("yadisk")
 
 const (
 	ModuleName    = "transport.yadisk"

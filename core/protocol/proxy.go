@@ -1,4 +1,4 @@
-﻿package protocol
+package protocol
 
 import (
 	"context"
@@ -21,16 +21,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 
 	quicgo "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
-)
 
-var log = logger.Module("chameleon")
+	"whispera/common/log"
+)
 
 var traceLog = logger.Trace()
 

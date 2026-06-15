@@ -8,7 +8,6 @@ import (
 const relayBufSize = 256 * 1024
 
 func Relay(a, b net.Conn, aReader, bReader io.Reader) {
-
 	if aReader == nil {
 		aReader = a
 	}

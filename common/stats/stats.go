@@ -1,12 +1,12 @@
-﻿package stats
+package stats
 
 import (
-	"whispera/common/log"
 	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
+	"whispera/common/log"
 )
 
 type TrafficStats struct {
@@ -81,7 +81,6 @@ func (s *TrafficStats) AddRx(userID string, bytes int64) {
 		user.PacketsRx++
 		user.LastActivity = time.Now()
 	}
-
 }
 
 func (s *TrafficStats) AddTx(userID string, bytes int64) {
@@ -97,7 +96,6 @@ func (s *TrafficStats) AddTx(userID string, bytes int64) {
 		user.PacketsTx++
 		user.LastActivity = time.Now()
 	}
-
 }
 
 func (s *TrafficStats) SetUserIP(userID, ip string) {
@@ -106,7 +104,6 @@ func (s *TrafficStats) SetUserIP(userID, ip string) {
 
 	user := s.getOrCreateUser(userID)
 	user.AssignedIP = ip
-
 }
 
 func (s *TrafficStats) IncrementSessionCount(userID string) {
@@ -201,7 +198,6 @@ func (s *TrafficStats) TakeSnapshot() {
 	if len(s.history) > s.historySize {
 		s.history = s.history[len(s.history)-s.historySize:]
 	}
-
 }
 
 func (s *TrafficStats) countActiveUsers() int {

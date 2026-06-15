@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"whispera/core/modules/proxyagent"
+	"whispera/core/modules/agent"
 
 	"golang.org/x/net/proxy"
 )
@@ -335,7 +335,7 @@ func startControlServer(ctx context.Context) {
 			http.Error(w, "agent not running", http.StatusServiceUnavailable)
 			return
 		}
-		var result proxyagent.ProbeResult
+		var result agent.ProbeResult
 		if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
 			return

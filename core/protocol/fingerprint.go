@@ -24,7 +24,6 @@ var (
 	harvestMu    sync.RWMutex
 	harvestSpecs []*utls.ClientHelloSpec
 
-	detectOnce        sync.Once
 	detectedBrowserID utls.ClientHelloID
 )
 

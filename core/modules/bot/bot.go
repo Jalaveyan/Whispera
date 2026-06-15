@@ -1,7 +1,6 @@
-﻿package bot
+package bot
 
 import (
-	"whispera/common/log"
 	"context"
 	"fmt"
 	"os/exec"
@@ -10,6 +9,7 @@ import (
 	"sync"
 	"time"
 	"whispera/app/db"
+	"whispera/common/log"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"

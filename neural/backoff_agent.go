@@ -1,4 +1,4 @@
-﻿package neural
+package neural
 
 import (
 	"math"
@@ -6,11 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 	"whispera/neural/gnet"
 )
-
-var boLog = logger.Module("rl-backoff")
 
 var BackoffDelays = []time.Duration{
 	1 * time.Second,
