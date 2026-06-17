@@ -5,7 +5,6 @@ go 1.26
 toolchain go1.26.4
 
 require (
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/google/uuid v1.6.0
 	github.com/gopacket/gopacket v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
@@ -42,6 +41,7 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/xtgo/set v1.0.0 // indirect
+	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go4.org/unsafe/assume-no-moving-gc v0.0.0-20231121144256-b99613f794b6 // indirect
 	golang.org/x/exp v0.0.0-20250911091902-df9299821621 // indirect
@@ -69,6 +69,6 @@ require (
 	github.com/klauspost/reedsolomon v1.13.0
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )

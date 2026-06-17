@@ -13,13 +13,11 @@ import (
 	"time"
 	"whispera/app/auth"
 	"whispera/common/runtime/base"
-	"whispera/core/modules/bridgepool"
 )
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
 	secret := []byte("test-signing-secret-32-bytes!!!!!")
-	bridgeReg := bridgepool.NewRegistry("")
 	s := &Server{
 		Module: base.NewModule(ModuleName, ModuleVersion, nil),
 		config: &Config{
@@ -32,8 +30,6 @@ func newTestServer(t *testing.T) *Server {
 		mux:            http.NewServeMux(),
 		handlers:       make(map[string]http.HandlerFunc),
 		jwtManager:     auth.NewJWTManager(secret),
-		bridgePool:     bridgeReg,
-		bridgeHandler:  bridgepool.NewAPIHandler(bridgeReg),
 		loginAttempts:  make(map[string][]time.Time),
 		sessionToken:   "static-test-session-token",
 		signingSecret:  secret,

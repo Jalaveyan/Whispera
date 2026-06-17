@@ -26,13 +26,12 @@ import (
 	"whispera/app/auth"
 	"whispera/app/db"
 	"whispera/common/ipdetect"
-	"whispera/common/log"
+	logger "whispera/common/log"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"
 	"whispera/common/stats"
-	"whispera/core/modules/bridgepool"
 	"whispera/core/modules/config"
 	"whispera/core/modules/dhcp"
 	"whispera/core/modules/keylimits"
@@ -123,8 +122,6 @@ type Server struct {
 	handlers map[string]http.HandlerFunc
 
 	jwtManager    *auth.JWTManager
-	bridgePool    *bridgepool.Registry
-	bridgeHandler *bridgepool.APIHandler
 	keyLimits     *keylimits.Manager
 	probeDetector interface {
 		Stats() map[string]interface{}
@@ -171,8 +168,6 @@ func New(cfg *Config) (*Server, error) {
 	if err := os.MkdirAll("/etc/whispera", 0755); err != nil {
 	}
 
-	bridgeReg := bridgepool.NewRegistry("/etc/whispera/bridges.json")
-
 	loadUsers()
 	loadSubscriptions()
 
@@ -185,8 +180,6 @@ func New(cfg *Config) (*Server, error) {
 		mux:            http.NewServeMux(),
 		handlers:       make(map[string]http.HandlerFunc),
 		jwtManager:     auth.NewJWTManager(signingSecret),
-		bridgePool:     bridgeReg,
-		bridgeHandler:  bridgepool.NewAPIHandler(bridgeReg),
 		loginAttempts:  make(map[string][]time.Time),
 		sessionToken:   sessionToken,
 		signingSecret:  signingSecret,
@@ -201,15 +194,10 @@ func New(cfg *Config) (*Server, error) {
 	s.loadRevokedKeys()
 	s.registerDefaultRoutes()
 	go s.cpuSampler()
-	bridgeReg.StartHealthMonitor()
 
 	s.registerUserV2Routes()
 
 	return s, nil
-}
-
-func (s *Server) BridgePool() *bridgepool.Registry {
-	return s.bridgePool
 }
 
 func (s *Server) SetKeyLimits(m *keylimits.Manager) {
@@ -305,32 +293,6 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/admin/update", s.handleAdminUpdate)
 	s.Handle("GET /api/system/update-check", s.handleUpdateCheck)
 	s.Handle("GET /api/logs", s.handleGetLogsAPI)
-
-	s.Handle("GET /api/bridge-list", s.bridgeHandler.HandleGetBridges)
-	s.Handle("GET /api/bridge-admin", s.bridgeHandler.HandleGetBridgesAdmin)
-	s.Handle("POST /api/bridge-add", s.bridgeHandler.HandleAddBridge)
-	s.Handle("POST /api/bridge-delete", s.bridgeHandler.HandleDeleteBridge)
-	s.Handle("POST /api/bridge-register", s.bridgeHandler.HandleRegisterBridge)
-	s.Handle("POST /api/bridge-health", s.bridgeHandler.HandleBridgeHealth)
-	s.Handle("GET /api/bridge-token", s.bridgeHandler.HandleGetRegistrationToken)
-	s.Handle("POST /api/bridge-token-regenerate", s.bridgeHandler.HandleRegenerateToken)
-	s.Handle("GET /api/bridge-cloudinit", s.bridgeHandler.HandleGetCloudInit)
-	s.Handle("GET /api/bridge-stats", s.handleBridgeStats)
-	s.Handle("POST /api/bridge-check", s.handleBridgeCheck)
-	s.Handle("GET /install-bridge.sh", s.handleServeBridgeScript)
-	s.Handle("GET /api/bridge-white", s.bridgeHandler.HandleGetWhiteBridges)
-	s.Handle("GET /api/bridge-map", s.bridgeHandler.HandleGetBridgeMap)
-	s.Handle("POST /api/bridge-heartbeat", s.bridgeHandler.HandleBridgeHeartbeat)
-	s.Handle("POST /api/bridge-ssh-admin", s.bridgeHandler.HandleSetAdminSSHKey)
-	s.Handle("POST /api/bridge-access-key", s.bridgeHandler.HandleIssueAccessKey)
-	s.Handle("POST /api/bridge-access-validate", s.bridgeHandler.HandleValidateAccessKey)
-	s.Handle("POST /api/bridge-access-revoke", s.bridgeHandler.HandleRevokeAccessKey)
-	s.Handle("GET /api/bridge-white-cloudinit", s.bridgeHandler.HandleGetWhiteCloudInit)
-	s.Handle("POST /api/bridge-connect", s.bridgeHandler.HandleBridgeConnect)
-	s.Handle("POST /api/bridge-scan", s.bridgeHandler.HandleBridgeScan)
-	s.Handle("POST /api/bridge-ping", s.bridgeHandler.HandleBridgePing)
-	s.Handle("POST /api/bridge-label", s.bridgeHandler.HandleSetBridgeLabel)
-	s.Handle("POST /api/bridge-rollout", s.handleBridgeRollout)
 
 	s.Handle("GET /api/ml/config", s.handleMLConfig)
 	s.Handle("POST /api/ml/token/rotate", s.handleMLTokenRotate)
@@ -706,15 +668,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			r.URL.Path == "/api/v2/users/login" ||
 			r.URL.Path == "/api/v2/auth/refresh" ||
 			r.URL.Path == "/api/logout" ||
-			r.URL.Path == "/api/bridge-register" ||
-			r.URL.Path == "/api/bridge-health" ||
-			r.URL.Path == "/api/bridge-heartbeat" ||
-			r.URL.Path == "/api/bridge-white-cloudinit" ||
-			r.URL.Path == "/api/bridge-access-validate" ||
-			r.URL.Path == "/api/bridge-map" ||
 			r.URL.Path == "/api/keys/check" ||
 			r.URL.Path == "/api/wiraid/public/list" ||
-			r.URL.Path == "/install-bridge.sh" ||
 			r.URL.Path == "/api/v1/speed/ping" ||
 			strings.HasSuffix(r.URL.Path, "/health") {
 			next.ServeHTTP(w, r)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -30,9 +29,6 @@ import (
 	"whispera/common/update"
 	server "whispera/core/manager"
 	"whispera/core/modules/apiserver"
-	"whispera/core/modules/bot"
-	bridgemod "whispera/core/modules/bridge"
-	"whispera/core/modules/bridgepool"
 	"whispera/core/modules/config"
 	"whispera/core/modules/crypto"
 	"whispera/core/modules/dataplane"
@@ -106,11 +102,8 @@ var (
 	printVersion   = flag.Bool("version", false, "Print version and exit")
 	validateConfig = flag.Bool("validate-config", false, "Validate configuration and exit")
 	pprofAddr      = flag.String("pprof", "localhost:6060", "Pprof server listen address")
-	clusterAddr    = flag.String("cluster-addr", ":8082", "Bridge cluster HTTP listen address (served by bridge agent)")
-	selfAddr       = flag.String("self-addr", "", "Public address of this bridge node (host:port), used in cluster election")
 )
 
-var globalBridgePool *bridgepool.Registry
 var globalWiraidEngine *wiraid.Engine
 
 var globalKeyLimits = keylimits.New(keylimits.Limits{
@@ -130,8 +123,6 @@ var (
 	globalObfuscator   interfaces.Obfuscator
 
 	globalServerConfig *config.ServerConfig
-	globalBridgeAgent  *bridgemod.Agent
-	globalBridge       *relay2.Bridge
 	globalRouter       *router.Engine
 	globalCorrelation  *evasion.CorrelationDefense
 	globalUpdater      *update.Updater
@@ -485,12 +476,6 @@ func main() {
 		}
 	}
 
-	if globalServerConfig != nil && globalServerConfig.Bridge.AutoRegister && globalServerConfig.UpstreamServer != "" {
-		go func() {
-			time.Sleep(1 * time.Second)
-			registerBridgeWithMainServer()
-		}()
-	}
 
 	if *validateConfig {
 		os.Exit(0)
@@ -582,45 +567,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		serverConfig.Metrics.ListenAddr = *metricsAddr
 	}
 
-	if serverConfig.RelayMode == "bridge" {
-		bridgeCfg := &relay2.BridgeConfig{
-			ListenAddr:     serverConfig.Server.ListenAddr,
-			UpstreamServer: serverConfig.UpstreamServer,
-		}
-
-		bridge, err := relay2.NewBridge(bridgeCfg)
-		if err != nil {
-			return fmt.Errorf("failed to create bridge: %w", err)
-		}
-
-		bridge.OnFailover(func(active bool) {
-			if !active {
-				fmt.Printf("bridge is offline\n")
-			}
-		})
-
-		globalBridge = bridge
-
-		if err := bridge.Start(serverConfig.Server.ListenAddr); err != nil {
-			return fmt.Errorf("failed to start bridge: %w", err)
-		}
-
-		agentCfg := bridgemod.DefaultAgentConfig()
-		agentCfg.BridgeID = serverConfig.Bridge.Region + "-" + serverConfig.Server.ListenAddr
-		agentCfg.UpstreamServer = serverConfig.UpstreamServer
-		agentCfg.RegistrationToken = serverConfig.Bridge.RegistrationToken
-		agentCfg.ClusterListenAddr = *clusterAddr
-
-		if *selfAddr != "" {
-			agentCfg.SelfAddress = *selfAddr
-		} else {
-			agentCfg.SelfAddress = serverConfig.Server.ListenAddr
-		}
-		globalBridgeAgent = bridgemod.NewAgent(agentCfg)
-		globalBridgeAgent.Start()
-
-		select {}
-	}
 
 	if err := initCore(manager, serverConfig); err != nil {
 		return err
@@ -887,25 +833,10 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 
 		apiServer.SetRegistry(m.Registry())
 		apiServer.SetKeyLimits(globalKeyLimits)
-		globalBridgePool = apiServer.BridgePool()
 
 		if err := m.Register(apiServer); err != nil {
 			return err
 		}
-
-		apiServer.Handle("/api/bridge/failover", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			if globalBridge == nil {
-				json.NewEncoder(w).Encode(map[string]interface{}{"mode": "master", "failover": false})
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"mode":               "bridge",
-				"upstream_alive":     globalBridge.IsUpstreamAlive(),
-				"failover_active":    globalBridge.IsFailoverActive(),
-				"active_connections": globalBridge.GetActiveConnections(),
-			})
-		})
 
 		apiServer.Handle("/api/ml/weights", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -1017,22 +948,6 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		}
 		cCfg.QUICListenAddr = sc.Chameleon.QUICListenAddr
 		go func() { _ = protocol2.ListenAndServe(ctx, cCfg) }()
-	}
-
-	if sc.Bot.Enabled && db.IsEnabled() {
-		botModule, err := bot.New(&sc.Bot, db.Global())
-		if err != nil {
-			return err
-		}
-		if globalWiraidEngine != nil {
-			botModule.SetWiraidEngine(globalWiraidEngine)
-		}
-		if globalBridgePool != nil {
-			botModule.SetBridgePool(globalBridgePool)
-		}
-		if err := m.Register(botModule); err != nil {
-			return err
-		}
 	}
 
 	if sc.Correlation.Enabled {
@@ -1274,71 +1189,6 @@ func (w *UDPResponseWriter) Write(data []byte) error {
 }
 
 func (w *UDPResponseWriter) RemoteAddr() net.Addr { return w.addr }
-
-func registerBridgeWithMainServer() {
-	cfg := globalServerConfig
-
-	if cfg == nil {
-		return
-	}
-
-	port := "443"
-
-	if len(cfg.Inbounds) > 0 {
-		port = fmt.Sprintf("%d", cfg.Inbounds[0].Port)
-	} else if cfg.Server.ListenAddr != "" {
-		if _, p, err := net.SplitHostPort(cfg.Server.ListenAddr); err == nil {
-			port = p
-		}
-	}
-
-	address := fmt.Sprintf("%s", port)
-
-	reqBody := map[string]string{
-		"address":    address,
-		"provider":   cfg.Bridge.Provider,
-		"region":     cfg.Bridge.Region,
-		"public_key": cfg.Server.PrivateKey,
-		"type":       cfg.Bridge.Type,
-		"token":      cfg.Bridge.RegistrationToken,
-	}
-
-	data, err := json.Marshal(reqBody)
-
-	if err != nil {
-		return
-	}
-
-	client := &http.Client{Timeout: 5 * time.Second}
-
-	url := fmt.Sprintf("https://%s/api/bridge-register", cfg.UpstreamServer)
-
-	requestContentType, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
-
-	requestContentType.Header.Set("Content-Type", "application/json")
-
-	response, err := client.Do(requestContentType)
-
-	if err != nil {
-		url = fmt.Sprintf("http://%s/api/bridge-register", cfg.UpstreamServer)
-
-		newRequest, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
-
-		newRequest.Header.Set("Content-Type", "application/json")
-
-		response, err = client.Do(newRequest)
-	}
-
-	if err != nil {
-		return
-	}
-
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return
-	}
-}
 
 type wiraidProxyDialer struct {
 	eng *wiraid.Engine

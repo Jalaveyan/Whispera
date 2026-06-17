@@ -12,7 +12,6 @@ import (
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"
 	"whispera/common/util"
-	"whispera/core/modules/bridgepool"
 )
 
 func init() {
@@ -186,12 +185,6 @@ func (p *Processor) SetDependencies(
 
 func (p *Processor) SetTUN(tun interfaces.TUNDevice) {
 	p.tun = tun
-}
-
-func (p *Processor) SetBridgeRegistry(reg *bridgepool.Registry) {
-	if p.outboundManager != nil {
-		p.outboundManager.SetBridgeRegistry(reg)
-	}
 }
 
 func (p *Processor) GetOutboundManager() *OutboundManager {

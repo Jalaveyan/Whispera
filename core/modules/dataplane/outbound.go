@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 	"whispera/common/log"
-	"whispera/core/modules/bridgepool"
 	"whispera/core/modules/config"
 	"whispera/core/modules/crypto"
 	"whispera/core/modules/handshake"
@@ -22,7 +21,6 @@ type OutboundManager struct {
 	outboundCfgs map[string]config.OutboundConfig
 	mu           sync.RWMutex
 	log          *logger.Logger
-	bridgeReg    *bridgepool.Registry
 	stealthMode  string
 }
 
@@ -47,9 +45,6 @@ func (c *cascadeConn) Close() error {
 	return err
 }
 
-func (om *OutboundManager) SetBridgeRegistry(reg *bridgepool.Registry) {
-	om.bridgeReg = reg
-}
 
 func (om *OutboundManager) SetStealthMode(mode string) {
 	om.mu.Lock()
@@ -159,11 +154,8 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 
 func (om *OutboundManager) dialCascade(ctx context.Context, hops []string, finalAddr string) (net.Conn, error) {
 	om.mu.RLock()
-	firstMgr, ok := om.outbounds[hops[0]]
+	firstMgr, _ := om.outbounds[hops[0]]
 	om.mu.RUnlock()
-	if !ok {
-		return om.dialBridgeHop(ctx, hops[0], finalAddr)
-	}
 
 	if len(hops) == 1 {
 		return firstMgr.DialStream(ctx, "tcp", finalAddr)
@@ -210,18 +202,6 @@ func (om *OutboundManager) dialCascade(ctx context.Context, hops []string, final
 	return &cascadeConn{Conn: conn, closeFns: closeFns}, nil
 }
 
-func (om *OutboundManager) dialBridgeHop(ctx context.Context, hopTag, _ string) (net.Conn, error) {
-	bridgeID := hopTag
-	if len(bridgeID) > 7 && bridgeID[:7] == "bridge:" {
-		bridgeID = bridgeID[7:]
-	}
-	if om.bridgeReg != nil {
-		if br, err := om.bridgeReg.GetBridge(bridgeID); err == nil && br.IsAlive {
-			return (&net.Dialer{}).DialContext(ctx, "tcp", br.Address)
-		}
-	}
-	return nil, fmt.Errorf("cascade: hop %q not found as outbound or bridge", hopTag)
-}
 
 func (om *OutboundManager) cleanupFns(fns []func()) {
 	for i := len(fns) - 1; i >= 0; i-- {

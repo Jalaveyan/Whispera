@@ -34,7 +34,6 @@ import (
 	socks6 "whispera/core/modules/socks5"
 	tunnel2 "whispera/core/modules/tunnel"
 	"whispera/core/protocol"
-	bridge "whispera/core/selector"
 	"whispera/neural"
 
 	_ "go.uber.org/automaxprocs"
@@ -326,25 +325,7 @@ func main() {
 			serverAddress = net.JoinHostPort(serverAddress, "8443")
 		}
 	}
-
-	var globalBridgeSel *bridge.Selector
-	if cfg.BridgeDiscoveryURL != "" {
-		globalBridgeSel = bridge.NewSelectorWithURL(cfg.BridgeDiscoveryURL)
-		fetchCtx, fetchCancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := globalBridgeSel.FetchBridges(fetchCtx); err != nil {
-			stdlog.Printf("Bridge discovery failed (%v) — connecting directly to %s", err, serverAddress)
-		} else {
-			globalBridgeSel.TestAllBridges(fetchCtx)
-			if best := globalBridgeSel.SelectBest(); best != nil {
-				stdlog.Printf("Bridge selected: %s (%s, %dms)", best.ID, best.Address, best.Latency)
-				serverAddress = best.Address
-			} else {
-				stdlog.Printf("No reachable bridges — connecting directly to %s", serverAddress)
-			}
-		}
-		fetchCancel()
-		globalBridgeSel.StartRefresh(ctx)
-	}
+		
 	asnBypassEnabled := *asnBypass
 	asnBypassFingerprint := *tlsFingerprint
 	if cfg.ASNBypass != nil && cfg.ASNBypass.Enabled {
@@ -978,14 +959,6 @@ func main() {
 						stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
 
 						targetCfg := buildBaseCfg(primaryEntry)
-						if globalBridgeSel != nil && globalBridgeSel.HasBridges() {
-							queryCtx, qcancel := context.WithTimeout(ctx, 5*time.Second)
-							if master := globalBridgeSel.GetClusterMaster(queryCtx); master != nil && master.MasterAddress != "" {
-								targetCfg.ServerAddr = master.MasterAddress
-								targetCfg.ServerAddrTCP = master.MasterAddress
-							}
-							qcancel()
-						}
 
 						restartEntry(primaryEntry, targetCfg)
 						primaryEntry.mu.Lock()
