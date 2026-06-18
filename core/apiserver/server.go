@@ -33,7 +33,6 @@ import (
 	"whispera/common/runtime/registry"
 	"whispera/common/stats"
 	config2 "whispera/core/config"
-	"whispera/core/dhcp"
 	"whispera/core/keylimits"
 
 	"github.com/quic-go/quic-go/http3"
@@ -204,105 +203,114 @@ func (s *Server) SetKeyLimits(m *keylimits.Manager) {
 	s.keyLimits = m
 }
 
+// handleDisabledEndpoint stands in for panel-era admin routes that have no
+// remaining caller (the web panel is gone; the chameleon/CLI key flow
+// bypasses this HTTP API entirely). Kept registered rather than deleted so
+// the underlying handler code survives for potential future use, but
+// unreachable until explicitly re-wired.
+func (s *Server) handleDisabledEndpoint(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, `{"error":"endpoint disabled"}`, http.StatusForbidden)
+}
+
 func (s *Server) registerDefaultRoutes() {
-	s.Handle("POST /api/login", s.handleLogin)
-	s.Handle("POST /api/auth/login", s.handleLogin)
-	s.Handle("POST /api/logout", s.handleLogout)
-	s.Handle("POST /api/v2/auth/login", s.handleLoginV2)
-	s.Handle("POST /api/v2/auth/refresh", s.handleRefreshToken)
-	s.Handle("POST /api/v2/auth/logout", s.handleLogoutV2)
+	s.Handle("POST /api/login", s.handleDisabledEndpoint)
+	s.Handle("POST /api/auth/login", s.handleDisabledEndpoint)
+	s.Handle("POST /api/logout", s.handleDisabledEndpoint)
+	s.Handle("POST /api/v2/auth/login", s.handleDisabledEndpoint)
+	s.Handle("POST /api/v2/auth/refresh", s.handleDisabledEndpoint)
+	s.Handle("POST /api/v2/auth/logout", s.handleDisabledEndpoint)
 
-	s.Handle("GET /api/v1/health", s.handleHealth)
-	s.Handle("GET /api/v1/status", s.handleStatus)
-	s.Handle("GET /api/v1/modules", s.handleModules)
-	s.Handle("GET /api/v1/config", s.handleGetConfig)
+	s.Handle("GET /api/v1/health", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/status", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/modules", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/config", s.handleDisabledEndpoint)
 
-	s.Handle("POST /api/v1/config/update", s.handleUpdateConfig)
-	s.Handle("POST /api/v1/config/reload", s.handleReloadConfig)
-	s.Handle("GET /api/v1/sessions", s.handleGetSessions)
-	s.Handle("DELETE /api/v1/sessions/{id}", s.handleDeleteSession)
-	s.Handle("GET /api/v1/stats", s.handleGetStats)
-	s.Handle("GET /api/v1/system/info", s.handleSystemInfo)
-	s.Handle("GET /api/v1/stats/traffic", s.handleTrafficStats)
-	s.Handle("GET /api/v1/stats/users", s.handleUserStats)
+	s.Handle("POST /api/v1/config/update", s.handleDisabledEndpoint)
+	s.Handle("POST /api/v1/config/reload", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/sessions", s.handleDisabledEndpoint)
+	s.Handle("DELETE /api/v1/sessions/{id}", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/stats", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/system/info", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/stats/traffic", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/stats/users", s.handleDisabledEndpoint)
 
-	s.Handle("GET /api/v1/dhcp/status", s.handleDHCPStatus)
-	s.Handle("GET /api/v1/dhcp/leases", s.handleDHCPLeases)
-	s.Handle("DELETE /api/v1/dhcp/lease", s.handleDHCPRelease)
-	s.Handle("GET /api/users", s.handleGetUsers)
-	s.Handle("POST /api/users/add", s.handleAddUser)
-	s.Handle("POST /api/users", s.handleAddUser)
-	s.Handle("PUT /api/users/{id}", s.handleUpdateUser)
-	s.Handle("POST /api/users/delete", s.handleDeleteUser)
+	s.Handle("GET /api/v1/dhcp/status", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/dhcp/leases", s.handleDisabledEndpoint)
+	s.Handle("DELETE /api/v1/dhcp/lease", s.handleDisabledEndpoint)
+	s.Handle("GET /api/users", s.handleDisabledEndpoint)
+	s.Handle("POST /api/users/add", s.handleDisabledEndpoint)
+	s.Handle("POST /api/users", s.handleDisabledEndpoint)
+	s.Handle("PUT /api/users/{id}", s.handleDisabledEndpoint)
+	s.Handle("POST /api/users/delete", s.handleDisabledEndpoint)
 
-	s.Handle("GET /api/routing/rules", s.handleGetRoutingRules)
-	s.Handle("POST /api/routing/rules/add", s.handleAddRoutingRule)
-	s.Handle("POST /api/routing/rules/delete", s.handleDeleteRoutingRule)
+	s.Handle("GET /api/routing/rules", s.handleDisabledEndpoint)
+	s.Handle("POST /api/routing/rules/add", s.handleDisabledEndpoint)
+	s.Handle("POST /api/routing/rules/delete", s.handleDisabledEndpoint)
 	s.Handle("GET /api/outbounds", s.handleGetOutbounds)
 	s.Handle("POST /api/outbounds/add", s.handleAddOutbound)
 	s.Handle("POST /api/outbounds/delete", s.handleDeleteOutbound)
 
-	s.Handle("GET /api/inbounds", s.handleGetInbounds)
-	s.Handle("GET /api/inbounds/pubkey", s.handleGetInboundPublicKey)
-	s.Handle("POST /api/inbounds/add", s.handleAddInbound)
-	s.Handle("POST /api/inbounds/update", s.handleUpdateInbound)
-	s.Handle("POST /api/inbounds/delete", s.handleDeleteInbound)
+	s.Handle("GET /api/inbounds", s.handleDisabledEndpoint)
+	s.Handle("GET /api/inbounds/pubkey", s.handleDisabledEndpoint)
+	s.Handle("POST /api/inbounds/add", s.handleDisabledEndpoint)
+	s.Handle("POST /api/inbounds/update", s.handleDisabledEndpoint)
+	s.Handle("POST /api/inbounds/delete", s.handleDisabledEndpoint)
 
-	s.Handle("POST /api/keys/generate", s.handleGenerateKeys)
-	s.Handle("POST /api/keys/connection", s.handleGenerateConnectionKey)
-	s.Handle("POST /api/keys/transport", s.handleGenerateTransportKeys)
-	s.Handle("POST /api/keys/multi-transport", s.handleGenerateMultiTransportKeys)
-	s.Handle("POST /api/keys/revoke", s.handleRevokeKey)
-	s.Handle("GET /api/keys/revoked", s.handleListRevokedKeys)
-	s.Handle("POST /api/keys/check", s.handleCheckKey)
-	s.Handle("GET /api/keys/ping", s.handlePingKey)
-	s.Handle("GET /api/keys/ping/all", s.handlePingAllKeys)
+	s.Handle("POST /api/keys/generate", s.handleDisabledEndpoint)
+	s.Handle("POST /api/keys/connection", s.handleDisabledEndpoint)
+	s.Handle("POST /api/keys/transport", s.handleDisabledEndpoint)
+	s.Handle("POST /api/keys/multi-transport", s.handleDisabledEndpoint)
+	s.Handle("POST /api/keys/revoke", s.handleDisabledEndpoint)
+	s.Handle("GET /api/keys/revoked", s.handleDisabledEndpoint)
+	s.Handle("POST /api/keys/check", s.handleDisabledEndpoint)
+	s.Handle("GET /api/keys/ping", s.handleDisabledEndpoint)
+	s.Handle("GET /api/keys/ping/all", s.handleDisabledEndpoint)
 
-	s.Handle("GET /api/key-limits", s.handleKeyLimitsList)
-	s.Handle("GET /api/key-limits/{id}", s.handleKeyLimitsGet)
-	s.Handle("POST /api/key-limits/{id}", s.handleKeyLimitsSet)
-	s.Handle("DELETE /api/key-limits/{id}", s.handleKeyLimitsClear)
-	s.Handle("GET /api/key-limits-defaults", s.handleKeyLimitsDefaults)
-	s.Handle("POST /api/key-limits-defaults", s.handleKeyLimitsSetDefaults)
+	s.Handle("GET /api/key-limits", s.handleDisabledEndpoint)
+	s.Handle("GET /api/key-limits/{id}", s.handleDisabledEndpoint)
+	s.Handle("POST /api/key-limits/{id}", s.handleDisabledEndpoint)
+	s.Handle("DELETE /api/key-limits/{id}", s.handleDisabledEndpoint)
+	s.Handle("GET /api/key-limits-defaults", s.handleDisabledEndpoint)
+	s.Handle("POST /api/key-limits-defaults", s.handleDisabledEndpoint)
 
-	s.Handle("GET /api/subscriptions", s.handleGetSubscriptions)
-	s.Handle("POST /api/subscriptions/add", s.handleAddSubscription)
-	s.Handle("POST /api/subscriptions/update", s.handleUpdateSubscription)
-	s.Handle("POST /api/subscriptions/delete", s.handleDeleteSubscription)
+	s.Handle("GET /api/subscriptions", s.handleDisabledEndpoint)
+	s.Handle("POST /api/subscriptions/add", s.handleDisabledEndpoint)
+	s.Handle("POST /api/subscriptions/update", s.handleDisabledEndpoint)
+	s.Handle("POST /api/subscriptions/delete", s.handleDisabledEndpoint)
 	s.Handle("GET /sub/{token}", s.handleServeSubscription)
 
-	s.Handle("GET /api/firewall/status", s.handleFirewallStatus)
-	s.Handle("POST /api/firewall/rules", s.handleFirewallAddRule)
-	s.Handle("DELETE /api/firewall/rules", s.handleFirewallDeleteRule)
-	s.Handle("POST /api/firewall/toggle", s.handleFirewallToggle)
+	s.Handle("GET /api/firewall/status", s.handleDisabledEndpoint)
+	s.Handle("POST /api/firewall/rules", s.handleDisabledEndpoint)
+	s.Handle("DELETE /api/firewall/rules", s.handleDisabledEndpoint)
+	s.Handle("POST /api/firewall/toggle", s.handleDisabledEndpoint)
 	s.Handle("GET /api/backup", s.handleGetBackup)
 	s.Handle("GET /api/backup/full", s.handleGetBackupFull)
 	s.Handle("GET /api/backup/list", s.handleBackupList)
 	s.Handle("POST /api/backup/restore", s.handleRestoreBackup)
 
-	s.Handle("GET /api/sessions", s.handleGetSessionsAPI)
-	s.Handle("POST /api/sessions/{id}/kill", s.handleKillSessionAPI)
-	s.Handle("GET /api/stats", s.handleGetStatsAPI)
-	s.Handle("GET /api/stats/live", s.handleStatsLive)
-	s.Handle("GET /api/stats/traffic", s.handleTrafficStatsAPI)
-	s.Handle("GET /api/stats/user/{id}", s.handleGetUserTrafficAPI)
+	s.Handle("GET /api/sessions", s.handleDisabledEndpoint)
+	s.Handle("POST /api/sessions/{id}/kill", s.handleDisabledEndpoint)
+	s.Handle("GET /api/stats", s.handleDisabledEndpoint)
+	s.Handle("GET /api/stats/live", s.handleDisabledEndpoint)
+	s.Handle("GET /api/stats/traffic", s.handleDisabledEndpoint)
+	s.Handle("GET /api/stats/user/{id}", s.handleDisabledEndpoint)
 
-	s.Handle("GET /api/system/info", s.handleSystemInfoAPI)
-	s.Handle("POST /api/admin/update", s.handleAdminUpdate)
-	s.Handle("GET /api/system/update-check", s.handleUpdateCheck)
-	s.Handle("GET /api/logs", s.handleGetLogsAPI)
+	s.Handle("GET /api/system/info", s.handleDisabledEndpoint)
+	s.Handle("POST /api/admin/update", s.handleDisabledEndpoint)
+	s.Handle("GET /api/system/update-check", s.handleDisabledEndpoint)
+	s.Handle("GET /api/logs", s.handleDisabledEndpoint)
 
-	s.Handle("GET /api/ml/config", s.handleMLConfig)
-	s.Handle("POST /api/ml/token/rotate", s.handleMLTokenRotate)
-	s.Handle("GET /api/events", s.handleGetEvents)
+	s.Handle("GET /api/ml/config", s.handleDisabledEndpoint)
+	s.Handle("POST /api/ml/token/rotate", s.handleDisabledEndpoint)
+	s.Handle("GET /api/events", s.handleDisabledEndpoint)
 
-	s.Handle("GET /api/fingerprints", s.handleGetFingerprints)
-	s.Handle("POST /api/fingerprints/set", s.handleSetFingerprint)
-	s.Handle("GET /api/failover/status", s.handleFailoverStatus)
+	s.Handle("GET /api/fingerprints", s.handleDisabledEndpoint)
+	s.Handle("POST /api/fingerprints/set", s.handleDisabledEndpoint)
+	s.Handle("GET /api/failover/status", s.handleDisabledEndpoint)
 
-	s.Handle("GET /api/v1/speed/ping", s.handleSpeedPing)
-	s.Handle("GET /api/v1/speed/download", s.handleSpeedDownload)
-	s.Handle("POST /api/v1/speed/upload", s.handleSpeedUpload)
+	s.Handle("GET /api/v1/speed/ping", s.handleDisabledEndpoint)
+	s.Handle("GET /api/v1/speed/download", s.handleDisabledEndpoint)
+	s.Handle("POST /api/v1/speed/upload", s.handleDisabledEndpoint)
 }
 
 func (s *Server) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
@@ -1063,7 +1071,7 @@ func (s *Server) getClientIP(r *http.Request) string {
 	return remoteIP
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	status := map[string]interface{}{
 		"version": ModuleVersion,
 		"uptime":  time.Since(s.LastActivity()).String(),
@@ -1345,59 +1353,6 @@ func (s *Server) handleUserStats(w http.ResponseWriter, r *http.Request) {
 		"count": len(allStats),
 		"users": allStats,
 	})
-}
-
-var globalDHCPManager *dhcp.Manager
-
-func (s *Server) handleDHCPStatus(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	if globalDHCPManager == nil {
-		s.jsonError(w, http.StatusServiceUnavailable, "DHCP not initialized")
-		return
-	}
-
-	s.jsonOK(w, globalDHCPManager.GetStats())
-}
-
-func (s *Server) handleDHCPLeases(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	if globalDHCPManager == nil {
-		s.jsonError(w, http.StatusServiceUnavailable, "DHCP not initialized")
-		return
-	}
-
-	leases := globalDHCPManager.GetAllLeases()
-	s.jsonOK(w, map[string]interface{}{
-		"count":  len(leases),
-		"leases": leases,
-	})
-}
-
-func (s *Server) handleDHCPRelease(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	if globalDHCPManager == nil {
-		s.jsonError(w, http.StatusServiceUnavailable, "DHCP not initialized")
-		return
-	}
-
-	clientID := r.URL.Query().Get("client_id")
-	if clientID == "" {
-		s.jsonError(w, http.StatusBadRequest, "client_id required")
-		return
-	}
-
-	if err := globalDHCPManager.ReleaseByClient(clientID); err != nil {
-		s.jsonError(w, http.StatusNotFound, err.Error())
-		return
-	}
-
-	s.jsonOK(w, map[string]string{"message": "Lease released"})
 }
 
 type User struct {
@@ -3265,7 +3220,7 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 	return New(config)
 }
 
-func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, _ *http.Request) {
 	s.jsonOK(w, map[string]interface{}{
 		"current_version": ModuleVersion,
 		"update_enabled":  true,

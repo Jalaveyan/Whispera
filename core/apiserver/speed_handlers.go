@@ -14,7 +14,7 @@ const (
 	speedChunkSize     = 32 * 1024
 )
 
-func (s *Server) handleSpeedPing(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleSpeedPing(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	s.jsonOK(w, map[string]int64{"ts": time.Now().UnixMilli()})
 }

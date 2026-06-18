@@ -21,14 +21,15 @@ type ClientConfig struct {
 }
 
 type ServerConfig struct {
-	ListenAddr    string
-	TLSCert       string
-	TLSKey        string
-	Domain        string
-	ACMEDir       string
-	DecoyOrigin   string
-	AsymBiasRatio float64
-	SharedSecret  []byte
+	ListenAddr       string
+	ExtraListenAddrs []string
+	TLSCert          string
+	TLSKey           string
+	Domain           string
+	ACMEDir          string
+	DecoyOrigin      string
+	AsymBiasRatio    float64
+	SharedSecret     []byte
 
 	QUICListenAddr string
 

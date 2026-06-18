@@ -1,25 +1,4 @@
-inbounds:
-  - tag: "tcp-main"
-    protocol: "whispera"
-    listen: "0.0.0.0"
-    port: 8444
-    stream_settings:
-      network: "tcp"
-      security: "none"
-
-  - tag: "websocket-main"
-    protocol: "whispera"
-    listen: "0.0.0.0"
-    port: 8445
-    stream_settings:
-      network: "websocket"
-      security: "none"
-      ws:
-        path: "/ws"
-
 transport:
-  selector_mode: "auto"
-
   udp:
     enabled: true
     listen_addr: ":8443"
@@ -51,15 +30,10 @@ logging:
   level: "info"
   format: "json"
 
-metrics:
-  enabled: true
-  listen_addr: ":9090"
-  path: "/metrics"
-
 api:
   enabled: true
   listen_addr: ":8080"
-  web_root: "c:/Whispera-main/web"
+  web_root: ""
   enable_cors: true
   auth_token: "whispera_admin_token"
   admin_username: "admin"
@@ -68,15 +42,8 @@ api:
 chameleon:
   enabled: true
   listen_addr: ":443"
-  # Автоматический сертификат Let's Encrypt (рекомендуется):
-  domain: ""          # e.g. "vpn.example.com" — заполнить домен сервера
+  domain: ""
   acme_dir: "/var/lib/whispera/acme"
-  # Либо ручные пути к сертификату (приоритет над domain):
   tls_cert: ""
   tls_key: ""
-  # decoy_origin: upstream для всех не-VPN запросов (любой GET, неавторизованный POST).
-  # Указывайте, если на 443 раньше стоял публичный сайт через nginx — перенесите nginx
-  # на loopback (например 127.0.0.1:80) и пропишите сюда:
-  #   decoy_origin: "http://127.0.0.1:80"
-  # Если пусто — chameleon отдаст встроенные decoy-страницы.
   decoy_origin: ""

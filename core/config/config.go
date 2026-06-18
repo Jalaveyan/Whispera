@@ -346,6 +346,7 @@ type ChameleonConfig struct {
 	GANMaxPadding  int    `yaml:"gan_max_padding" json:"gan_max_padding"`
 	Secret         string `yaml:"secret" json:"secret"`
 	QUICListenAddr string `yaml:"quic_listen_addr" json:"quic_listen_addr"`
+	ExtraPorts     []int  `yaml:"extra_ports,omitempty" json:"extra_ports,omitempty"`
 }
 
 type ServerSettings struct {

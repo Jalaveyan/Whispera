@@ -50,36 +50,17 @@ refresh_config() {
     return 0
 }
 
-_enable_tcp8443_in_config() {
-    local cfg="${CONF_PATH}/config.yaml"
-    [[ -f "$cfg" ]] || return
-    if awk '/^  tcp:/{f=1} f && /listen_addr:.*:8443/{a=1} f && /enabled: true/{b=1} /^  [a-z]/ && !/^  tcp:/{f=0} END{exit !(a&&b)}' "$cfg" 2>/dev/null; then
-        return
-    fi
-    local changed=0
-    if grep -q 'listen_addr: ":8443"' "$cfg"; then
-        awk '
-            /^  tcp:/ { in_tcp=1 }
-            in_tcp && /listen_addr:/ { sub(/":[0-9]+"/, "\":8443\""); changed=1 }
-            in_tcp && /enabled: false/ { sub(/false/, "true"); changed=1 }
-            /^  [a-z]/ && !/^  tcp:/ { in_tcp=0 }
-            { print }
-        ' "$cfg" > "${cfg}.tmp" && mv "${cfg}.tmp" "$cfg"
-        changed=1
-    fi
-    if [[ $changed -eq 1 ]]; then
-        refresh_config "$cfg"
-        log_success "TCP transport enabled on :8443 in config.yaml"
-    fi
-}
-
 _enable_chameleon_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
 
-    local cert="" key=""
-    cert=$(grep -hE '^[[:space:]]*ssl_certificate[[:space:]]' /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
-    key=$(grep -hE '^[[:space:]]*ssl_certificate_key[[:space:]]' /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
+    local cert="${CONF_PATH}/chameleon.crt" key="${CONF_PATH}/chameleon.key"
+    if [[ ! -f "$cert" || ! -f "$key" ]] && command -v openssl &>/dev/null; then
+        openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$key" -out "$cert" \
+            -days 3650 -subj "/CN=whispera" 2>/dev/null
+        chmod 600 "$key"
+    fi
 
     if grep -q "^chameleon:" "$cfg"; then
         sed -i '/^chameleon:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
@@ -107,16 +88,16 @@ text = re.sub(r'^chameleon:.*?(?=\n\S|\Z)', patch_block, text, flags=re.S|re.M)
 with open(path, 'w') as f:
     f.write(text)
 PYEOF
-            log_info "Chameleon: injected TLS cert from nginx into existing config"
+            log_info "Chameleon: injected self-signed TLS cert into existing config"
         fi
     else
-        printf '\nchameleon:\n  enabled: true\n  listen_addr: ":9443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
+        printf '\nchameleon:\n  enabled: true\n  listen_addr: ":443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
             "${cert}" "${key}" >> "$cfg"
     fi
     if command -v ufw &>/dev/null; then
-        ufw allow 9443/tcp >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
     elif command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port=9443/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
         firewall-cmd --reload >/dev/null 2>&1 || true
     fi
     refresh_config "$cfg"
@@ -653,8 +634,6 @@ generate_panel_cert() {
 setup_nginx_proxy() {
     local SERVER_IP
     SERVER_IP=$(get_public_ip)
-    local CERT="$CONF_PATH/panel.crt"
-    local KEY="$CONF_PATH/panel.key"
 
     if ! command -v nginx &>/dev/null; then
         log_info "Installing nginx..."
@@ -676,7 +655,7 @@ setup_nginx_proxy() {
         fi
     fi
     if ! command -v nginx &>/dev/null; then
-        log_warn "nginx install failed (no outbound? unsupported distro) — panel unreachable on :443 until nginx is installed"
+        log_warn "nginx install failed (no outbound? unsupported distro) — chameleon decoy backend unavailable until nginx is installed"
         return
     fi
 
@@ -687,37 +666,18 @@ limit_req_zone $binary_remote_addr zone=panel_api:10m  rate=60r/s;
 limit_req_status 429;
 RLCONF
 
-    if ! grep -q "whispera-ui" /etc/hosts; then
-        echo "127.0.0.1 whispera-ui" >> /etc/hosts
-        log_info "Added whispera-ui to /etc/hosts"
-    fi
-
-    local LISTEN_BLOCK="    listen 443 ssl default_server;
-    server_name _;
-
-    ssl_certificate     ${CERT};
-    ssl_certificate_key ${KEY};
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always;"
-
-    local cfg="${CONF_PATH}/config.yaml"
-    if [[ -f "$cfg" ]] && grep -qE '^[[:space:]]*enabled:[[:space:]]*true' <(sed -n '/^chameleon:/,/^[a-z]/p' "$cfg"); then
-        local chm_listen
-        chm_listen=$(sed -n '/^chameleon:/,/^[a-z]/p' "$cfg" | grep -E '^[[:space:]]*listen_addr:' | head -1 | sed -E 's/.*listen_addr:[[:space:]]*"?([^"]*)"?.*/\1/')
-        if [[ -z "$chm_listen" || "$chm_listen" == *:443 || "$chm_listen" == ":443" ]]; then
-            LISTEN_BLOCK="    listen 127.0.0.1:80;
-    server_name _;"
-            log_info "Chameleon owns :443 — binding panel nginx to 127.0.0.1:80 (decoy backend)"
-        fi
+    mkdir -p /var/www/whispera-decoy
+    if [[ ! -f /var/www/whispera-decoy/index.html ]]; then
+        cat > /var/www/whispera-decoy/index.html <<'DECOYHTML'
+<!doctype html><html><head><title>Welcome</title></head><body><h1>It works.</h1></body></html>
+DECOYHTML
     fi
 
     cat > /etc/nginx/conf.d/whispera-ui.conf <<NGINX
 server {
-${LISTEN_BLOCK}
-
-    root ${DAT_PATH}/panel/public;
+    listen 127.0.0.1:80;
+    server_name whispera-ui ${SERVER_IP};
+    root /var/www/whispera-decoy;
 
     location /sub/ {
         proxy_pass         http://127.0.0.1:8080;
@@ -764,7 +724,7 @@ ${LISTEN_BLOCK}
     }
 
     location / {
-        try_files \$uri \$uri/ /index.html;
+        try_files \$uri \$uri/ =404;
     }
 }
 NGINX
@@ -789,9 +749,9 @@ NGINX
     if nginx -t 2>/dev/null; then
         systemctl enable nginx >/dev/null 2>&1
         if systemctl restart nginx 2>/dev/null; then
-            log_success "Nginx reverse proxy configured: https://whispera-ui/"
+            log_success "Nginx decoy/reverse-proxy backend configured on 127.0.0.1:80"
         else
-            log_warn "Nginx failed to restart — port 443 may be in use. Check: journalctl -u nginx"
+            log_warn "Nginx failed to restart — port 80 may be in use. Check: journalctl -u nginx"
         fi
     else
         log_warn "Nginx config test failed — check /etc/nginx/conf.d/whispera-ui.conf"
@@ -1011,16 +971,7 @@ show_extras_menu() {
         echo ""
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
         _row "          WHISPERA MANAGEMENT MENU"
-        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row "  Web Panel:  https://${SRV_IP}/"
-        _row "  Config:     /etc/whispera/config.yaml"
-        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row "  BRIDGE MANAGEMENT"
-        _row " 19.  Show bridge token & install command"
-        _row " 20.  Add bridge manually (enter IP + token)"
-        _row " 21.  List registered bridges"
-        _row " 22.  SSH OTP       - One-time SSH key for bridge admin (1h)"
-        _row " 23.  Panel Password  - Change panel Basic Auth password"
+        _row "  Config: /etc/whispera/config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
         _row "  1.  BBR           - Faster TCP (recommended)"
@@ -1034,7 +985,6 @@ show_extras_menu() {
         _row "  9.  PostgreSQL    - User accounts, traffic, billing"
         _row " 10.  Telegram      - Configure notifications"
         _row " 11.  Backups       - Daily database backups"
-        _row "  a.  ALL (1,5,8,9,11) - Install recommended stack"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  SERVICE MANAGEMENT"
         _row " 12.  Start         - Start Whispera service"
@@ -1043,8 +993,8 @@ show_extras_menu() {
         _row " 15.  Status        - Check service status"
         _row " 16.  View Logs     - Watch live logs"
         _row " 17.  Edit Config   - Modify config.yaml"
-        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row " 18.  Update        - Update"
+        _row " 19.  Change pass   - Generate a new password"
         _row "  0.  Exit"
         echo -e "${BLUE}╚${SEP}╝${PLAIN}"
         echo ""
@@ -1062,7 +1012,6 @@ show_extras_menu() {
             9) setup_postgres ;;
             10) setup_telegram ;;
             11) setup_backups ;;
-            a|A) setup_bbr; setup_sysctl; setup_redis; setup_postgres; setup_backups ;;
             12) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
             13) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
             14) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
@@ -1071,40 +1020,6 @@ show_extras_menu() {
             17) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
             18) bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/update.sh) ;;
             19)
-                local tok=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
-                if [[ -z "$tok" ]]; then
-                    log_warn "Bridge token not found at $CONF_PATH/bridge.token"
-                else
-                    echo ""
-                    echo -e "${GREEN}Bridge token:${PLAIN} $tok"
-                    echo ""
-                    echo -e "${GREEN}Install bridge on another server:${PLAIN}"
-                    echo -e "  curl -sL https://${SRV_IP}:8080/install-bridge.sh | bash -s -- ${SRV_IP}:8443 $tok"
-                fi
-                ;;
-            20)
-                read -rp "  Bridge IP:port (e.g. 1.2.3.4:8443): " BR_ADDR
-                read -rp "  Bridge token: " BR_TOK
-                if [[ -n "$BR_ADDR" && -n "$BR_TOK" ]]; then
-                    curl -sk -X POST "https://127.0.0.1:8080/api/bridges" \
-                        -H "Content-Type: application/json" \
-                        -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" \
-                        -d "{\"address\":\"$BR_ADDR\",\"token\":\"$BR_TOK\"}" && \
-                        log_success "Bridge $BR_ADDR registered" || log_err "Failed to register bridge"
-                else
-                    log_warn "Address and token are required"
-                fi
-                ;;
-            21)
-                curl -sk "https://127.0.0.1:8080/api/bridges" \
-                    -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" | \
-                    jq . 2>/dev/null || cat || \
-                    log_err "Failed to fetch bridges (is Whispera running?)"
-                ;;
-            22)
-                gen_bridge_ssh_otp 3600
-                ;;
-            23)
                 read -rp "  New password (leave empty to generate): " NEW_PASS
                 if [[ -z "$NEW_PASS" ]]; then
                     NEW_PASS=$(gen_password 20)
@@ -1114,9 +1029,6 @@ show_extras_menu() {
                 chmod 600 "$CONF_PATH/admin.pass"
                 nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true
                 log_success "Panel password updated. User: admin / Password: ${NEW_PASS}"
-                ;;
-            24)
-                log_info "Panel is static — no bundle integrity check needed"
                 ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
@@ -1419,7 +1331,6 @@ do_update() {
         systemctl daemon-reload
     fi
     _enable_ml_in_config
-    _enable_tcp8443_in_config
     _enable_chameleon_in_config
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then

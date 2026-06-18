@@ -1352,22 +1352,45 @@ generate_config() {
     else
         log_warn "Skipping admin creation (Postgres not configured)"
     fi
-    
+
+    local CHM_CERT="$CONF_PATH/chameleon.crt"
+    local CHM_KEY="$CONF_PATH/chameleon.key"
+    if [[ ! -f "$CHM_CERT" || ! -f "$CHM_KEY" ]]; then
+        log_info "Generating self-signed TLS certificate for chameleon..."
+        if command -v openssl &>/dev/null; then
+            openssl req -x509 -newkey rsa:2048 -nodes \
+                -keyout "$CHM_KEY" -out "$CHM_CERT" \
+                -days 3650 -subj "/CN=whispera" 2>/dev/null
+            chmod 600 "$CHM_KEY"
+            log_success "Chameleon TLS cert generated: $CHM_CERT"
+        else
+            log_warn "openssl not found — chameleon will run without TLS until a cert is provided"
+        fi
+    fi
+
     cat > "$CONF_PATH/config.yaml" <<EOF
 server:
   name: whispera-server
-  listen_addr: "0.0.0.0:8443"
+  listen_addr: "0.0.0.0:443"
   private_key: "$PRIVATE_KEY"
   mtu: 1420
   workers: 8
 
 transport:
   udp:
-    enabled: true
+    enabled: false
     listen_addr: ":8443"
   tcp:
-    enabled: true
+    enabled: false
     listen_addr: ":8443"
+
+chameleon:
+  enabled: true
+  listen_addr: ":443"
+  tls_cert: "$CHM_CERT"
+  tls_key: "$CHM_KEY"
+  domain: ""
+  acme_dir: "/var/lib/whispera/acme"
 
 network:
   tun_name: "Whispera"
@@ -1387,7 +1410,7 @@ session:
 
 api:
   enabled: true
-  listen_addr: ":8080"
+  listen_addr: "127.0.0.1:8080"
   web_root: ""
   admin_username: "admin"
   admin_password_hash: "$ADMIN_HASH"
@@ -1458,8 +1481,6 @@ generate_panel_cert() {
 setup_nginx_proxy() {
     local SERVER_IP
     SERVER_IP=$(get_public_ip)
-    local CERT="$CONF_PATH/panel.crt"
-    local KEY="$CONF_PATH/panel.key"
 
     if ! command -v nginx &>/dev/null; then
         log_info "Installing nginx..."
@@ -1481,7 +1502,7 @@ setup_nginx_proxy() {
         fi
     fi
     if ! command -v nginx &>/dev/null; then
-        log_warn "nginx install failed (no outbound? unsupported distro) — panel unreachable on :443 until nginx is installed"
+        log_warn "nginx install failed (no outbound? unsupported distro) — chameleon decoy backend unavailable until nginx is installed"
         return
     fi
 
@@ -1492,44 +1513,21 @@ limit_req_zone $binary_remote_addr zone=panel_api:10m  rate=60r/s;
 limit_req_status 429;
 RLCONF
 
-    if ! grep -q "whispera-ui" /etc/hosts; then
-        echo "127.0.0.1 whispera-ui" >> /etc/hosts
-        log_info "Added whispera-ui to /etc/hosts"
+    mkdir -p /var/www/whispera-decoy
+    if [[ ! -f /var/www/whispera-decoy/index.html ]]; then
+        cat > /var/www/whispera-decoy/index.html <<'DECOYHTML'
+<!doctype html><html><head><title>Welcome</title></head><body><h1>It works.</h1></body></html>
+DECOYHTML
     fi
 
-    local SERVER_BLOCK="server {
-    listen 80;
-    server_name whispera-ui ${SERVER_IP};
-    return 301 https://\$host\$request_uri;
-}
-
+    # Chameleon owns the public :443 listener; nginx is only an internal
+    # decoy backend (chameleon.decoy_origin) plus a reverse proxy for /sub/
+    # and /api/, reachable only via chameleon's passthrough on 127.0.0.1.
+    cat > /etc/nginx/conf.d/whispera-ui.conf <<NGINX
 server {
-    listen 443 ssl;
-    server_name whispera-ui ${SERVER_IP};
-    root ${DAT_PATH}/panel/public;
-
-    ssl_certificate     ${CERT};
-    ssl_certificate_key ${KEY};
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always;"
-
-    local cfg="${CONF_PATH}/config.yaml"
-    if [[ -f "$cfg" ]] && grep -qE '^[[:space:]]*enabled:[[:space:]]*true' <(sed -n '/^chameleon:/,/^[a-z]/p' "$cfg"); then
-        local chm_listen
-        chm_listen=$(sed -n '/^chameleon:/,/^[a-z]/p' "$cfg" | grep -E '^[[:space:]]*listen_addr:' | head -1 | sed -E 's/.*listen_addr:[[:space:]]*"?([^"]*)"?.*/\1/')
-        if [[ -z "$chm_listen" || "$chm_listen" == *:443 || "$chm_listen" == ":443" ]]; then
-            SERVER_BLOCK="server {
     listen 127.0.0.1:80;
     server_name whispera-ui ${SERVER_IP};
-    root ${DAT_PATH}/panel/public;"
-            log_info "Chameleon owns :443 — binding panel nginx to 127.0.0.1:80 (decoy backend)"
-        fi
-    fi
-
-    cat > /etc/nginx/conf.d/whispera-ui.conf <<NGINX
-${SERVER_BLOCK}
+    root /var/www/whispera-decoy;
 
     location /sub/ {
         proxy_pass         http://127.0.0.1:8080;
@@ -1576,7 +1574,7 @@ ${SERVER_BLOCK}
     }
 
     location / {
-        try_files \$uri \$uri/ /index.html;
+        try_files \$uri \$uri/ =404;
     }
 }
 NGINX
@@ -1623,7 +1621,7 @@ setup_systemd() {
 
     if ! has_systemd; then
         log_warn "No systemd detected (Alpine/OpenRC?). User & config are set up, but service units were NOT installed."
-        log_warn "Start manually: $BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080"
+        log_warn "Start manually: $BIN_PATH/whispera -config $CONF_PATH/config.yaml -api 127.0.0.1:8080"
         return 0
     fi
 
@@ -1642,7 +1640,7 @@ Group=whispera
 WorkingDirectory=$WORK_DIR
 Environment=WHISPERA_MASK_LOGS=true
 EnvironmentFile=-$INTEGRITY_ENV_FILE
-ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080
+ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api 127.0.0.1:8080
 Restart=always
 RestartSec=5
 LimitNOFILE=infinity
@@ -1718,9 +1716,13 @@ _enable_chameleon_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
 
-    local cert="" key=""
-    cert=$(grep -hE '^[[:space:]]*ssl_certificate[[:space:]]' /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
-    key=$(grep -hE '^[[:space:]]*ssl_certificate_key[[:space:]]' /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
+    local cert="${CONF_PATH}/chameleon.crt" key="${CONF_PATH}/chameleon.key"
+    if [[ ! -f "$cert" || ! -f "$key" ]] && command -v openssl &>/dev/null; then
+        openssl req -x509 -newkey rsa:2048 -nodes \
+            -keyout "$key" -out "$cert" \
+            -days 3650 -subj "/CN=whispera" 2>/dev/null
+        chmod 600 "$key"
+    fi
 
     if grep -q "^chameleon:" "$cfg"; then
         sed -i '/^chameleon:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
@@ -1748,16 +1750,16 @@ text = re.sub(r'^chameleon:.*?(?=\n\S|\Z)', patch_block, text, flags=re.S|re.M)
 with open(path, 'w') as f:
     f.write(text)
 PYEOF
-            log_info "Chameleon: injected TLS cert from nginx into existing config"
+            log_info "Chameleon: injected self-signed TLS cert into existing config"
         fi
     else
-        printf '\nchameleon:\n  enabled: true\n  listen_addr: ":9443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
+        printf '\nchameleon:\n  enabled: true\n  listen_addr: ":443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
             "${cert}" "${key}" >> "$cfg"
     fi
     if command -v ufw &>/dev/null; then
-        ufw allow 9443/tcp >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
     elif command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port=9443/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
         firewall-cmd --reload >/dev/null 2>&1 || true
     fi
     refresh_config "$cfg"
@@ -1799,36 +1801,21 @@ setup_firewall() {
         ufw default allow outgoing >/dev/null 2>&1 || true
 
         ufw allow ssh >/dev/null 2>&1 || true
-        ufw allow 8443/tcp >/dev/null 2>&1 || true
-        ufw allow 8443/udp >/dev/null 2>&1 || true
-        ufw allow 8080/tcp >/dev/null 2>&1 || true
-        ufw allow 9443/tcp >/dev/null 2>&1 || true
         ufw allow 80/tcp >/dev/null 2>&1 || true
         ufw allow 443/tcp >/dev/null 2>&1 || true
 
-        ufw allow from 127.0.0.1 to any port 3000 >/dev/null 2>&1 || true
-        ufw deny 3000/tcp >/dev/null 2>&1 || true
-
         ufw --force enable >/dev/null 2>&1 || true
-        log_success "UFW configured (default deny incoming)"
-        log_info "Panel port 3000 restricted to localhost only"
+        log_success "UFW configured (default deny incoming; 22/80/443 only — admin API stays on 127.0.0.1)"
     elif command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port=8443/tcp >/dev/null 2>&1 || true
-        firewall-cmd --permanent --add-port=8443/udp >/dev/null 2>&1 || true
-        firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
-        firewall-cmd --permanent --add-port=9443/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
-        firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="127.0.0.1" port protocol="tcp" port="3000" accept' >/dev/null 2>&1 || true
         firewall-cmd --reload >/dev/null 2>&1 || true
         log_success "Firewalld configured"
     elif command -v iptables &>/dev/null; then
-        for p in 22 8443 8080 9443 80 443; do
+        for p in 22 80 443; do
             iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || \
             iptables -A INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || true
         done
-        iptables -C INPUT -p udp --dport 8443 -j ACCEPT 2>/dev/null || \
-        iptables -A INPUT -p udp --dport 8443 -j ACCEPT 2>/dev/null || true
         log_success "iptables rules added (not persistent without netfilter-persistent)"
     else
         log_warn "No firewall found, skipping"
@@ -2042,7 +2029,6 @@ main() {
     install_cli_wrapper
     setup_network
     setup_firewall
-    generate_panel_cert
     setup_systemd
     setup_nginx_proxy
 

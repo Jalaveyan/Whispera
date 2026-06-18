@@ -440,6 +440,16 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		srv.Close()
 	}()
 
+	for _, extraAddr := range cfg.ExtraListenAddrs {
+		extraAddr := extraAddr
+		extraLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", extraAddr)
+		if err != nil {
+			continue
+		}
+		extraTLSLn := tls.NewListener(&noDelayListener{TCPListener: extraLn.(*net.TCPListener)}, tlsCfg)
+		go srv.Serve(extraTLSLn)
+	}
+
 	rawLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("chameleon: listen: %w", err)

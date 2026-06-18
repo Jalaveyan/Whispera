@@ -128,7 +128,7 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := openFirewallPort(req.Port); err != nil {
+	if err := OpenFirewallPort(req.Port); err != nil {
 	}
 
 	if portOccupiedByExistingInbound(cfgProvider, req) {
@@ -342,7 +342,9 @@ func base64Encode(data []byte) string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
-func openFirewallPort(port int) error {
+// OpenFirewallPort opens the given port for both TCP and UDP via ufw.
+// Used both from the HTTP inbound-management handlers and the create-key CLI.
+func OpenFirewallPort(port int) error {
 	if port <= 0 || port > 65535 {
 		return fmt.Errorf("invalid port %d", port)
 	}

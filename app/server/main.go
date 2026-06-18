@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 	"whispera/app/db"
+	"whispera/common/ipdetect"
 	"whispera/common/log"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
@@ -301,6 +302,15 @@ func acceptBackoff(d *time.Duration) {
 	}
 }
 
+func stripURLScheme(publicURL string) string {
+	s := strings.TrimPrefix(strings.TrimPrefix(publicURL, "https://"), "http://")
+	s = strings.TrimRight(s, "/")
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		return h
+	}
+	return s
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		cmd := strings.TrimSpace(os.Args[1])
@@ -382,6 +392,209 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Printf("User %s is now an admin\n", *email)
+			os.Exit(0)
+		case "create-key":
+			createKeyCmd := flag.NewFlagSet("create-key", flag.ExitOnError)
+			user := createKeyCmd.String("user", "", "User identifier (used as the chameleon auth username)")
+			port := createKeyCmd.Int("port", 0, "Dedicated chameleon listen port for this user")
+			cfgPath := createKeyCmd.String("config", "/etc/whispera/config.yaml", "Path to config.yaml")
+			trafficLimit := createKeyCmd.Int64("traffic-limit", 0, "Traffic limit in bytes (0 = unlimited)")
+
+			createKeyCmd.Parse(os.Args[2:])
+
+			if *user == "" || *port == 0 {
+				fmt.Fprintln(os.Stderr, "whispera create-key -user <name> -port <port> [-config <path>] [-traffic-limit <bytes>]")
+				os.Exit(1)
+			}
+			if *port < 1 || *port > 65535 {
+				fmt.Fprintf(os.Stderr, "Error: invalid port %d\n", *port)
+				os.Exit(1)
+			}
+
+			cfgProvider, err := config.New(*cfgPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if err := cfgProvider.Load(*cfgPath); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to load %s: %v\n", *cfgPath, err)
+				os.Exit(1)
+			}
+			sc := cfgProvider.GetConfig()
+
+			_, chmPortStr, _ := net.SplitHostPort(sc.Chameleon.ListenAddr)
+			chmPort, _ := strconv.Atoi(chmPortStr)
+
+			portTaken := *port == chmPort
+			for _, in := range sc.Inbounds {
+				if in.Port == *port {
+					portTaken = true
+				}
+			}
+			for _, p := range sc.Chameleon.ExtraPorts {
+				if p == *port {
+					portTaken = true
+				}
+			}
+
+			if !portTaken {
+				err = cfgProvider.Update(func(sc *config.ServerConfig) {
+					sc.Chameleon.ExtraPorts = append(sc.Chameleon.ExtraPorts, *port)
+				})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to update %s: %v\n", *cfgPath, err)
+					os.Exit(1)
+				}
+				fmt.Printf("Chameleon will also listen on port %d (restart server to activate)\n", *port)
+			} else {
+				fmt.Printf("Port %d is already a chameleon listener — reusing it\n", *port)
+			}
+
+			if err := apiserver.OpenFirewallPort(*port); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: firewall rule not applied: %v\n", err)
+			} else {
+				fmt.Printf("Opened port %d in ufw (tcp+udp)\n", *port)
+			}
+
+			privateKeyB64, publicKeyB64, err := apiserver.CLIUpsertUser(*user, *trafficLimit)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to create user: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("User %s registered for live auth (/etc/whispera/users.json)\n", *user)
+
+			serverHost := stripURLScheme(sc.Server.PublicURL)
+			if serverHost == "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				serverHost, _ = ipdetect.DetectServerIP(ctx)
+				cancel()
+			}
+			if serverHost == "" {
+				serverHost = "<server_ip>"
+			}
+			serverAddr := fmt.Sprintf("%s:%d", serverHost, *port)
+
+			serverPubKeyB64 := ""
+			if sc.Server.PrivateKey != "" {
+				serverPubKeyB64 = apiserver.DerivePublicKeyB64(sc.Server.PrivateKey)
+			}
+
+			connectionURI, err := apiserver.CLIBuildConnectionKey(*user, serverAddr, serverPubKeyB64, "chameleon")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to build connection key: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Println()
+			fmt.Println("=== Client config ===")
+			fmt.Printf("User:        %s\n", *user)
+			fmt.Printf("Server:      %s\n", serverAddr)
+			fmt.Printf("Private Key: %s\n", privateKeyB64)
+			fmt.Printf("Public Key:  %s\n", publicKeyB64)
+			fmt.Printf("Key:         %s\n", connectionURI)
+			fmt.Println()
+			fmt.Println("Restart the whispera server for the new user/inbound to take effect.")
+			os.Exit(0)
+		case "generate-sub":
+			genSubCmd := flag.NewFlagSet("generate-sub", flag.ExitOnError)
+			name := genSubCmd.String("name", "", "Subscription name")
+			usersCSV := genSubCmd.String("users", "", "Comma-separated list of usernames created via create-key")
+			cfgPath := genSubCmd.String("config", "/etc/whispera/config.yaml", "Path to config.yaml")
+
+			genSubCmd.Parse(os.Args[2:])
+
+			if *usersCSV == "" {
+				fmt.Fprintln(os.Stderr, "whispera generate-sub -users <user1,user2,...> [-name <name>] [-config <path>]")
+				os.Exit(1)
+			}
+			if *name == "" {
+				*name = fmt.Sprintf("Sub-%d", time.Now().Unix())
+			}
+
+			usernames := strings.Split(*usersCSV, ",")
+			for i := range usernames {
+				usernames[i] = strings.TrimSpace(usernames[i])
+			}
+
+			cfgProvider, err := config.New(*cfgPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if err := cfgProvider.Load(*cfgPath); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to load %s: %v\n", *cfgPath, err)
+				os.Exit(1)
+			}
+			sc := cfgProvider.GetConfig()
+
+			token, err := apiserver.CLICreateSubscription(*name, usernames)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to create subscription: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Subscription %q created for %d user(s)\n", *name, len(usernames))
+
+			serverHost := strings.TrimRight(sc.Server.PublicURL, "/")
+			if serverHost == "" {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ip, _ := ipdetect.DetectServerIP(ctx)
+				cancel()
+				if ip == "" {
+					ip = "<server_ip>"
+				}
+				serverHost = fmt.Sprintf("http://%s:8081", ip)
+			}
+
+			fmt.Println()
+			fmt.Println("=== Subscription URL ===")
+			fmt.Printf("%s/sub/%s\n", serverHost, token)
+			fmt.Println()
+			fmt.Println("Restart the whispera server for the new subscription to take effect.")
+			os.Exit(0)
+		case "view-keys":
+			viewKeysCmd := flag.NewFlagSet("view-keys", flag.ExitOnError)
+			filterUser := viewKeysCmd.String("user", "", "Show only this user")
+			full := viewKeysCmd.Bool("full", false, "Print the full whispera:// connection key")
+
+			viewKeysCmd.Parse(os.Args[2:])
+
+			users := apiserver.CLIListUsers()
+			if len(users) == 0 {
+				fmt.Println("No users found in /etc/whispera/users.json")
+				os.Exit(0)
+			}
+
+			printed := 0
+			for _, u := range users {
+				if *filterUser != "" && u.Username != *filterUser {
+					continue
+				}
+				printed++
+
+				fmt.Printf("ID:      %d\n", u.ID)
+				fmt.Printf("User:    %s\n", u.Username)
+				fmt.Printf("Status:  %s\n", u.Status)
+				fmt.Printf("Traffic: %d / %d bytes\n", u.Upload+u.Download, u.TrafficLimit)
+				fmt.Printf("Created: %s\n", u.CreatedAt.Format(time.RFC3339))
+				if u.ExpiryDate != "" {
+					fmt.Printf("Expires: %s\n", u.ExpiryDate)
+				}
+				switch {
+				case u.ConnectionURI == "":
+					fmt.Println("Key:     (none — run create-key again to generate one)")
+				case *full:
+					fmt.Printf("Key:     %s\n", u.ConnectionURI)
+				default:
+					fmt.Printf("Key:     %s... (%d chars total, use -full to print)\n",
+						u.ConnectionURI[:min(40, len(u.ConnectionURI))], len(u.ConnectionURI))
+				}
+				fmt.Println()
+			}
+
+			if *filterUser != "" && printed == 0 {
+				fmt.Fprintf(os.Stderr, "User %q not found\n", *filterUser)
+				os.Exit(1)
+			}
 			os.Exit(0)
 		case "hash-password":
 			if len(os.Args) < 3 || os.Args[2] == "" {
@@ -925,6 +1138,15 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 			},
 		}
 		cCfg.QUICListenAddr = sc.Chameleon.QUICListenAddr
+		if len(sc.Chameleon.ExtraPorts) > 0 {
+			listenHost, _, _ := net.SplitHostPort(sc.Chameleon.ListenAddr)
+			for _, p := range sc.Chameleon.ExtraPorts {
+				if p <= 0 || p > 65535 {
+					continue
+				}
+				cCfg.ExtraListenAddrs = append(cCfg.ExtraListenAddrs, net.JoinHostPort(listenHost, strconv.Itoa(p)))
+			}
+		}
 		go func() { _ = protocol2.ListenAndServe(ctx, cCfg) }()
 	}
 
