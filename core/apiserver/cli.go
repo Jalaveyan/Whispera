@@ -1,13 +1,37 @@
 package apiserver
 
 import (
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"os"
 	"sort"
 	"time"
 	"whispera/core/config"
 )
+
+func ComputeChameleonCertPin(certPath string) (string, error) {
+	if certPath == "" {
+		return "", fmt.Errorf("no certificate path configured")
+	}
+	raw, err := os.ReadFile(certPath)
+	if err != nil {
+		return "", fmt.Errorf("read cert: %w", err)
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return "", fmt.Errorf("no PEM block found in %s", certPath)
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", fmt.Errorf("parse cert: %w", err)
+	}
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return base64.StdEncoding.EncodeToString(sum[:]), nil
+}
 
 func CLIUpsertUser(username string, trafficLimit int64) (privateKeyB64, publicKeyB64 string, err error) {
 	loadUsers()
@@ -47,7 +71,7 @@ func CLIUpsertUser(username string, trafficLimit int64) (privateKeyB64, publicKe
 	return keys.PrivateKey, keys.PublicKey, nil
 }
 
-func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport string) (string, error) {
+func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport, chameleonCertPin string) (string, error) {
 	loadUsers()
 
 	userStoreMu.Lock()
@@ -64,18 +88,19 @@ func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport stri
 	}
 
 	ck := config.ConnectionKey{
-		Version:         2,
-		KeyID:           generateKeyID(),
-		Server:          serverAddr,
-		PSK:             user.PrivateKey,
-		ServerPub:       serverPubKeyB64,
-		Transport:       transport,
-		ObfsPreset:      "default",
-		ObfsProfile:     "vk",
-		EnableML:        true,
-		EnableFTE:       true,
-		EnableASNBypass: true,
-		TLSFingerprint:  "chrome",
+		Version:          2,
+		KeyID:            generateKeyID(),
+		Server:           serverAddr,
+		PSK:              user.PrivateKey,
+		ServerPub:        serverPubKeyB64,
+		Transport:        transport,
+		ObfsPreset:       "default",
+		ObfsProfile:      "vk",
+		EnableML:         true,
+		EnableFTE:        true,
+		EnableASNBypass:  true,
+		TLSFingerprint:   "chrome",
+		ChameleonCertPin: chameleonCertPin,
 	}
 	data, err := json.Marshal(ck)
 	if err != nil {

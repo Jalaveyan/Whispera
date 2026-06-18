@@ -479,7 +479,17 @@ func main() {
 				serverPubKeyB64 = apiserver.DerivePublicKeyB64(sc.Server.PrivateKey)
 			}
 
-			connectionURI, err := apiserver.CLIBuildConnectionKey(*user, serverAddr, serverPubKeyB64, "chameleon")
+			chameleonCertPin := ""
+			if sc.Chameleon.Domain == "" && sc.Chameleon.TLSCert != "" {
+				pin, pinErr := apiserver.ComputeChameleonCertPin(sc.Chameleon.TLSCert)
+				if pinErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: could not compute chameleon cert pin: %v (client will not pin the server cert)\n", pinErr)
+				} else {
+					chameleonCertPin = pin
+				}
+			}
+
+			connectionURI, err := apiserver.CLIBuildConnectionKey(*user, serverAddr, serverPubKeyB64, "chameleon", chameleonCertPin)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to build connection key: %v\n", err)
 				os.Exit(1)
@@ -491,6 +501,11 @@ func main() {
 			fmt.Printf("Server:      %s\n", serverAddr)
 			fmt.Printf("Private Key: %s\n", privateKeyB64)
 			fmt.Printf("Public Key:  %s\n", publicKeyB64)
+			if chameleonCertPin != "" {
+				fmt.Printf("Cert Pin:    %s (embedded in key — protects against TLS MITM)\n", chameleonCertPin)
+			} else {
+				fmt.Println("Cert Pin:    none (chameleon.domain is set — cert rotates under ACME, so it isn't pinned)")
+			}
 			fmt.Printf("Key:         %s\n", connectionURI)
 			fmt.Println()
 			fmt.Println("Restart the whispera server for the new user/inbound to take effect.")
@@ -1094,7 +1109,18 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 			ganModelDir = "./ml_models"
 		}
 		ganSavePath := filepath.Join(ganModelDir, "gan_state.json")
+		if err := os.MkdirAll(ganModelDir, 0755); err != nil {
+			log.Error("GAN: failed to create model dir %s: %v", ganModelDir, err)
+		}
 		ganRunner := neural.NewGANRunner(ganIface, ganPort, ganSavePath)
+		if err := ganRunner.Start(); err != nil {
+			log.Error("GAN: failed to start traffic-shaping runner: %v", err)
+		} else {
+			m.OnStop(func() error {
+				ganRunner.Stop()
+				return nil
+			})
+		}
 
 		cCfg := &protocol2.ServerConfig{
 			GANDecide: func(iatMean, sizeMean, upRatio float64) protocol2.GANAction {

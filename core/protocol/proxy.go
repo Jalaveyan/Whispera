@@ -172,7 +172,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	windowIdx := sched.CurrentIndex()
 	bp := DeriveBehaviorParams(keys.Behavior, windowIdx, sessionID)
 	path := GeneratePath(bp.PathSeed, windowIdx)
-	token := AuthToken(keys.Auth, anchor.Unix()/30, sessionID)
+	token := AuthToken(keys.Auth, anchor.Unix()/authWindowSeconds, sessionID)
 
 	sni := pickSNI(cfg)
 	origin := "https://" + sni
@@ -325,6 +325,19 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		handleRequest(w, r, cfg)
 	})
+
+	go func() {
+		ticker := time.NewTicker(replayWindowSeconds * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cfg.seenTokens.sweep(time.Now().Unix())
+			}
+		}
+	}()
 
 	listenAddr := cfg.ListenAddr
 	if listenAddr == "" {
@@ -616,7 +629,31 @@ func resolveSecret(cfg *ServerConfig, token string, sessionID []byte) ([]byte, s
 			return u.PSK, u.UserID
 		}
 	}
+	probeClockDriftOnFailure(cfg, token, sessionID)
 	return nil, ""
+}
+
+func probeClockDriftOnFailure(cfg *ServerConfig, token string, sessionID []byte) {
+	if len(cfg.SharedSecret) == 32 {
+		k := DeriveKeys(cfg.SharedSecret)
+		if drift, found := ProbeClockDrift(k.Auth, token, sessionID); found {
+			traceLog.Warnw("chameleon_auth_clock_drift_suspected", "user", "default", "drift_windows", drift, "drift_seconds", drift*authWindowSeconds)
+			return
+		}
+	}
+	if cfg.GetUsers == nil {
+		return
+	}
+	for _, u := range cfg.GetUsers() {
+		if len(u.PSK) != 32 {
+			continue
+		}
+		k := DeriveKeys(u.PSK)
+		if drift, found := ProbeClockDrift(k.Auth, token, sessionID); found {
+			traceLog.Warnw("chameleon_auth_clock_drift_suspected", "user", u.UserID, "drift_windows", drift, "drift_seconds", drift*authWindowSeconds)
+			return
+		}
+	}
 }
 
 func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {

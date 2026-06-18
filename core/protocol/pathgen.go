@@ -18,6 +18,12 @@ var (
 	pathExts = []string{"", "", "", ".json", ".js", ".css", ".woff2", ".bin"}
 )
 
+const authWindowSeconds = 30
+
+const authWindowTolerance = 1
+
+const clockDriftProbeWindows = 10
+
 func GeneratePath(seed uint64, seq int) string {
 	mix := int64(seed>>1) ^ int64(seq)*0x517cc1b727220a95
 	rng := rand.New(rand.NewSource(mix))
@@ -49,16 +55,37 @@ func VerifyAuthToken(authKey []byte, token string, sessionID []byte) bool {
 	if err != nil || len(raw) != 32 {
 		return false
 	}
-	w := time.Now().Unix() / 30
-	for _, candidate := range []int64{w, w - 1, w + 1} {
-		mac := hmac.New(sha256.New, authKey)
-		var wb [8]byte
-		binary.BigEndian.PutUint64(wb[:], uint64(candidate))
-		mac.Write(wb[:])
-		mac.Write(sessionID)
-		if hmac.Equal(mac.Sum(nil), raw) {
+	w := time.Now().Unix() / authWindowSeconds
+	for candidate := w - authWindowTolerance; candidate <= w+authWindowTolerance; candidate++ {
+		if macMatches(authKey, candidate, sessionID, raw) {
 			return true
 		}
 	}
 	return false
+}
+
+func macMatches(authKey []byte, window int64, sessionID, want []byte) bool {
+	mac := hmac.New(sha256.New, authKey)
+	var wb [8]byte
+	binary.BigEndian.PutUint64(wb[:], uint64(window))
+	mac.Write(wb[:])
+	mac.Write(sessionID)
+	return hmac.Equal(mac.Sum(nil), want)
+}
+
+func ProbeClockDrift(authKey []byte, token string, sessionID []byte) (driftWindows int64, found bool) {
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(raw) != 32 {
+		return 0, false
+	}
+	w := time.Now().Unix() / authWindowSeconds
+	for offset := int64(authWindowTolerance + 1); offset <= clockDriftProbeWindows; offset++ {
+		if macMatches(authKey, w+offset, sessionID, raw) {
+			return offset, true
+		}
+		if macMatches(authKey, w-offset, sessionID, raw) {
+			return -offset, true
+		}
+	}
+	return 0, false
 }

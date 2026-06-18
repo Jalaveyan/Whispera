@@ -1,8 +1,0 @@
-{
-  "model_type": "cnn",
-  "input_size": 1500,
-  "num_classes": 10,
-  "accuracy": 0.3812499940395355,
-  "last_updated": "2025-10-25T12:42:37.751218",
-  "is_trained": true
-}

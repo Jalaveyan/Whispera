@@ -1478,6 +1478,101 @@ generate_panel_cert() {
     fi
 }
 
+setup_decoy_refresh() {
+    if ! command -v wget &>/dev/null; then
+        if command -v apt-get &>/dev/null; then apt-get install -y wget >/dev/null 2>&1
+        elif command -v dnf &>/dev/null; then dnf install -y wget >/dev/null 2>&1
+        elif command -v yum &>/dev/null; then yum install -y wget >/dev/null 2>&1
+        elif command -v pacman &>/dev/null; then pacman -Sy --noconfirm wget >/dev/null 2>&1
+        elif command -v zypper &>/dev/null; then zypper install -y wget >/dev/null 2>&1
+        elif command -v apk &>/dev/null; then apk add wget >/dev/null 2>&1
+        fi
+    fi
+
+    local default_sites="https://ria.ru/,https://lenta.ru/,https://www.rbc.ru/,https://www.kp.ru/,https://tass.ru/,\
+https://www.gazeta.ru/,https://www.kommersant.ru/,https://www.vedomosti.ru/,https://www.fontanka.ru/,https://www.ng.ru/,\
+https://www.rg.ru/,https://iz.ru/,https://life.ru/,https://www.vesti.ru/,https://www.interfax.ru/,\
+https://yandex.ru/,https://mail.ru/,https://www.rambler.ru/,https://ok.ru/,https://go.mail.ru/,\
+https://www.ozon.ru/,https://www.wildberries.ru/,https://www.avito.ru/,https://www.citilink.ru/,https://www.dns-shop.ru/,\
+https://www.mvideo.ru/,https://www.eldorado.ru/,https://www.lamoda.ru/,https://www.sportmaster.ru/,https://leroymerlin.ru/,\
+https://www.sberbank.ru/,https://www.vtb.ru/,https://alfabank.ru/,https://www.gazprombank.ru/,https://www.raiffeisen.ru/,\
+https://sovcombank.ru/,https://www.gosuslugi.ru/,https://www.nalog.gov.ru/,https://www.mos.ru/,https://www.gibdd.ru/,\
+https://hh.ru/,https://auto.ru/,https://www.cian.ru/,https://www.drom.ru/,https://www.kinopoisk.ru/,\
+https://2gis.ru/,https://www.eapteka.ru/,https://www.dixy.ru/,https://www.perekrestok.ru/,https://www.pochta.ru/"
+    local sites="${WHISPERA_DECOY_SITES:-$default_sites}"
+    local interval="${WHISPERA_DECOY_REFRESH_INTERVAL:-1d}"
+
+    cat > /usr/local/bin/whispera-refresh-decoy.sh <<REFRESHEOF
+#!/bin/bash
+DECOY_DIR="/var/www/whispera-decoy"
+SITES="\${WHISPERA_DECOY_SITES:-$sites}"
+IFS=',' read -ra SITE_ARR <<< "\$SITES"
+N=\${#SITE_ARR[@]}
+[[ \$N -eq 0 ]] && exit 0
+
+command -v wget &>/dev/null || exit 0
+
+MAX_ATTEMPTS=8
+[[ \$MAX_ATTEMPTS -gt \$N ]] && MAX_ATTEMPTS=\$N
+
+for ((attempt=0; attempt<MAX_ATTEMPTS; attempt++)); do
+    PICK="\${SITE_ARR[\$((RANDOM % N))]}"
+    TMP_DIR=\$(mktemp -d)
+    wget --quiet --page-requisites --convert-links --adjust-extension \\
+        --span-hosts --no-parent --no-host-directories \\
+        --timeout=15 --tries=1 -e robots=off \\
+        -P "\$TMP_DIR" "\$PICK" 2>/dev/null
+    if [[ ! -f "\$TMP_DIR/index.html" ]]; then
+        first_html=\$(find "\$TMP_DIR" -maxdepth 1 -name '*.html' | head -n1)
+        [[ -n "\$first_html" ]] && cp "\$first_html" "\$TMP_DIR/index.html"
+    fi
+    if [[ -f "\$TMP_DIR/index.html" ]]; then
+        rm -rf "\$DECOY_DIR"
+        mkdir -p "\$(dirname "\$DECOY_DIR")"
+        mv "\$TMP_DIR" "\$DECOY_DIR"
+        logger -t whispera-decoy "refreshed from \$PICK" 2>/dev/null || true
+        exit 0
+    fi
+    rm -rf "\$TMP_DIR"
+done
+
+mkdir -p "\$DECOY_DIR"
+if [[ ! -f "\$DECOY_DIR/index.html" ]]; then
+    cat > "\$DECOY_DIR/index.html" <<'DECOYHTML'
+<!doctype html><html><head><title>Welcome</title></head><body><h1>It works.</h1></body></html>
+DECOYHTML
+fi
+REFRESHEOF
+    chmod +x /usr/local/bin/whispera-refresh-decoy.sh
+
+    if command -v systemctl &>/dev/null; then
+        cat > /etc/systemd/system/whispera-decoy-refresh.service <<'EOF'
+[Unit]
+Description=Refresh Whispera nginx decoy backend content
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/whispera-refresh-decoy.sh
+EOF
+        cat > /etc/systemd/system/whispera-decoy-refresh.timer <<EOF
+[Unit]
+Description=Periodically refresh Whispera decoy backend content
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=${interval}
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+        systemctl daemon-reload >/dev/null 2>&1
+        systemctl enable --now whispera-decoy-refresh.timer >/dev/null 2>&1
+        log_success "Decoy refresh timer installed (every ${interval}, randomized up to 6h)"
+    fi
+}
+
 setup_nginx_proxy() {
     local SERVER_IP
     SERVER_IP=$(get_public_ip)
@@ -1513,11 +1608,12 @@ limit_req_zone $binary_remote_addr zone=panel_api:10m  rate=60r/s;
 limit_req_status 429;
 RLCONF
 
-    mkdir -p /var/www/whispera-decoy
-    if [[ ! -f /var/www/whispera-decoy/index.html ]]; then
-        cat > /var/www/whispera-decoy/index.html <<'DECOYHTML'
-<!doctype html><html><head><title>Welcome</title></head><body><h1>It works.</h1></body></html>
-DECOYHTML
+    setup_decoy_refresh
+    /usr/local/bin/whispera-refresh-decoy.sh >/dev/null 2>&1 || true
+    if [[ -f /var/www/whispera-decoy/index.html ]]; then
+        log_info "Decoy backend populated"
+    else
+        log_warn "Decoy backend clone failed on first run — will retry on next timer tick"
     fi
 
     # Chameleon owns the public :443 listener; nginx is only an internal

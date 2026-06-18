@@ -39,6 +39,7 @@ type ConnectionKey struct {
 	ChameleonAddr     string `json:"chameleon_addr,omitempty"`
 	ChameleonSNI      string `json:"chameleon_sni,omitempty"`
 	ChameleonQUICAddr string `json:"chameleon_quic_addr,omitempty"`
+	ChameleonCertPin  string `json:"chameleon_pin,omitempty"`
 
 	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
 
@@ -139,6 +140,9 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 		}
 		if val := q.Get("tls"); val != "" {
 			ck.TLSFingerprint = val
+		}
+		if val := q.Get("pin"); val != "" {
+			ck.ChameleonCertPin = val
 		}
 		if val := q.Get("front"); val != "" {
 			ck.DomainFrontHost = val
@@ -245,6 +249,7 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		ChameleonAddr:     ck.ChameleonAddr,
 		ChameleonSNI:      ck.ChameleonSNI,
 		ChameleonQUICAddr: ck.ChameleonQUICAddr,
+		ChameleonCertPin:  ck.ChameleonCertPin,
 	}
 
 	switch ck.Transport {
