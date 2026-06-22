@@ -21,6 +21,22 @@ log_success() { echo -e "${GREEN}[OK]${PLAIN} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERR]${PLAIN} $1"; }
 
+WHISPERA_LIB_URL="https://raw.githubusercontent.com/Jalaveyan/Whispera/main/scripts/lib.sh"
+__wsp_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+if [[ -n "$__wsp_script_dir" && -f "$__wsp_script_dir/scripts/lib.sh" ]]; then
+    source "$__wsp_script_dir/scripts/lib.sh"
+else
+    __wsp_lib_tmp="$(mktemp)"
+    if curl -fsSL "$WHISPERA_LIB_URL" -o "$__wsp_lib_tmp"; then
+        source "$__wsp_lib_tmp"
+    else
+        echo "Failed to download lib.sh from $WHISPERA_LIB_URL" >&2
+        rm -f "$__wsp_lib_tmp"
+        exit 1
+    fi
+    rm -f "$__wsp_lib_tmp"
+fi
+
 INTEGRITY_ENV_FILE="$CONF_PATH/whispera.env"
 
 ensure_integrity_key() {
@@ -59,28 +75,15 @@ refresh_config() {
     fi
 }
 
-get_public_ip() {
-    local IP
-    IP=$(curl -s https://2ip.ru/api/self -m 5 2>/dev/null | grep -oE '"ip":"[^"]*"' | cut -d'"' -f4)
-    if [[ -z "$IP" ]]; then
-        IP=$(curl -s https://2ip.io -m 5 2>/dev/null | tr -d '[:space:]')
-    fi
-    if [[ -z "$IP" ]]; then
-        IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null)
-    fi
-    if [[ -z "$IP" ]]; then
-        IP=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -n1)
-    fi
-    echo "${IP:-localhost}"
-}
-
-
 print_logo() {
     echo -e "${BLUE}"
-    echo "█   █ █ █ █ ▀▀█ █▀▀ █▀▀ █▀▀ █▀█"
-    echo "█ █ █ █▀█ █   ▀▀█ █▀▀ █▀▀ █▀▀ █▀█"
-    echo "▀▄▀▄▀ ▀ ▀ ▀   ▀▀▀ ▀   ▀▀▀ ▀   ▀ ▀"
-    echo ":: Whispera Installer :: (v2.1.0)"
+    echo "██╗    ██╗██╗  ██╗██╗███████╗██████╗ ███████╗██████╗  █████╗"
+    echo "██║    ██║██║  ██║██║██╔════╝██╔══██╗██╔════╝██╔══██╗██╔══██╗"
+    echo "██║ █╗ ██║███████║██║███████╗██████╔╝█████╗  ██████╔╝███████║"
+    echo "██║███╗██║██╔══██║██║╚════██║██╔═══╝ ██╔══╝  ██╔══██╗██╔══██║"
+    echo "╚███╔███╔╝██║  ██║██║███████║██║     ███████╗██║  ██║██║  ██║"
+    echo " ╚══╝╚══╝ ╚═╝  ╚═╝╚═╝╚══════╝╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝"
+    echo ":: Whispera Installer ::"
     echo -e "${PLAIN}"
 }
 
@@ -90,46 +93,6 @@ check_root() {
         exit 1
     fi
 }
-
-gen_password() {
-    local len=${1:-30}
-    if command -v openssl &>/dev/null; then
-        openssl rand -base64 40 | tr -dc 'A-Za-z0-9' | head -c "$len"
-    else
-        head -c 64 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c "$len"
-    fi
-}
-
-check_os() {
-    if [[ ! -f /etc/os-release ]]; then
-        log_err "Failed to check OS (missing /etc/os-release)"
-        exit 1
-    fi
-    source /etc/os-release
-    RELEASE="${ID:-}"
-
-    case "$RELEASE" in
-        ubuntu|debian|centos|fedora|almalinux|rocky|alpine|arch|manjaro|opensuse*|sles|mageia) ;;
-        *)
-            for like in ${ID_LIKE:-}; do
-                case "$like" in
-                    debian|ubuntu)          RELEASE="debian";   break ;;
-                    rhel|fedora|centos)     RELEASE="rocky";    break ;;
-                    suse|opensuse)          RELEASE="opensuse"; break ;;
-                    arch)                   RELEASE="arch";     break ;;
-                esac
-            done
-            ;;
-    esac
-
-    case "$RELEASE" in
-        ubuntu|debian|centos|fedora|almalinux|rocky|alpine|arch|manjaro|opensuse*|sles|mageia)
-            log_info "Detected OS: $RELEASE" ;;
-        *)
-            log_warn "Unrecognised OS '${ID:-unknown}' (ID_LIKE='${ID_LIKE:-}') — falling back to apt-get" ;;
-    esac
-}
-
 
 has_systemd() {
     [[ -d /run/systemd/system ]] || { command -v systemctl &>/dev/null && systemctl --version &>/dev/null; }
@@ -447,64 +410,6 @@ EOF
     fi
 }
 
-setup_redis() {
-    log_info "Setting up Redis..."
-    
-    if command -v redis-server &>/dev/null; then
-        if systemctl is-active --quiet redis-server 2>/dev/null || systemctl is-active --quiet redis 2>/dev/null; then
-            log_success "Redis already installed and running"
-            return
-        fi
-    fi
-    
-    case $RELEASE in
-        ubuntu|debian)
-            apt-get update >/dev/null 2>&1
-            apt-get install -y redis-server >/dev/null 2>&1
-            ;;
-        centos|fedora|almalinux|rocky)
-            yum install -y redis >/dev/null 2>&1
-            ;;
-        alpine)
-            apk add redis >/dev/null 2>&1
-            ;;
-        *)
-            log_warn "Redis installation not supported on $RELEASE"
-            return
-            ;;
-    esac
-    
-    if ! command -v redis-server &>/dev/null; then
-        log_warn "Redis installation failed"
-        return
-    fi
-    
-    local REDIS_CONF="/etc/redis/redis.conf"
-    [[ -f "/etc/redis.conf" ]] && REDIS_CONF="/etc/redis.conf"
-    
-    if [[ -f "$REDIS_CONF" ]]; then
-        sed -i 's/^bind .*/bind 127.0.0.1/' "$REDIS_CONF" 2>/dev/null || true
-        grep -q "^maxmemory " "$REDIS_CONF" || echo "maxmemory 256mb" >> "$REDIS_CONF"
-        grep -q "^maxmemory-policy " "$REDIS_CONF" || echo "maxmemory-policy allkeys-lru" >> "$REDIS_CONF"
-    fi
-    
-    systemctl enable redis-server 2>/dev/null || systemctl enable redis 2>/dev/null
-    systemctl restart redis-server 2>/dev/null || systemctl restart redis 2>/dev/null
-    
-    sleep 1
-    
-    if redis-cli ping 2>/dev/null | grep -q "PONG"; then
-        log_success "Redis installed and running on 127.0.0.1:6379"
-        
-        echo ""
-        log_info "To enable Redis in Whispera, add to config.yaml:"
-        echo "  cache:"
-        echo "    redis_url: \"redis://127.0.0.1:6379\""
-    else
-        log_warn "Redis installed but not responding"
-    fi
-}
-
 setup_postgres() {
     log_info "Setting up PostgreSQL..."
     
@@ -716,58 +621,6 @@ CRONEOF
     log_success "Auto-update enabled (daily, downloads from GitHub Releases)"
 }
 
-setup_telegram() {
-    echo ""
-    echo -e "${YELLOW}--- Setup Telegram Notifications ---${PLAIN}"
-    echo "1. Create a bot via @BotFather in Telegram and copy the token."
-    echo "2. Send /start to your bot, then get your user ID via @userinfobot."
-    echo ""
-    read -p "Enter Telegram Bot Token (from @BotFather, leave empty to cancel): " TG_TOKEN
-
-    if [[ -z "$TG_TOKEN" ]]; then
-        log_warn "Cancelled."
-        return
-    fi
-
-    read -p "Enter your Telegram User ID (numbers only): " TG_ID
-
-    if [[ -z "$TG_ID" ]]; then
-        log_warn "Cancelled."
-        return
-    fi
-
-    if ! [[ "$TG_ID" =~ ^-?[0-9]+$ ]]; then
-        log_err "Invalid Telegram ID: must be a number (e.g. 123456789). Got: $TG_ID"
-        return
-    fi
-
-    if [[ ! -f "$CONF_PATH/config.yaml" ]]; then
-        log_err "Config file not found!"
-        return
-    fi
-
-    log_info "Updating config..."
-    sed -i "s|admin_id: .*|admin_id: $TG_ID|" "$CONF_PATH/config.yaml"
-    sed -i "s|chat_id: .*|chat_id: \"$TG_ID\"|" "$CONF_PATH/config.yaml"
-    sed -i "s|token: \"YOUR_TELEGRAM_BOT_TOKEN\"|token: \"$TG_TOKEN\"|g" "$CONF_PATH/config.yaml"
-    sed -i "/^bot:/,/^[^ ]/ s|enabled: false|enabled: true|" "$CONF_PATH/config.yaml"
-    sed -i "/^notifications:/,/^[^ ]/ s|enabled: false|enabled: true|" "$CONF_PATH/config.yaml"
-
-    log_info "Testing bot connection..."
-    local TEST_RESULT=$(curl -s "https://api.telegram.org/bot${TG_TOKEN}/getMe" 2>/dev/null)
-    if echo "$TEST_RESULT" | grep -q '"ok":true'; then
-        local BOT_NAME=$(echo "$TEST_RESULT" | grep -o '"first_name":"[^"]*"' | cut -d'"' -f4)
-        log_success "Bot connected: $BOT_NAME"
-    else
-        log_warn "Could not verify bot token. Check the token and try again."
-    fi
-
-    log_info "Restarting Whispera..."
-    refresh_config
-    systemctl restart whispera
-    log_success "Telegram notifications enabled for ID $TG_ID"
-}
-
 setup_ssh_hardening() {
     log_info "Hardening SSH..."
     
@@ -786,73 +639,6 @@ setup_ssh_hardening() {
     log_warn "Make sure you have SSH key access before logging out!"
 }
 
-gen_bridge_ssh_otp() {
-    log_info "Generating one-time SSH access code for bridge..."
-
-    local TTL=${1:-3600}  # seconds, default 1 hour
-    local KEY_DIR=$(mktemp -d)
-    local KEY_FILE="$KEY_DIR/bridge_otp"
-
-    ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "whispera-bridge-otp-$(date +%s)" -q
-
-    local PUB_KEY=$(cat "$KEY_FILE.pub")
-    local PRIV_KEY=$(cat "$KEY_FILE")
-    local EXPIRE_AT=$(date -d "+${TTL} seconds" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -v "+${TTL}S" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "in ${TTL}s")
-    local REMOVAL_AT=$(date -d "+${TTL} seconds" '+%H%M %Y-%m-%d' 2>/dev/null || date -v "+${TTL}S" '+%H%M %Y-%m-%d' 2>/dev/null)
-    local MARKER="whispera-bridge-otp-$(date +%s)"
-
-    mkdir -p ~/.ssh
-    chmod 700 ~/.ssh
-    echo "${PUB_KEY} ${MARKER}" >> ~/.ssh/authorized_keys
-    chmod 600 ~/.ssh/authorized_keys
-
-    local CLEANUP_SCRIPT="/tmp/whispera-otp-${MARKER}.sh"
-    cat > "$CLEANUP_SCRIPT" <<CLEANSCRIPT
-sed -i "/${MARKER}/d" ~/.ssh/authorized_keys
-rm -f "$CLEANUP_SCRIPT"
-CLEANSCRIPT
-    chmod +x "$CLEANUP_SCRIPT"
-    local SCHEDULED=0
-
-    if command -v at &>/dev/null; then
-        if systemctl is-active --quiet atd 2>/dev/null || service atd status &>/dev/null 2>&1 || pgrep -x atd &>/dev/null; then
-            echo "bash $CLEANUP_SCRIPT" | at "now + $(( TTL / 60 + 1 )) minutes" 2>/dev/null && SCHEDULED=1
-        fi
-    fi
-
-    if [[ "$SCHEDULED" -eq 0 ]] && command -v crontab &>/dev/null; then
-        local CRON_TIME
-        CRON_TIME=$(date -d "+$(( TTL / 60 + 1 )) minutes" '+%M %H %d %m *' 2>/dev/null \
-                 || date -v "+$(( TTL / 60 + 1 ))M" '+%M %H %d %m *' 2>/dev/null)
-        if [[ -n "$CRON_TIME" ]]; then
-            (crontab -l 2>/dev/null | grep -v "$CLEANUP_SCRIPT"; \
-             echo "$CRON_TIME bash $CLEANUP_SCRIPT") | crontab - 2>/dev/null && SCHEDULED=1
-        fi
-    fi
-
-    if [[ "$SCHEDULED" -eq 0 ]]; then
-        nohup bash -c "sleep ${TTL}; bash $CLEANUP_SCRIPT" </dev/null >/dev/null 2>&1 &
-        SCHEDULED=1
-        log_warn "at/cron unavailable — using background process (key removed in ${TTL}s if server stays up)"
-    fi
-
-    rm -rf "$KEY_DIR"
-
-    echo ""
-    echo -e "${YELLOW}┌─── One-time SSH key (valid until: ${EXPIRE_AT}) ───────────────────────────────┐${PLAIN}"
-    echo -e "${YELLOW}│ Expires automatically. Use ONCE to set up the bridge, then key is removed.   │${PLAIN}"
-    echo -e "${YELLOW}└───────────────────────────────────────────────────────────────────────────────┘${PLAIN}"
-    echo ""
-    echo -e "${GREEN}Paste this private key into a file on the bridge server:${PLAIN}"
-    echo ""
-    echo "$PRIV_KEY"
-    echo ""
-    local SRV_IP=$(get_public_ip)
-    echo -e "${GREEN}SSH command to use on the bridge server:${PLAIN}"
-    echo -e "  ssh -i /tmp/bridge_key -o StrictHostKeyChecking=no root@${SRV_IP}"
-    echo ""
-    log_success "Key added to authorized_keys. It will self-remove after ${TTL}s."
-}
 
 setup_backups() {
     log_info "Setting up daily database backups..."
@@ -919,21 +705,11 @@ show_extras_menu() {
         local SRV_IP=$(get_public_ip)
         local ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
 
-        local BRIDGE_TOKEN=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
-
         echo ""
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
         _row "          WHISPERA MANAGEMENT MENU"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row "  Web Panel:  https://${SRV_IP}/"
-        _row "  Admin Pass: ${ADMIN_PASS}"
         _row "  Config:     /etc/whispera/config.yaml"
-        echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row "  BRIDGE MANAGEMENT"
-        _row " 19.  Show bridge token & install command"
-        _row " 20.  Add bridge manually (enter IP + token)"
-        _row " 21.  List registered bridges"
-        _row " 22.  SSH OTP       - One-time SSH key for bridge admin (1h)"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
         _row "  1.  BBR           - Faster TCP (recommended)"
@@ -943,21 +719,19 @@ show_extras_menu() {
         _row "  5.  Optimize      - Tune sysctl for high performance"
         _row "  6.  Auto-update   - Daily auto-update from GitHub"
         _row "  7.  SSH Hardening - Disable password auth (keys only)"
-        _row "  8.  Redis         - Session cache for persistence"
-        _row "  9.  PostgreSQL    - User accounts, traffic, billing"
-        _row " 10.  Telegram      - Configure notifications"
-        _row " 11.  Backups       - Daily database backups"
-        _row "  a.  ALL (1,5,8,9,11) - Install recommended stack"
+        _row "  8.  PostgreSQL    - User accounts, traffic, billing"
+        _row "  9.  Telegram      - Configure notifications"
+        _row " 10.  Backups       - Daily database backups"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  SERVICE MANAGEMENT"
-        _row " 12.  Start         - Start Whispera service"
-        _row " 13.  Stop          - Stop Whispera service"
-        _row " 14.  Restart       - Restart Whispera service"
-        _row " 15.  Status        - Check service status"
-        _row " 16.  View Logs     - Watch live logs"
-        _row " 17.  Edit Config   - Modify config.yaml"
+        _row " 11.  Start         - Start Whispera service"
+        _row " 12.  Stop          - Stop Whispera service"
+        _row " 13.  Restart       - Restart Whispera service"
+        _row " 14.  Status        - Check service status"
+        _row " 15.  View Logs     - Watch live logs"
+        _row " 16.  Edit Config   - Modify config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row " 18.  Update        - Update Whispera from GitHub"
+        _row " 17.  Update        - Update Whispera from GitHub"
         _row "  0.  Exit"
         echo -e "${BLUE}╚${SEP}╝${PLAIN}"
         echo ""
@@ -971,54 +745,19 @@ show_extras_menu() {
             5) setup_sysctl ;;
             6) setup_autoupdate ;;
             7) setup_ssh_hardening ;;
-            8) setup_redis ;;
-            9) setup_postgres ;;
-            10) setup_telegram ;;
-            11) setup_backups ;;
-            a|A) setup_bbr; setup_sysctl; setup_redis; setup_postgres; setup_backups ;;
-            12) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
-            13) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
-            14) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
-            15) systemctl status whispera ;;
-            16) journalctl -u whispera -f ;;
-            17) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
-            18)
+            8) setup_postgres ;;
+            9) setup_telegram ;;
+            10) setup_backups ;;
+            a|A) setup_bbr; setup_sysctl; setup_postgres; setup_backups ;;
+            11) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
+            12) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
+            13) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
+            14) systemctl status whispera ;;
+            15) journalctl -u whispera -f ;;
+            16) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
+            17)
                 pkill -9 whispera 2>/dev/null
                 bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/update.sh)
-                ;;
-            19)
-                local tok=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
-                if [[ -z "$tok" ]]; then
-                    log_warn "Bridge token not found at $CONF_PATH/bridge.token"
-                else
-                    echo ""
-                    echo -e "${GREEN}Bridge token:${PLAIN} $tok"
-                    echo ""
-                    echo -e "${GREEN}Install bridge on another server:${PLAIN}"
-                    echo -e "  curl -sL https://${SRV_IP}:8080/install-bridge.sh | bash -s -- ${SRV_IP}:8443 $tok"
-                fi
-                ;;
-            20)
-                read -rp "  Bridge IP:port (e.g. 1.2.3.4:8443): " BR_ADDR
-                read -rp "  Bridge token: " BR_TOK
-                if [[ -n "$BR_ADDR" && -n "$BR_TOK" ]]; then
-                    curl -sk -X POST "https://127.0.0.1:8080/api/bridges" \
-                        -H "Content-Type: application/json" \
-                        -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" \
-                        -d "{\"address\":\"$BR_ADDR\",\"token\":\"$BR_TOK\"}" && \
-                        log_success "Bridge $BR_ADDR registered" || log_err "Failed to register bridge"
-                else
-                    log_warn "Address and token are required"
-                fi
-                ;;
-            21)
-                curl -sk "https://127.0.0.1:8080/api/bridges" \
-                    -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" | \
-                    jq . 2>/dev/null || cat || \
-                    log_err "Failed to fetch bridges (is Whispera running?)"
-                ;;
-            22)
-                gen_bridge_ssh_otp 3600
                 ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
@@ -1175,84 +914,6 @@ install_nodejs() {
     log_success "Node.js installed"
 }
 
-setup_monitoring() {
-    log_info "Setting up Monitoring (Prometheus + Grafana)..."
-
-    if ! command -v docker &>/dev/null; then
-        log_warn "Docker not found. Installing Docker..."
-        curl -fsSL https://get.docker.com | sh
-    fi
-
-    if ! command -v docker-compose &>/dev/null && ! docker compose version &>/dev/null; then
-         log_warn "Docker Compose not found. Installing..."
-         apt-get install -y docker-compose-plugin
-    fi
-
-    if [[ ! -d "$WORK_DIR/monitoring" ]]; then
-        log_err "Monitoring configuration not found in $WORK_DIR/monitoring"
-        return
-    fi
-    
-    cd "$WORK_DIR/monitoring"
-    
-    log_info "Starting monitoring stack..."
-    docker compose up -d || docker-compose up -d
-
-    if [[ $? -eq 0 ]]; then
-        log_success "Monitoring started!"
-        echo ""
-        log_info "Grafana: http://$(get_public_ip):3001 (admin/admin)"
-        log_info "Prometheus: http://$(get_public_ip):9091"
-    else
-        log_err "Failed to start monitoring stack"
-    fi
-}
-
-install_panel() {
-    log_info "Installing Whispera Panel (static — served by nginx)..."
-
-    local PANEL_SRC="$WORK_DIR/panel/public"
-    local PANEL_DEST="$DAT_PATH/panel/public"
-
-    if [[ ! -d "$PANEL_SRC" ]]; then
-        log_warn "Panel static source not found ($PANEL_SRC) — cloning repo..."
-        rm -rf "$WORK_DIR"
-        git clone -b main https://github.com/Jalaveyan/Whispera.git "$WORK_DIR"
-    fi
-
-    if [[ ! -d "$PANEL_SRC" ]]; then
-        log_err "Panel static source missing — skipping panel install"
-        return
-    fi
-
-    rm -rf "$PANEL_DEST"
-    mkdir -p "$(dirname "$PANEL_DEST")"
-    cp -r "$PANEL_SRC" "$PANEL_DEST"
-    mkdir -p "$PANEL_DEST/uploads"
-
-    local FA_DIR="$PANEL_DEST/vendor/fa"
-    local FA_VER="6.5.1"
-    local FA_BASE="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/${FA_VER}"
-    if [[ ! -f "$FA_DIR/all.min.css" ]]; then
-        log_info "Downloading Font Awesome ${FA_VER} for offline panel..."
-        mkdir -p "$FA_DIR/webfonts"
-        if curl -fsSL "${FA_BASE}/css/all.min.css" -o "$FA_DIR/all.min.css" 2>/dev/null; then
-            for wf in fa-solid-900 fa-regular-400 fa-brands-400; do
-                curl -fsSL "${FA_BASE}/webfonts/${wf}.woff2" -o "$FA_DIR/webfonts/${wf}.woff2" 2>/dev/null || true
-                curl -fsSL "${FA_BASE}/webfonts/${wf}.ttf"   -o "$FA_DIR/webfonts/${wf}.ttf"   2>/dev/null || true
-            done
-            sed -i "s|../webfonts/|/vendor/fa/webfonts/|g" "$FA_DIR/all.min.css"
-            log_success "Font Awesome cached at $FA_DIR"
-        else
-            log_warn "Font Awesome download failed — panel icons may not render"
-        fi
-    fi
-
-    chmod -R a+rX "$PANEL_DEST"
-
-    log_success "Panel (static) installed to $PANEL_DEST"
-}
-
 cleanup_source() {
     log_info "Cleaning up source code..."
     cd /
@@ -1284,35 +945,6 @@ generate_keys() {
     log_success "Keys generated"
 }
 
-generate_bridge_token() {
-    gen_password 30
-}
-
-setup_dns_discovery() {
-    log_info "Setting up DNS discovery for bridges..."
-    
-    local SERVER_IP=$(get_public_ip)
-    
-    echo ""
-    log_info "To enable automatic bridge discovery, add this DNS record:"
-    echo ""
-    echo -e "  ${GREEN}_whispera._tcp.yourdomain.com  SRV  0 0 8443 $SERVER_IP${PLAIN}"
-    echo ""
-    echo "  Or TXT record:"
-    echo -e "  ${GREEN}whispera-server.yourdomain.com  TXT  \"$SERVER_IP:8443\"${PLAIN}"
-    echo ""
-    
-    cat > "$CONF_PATH/dns-discovery.txt" <<EOF
-
-_whispera._tcp.yourdomain.com  SRV  0 0 8443 $SERVER_IP
-
-whispera-server.yourdomain.com  TXT  "$SERVER_IP:8443"
-
-EOF
-    
-    log_success "DNS instructions saved to $CONF_PATH/dns-discovery.txt"
-}
-
 generate_config() {
     log_info "Generating configuration..."
     
@@ -1322,10 +954,6 @@ generate_config() {
         generate_keys
         PRIVATE_KEY=$(cat "$CONF_PATH/server.key")
     fi
-    
-    local BRIDGE_TOKEN=$(generate_bridge_token)
-    echo "$BRIDGE_TOKEN" > "$CONF_PATH/bridge.token"
-    log_info "Bridge token generated: $BRIDGE_TOKEN"
     
     local PG_PASS=""
     local PG_URL=""
@@ -1353,20 +981,10 @@ generate_config() {
         log_warn "Skipping admin creation (Postgres not configured)"
     fi
 
-    local CHM_CERT="$CONF_PATH/chameleon.crt"
-    local CHM_KEY="$CONF_PATH/chameleon.key"
-    if [[ ! -f "$CHM_CERT" || ! -f "$CHM_KEY" ]]; then
-        log_info "Generating self-signed TLS certificate for chameleon..."
-        if command -v openssl &>/dev/null; then
-            openssl req -x509 -newkey rsa:2048 -nodes \
-                -keyout "$CHM_KEY" -out "$CHM_CERT" \
-                -days 3650 -subj "/CN=whispera" 2>/dev/null
-            chmod 600 "$CHM_KEY"
-            log_success "Chameleon TLS cert generated: $CHM_CERT"
-        else
-            log_warn "openssl not found — chameleon will run without TLS until a cert is provided"
-        fi
-    fi
+    local DECOY_FIRST_SITE="${WHISPERA_DECOY_SITES%%,*}"
+    DECOY_FIRST_SITE="${DECOY_FIRST_SITE:-https://ria.ru/}"
+    local DECOY_ORIGIN="${DECOY_FIRST_SITE%%/}"
+    log_info "Whispera decoy origin: $DECOY_ORIGIN (TLS cert will be auto-cloned from it on first start)"
 
     cat > "$CONF_PATH/config.yaml" <<EOF
 server:
@@ -1384,13 +1002,14 @@ transport:
     enabled: false
     listen_addr: ":8443"
 
-chameleon:
+whispera:
   enabled: true
   listen_addr: ":443"
-  tls_cert: "$CHM_CERT"
-  tls_key: "$CHM_KEY"
+  tls_cert: ""
+  tls_key: ""
   domain: ""
   acme_dir: "/var/lib/whispera/acme"
+  decoy_origin: "$DECOY_ORIGIN"
 
 network:
   tun_name: "Whispera"
@@ -1417,12 +1036,6 @@ api:
   enable_cors: true
   login_rate_limit: 5
 
-bridge:
-  enabled: true
-  registration_token: "$BRIDGE_TOKEN"
-  auto_cleanup: true
-  health_check_interval: 60
-
 bot:
   enabled: false
   token: "YOUR_TELEGRAM_BOT_TOKEN"
@@ -1440,9 +1053,6 @@ database:
   max_conns: 25
   min_conns: 5
 
-cache:
-  redis_url: "redis://127.0.0.1:6379"
-
 ml:
   enabled: false
   server_url: "https://127.0.0.1:8000"
@@ -1451,126 +1061,6 @@ ml:
 EOF
     
     log_success "Config saved to $CONF_PATH/config.yaml"
-}
-
-generate_panel_cert() {
-    local CERT="$CONF_PATH/panel.crt"
-    local KEY="$CONF_PATH/panel.key"
-    local SERVER_IP
-    SERVER_IP=$(get_public_ip)
-
-    if [[ -f "$CERT" && -f "$KEY" ]]; then
-        log_info "Panel TLS cert already exists, skipping generation"
-        return
-    fi
-
-    log_info "Generating self-signed TLS certificate for panel (CN=whispera-ui)..."
-    if command -v openssl &>/dev/null; then
-        openssl req -x509 -newkey rsa:2048 -nodes \
-            -keyout "$KEY" -out "$CERT" \
-            -days 3650 -subj "/CN=whispera-ui" \
-            -addext "subjectAltName=DNS:whispera-ui,IP:127.0.0.1,IP:${SERVER_IP}" \
-            2>/dev/null
-        chmod 600 "$KEY"
-        log_success "Panel TLS cert generated: $CERT"
-    else
-        log_warn "openssl not found — panel will run without HTTPS"
-    fi
-}
-
-setup_decoy_refresh() {
-    if ! command -v wget &>/dev/null; then
-        if command -v apt-get &>/dev/null; then apt-get install -y wget >/dev/null 2>&1
-        elif command -v dnf &>/dev/null; then dnf install -y wget >/dev/null 2>&1
-        elif command -v yum &>/dev/null; then yum install -y wget >/dev/null 2>&1
-        elif command -v pacman &>/dev/null; then pacman -Sy --noconfirm wget >/dev/null 2>&1
-        elif command -v zypper &>/dev/null; then zypper install -y wget >/dev/null 2>&1
-        elif command -v apk &>/dev/null; then apk add wget >/dev/null 2>&1
-        fi
-    fi
-
-    local default_sites="https://ria.ru/,https://lenta.ru/,https://www.rbc.ru/,https://www.kp.ru/,https://tass.ru/,\
-https://www.gazeta.ru/,https://www.kommersant.ru/,https://www.vedomosti.ru/,https://www.fontanka.ru/,https://www.ng.ru/,\
-https://www.rg.ru/,https://iz.ru/,https://life.ru/,https://www.vesti.ru/,https://www.interfax.ru/,\
-https://yandex.ru/,https://mail.ru/,https://www.rambler.ru/,https://ok.ru/,https://go.mail.ru/,\
-https://www.ozon.ru/,https://www.wildberries.ru/,https://www.avito.ru/,https://www.citilink.ru/,https://www.dns-shop.ru/,\
-https://www.mvideo.ru/,https://www.eldorado.ru/,https://www.lamoda.ru/,https://www.sportmaster.ru/,https://leroymerlin.ru/,\
-https://www.sberbank.ru/,https://www.vtb.ru/,https://alfabank.ru/,https://www.gazprombank.ru/,https://www.raiffeisen.ru/,\
-https://sovcombank.ru/,https://www.gosuslugi.ru/,https://www.nalog.gov.ru/,https://www.mos.ru/,https://www.gibdd.ru/,\
-https://hh.ru/,https://auto.ru/,https://www.cian.ru/,https://www.drom.ru/,https://www.kinopoisk.ru/,\
-https://2gis.ru/,https://www.eapteka.ru/,https://www.dixy.ru/,https://www.perekrestok.ru/,https://www.pochta.ru/"
-    local sites="${WHISPERA_DECOY_SITES:-$default_sites}"
-    local interval="${WHISPERA_DECOY_REFRESH_INTERVAL:-1d}"
-
-    cat > /usr/local/bin/whispera-refresh-decoy.sh <<REFRESHEOF
-#!/bin/bash
-DECOY_DIR="/var/www/whispera-decoy"
-SITES="\${WHISPERA_DECOY_SITES:-$sites}"
-IFS=',' read -ra SITE_ARR <<< "\$SITES"
-N=\${#SITE_ARR[@]}
-[[ \$N -eq 0 ]] && exit 0
-
-command -v wget &>/dev/null || exit 0
-
-MAX_ATTEMPTS=8
-[[ \$MAX_ATTEMPTS -gt \$N ]] && MAX_ATTEMPTS=\$N
-
-for ((attempt=0; attempt<MAX_ATTEMPTS; attempt++)); do
-    PICK="\${SITE_ARR[\$((RANDOM % N))]}"
-    TMP_DIR=\$(mktemp -d)
-    wget --quiet --page-requisites --convert-links --adjust-extension \\
-        --span-hosts --no-parent --no-host-directories \\
-        --timeout=15 --tries=1 -e robots=off \\
-        -P "\$TMP_DIR" "\$PICK" 2>/dev/null
-    if [[ ! -f "\$TMP_DIR/index.html" ]]; then
-        first_html=\$(find "\$TMP_DIR" -maxdepth 1 -name '*.html' | head -n1)
-        [[ -n "\$first_html" ]] && cp "\$first_html" "\$TMP_DIR/index.html"
-    fi
-    if [[ -f "\$TMP_DIR/index.html" ]]; then
-        rm -rf "\$DECOY_DIR"
-        mkdir -p "\$(dirname "\$DECOY_DIR")"
-        mv "\$TMP_DIR" "\$DECOY_DIR"
-        logger -t whispera-decoy "refreshed from \$PICK" 2>/dev/null || true
-        exit 0
-    fi
-    rm -rf "\$TMP_DIR"
-done
-
-mkdir -p "\$DECOY_DIR"
-if [[ ! -f "\$DECOY_DIR/index.html" ]]; then
-    cat > "\$DECOY_DIR/index.html" <<'DECOYHTML'
-<!doctype html><html><head><title>Welcome</title></head><body><h1>It works.</h1></body></html>
-DECOYHTML
-fi
-REFRESHEOF
-    chmod +x /usr/local/bin/whispera-refresh-decoy.sh
-
-    if command -v systemctl &>/dev/null; then
-        cat > /etc/systemd/system/whispera-decoy-refresh.service <<'EOF'
-[Unit]
-Description=Refresh Whispera nginx decoy backend content
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/whispera-refresh-decoy.sh
-EOF
-        cat > /etc/systemd/system/whispera-decoy-refresh.timer <<EOF
-[Unit]
-Description=Periodically refresh Whispera decoy backend content
-
-[Timer]
-OnBootSec=10min
-OnUnitActiveSec=${interval}
-RandomizedDelaySec=6h
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-        systemctl daemon-reload >/dev/null 2>&1
-        systemctl enable --now whispera-decoy-refresh.timer >/dev/null 2>&1
-        log_success "Decoy refresh timer installed (every ${interval}, randomized up to 6h)"
-    fi
 }
 
 setup_nginx_proxy() {
@@ -1597,7 +1087,7 @@ setup_nginx_proxy() {
         fi
     fi
     if ! command -v nginx &>/dev/null; then
-        log_warn "nginx install failed (no outbound? unsupported distro) — chameleon decoy backend unavailable until nginx is installed"
+        log_warn "nginx install failed (no outbound? unsupported distro) — whispera decoy backend unavailable until nginx is installed"
         return
     fi
 
@@ -1616,9 +1106,6 @@ RLCONF
         log_warn "Decoy backend clone failed on first run — will retry on next timer tick"
     fi
 
-    # Chameleon owns the public :443 listener; nginx is only an internal
-    # decoy backend (chameleon.decoy_origin) plus a reverse proxy for /sub/
-    # and /api/, reachable only via chameleon's passthrough on 127.0.0.1.
     cat > /etc/nginx/conf.d/whispera-ui.conf <<NGINX
 server {
     listen 127.0.0.1:80;
@@ -1796,73 +1283,6 @@ WEOF
     log_success "ML engine runs inside main Whispera process (port 8000)"
 }
 
-_enable_ml_in_config() {
-    local cfg="${CONF_PATH}/config.yaml"
-    [[ -f "$cfg" ]] || return
-    if grep -q "^ml:" "$cfg"; then
-        sed -i '/^ml:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
-    else
-        printf '\nml:\n  enabled: true\n  server_url: "https://127.0.0.1:8000"\n  token_file: ""\n' >> "$cfg"
-    fi
-    refresh_config "$cfg"
-    log_success "ML enabled in config.yaml"
-}
-
-
-_enable_chameleon_in_config() {
-    local cfg="${CONF_PATH}/config.yaml"
-    [[ -f "$cfg" ]] || return
-
-    local cert="${CONF_PATH}/chameleon.crt" key="${CONF_PATH}/chameleon.key"
-    if [[ ! -f "$cert" || ! -f "$key" ]] && command -v openssl &>/dev/null; then
-        openssl req -x509 -newkey rsa:2048 -nodes \
-            -keyout "$key" -out "$cert" \
-            -days 3650 -subj "/CN=whispera" 2>/dev/null
-        chmod 600 "$key"
-    fi
-
-    if grep -q "^chameleon:" "$cfg"; then
-        sed -i '/^chameleon:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
-        local cur_domain
-        cur_domain=$(awk '/^chameleon:/{f=1} f && /^[[:space:]]+domain:/{print $2; exit}' "$cfg" | tr -d '"')
-        if [[ -n "$cur_domain" ]]; then
-            refresh_config "$cfg"
-            log_success "Chameleon enabled in config.yaml (autocert domain=$cur_domain, tls_cert untouched)"
-            return
-        fi
-        local cur_cert
-        cur_cert=$(awk '/^chameleon:/{f=1} f && /tls_cert:/{print $2; exit}' "$cfg" | tr -d '"')
-        if [[ -z "$cur_cert" && -n "$cert" ]]; then
-            python3 - "$cfg" "$cert" "$key" <<'PYEOF'
-import sys, re
-path, cert, key = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(path) as f:
-    text = f.read()
-def patch_block(m):
-    blk = m.group(0)
-    blk = re.sub(r'tls_cert:\s*""', f'tls_cert: "{cert}"', blk)
-    blk = re.sub(r'tls_key:\s*""',  f'tls_key: "{key}"',   blk)
-    return blk
-text = re.sub(r'^chameleon:.*?(?=\n\S|\Z)', patch_block, text, flags=re.S|re.M)
-with open(path, 'w') as f:
-    f.write(text)
-PYEOF
-            log_info "Chameleon: injected self-signed TLS cert into existing config"
-        fi
-    else
-        printf '\nchameleon:\n  enabled: true\n  listen_addr: ":443"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n' \
-            "${cert}" "${key}" >> "$cfg"
-    fi
-    if command -v ufw &>/dev/null; then
-        ufw allow 443/tcp >/dev/null 2>&1 || true
-    elif command -v firewall-cmd &>/dev/null; then
-        firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
-        firewall-cmd --reload >/dev/null 2>&1 || true
-    fi
-    refresh_config "$cfg"
-    log_success "Chameleon enabled in config.yaml"
-}
-
 setup_network() {
     log_info "Configuring network..."
     
@@ -1917,21 +1337,6 @@ setup_firewall() {
     else
         log_warn "No firewall found, skipping"
     fi
-}
-
-show_connection_key() {
-    local SERVER_IP=$(get_public_ip)
-    local ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
-
-    echo ""
-    echo -e "${GREEN}================================================================${PLAIN}"
-    echo -e "${GREEN} WEB PANEL                                                      ${PLAIN}"
-    echo -e "${GREEN}================================================================${PLAIN}"
-    echo -e "  URL:      ${BLUE}https://${SERVER_IP}/${PLAIN}"
-    echo -e "  User:     ${BLUE}admin${PLAIN}"
-    echo -e "  Password: ${BLUE}${ADMIN_PASS}${PLAIN}"
-    echo -e "${GREEN}================================================================${PLAIN}"
-    echo ""
 }
 
 install_cli_wrapper() {
@@ -2033,7 +1438,7 @@ api:
   enabled: true
   listen_addr: "127.0.0.1:8080"
 
-chameleon:
+whispera:
   enabled: true
   listen_addr: ":443"
   tls_cert: "$CERT"
@@ -2044,7 +1449,7 @@ EOF
         log_success "Relay config saved to $CONF_PATH/config.yaml"
     else
         if ! grep -q "^  secret:" "$CONF_PATH/config.yaml"; then
-            sed -i "/^chameleon:/a\\  secret: \"$RELAY_SECRET\"" "$CONF_PATH/config.yaml"
+            sed -i "/^whispera:/a\\  secret: \"$RELAY_SECRET\"" "$CONF_PATH/config.yaml"
             refresh_config
         else
             RELAY_SECRET=$(grep "^  secret:" "$CONF_PATH/config.yaml" | awk '{print $2}' | tr -d '"')
@@ -2097,11 +1502,11 @@ EOF
     echo ""
     log_success "Whispera relay installed!"
     echo ""
-    echo -e "  ${YELLOW}Chameleon secret (скопируй на мастер):${PLAIN}"
+    echo -e "  ${YELLOW}Whispera secret (скопируй на мастер):${PLAIN}"
     echo -e "  ${GREEN}${RELAY_SECRET}${PLAIN}"
     echo ""
     echo -e "  Используй в конфиге мастера:"
-    echo -e "  ${GREEN}chameleon_secret: \"${RELAY_SECRET}\"${PLAIN}"
+    echo -e "  ${GREEN}whispera_secret: \"${RELAY_SECRET}\"${PLAIN}"
     echo ""
 }
 
@@ -2129,7 +1534,7 @@ main() {
     setup_systemd
     setup_nginx_proxy
 
-    _enable_chameleon_in_config
+    _enable_whispera_in_config
     refresh_config
     if systemctl is-active whispera &>/dev/null; then
         systemctl restart whispera >/dev/null 2>&1 || true
@@ -2152,25 +1557,12 @@ main() {
     echo -e "  Config:         ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
     local SERVER_IP
     SERVER_IP=$(get_public_ip)
-    echo -e "  Web Panel:      ${GREEN}https://${SERVER_IP}/${PLAIN}"
-    echo -e "  ${YELLOW}(самоподписанный сертификат — в браузере нажмите «Продолжить»)${PLAIN}"
+    echo -e "  ${YELLOW}(self sert)${PLAIN}"
     echo ""
     echo -e "  ${YELLOW}Admin User:${PLAIN}     admin"
     echo -e "  ${YELLOW}Admin Password:${PLAIN} ${GREEN}$ADMIN_PASS${PLAIN}"
     echo ""
     echo -e "  ${YELLOW}DB Password:${PLAIN}    $PG_PASS"
-    
-    local BRIDGE_TOKEN=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
-    if [[ -n "$BRIDGE_TOKEN" ]]; then
-        echo ""
-        echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${PLAIN}"
-        echo -e "${BLUE}║              BRIDGE REGISTRATION TOKEN                        ║${PLAIN}"
-        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${PLAIN}"
-        echo -e "  Token: ${GREEN}$BRIDGE_TOKEN${PLAIN}"
-        echo ""
-        echo -e "  Install bridge on other servers:"
-        echo -e "  ${GREEN}curl -sL https://$(get_public_ip):8080/install-bridge.sh | bash -s -- $(get_public_ip):8443 $BRIDGE_TOKEN${PLAIN}"
-    fi
 
     setup_dns_discovery
     
@@ -2189,13 +1581,6 @@ case "${1:-}" in
         SERVER_IP=$(get_public_ip)
         ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
         log_success "Keys regenerated. Panel: https://${SERVER_IP}/ (admin / ${ADMIN_PASS})"
-        ;;
-    key|showkey)
-        SERVER_IP=$(get_public_ip)
-        ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
-        echo "Web Panel:  https://${SERVER_IP}/"
-        echo "Admin User: admin"
-        echo "Admin Pass: ${ADMIN_PASS}"
         ;;
     update)
         log_info "Updating Whispera..."
@@ -2263,7 +1648,7 @@ case "${1:-}" in
         systemctl status whispera
         ;;
     help|--help|-h)
-        echo "Whispera Installer v2.1"
+        echo "Whispera"
         echo ""
         echo "Usage: ./install.sh [command]"
         echo ""
