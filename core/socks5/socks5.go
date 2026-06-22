@@ -7,6 +7,7 @@ import (
 	"io"
 	stdlog "log"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -293,6 +294,11 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 					delete(streams, dstKey)
 					streamsMu.Unlock()
 					stream.Close()
+				}()
+				defer func() {
+					if r := recover(); r != nil {
+						stdlog.Printf("[SOCKS5-UDP] PANIC in stream reader: %v\n%s", r, debug.Stack())
+					}
 				}()
 
 				hdr := make([]byte, 2)

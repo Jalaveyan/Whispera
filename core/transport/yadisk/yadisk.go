@@ -7,13 +7,17 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
+	"whispera/common/log"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"
 )
+
+var log = logger.Module("transport_yadisk")
 
 func init() {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
@@ -162,6 +166,22 @@ func (t *Transport) sendLoop() {
 		select {
 		case <-t.stopCh:
 			return
+		default:
+		}
+		t.runSendLoop()
+	}
+}
+
+func (t *Transport) runSendLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in yadisk sendLoop: %v\n%s", r, debug.Stack())
+		}
+	}()
+	for {
+		select {
+		case <-t.stopCh:
+			return
 		case data := <-t.dataOut:
 			seq := atomic.AddUint64(&t.writeSeq, 1) - 1
 			path := fmt.Sprintf("%s/%010d", t.writeDir, seq)
@@ -173,6 +193,22 @@ func (t *Transport) sendLoop() {
 }
 
 func (t *Transport) recvLoop() {
+	for {
+		select {
+		case <-t.stopCh:
+			return
+		default:
+		}
+		t.runRecvLoop()
+	}
+}
+
+func (t *Transport) runRecvLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in yadisk recvLoop: %v\n%s", r, debug.Stack())
+		}
+	}()
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 

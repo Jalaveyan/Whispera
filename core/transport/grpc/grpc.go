@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
+	"whispera/common/log"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
 	"whispera/common/runtime/interfaces"
@@ -17,7 +19,20 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
+
+var log = logger.Module("transport_grpc")
+
+func recoveryStreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in gRPC stream handler %s: %v\n%s", info.FullMethod, r, debug.Stack())
+			err = fmt.Errorf("internal error")
+		}
+	}()
+	return handler(srv, ss)
+}
 
 func init() {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
@@ -29,14 +44,15 @@ const (
 )
 
 type Config struct {
-	ListenAddr  string
-	ServiceName string
-	UseTLS      bool
-	CertFile    string
-	KeyFile     string
-	ServerName  string
-	MaxConns    int
-	MaxStreams  int
+	ListenAddr       string
+	ExtraListenAddrs []string
+	ServiceName      string
+	UseTLS           bool
+	CertFile         string
+	KeyFile          string
+	ServerName       string
+	MaxConns         int
+	MaxStreams       int
 }
 
 func DefaultConfig() *Config {
@@ -117,6 +133,7 @@ func (t *Transport) Start() error {
 	}
 
 	opts = append(opts, grpc.MaxConcurrentStreams(uint32(t.config.MaxStreams)))
+	opts = append(opts, grpc.StreamInterceptor(recoveryStreamInterceptor))
 
 	t.server = grpc.NewServer(opts...)
 
@@ -128,10 +145,32 @@ func (t *Transport) Start() error {
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("PANIC in gRPC Serve: %v\n%s", r, debug.Stack())
+			}
+		}()
 		if err := t.server.Serve(listener); err != nil {
 			t.SetHealthy(false, fmt.Sprintf("server error: %v", err))
 		}
 	}()
+
+	for _, extraAddr := range t.config.ExtraListenAddrs {
+		extraAddr := extraAddr
+		extraListener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", extraAddr)
+		if err != nil {
+			log.Error("gRPC: failed to listen on extra addr %s: %v", extraAddr, err)
+			continue
+		}
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("PANIC in gRPC extra Serve(%s): %v\n%s", extraAddr, r, debug.Stack())
+				}
+			}()
+			t.server.Serve(extraListener)
+		}()
+	}
 
 	t.SetHealthy(true, fmt.Sprintf("listening on %s", t.config.ListenAddr))
 	t.PublishEvent(events.EventTypeModuleStarted, map[string]interface{}{
@@ -160,10 +199,6 @@ func (t *Transport) Type() interfaces.TransportType {
 	return interfaces.TransportType("grpc")
 }
 
-func (t *Transport) Listen(addr string) error {
-	return nil
-}
-
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	var opts []grpc.DialOption
 
@@ -174,7 +209,7 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	conn, err := grpc.DialContext(ctx, addr, opts...)
+	conn, err := grpc.NewClient(addr, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -238,9 +273,7 @@ type TunnelService_TunnelClient interface {
 	grpc.ClientStream
 }
 
-type TunnelData struct {
-	Data []byte
-}
+type TunnelData = wrapperspb.BytesValue
 
 func RegisterTunnelServiceServer(s *grpc.Server, srv TunnelServiceServer) {
 	s.RegisterService(&_TunnelService_serviceDesc, srv)
@@ -369,16 +402,16 @@ func (c *grpcConn) Read(b []byte) (n int, err error) {
 		return 0, err
 	}
 
-	n = copy(b, data.Data)
-	if n < len(data.Data) {
-		c.readBuf = data.Data[n:]
+	n = copy(b, data.Value)
+	if n < len(data.Value) {
+		c.readBuf = data.Value[n:]
 	}
 	atomic.AddUint64(&c.transport.bytesRx, uint64(n))
 	return n, nil
 }
 
 func (c *grpcConn) Write(b []byte) (n int, err error) {
-	err = c.stream.Send(&TunnelData{Data: b})
+	err = c.stream.Send(&TunnelData{Value: b})
 	if err != nil {
 		return 0, err
 	}
@@ -425,16 +458,16 @@ func (c *grpcServerConn) Read(b []byte) (n int, err error) {
 		return 0, err
 	}
 
-	n = copy(b, data.Data)
-	if n < len(data.Data) {
-		c.readBuf = data.Data[n:]
+	n = copy(b, data.Value)
+	if n < len(data.Value) {
+		c.readBuf = data.Value[n:]
 	}
 	atomic.AddUint64(&c.transport.bytesRx, uint64(n))
 	return n, nil
 }
 
 func (c *grpcServerConn) Write(b []byte) (n int, err error) {
-	err = c.stream.Send(&TunnelData{Data: b})
+	err = c.stream.Send(&TunnelData{Value: b})
 	if err != nil {
 		return 0, err
 	}

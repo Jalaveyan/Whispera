@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
+	"whispera/common/log"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"
 )
+
+var log = logger.Module("transport_udp")
 
 func init() {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
@@ -164,10 +168,6 @@ func (t *Transport) Type() interfaces.TransportType {
 	return interfaces.TransportUDP
 }
 
-func (t *Transport) Listen(addr string) error {
-	return nil
-}
-
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
@@ -239,6 +239,18 @@ func (t *Transport) OnPacket(handler func(data []byte, addr net.Addr)) {
 
 func (t *Transport) readLoop() {
 	for t.IsRunning() {
+		t.runReadLoop()
+	}
+}
+
+func (t *Transport) runReadLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in udp readLoop: %v\n%s", r, debug.Stack())
+		}
+	}()
+
+	for t.IsRunning() {
 		buf := t.bufferPool.Get().([]byte)
 		buf = buf[:cap(buf)]
 
@@ -249,7 +261,7 @@ func (t *Transport) readLoop() {
 			if !t.IsRunning() {
 				return
 			}
-			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
 			t.metrics.Increment("read_errors")

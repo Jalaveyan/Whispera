@@ -144,10 +144,6 @@ func (t *Transport) Type() interfaces.TransportType {
 	return interfaces.TransportTCP
 }
 
-func (t *Transport) Listen(addr string) error {
-	return nil
-}
-
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	dialer := &net.Dialer{
 		Timeout:   t.config.WriteTimeout,

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime/debug"
 	"sync"
 	"time"
 	"whispera/common/log"
@@ -56,19 +57,17 @@ func mapErrorToReplyCode(err error) byte {
 		}
 	}
 
-	msg := err.Error()
-	switch msg {
-	case "connection refused":
-		return socks5ReplyConnectionRefused
-	case "network unreachable":
-		return socks5ReplyNetworkUnreachable
-	case "host unreachable":
-		return socks5ReplyHostUnreachable
-	case "permission denied":
-		return socks5ReplyConnectionNotAllowed
+	if code, ok := errMsgReplyCodes[err.Error()]; ok {
+		return code
 	}
-
 	return socks5ReplyGeneralFailure
+}
+
+var errMsgReplyCodes = map[string]byte{
+	"connection refused":  socks5ReplyConnectionRefused,
+	"network unreachable": socks5ReplyNetworkUnreachable,
+	"host unreachable":    socks5ReplyHostUnreachable,
+	"permission denied":   socks5ReplyConnectionNotAllowed,
 }
 
 type SOCKS5Server struct {
@@ -78,7 +77,6 @@ type SOCKS5Server struct {
 	packetHandler   PacketHandler
 	udpRelayHandler UDPRelayHandler
 	udpHandler      func(net.Conn) error
-	udpConn         *net.UDPConn
 	udpAddr         *net.UDPAddr
 	mu              sync.RWMutex
 	log             *logger.Logger
@@ -134,6 +132,11 @@ func (s *SOCKS5Server) ListenAndServe() error {
 
 func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("PANIC in handleConnection: %v\n%s", r, debug.Stack())
+		}
+	}()
 
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
@@ -400,34 +403,37 @@ func (s *SOCKS5Server) handleUsernamePasswordAuth(conn net.Conn) error {
 	return nil
 }
 
-func (s *SOCKS5Server) handleUDPAssociate(conn net.Conn, atyp byte) (string, uint16, error) {
-	switch atyp {
-	case socks5ATYPIPv4:
+var udpAssociateAddrReaders = map[byte]func(conn net.Conn) error{
+	socks5ATYPIPv4: func(conn net.Conn) error {
 		addr := make([]byte, 4)
-		if _, err := io.ReadFull(conn, addr); err != nil {
-			s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
-			return "", 0, err
-		}
-	case socks5ATYPIPv6:
+		_, err := io.ReadFull(conn, addr)
+		return err
+	},
+	socks5ATYPIPv6: func(conn net.Conn) error {
 		addr := make([]byte, 16)
-		if _, err := io.ReadFull(conn, addr); err != nil {
-			s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
-			return "", 0, err
-		}
-	case socks5ATYPDomain:
+		_, err := io.ReadFull(conn, addr)
+		return err
+	},
+	socks5ATYPDomain: func(conn net.Conn) error {
 		lenBuf := make([]byte, 1)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
-			s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
-			return "", 0, err
+			return err
 		}
 		domain := make([]byte, int(lenBuf[0]))
-		if _, err := io.ReadFull(conn, domain); err != nil {
-			s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
-			return "", 0, err
-		}
-	default:
+		_, err := io.ReadFull(conn, domain)
+		return err
+	},
+}
+
+func (s *SOCKS5Server) handleUDPAssociate(conn net.Conn, atyp byte) (string, uint16, error) {
+	reader, ok := udpAssociateAddrReaders[atyp]
+	if !ok {
 		s.sendReply(conn, socks5ReplyAddressTypeNotSupported, nil, 0)
 		return "", 0, fmt.Errorf("unsupported address type: %d", atyp)
+	}
+	if err := reader(conn); err != nil {
+		s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
+		return "", 0, err
 	}
 
 	portBuf := make([]byte, 2)
@@ -466,6 +472,11 @@ func (s *SOCKS5Server) handleUDPAssociate(conn net.Conn, atyp byte) (string, uin
 
 func (s *SOCKS5Server) handleUDPRelay(udpListener *net.UDPConn, tcpConn net.Conn) {
 	defer udpListener.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("PANIC in handleUDPRelay: %v\n%s", r, debug.Stack())
+		}
+	}()
 
 	clientAddr := (*net.UDPAddr)(nil)
 

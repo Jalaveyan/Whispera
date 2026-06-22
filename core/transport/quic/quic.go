@@ -246,10 +246,6 @@ func (t *Transport) Type() interfaces.TransportType {
 	return interfaces.TransportQUIC
 }
 
-func (t *Transport) Listen(addr string) error {
-	return nil
-}
-
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	alpn := t.config.ALPN
 	if alpn == "" {
