@@ -65,6 +65,18 @@ type KillSwitch struct {
 	cancel        context.CancelFunc
 }
 
+type Status struct {
+	State       string    `json:"state"`
+	Enabled     bool      `json:"enabled"`
+	Active      bool      `json:"active"`
+	VPNServer   string    `json:"vpn_server,omitempty"`
+	AllowLAN    bool      `json:"allow_lan"`
+	AllowDNS    bool      `json:"allow_dns"`
+	Platform    string    `json:"platform"`
+	Supported   bool      `json:"supported"`
+	LastChanged time.Time `json:"last_changed,omitempty"`
+}
+
 type Platform interface {
 	Name() string
 	IsSupported() bool
@@ -305,18 +317,6 @@ func (ks *KillSwitch) MonitorHealth() {
 	if !active && ks.state == StateActive {
 		ks.notifyError(fmt.Errorf("kill switch rules unexpectedly deactivated"))
 	}
-}
-
-type Status struct {
-	State       string    `json:"state"`
-	Enabled     bool      `json:"enabled"`
-	Active      bool      `json:"active"`
-	VPNServer   string    `json:"vpn_server,omitempty"`
-	AllowLAN    bool      `json:"allow_lan"`
-	AllowDNS    bool      `json:"allow_dns"`
-	Platform    string    `json:"platform"`
-	Supported   bool      `json:"supported"`
-	LastChanged time.Time `json:"last_changed,omitempty"`
 }
 
 func (ks *KillSwitch) GetStatus() Status {

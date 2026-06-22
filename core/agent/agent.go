@@ -52,19 +52,6 @@ type AgentConfig struct {
 	ParallelProbes int
 }
 
-func DefaultAgentConfig() *AgentConfig {
-	return &AgentConfig{
-		ProbeInterval:  60 * time.Second,
-		RotateInterval: 30 * time.Minute,
-		FailThreshold:  3,
-		LearnRate:      0.1,
-		ExploreRate:    0.15,
-		DecayRate:      0.01,
-		MaxHistory:     100,
-		ParallelProbes: 3,
-	}
-}
-
 type armStats struct {
 	mu        sync.Mutex
 	name      string
@@ -97,6 +84,19 @@ type ProxyAgent struct {
 	totalProbes    uint64
 	totalRotations uint64
 	totalBlocks    uint64
+}
+
+func DefaultAgentConfig() *AgentConfig {
+	return &AgentConfig{
+		ProbeInterval:  60 * time.Second,
+		RotateInterval: 30 * time.Minute,
+		FailThreshold:  3,
+		LearnRate:      0.1,
+		ExploreRate:    0.15,
+		DecayRate:      0.01,
+		MaxHistory:     100,
+		ParallelProbes: 3,
+	}
 }
 
 func NewProxyAgent(cfg *AgentConfig) *ProxyAgent {

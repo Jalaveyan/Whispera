@@ -46,9 +46,17 @@ const (
 	HandshakeTypeRekey    HandshakeType = 0x03
 )
 
+var handshakeHandlers = map[HandshakeType]func(*Handler, context.Context, []byte, net.Addr) (interfaces.Session, error){
+	HandshakeTypeInit:     (*Handler).handleInit,
+	HandshakeTypeResponse: (*Handler).handleResponse,
+	HandshakeTypeRekey:    (*Handler).handleRekey,
+}
+
 type Config struct {
 	RateLimit        float64
 	RateBurst        int
+	PerIPRateLimit   float64
+	PerIPRateBurst   int
 	Timeout          time.Duration
 	MaxPending       int
 	EnableAntiReplay bool
@@ -58,6 +66,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		RateLimit:        100,
 		RateBurst:        50,
+		PerIPRateLimit:   20,
+		PerIPRateBurst:   10,
 		Timeout:          2 * time.Second,
 		MaxPending:       1000,
 		EnableAntiReplay: true,
@@ -71,6 +81,12 @@ func (c *Config) Validate() error {
 	if c.RateBurst <= 0 {
 		c.RateBurst = 50
 	}
+	if c.PerIPRateLimit <= 0 {
+		c.PerIPRateLimit = 20
+	}
+	if c.PerIPRateBurst <= 0 {
+		c.PerIPRateBurst = 10
+	}
 	if c.Timeout <= 0 {
 		c.Timeout = 10 * time.Second
 	}
@@ -78,6 +94,11 @@ func (c *Config) Validate() error {
 		c.MaxPending = 1000
 	}
 	return nil
+}
+
+type ipRateEntry struct {
+	limiter  *base.RateLimiter
+	lastSeen time.Time
 }
 
 type PendingHandshake struct {
@@ -91,8 +112,11 @@ type Handler struct {
 	*base.Module
 	config         *Config
 	crypto         interfaces.CryptoProvider
-	sessionManager interfaces.SessionManager
+	sessionManager interfaces.SessionStore
 	rateLimiter    *base.RateLimiter
+
+	ipLimiterMu sync.Mutex
+	ipLimiters  map[string]*ipRateEntry
 
 	mu      sync.RWMutex
 	pending map[string]*PendingHandshake
@@ -121,6 +145,7 @@ func New(cfg *Config) (*Handler, error) {
 		Module:      base.NewModule(ModuleName, ModuleVersion, []string{"crypto.provider", "session.manager"}),
 		config:      cfg,
 		rateLimiter: base.NewRateLimiter(cfg.RateLimit, cfg.RateBurst),
+		ipLimiters:  make(map[string]*ipRateEntry),
 		pending:     make(map[string]*PendingHandshake),
 		replayCache: make(map[string]time.Time),
 	}
@@ -158,7 +183,7 @@ func (h *Handler) Stop() error {
 	return h.Module.Stop()
 }
 
-func (h *Handler) SetDependencies(crypto interfaces.CryptoProvider, sessionMgr interfaces.SessionManager) {
+func (h *Handler) SetDependencies(crypto interfaces.CryptoProvider, sessionMgr interfaces.SessionStore) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.crypto = crypto
@@ -192,6 +217,11 @@ func (h *Handler) HandleHandshake(ctx context.Context, data []byte, addr net.Add
 		return nil, fmt.Errorf("rate limit exceeded")
 	}
 
+	if !h.allowIP(addr) {
+		atomic.AddUint64(&h.handshakesRejected, 1)
+		return nil, fmt.Errorf("rate limit exceeded for %s", addr.String())
+	}
+
 	if len(data) < HandshakeMinSize || len(data) > HandshakeMaxSize {
 		atomic.AddUint64(&h.handshakesFailed, 1)
 		return nil, fmt.Errorf("invalid handshake size: %d", len(data))
@@ -206,19 +236,11 @@ func (h *Handler) HandleHandshake(ctx context.Context, data []byte, addr net.Add
 
 	hsType := HandshakeType(data[0])
 
-	var session interfaces.Session
-	var err error
-
-	switch hsType {
-	case HandshakeTypeInit:
-		session, err = h.handleInit(ctx, data, addr)
-	case HandshakeTypeResponse:
-		session, err = h.handleResponse(ctx, data, addr)
-	case HandshakeTypeRekey:
-		session, err = h.handleRekey(ctx, data, addr)
-	default:
-		session, err = h.handleLegacy(ctx, data, addr)
+	handler, ok := handshakeHandlers[hsType]
+	if !ok {
+		handler = (*Handler).handleLegacy
 	}
+	session, err := handler(h, ctx, data, addr)
 
 	if err != nil {
 		atomic.AddUint64(&h.handshakesFailed, 1)
@@ -488,6 +510,32 @@ func (h *Handler) SetRateLimiter(rate float64, burst int) {
 	h.rateLimiter.SetRate(rate, burst)
 }
 
+func (h *Handler) allowIP(addr net.Addr) bool {
+	ip := ipFromAddr(addr)
+
+	h.ipLimiterMu.Lock()
+	entry, ok := h.ipLimiters[ip]
+	if !ok {
+		entry = &ipRateEntry{limiter: base.NewRateLimiter(h.config.PerIPRateLimit, h.config.PerIPRateBurst)}
+		h.ipLimiters[ip] = entry
+	}
+	entry.lastSeen = time.Now()
+	h.ipLimiterMu.Unlock()
+
+	return entry.limiter.Allow()
+}
+
+func ipFromAddr(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
+}
+
 func (h *Handler) replayKey(data []byte) string {
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])
@@ -549,6 +597,14 @@ func (h *Handler) cleanup() {
 		}
 	}
 	h.replayMu.Unlock()
+
+	h.ipLimiterMu.Lock()
+	for ip, entry := range h.ipLimiters {
+		if now.Sub(entry.lastSeen) > 10*time.Minute {
+			delete(h.ipLimiters, ip)
+		}
+	}
+	h.ipLimiterMu.Unlock()
 }
 
 func (h *Handler) HealthCheck() interfaces.HealthStatus {

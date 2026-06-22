@@ -3,15 +3,12 @@ package dataplane
 import (
 	"context"
 	"fmt"
-	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"
-	"whispera/common/util"
 )
 
 func init() {
@@ -67,10 +64,9 @@ type Processor struct {
 	*base.Module
 	config *Config
 
-	tun            interfaces.TUNDevice
-	router         interfaces.Router
-	obfuscator     interfaces.Obfuscator
-	sessionManager interfaces.SessionManager
+	tun        interfaces.TUNDevice
+	router     interfaces.Router
+	obfuscator interfaces.Obfuscator
 
 	outboundManager *OutboundManager
 
@@ -93,17 +89,6 @@ type packetJob struct {
 	Packet  *interfaces.Packet
 	Session interfaces.Session
 	Data    []byte
-}
-
-type natEntry struct {
-	SrcAddr      net.Addr
-	DstAddr      net.Addr
-	SessionID    uint32
-	StreamID     uint16
-	Destination  *interfaces.Destination
-	CreatedAt    time.Time
-	LastUsed     time.Time
-	lastUsedNano int64
 }
 
 func New(cfg *Config) (*Processor, error) {
@@ -176,11 +161,9 @@ func (p *Processor) Stop() error {
 func (p *Processor) SetDependencies(
 	router interfaces.Router,
 	obfuscator interfaces.Obfuscator,
-	sessionMgr interfaces.SessionManager,
 ) {
 	p.router = router
 	p.obfuscator = obfuscator
-	p.sessionManager = sessionMgr
 }
 
 func (p *Processor) SetTUN(tun interfaces.TUNDevice) {
@@ -400,64 +383,6 @@ func (p *Processor) QueueOutbound(data []byte, session interfaces.Session) bool 
 		atomic.AddUint64(&p.packetsDropped, 1)
 		return false
 	}
-}
-
-func (p *Processor) AddNATEntry(key string, srcAddr, dstAddr net.Addr, sessionID uint32, streamID uint16, dest *interfaces.Destination) {
-	p.natTableMu.Lock()
-	defer p.natTableMu.Unlock()
-
-	now := time.Now()
-	p.natTable[key] = &natEntry{
-		SrcAddr:      srcAddr,
-		DstAddr:      dstAddr,
-		SessionID:    sessionID,
-		StreamID:     streamID,
-		Destination:  dest,
-		CreatedAt:    now,
-		LastUsed:     now,
-		lastUsedNano: now.UnixNano(),
-	}
-
-	atomic.StoreUint64(&p.natEntries, uint64(len(p.natTable)))
-}
-
-func (p *Processor) LookupNATEntry(key string) (*natEntry, bool) {
-	p.natTableMu.RLock()
-	defer p.natTableMu.RUnlock()
-
-	entry, ok := p.natTable[key]
-	if ok {
-		atomic.StoreInt64(&entry.lastUsedNano, util.GetGlobalTimeCache().NowNano())
-	}
-	return entry, ok
-}
-
-func (p *Processor) natCleanupLoop() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-
-	for p.IsRunning() {
-		select {
-		case <-p.Context().Done():
-			return
-		case <-ticker.C:
-			p.cleanupNAT()
-		}
-	}
-}
-
-func (p *Processor) cleanupNAT() {
-	p.natTableMu.Lock()
-	defer p.natTableMu.Unlock()
-
-	cutoff := time.Now().Add(-5 * time.Minute).UnixNano()
-	for key, entry := range p.natTable {
-		if atomic.LoadInt64(&entry.lastUsedNano) < cutoff {
-			delete(p.natTable, key)
-		}
-	}
-
-	atomic.StoreUint64(&p.natEntries, uint64(len(p.natTable)))
 }
 
 func (p *Processor) HealthCheck() interfaces.HealthStatus {

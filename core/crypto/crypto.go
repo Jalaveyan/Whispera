@@ -34,6 +34,25 @@ const (
 	InfoRecv  = "whispera-recv"
 )
 
+type Provider struct {
+	*base.Module
+	config *Config
+
+	keyPool     chan []byte
+	keyPoolOnce sync.Once
+
+	mu              sync.RWMutex
+	keysGenerated   uint64
+	encryptOps      atomic.Uint64
+	decryptOps      atomic.Uint64
+	decryptFailures atomic.Uint64
+}
+
+type DirectionalKeys struct {
+	SendKey []byte
+	RecvKey []byte
+}
+
 type CipherType string
 
 const (
@@ -65,20 +84,6 @@ func (c *Config) Validate() error {
 		c.KeyPoolSize = 100
 	}
 	return nil
-}
-
-type Provider struct {
-	*base.Module
-	config *Config
-
-	keyPool     chan []byte
-	keyPoolOnce sync.Once
-
-	mu              sync.RWMutex
-	keysGenerated   uint64
-	encryptOps      atomic.Uint64
-	decryptOps      atomic.Uint64
-	decryptFailures atomic.Uint64
 }
 
 func New(cfg *Config) (*Provider, error) {
@@ -322,11 +327,6 @@ func (a *aeadWrapper) NonceSize() int {
 }
 func (a *aeadWrapper) Overhead() int {
 	return a.aead.Overhead()
-}
-
-type DirectionalKeys struct {
-	SendKey []byte
-	RecvKey []byte
 }
 
 type AEADState struct {

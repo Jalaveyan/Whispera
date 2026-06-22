@@ -26,24 +26,29 @@ const (
 )
 
 type Config struct {
-	MaxSessions     int
-	SessionTimeout  time.Duration
-	CleanupInterval time.Duration
-	EnableMetrics   bool
+	MaxSessions      int
+	MaxSessionsPerIP int
+	SessionTimeout   time.Duration
+	CleanupInterval  time.Duration
+	EnableMetrics    bool
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		MaxSessions:     10000,
-		SessionTimeout:  24 * time.Hour,
-		CleanupInterval: 1 * time.Minute,
-		EnableMetrics:   true,
+		MaxSessions:      10000,
+		MaxSessionsPerIP: 100,
+		SessionTimeout:   24 * time.Hour,
+		CleanupInterval:  1 * time.Minute,
+		EnableMetrics:    true,
 	}
 }
 
 func (c *Config) Validate() error {
 	if c.MaxSessions <= 0 {
 		c.MaxSessions = 10000
+	}
+	if c.MaxSessionsPerIP <= 0 {
+		c.MaxSessionsPerIP = 100
 	}
 	if c.SessionTimeout <= 0 {
 		c.SessionTimeout = 24 * time.Hour
@@ -52,6 +57,17 @@ func (c *Config) Validate() error {
 		c.CleanupInterval = 1 * time.Minute
 	}
 	return nil
+}
+
+func sessionIP(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
 }
 
 const numShards = 16
@@ -69,6 +85,9 @@ type Manager struct {
 
 	byAddrMu sync.RWMutex
 	byAddr   map[string]uint32
+
+	perIPMu       sync.Mutex
+	perIPSessions map[string]int
 
 	eventChans   []chan interfaces.SessionEvent
 	eventChansMu sync.RWMutex
@@ -89,9 +108,7 @@ type Session struct {
 	metadata     map[string]interface{}
 	closed       bool
 
-	seed    []byte
-	sendKey []byte
-	recvKey []byte
+	seed []byte
 
 	streams   map[uint16]*Stream
 	streamsMu sync.RWMutex
@@ -128,11 +145,12 @@ func New(cfg *Config) (*Manager, error) {
 	}
 
 	m := &Manager{
-		Module:      base.NewModule(ModuleName, ModuleVersion, nil),
-		config:      cfg,
-		byAddr:      make(map[string]uint32),
-		eventChans:  make([]chan interfaces.SessionEvent, 0),
-		cleanupStop: make(chan struct{}),
+		Module:        base.NewModule(ModuleName, ModuleVersion, nil),
+		config:        cfg,
+		byAddr:        make(map[string]uint32),
+		perIPSessions: make(map[string]int),
+		eventChans:    make([]chan interfaces.SessionEvent, 0),
+		cleanupStop:   make(chan struct{}),
 	}
 
 	for i := 0; i < numShards; i++ {
@@ -226,8 +244,27 @@ func (m *Manager) CreateSession(params interfaces.SessionParams) (interfaces.Ses
 		return nil, fmt.Errorf("max sessions reached (%d)", m.config.MaxSessions)
 	}
 
+	ip := sessionIP(params.ClientAddr)
+	if ip != "" {
+		m.perIPMu.Lock()
+		if m.perIPSessions[ip] >= m.config.MaxSessionsPerIP {
+			m.perIPMu.Unlock()
+			return nil, fmt.Errorf("max sessions per IP reached (%d) for %s", m.config.MaxSessionsPerIP, ip)
+		}
+		m.perIPSessions[ip]++
+		m.perIPMu.Unlock()
+	}
+
 	id, err := m.generateSessionID()
 	if err != nil {
+		if ip != "" {
+			m.perIPMu.Lock()
+			m.perIPSessions[ip]--
+			if m.perIPSessions[ip] <= 0 {
+				delete(m.perIPSessions, ip)
+			}
+			m.perIPMu.Unlock()
+		}
 		return nil, fmt.Errorf("failed to generate session ID: %w", err)
 	}
 
@@ -291,6 +328,16 @@ func (m *Manager) removeSessionFromShard(shard *sessionShard, id uint32) {
 		m.byAddrMu.Lock()
 		delete(m.byAddr, session.clientAddr.String())
 		m.byAddrMu.Unlock()
+
+		ip := sessionIP(session.clientAddr)
+		if ip != "" {
+			m.perIPMu.Lock()
+			m.perIPSessions[ip]--
+			if m.perIPSessions[ip] <= 0 {
+				delete(m.perIPSessions, ip)
+			}
+			m.perIPMu.Unlock()
+		}
 	}
 
 	session.mu.Lock()

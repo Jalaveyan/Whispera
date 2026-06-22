@@ -41,6 +41,95 @@ type SNICategory struct {
 	MaxDuration time.Duration
 }
 
+type wsConn struct {
+	net.Conn
+}
+
+type domainFrontedConn struct {
+	net.Conn
+	realHost string
+}
+
+type TimedConn struct {
+	net.Conn
+	closeTimer *time.Timer
+}
+
+type interceptorConn struct {
+	net.Conn
+	buf      bytes.Buffer
+	mu       sync.Mutex
+	captured bool
+	closed   bool
+}
+
+type Config struct {
+	Strategy Strategy
+
+	FrontDomain   string
+	RealHost      string
+	EnableSNIMask bool
+
+	ResidentialProxies []string
+	ProxyRotation      bool
+
+	TLSFingerprint string
+	TLSMinVersion  uint16
+	TLSMaxVersion  uint16
+
+	EnableECH    bool
+	ECHConfigURL string
+
+	EnableJA3Randomization bool
+	EnableTLSFragmentation bool
+	TLSFragmentSize        int
+	ConnectionBurstLimit   int
+	ConnectionCooldown     time.Duration
+
+	FallbackStrategies []Strategy
+	FailoverTimeout    time.Duration
+}
+
+type firstWriteFragConn struct {
+	net.Conn
+	fragSize int
+	done     bool
+	mu       sync.Mutex
+}
+
+type Dialer struct {
+	config *Config
+	mu     sync.RWMutex
+
+	connCount     int
+	lastConnReset time.Time
+	countMu       sync.Mutex
+
+	proxyIndex int
+	proxyMu    sync.Mutex
+
+	directAttempts  int64
+	frontedAttempts int64
+	proxyAttempts   int64
+	successCount    int64
+	failureCount    int64
+}
+
+type stickySNI struct {
+	domain    string
+	expiresAt time.Time
+}
+
+type dialResult struct {
+	conn net.Conn
+	err  error
+}
+
+var (
+	globalStickySNI stickySNI
+	globalSNIMu     sync.RWMutex
+)
+
 var SNICategories = []SNICategory{
 	{
 		Name:        "Banking",
@@ -81,13 +170,6 @@ func (d *Dialer) DialTCP(ctx context.Context, network, addr string) (net.Conn, e
 		return &firstWriteFragConn{Conn: conn, fragSize: fragSize}, nil
 	}
 	return conn, nil
-}
-
-type firstWriteFragConn struct {
-	net.Conn
-	fragSize int
-	done     bool
-	mu       sync.Mutex
 }
 
 func (c *firstWriteFragConn) Write(b []byte) (int, error) {
@@ -169,33 +251,6 @@ func pickRandomSNI() (string, time.Duration) {
 	return domain, duration
 }
 
-type Config struct {
-	Strategy Strategy
-
-	FrontDomain   string
-	RealHost      string
-	EnableSNIMask bool
-
-	ResidentialProxies []string
-	ProxyRotation      bool
-
-	TLSFingerprint string
-	TLSMinVersion  uint16
-	TLSMaxVersion  uint16
-
-	EnableECH    bool
-	ECHConfigURL string
-
-	EnableJA3Randomization bool
-	EnableTLSFragmentation bool
-	TLSFragmentSize        int
-	ConnectionBurstLimit   int
-	ConnectionCooldown     time.Duration
-
-	FallbackStrategies []Strategy
-	FailoverTimeout    time.Duration
-}
-
 func DefaultConfig() *Config {
 	return &Config{
 		Strategy:               StrategyTLSMasquerade,
@@ -212,24 +267,6 @@ func DefaultConfig() *Config {
 	}
 }
 
-type Dialer struct {
-	config *Config
-	mu     sync.RWMutex
-
-	connCount     int
-	lastConnReset time.Time
-	countMu       sync.Mutex
-
-	proxyIndex int
-	proxyMu    sync.Mutex
-
-	directAttempts  int64
-	frontedAttempts int64
-	proxyAttempts   int64
-	successCount    int64
-	failureCount    int64
-}
-
 func NewDialer(cfg *Config) *Dialer {
 	if cfg == nil {
 		cfg = DefaultConfig()
@@ -240,16 +277,6 @@ func NewDialer(cfg *Config) *Dialer {
 	}
 }
 
-type stickySNI struct {
-	domain    string
-	expiresAt time.Time
-}
-
-var (
-	globalStickySNI stickySNI
-	globalSNIMu     sync.RWMutex
-)
-
 func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	if !d.checkBurstLimit() {
 		select {
@@ -257,11 +284,6 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
-	}
-
-	type dialResult struct {
-		conn net.Conn
-		err  error
 	}
 
 	resultCh := make(chan dialResult, len(d.config.FallbackStrategies)+1)
@@ -315,25 +337,33 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 	return nil, fmt.Errorf("all bypass strategies failed, last error: %w", lastErr)
 }
 
-func (d *Dialer) dialWithStrategy(ctx context.Context, network, addr string, strategy Strategy) (net.Conn, error) {
-	switch strategy {
-	case StrategyDirect:
+var strategyDialers = map[Strategy]func(d *Dialer, ctx context.Context, network, addr string) (net.Conn, error){
+	StrategyDirect: func(d *Dialer, ctx context.Context, network, addr string) (net.Conn, error) {
 		return d.dialDirect(ctx, network, addr)
-	case StrategyDomainFronting:
+	},
+	StrategyDomainFronting: func(d *Dialer, ctx context.Context, _, addr string) (net.Conn, error) {
 		return d.dialDomainFronting(ctx, addr)
-	case StrategyResidentialProxy:
+	},
+	StrategyResidentialProxy: func(d *Dialer, ctx context.Context, network, addr string) (net.Conn, error) {
 		return d.dialResidentialProxy(ctx, network, addr)
-	case StrategyTLSMasquerade:
+	},
+	StrategyTLSMasquerade: func(d *Dialer, ctx context.Context, network, addr string) (net.Conn, error) {
 		return d.dialTLSMasquerade(ctx, network, addr)
-	case StrategyCloudflareBypass:
+	},
+	StrategyCloudflareBypass: func(d *Dialer, ctx context.Context, _, addr string) (net.Conn, error) {
 		return d.dialCloudflareBypass(ctx, addr)
-	case StrategyWebSocket:
+	},
+	StrategyWebSocket: func(d *Dialer, ctx context.Context, _, addr string) (net.Conn, error) {
 		return d.dialWebSocket(ctx, addr)
-	case StrategyGRPC:
-		return d.dialGRPC(ctx, addr)
-	default:
-		return d.dialDirect(ctx, network, addr)
+	},
+	StrategyGRPC: func(d *Dialer, ctx context.Context, _, addr string) (net.Conn, error) { return d.dialGRPC(ctx, addr) },
+}
+
+func (d *Dialer) dialWithStrategy(ctx context.Context, network, addr string, strategy Strategy) (net.Conn, error) {
+	if fn, ok := strategyDialers[strategy]; ok {
+		return fn(d, ctx, network, addr)
 	}
+	return d.dialDirect(ctx, network, addr)
 }
 
 func (d *Dialer) dialDirect(ctx context.Context, _, addr string) (net.Conn, error) {
@@ -568,9 +598,8 @@ func (d *Dialer) dialGRPC(ctx context.Context, addr string) (net.Conn, error) {
 }
 
 func (d *Dialer) getUTLSFingerprint() *utls.ClientHelloID {
-	d.mu.RLock()
+
 	fp := d.config.TLSFingerprint
-	d.mu.RUnlock()
 
 	fingerprintMap := map[string]*utls.ClientHelloID{
 		"chrome":     &utls.HelloChrome_Auto,
@@ -808,17 +837,8 @@ func (d *Dialer) SetFingerprint(fp string) {
 	d.mu.Unlock()
 }
 
-type domainFrontedConn struct {
-	net.Conn
-	realHost string
-}
-
 func (c *domainFrontedConn) Write(b []byte) (int, error) {
 	return c.Conn.Write(b)
-}
-
-type wsConn struct {
-	net.Conn
 }
 
 func (c *wsConn) Write(b []byte) (int, error) {
@@ -844,14 +864,6 @@ func (d *Dialer) CreateHTTPClient() *http.Client {
 		},
 		Timeout: 30 * time.Second,
 	}
-}
-
-type interceptorConn struct {
-	net.Conn
-	buf      bytes.Buffer
-	mu       sync.Mutex
-	captured bool
-	closed   bool
 }
 
 func newInterceptorConn() *interceptorConn {
@@ -905,9 +917,4 @@ func (ic *interceptorConn) WaitForBytes(timeout time.Duration) ([]byte, error) {
 
 		time.Sleep(10 * time.Millisecond)
 	}
-}
-
-type TimedConn struct {
-	net.Conn
-	closeTimer *time.Timer
 }

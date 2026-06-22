@@ -74,16 +74,16 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 		tCfg.Transport = "asn_bypass"
 	}
 
-	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {
+	if secret, ok := cfg.Settings["whispera_secret"].(string); ok && secret != "" {
 		if decoded, err := decodePSK(secret); err == nil && len(decoded) == 32 {
-			tCfg.EnableChameleon = true
-			tCfg.ChameleonAddr = cfg.Address
-			tCfg.ChameleonSecret = decoded
-			if sni, ok := cfg.Settings["chameleon_sni"].(string); ok && sni != "" {
-				tCfg.ChameleonSNI = sni
+			tCfg.EnableWhispera = true
+			tCfg.WhisperaAddr = cfg.Address
+			tCfg.WhisperaSecret = decoded
+			if sni, ok := cfg.Settings["whispera_sni"].(string); ok && sni != "" {
+				tCfg.WhisperaSNI = sni
 			}
-			if qa, ok := cfg.Settings["chameleon_quic_addr"].(string); ok && qa != "" {
-				tCfg.ChameleonQUICAddr = qa
+			if qa, ok := cfg.Settings["whispera_quic_addr"].(string); ok && qa != "" {
+				tCfg.WhisperaQUICAddr = qa
 			}
 		}
 	}
@@ -153,7 +153,7 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 
 func (om *OutboundManager) dialCascade(ctx context.Context, hops []string, finalAddr string) (net.Conn, error) {
 	om.mu.RLock()
-	firstMgr, _ := om.outbounds[hops[0]]
+	firstMgr := om.outbounds[hops[0]]
 	om.mu.RUnlock()
 
 	if len(hops) == 1 {
@@ -217,16 +217,16 @@ func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.Outbound
 		return transport, nil
 	}
 
-	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {
+	if secret, ok := cfg.Settings["whispera_secret"].(string); ok && secret != "" {
 		if decoded, err := decodePSK(secret); err == nil && len(decoded) == 32 {
-			tCfg.EnableChameleon = true
-			tCfg.ChameleonAddr = cfg.Address
-			tCfg.ChameleonSecret = decoded
-			if sni, ok := cfg.Settings["chameleon_sni"].(string); ok && sni != "" {
-				tCfg.ChameleonSNI = sni
+			tCfg.EnableWhispera = true
+			tCfg.WhisperaAddr = cfg.Address
+			tCfg.WhisperaSecret = decoded
+			if sni, ok := cfg.Settings["whispera_sni"].(string); ok && sni != "" {
+				tCfg.WhisperaSNI = sni
 			}
-			if qa, ok := cfg.Settings["chameleon_quic_addr"].(string); ok && qa != "" {
-				tCfg.ChameleonQUICAddr = qa
+			if qa, ok := cfg.Settings["whispera_quic_addr"].(string); ok && qa != "" {
+				tCfg.WhisperaQUICAddr = qa
 			}
 		}
 	}
