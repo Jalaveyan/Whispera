@@ -26,6 +26,8 @@ This is for creating a key
 whispera create-key -user <your_username> -port <your_port>
 ```
 
+Available options
+
 ```
 -user <name> required — username (login via Whispera Auth)
 -port <port> required — dedicated listening port for this user
