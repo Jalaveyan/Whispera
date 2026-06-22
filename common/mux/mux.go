@@ -23,6 +23,20 @@ type Config struct {
 	DisableKeepAlive     bool
 }
 
+type Session struct {
+	streamsOpened uint64
+	streamsClosed uint64
+	bytesRx       uint64
+	bytesTx       uint64
+
+	session  *yamux.Session
+	conn     net.Conn
+	config   *Config
+	mu       sync.RWMutex
+	closed   int32
+	isServer bool
+}
+
 func DefaultConfig() *Config {
 	return &Config{
 		MaxFrameSize:         65536,
@@ -60,20 +74,6 @@ func (c *Config) toYamuxConfig() *yamux.Config {
 		cfg.AcceptBacklog = c.MaxConcurrentStreams
 	}
 	return cfg
-}
-
-type Session struct {
-	streamsOpened uint64
-	streamsClosed uint64
-	bytesRx       uint64
-	bytesTx       uint64
-
-	session  *yamux.Session
-	conn     net.Conn
-	config   *Config
-	mu       sync.RWMutex
-	closed   int32
-	isServer bool
 }
 
 func Client(conn net.Conn, cfg *Config) (*Session, error) {

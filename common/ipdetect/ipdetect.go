@@ -20,6 +20,19 @@ type IPDetector struct {
 	httpClient *http.Client
 }
 
+type ServerInfo struct {
+	ExternalIP string          `json:"external_ip"`
+	Hostname   string          `json:"hostname"`
+	Interfaces []InterfaceInfo `json:"interfaces"`
+	DetectedAt time.Time       `json:"detected_at"`
+}
+
+type InterfaceInfo struct {
+	Name      string   `json:"name"`
+	Addresses []string `json:"addresses"`
+	IsUp      bool     `json:"is_up"`
+}
+
 type IPDetectConfig struct {
 	CacheTTL       time.Duration
 	RequestTimeout time.Duration
@@ -276,17 +289,4 @@ func GetGlobalDetector() *IPDetector {
 
 func DetectServerIP(ctx context.Context) (string, error) {
 	return GetGlobalDetector().DetectExternalIP(ctx)
-}
-
-type ServerInfo struct {
-	ExternalIP string          `json:"external_ip"`
-	Hostname   string          `json:"hostname"`
-	Interfaces []InterfaceInfo `json:"interfaces"`
-	DetectedAt time.Time       `json:"detected_at"`
-}
-
-type InterfaceInfo struct {
-	Name      string   `json:"name"`
-	Addresses []string `json:"addresses"`
-	IsUp      bool     `json:"is_up"`
 }

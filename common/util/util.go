@@ -5,11 +5,6 @@ import (
 	"time"
 )
 
-func SafeClose(name string, closer func() error) {
-	if err := closer(); err != nil {
-	}
-}
-
 type TimeCache struct {
 	current atomic.Value
 }

@@ -1,0 +1,94 @@
+package dns
+
+import (
+	"fmt"
+	"net"
+	"strings"
+)
+
+func buildDNSMsg(domain string) []byte {
+	id := [2]byte{0x12, 0x34}
+	buf := []byte{
+		id[0], id[1],
+		0x01, 0x00,
+		0x00, 0x01,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(domain, "."), ".") {
+		buf = append(buf, byte(len(label)))
+		buf = append(buf, label...)
+	}
+	buf = append(buf, 0x00)
+	buf = append(buf, 0x00, 0x01)
+	buf = append(buf, 0x00, 0x01)
+	return buf
+}
+
+func parseDNSResponse(response []byte) ([]net.IP, error) {
+	if len(response) < 12 {
+		return nil, fmt.Errorf("dns response too short (%d bytes)", len(response))
+	}
+	rcode := response[3] & 0x0F
+	if rcode != 0 {
+		return nil, fmt.Errorf("dns error rcode=%d", rcode)
+	}
+	ancount := int(response[6])<<8 | int(response[7])
+	if ancount == 0 {
+		return nil, fmt.Errorf("dns: no answers")
+	}
+
+	offset := 12
+	for offset < len(response) {
+		if response[offset] == 0 {
+			offset++
+			break
+		}
+		if response[offset]&0xC0 == 0xC0 {
+			offset += 2
+			break
+		}
+		offset += int(response[offset]) + 1
+	}
+	offset += 4
+
+	var ips []net.IP
+	for i := 0; i < ancount && offset < len(response); i++ {
+		if offset >= len(response) {
+			break
+		}
+		if response[offset]&0xC0 == 0xC0 {
+			offset += 2
+		} else {
+			for offset < len(response) && response[offset] != 0 {
+				offset += int(response[offset]) + 1
+			}
+			offset++
+		}
+		if offset+10 > len(response) {
+			break
+		}
+		rtype := int(response[offset])<<8 | int(response[offset+1])
+		offset += 8
+		rdlen := int(response[offset])<<8 | int(response[offset+1])
+		offset += 2
+		if offset+rdlen > len(response) {
+			break
+		}
+		if rtype == 1 && rdlen == 4 {
+			ip := make(net.IP, 4)
+			copy(ip, response[offset:offset+4])
+			ips = append(ips, ip)
+		} else if rtype == 28 && rdlen == 16 {
+			ip := make(net.IP, 16)
+			copy(ip, response[offset:offset+16])
+			ips = append(ips, ip)
+		}
+		offset += rdlen
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("dns: no A/AAAA records in response")
+	}
+	return ips, nil
+}
