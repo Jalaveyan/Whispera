@@ -3,8 +3,10 @@ package relay
 import (
 	"io"
 	"net"
+	"runtime/debug"
 	"sync"
 	"time"
+	"whispera/common/log"
 )
 
 type PooledConn struct {
@@ -106,13 +108,24 @@ func (cp *ConnectionPool) Discard(conn net.Conn) {
 	}
 }
 
+var connPoolLog = logger.Module("relay_pool")
+
 func (cp *ConnectionPool) cleanupLoop() {
 	ticker := time.NewTicker(cp.ttl / 2)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		cp.cleanup()
+		cp.cleanupSafe()
 	}
+}
+
+func (cp *ConnectionPool) cleanupSafe() {
+	defer func() {
+		if r := recover(); r != nil {
+			connPoolLog.Error("PANIC in connection pool cleanup: %v\n%s", r, debug.Stack())
+		}
+	}()
+	cp.cleanup()
 }
 
 func (cp *ConnectionPool) cleanup() {

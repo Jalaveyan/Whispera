@@ -146,10 +146,7 @@ const (
 )
 
 const (
-	ProfileBalanced   uint8 = 0x00
-	ProfileLowLatency uint8 = 0x01
-	ProfileAggressive uint8 = 0x02
-	ProfilePersonal   uint8 = 0x03
+	ProfileBalanced uint8 = 0x00
 )
 
 func (p *ConnectPayload) Encode() []byte {

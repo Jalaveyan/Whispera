@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,7 +15,6 @@ import (
 	"time"
 	"whispera/common/dns"
 
-	"github.com/klauspost/reedsolomon"
 	"golang.org/x/net/proxy"
 )
 
@@ -357,6 +357,11 @@ func (s *Stream) Connect(ctx context.Context) error {
 
 func (s *Stream) speculativeConnect(target string) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				connPoolLog.Error("PANIC in speculativeConnect: %v\n%s", r, debug.Stack())
+			}
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
@@ -501,6 +506,7 @@ func (s *Stream) HandleUDPData(data []byte) error {
 func (s *Stream) readFromTarget() {
 	defer func() {
 		if r := recover(); r != nil {
+			connPoolLog.Error("PANIC in readFromTarget: %v\n%s", r, debug.Stack())
 		}
 		s.Close()
 	}()
@@ -578,6 +584,7 @@ func (s *Stream) readFromTarget() {
 func (s *Stream) readUDPFromTarget() {
 	defer func() {
 		if r := recover(); r != nil {
+			connPoolLog.Error("PANIC in readUDPFromTarget: %v\n%s", r, debug.Stack())
 		}
 		s.Close()
 	}()
@@ -646,6 +653,7 @@ func (s *Stream) readUDPFromTarget() {
 func (s *Stream) readRelayUDP() {
 	defer func() {
 		if r := recover(); r != nil {
+			connPoolLog.Error("PANIC in readRelayUDP: %v\n%s", r, debug.Stack())
 		}
 		s.Close()
 	}()
@@ -669,7 +677,7 @@ func (s *Stream) readRelayUDP() {
 		n, addr, err := s.udpConn.ReadFromUDP(buf[Headroom:])
 		if err != nil {
 			packetPool.Put(buf)
-			if netErr, ok := err.(net.Error); ok && (netErr.Timeout() || netErr.Temporary()) {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
 			if isClosedConnError(err) {
@@ -877,9 +885,18 @@ func (sm *StreamManager) cleanupLoop() {
 		case <-sm.ctx.Done():
 			return
 		case <-ticker.C:
-			sm.cleanup()
+			sm.cleanupSafe()
 		}
 	}
+}
+
+func (sm *StreamManager) cleanupSafe() {
+	defer func() {
+		if r := recover(); r != nil {
+			connPoolLog.Error("PANIC in stream manager cleanup: %v\n%s", r, debug.Stack())
+		}
+	}()
+	sm.cleanup()
 }
 
 func (sm *StreamManager) cleanup() {
@@ -957,383 +974,6 @@ func (s *Stream) RecordRTT(rtt time.Duration) {
 
 func (s *Stream) GetRTTStats() TimeoutStats {
 	return s.adaptiveTimeout.GetStats()
-}
-
-type TrafficShaper struct {
-	lastCheck  time.Time
-	bytesSince int
-
-	targetRate float64
-	minPadding int
-	maxPadding int
-
-	totalBytes uint64
-}
-
-func NewTrafficShaper(targetRateMBps float64) *TrafficShaper {
-	return &TrafficShaper{
-		lastCheck:  time.Now(),
-		targetRate: targetRateMBps * 1024 * 1024,
-		minPadding: 128,
-		maxPadding: 1400,
-	}
-}
-
-func (ts *TrafficShaper) Update(n int) int {
-	now := time.Now()
-	dt := now.Sub(ts.lastCheck).Seconds()
-
-	ts.bytesSince += n
-	ts.totalBytes += uint64(n)
-
-	if dt < 0.05 {
-		return 0
-	}
-
-	currentRate := float64(ts.bytesSince) / dt
-
-	ts.lastCheck = now
-	ts.bytesSince = 0
-
-	if currentRate < ts.targetRate {
-		needed := (ts.targetRate * dt) - float64(n)
-
-		if needed > float64(ts.minPadding) {
-			pad := int(needed)
-			if pad > ts.maxPadding {
-				pad = ts.maxPadding
-			}
-			return pad
-		}
-	}
-
-	return 0
-}
-
-type FECEncoder struct {
-	k         int
-	m         int
-	enc       reedsolomon.Encoder
-	shards    [][]byte
-	shardSize int
-	idx       int
-}
-
-func NewFECEncoder(k, m int) *FECEncoder {
-	enc, err := reedsolomon.New(k, m)
-	if err != nil {
-		log.Printf("[FEC] Failed to create encoder (k=%d, m=%d): %v", k, m, err)
-		return nil
-	}
-	return &FECEncoder{
-		k:      k,
-		m:      m,
-		enc:    enc,
-		shards: make([][]byte, k+m),
-	}
-}
-
-func (fe *FECEncoder) EncodeFEC(data []byte, seqNum uint32, headroom int) []byte {
-	payloadLen := 7 + len(data)
-	totalLen := headroom + payloadLen
-
-	buf := packetPool.Get().([]byte)
-
-	if cap(buf) < totalLen {
-		packetPool.Put(buf)
-		buf = make([]byte, totalLen)
-	}
-
-	buf = buf[:totalLen]
-
-	ptr := headroom
-	buf[ptr] = 0xFF
-	binary.BigEndian.PutUint32(buf[ptr+1:ptr+5], seqNum)
-	buf[ptr+5] = byte(fe.k)
-	buf[ptr+6] = byte(fe.m)
-
-	copy(buf[ptr+7:], data)
-
-	rsShardLen := 2 + len(data)
-
-	shardBuf := packetPool.Get().([]byte)
-	if cap(shardBuf) < rsShardLen {
-		packetPool.Put(shardBuf)
-		shardBuf = make([]byte, rsShardLen)
-	}
-	shardBuf = shardBuf[:rsShardLen]
-
-	binary.BigEndian.PutUint16(shardBuf[0:2], uint16(len(data)))
-	copy(shardBuf[2:], data)
-
-	fe.shards[fe.idx] = shardBuf
-	if rsShardLen > fe.shardSize {
-		fe.shardSize = rsShardLen
-	}
-
-	fe.idx++
-	return buf
-}
-
-func (fe *FECEncoder) GetParityPackets(baseSeq uint32, headroom int) [][]byte {
-	if fe.idx < fe.k {
-		return nil
-	}
-
-	for i := 0; i < fe.k; i++ {
-		shard := fe.shards[i]
-		if len(shard) < fe.shardSize {
-			newShard := shard[:fe.shardSize]
-			for j := len(shard); j < fe.shardSize; j++ {
-				newShard[j] = 0
-			}
-			fe.shards[i] = newShard
-		}
-	}
-
-	for i := 0; i < fe.m; i++ {
-		buf := packetPool.Get().([]byte)
-		if cap(buf) < fe.shardSize {
-			packetPool.Put(buf)
-			buf = make([]byte, fe.shardSize)
-		}
-		fe.shards[fe.k+i] = buf[:fe.shardSize]
-	}
-
-	if err := fe.enc.Encode(fe.shards); err != nil {
-		fe.reset()
-		return nil
-	}
-
-	parityPackets := make([][]byte, fe.m)
-	for i := 0; i < fe.m; i++ {
-		parityData := fe.shards[fe.k+i]
-
-		pktLen := 7 + len(parityData)
-		totalLen := headroom + pktLen
-
-		buf := packetPool.Get().([]byte)
-		if cap(buf) < totalLen {
-			packetPool.Put(buf)
-			buf = make([]byte, totalLen)
-		}
-		buf = buf[:totalLen]
-
-		ptr := headroom
-		buf[ptr] = 0xFF
-		binary.BigEndian.PutUint32(buf[ptr+1:ptr+5], baseSeq+uint32(i))
-		buf[ptr+5] = byte(fe.k)
-		buf[ptr+6] = byte(fe.m)
-		copy(buf[ptr+7:], parityData)
-
-		parityPackets[i] = buf
-	}
-
-	for i := 0; i < fe.k+fe.m; i++ {
-		if fe.shards[i] != nil {
-			packetPool.Put(fe.shards[i])
-			fe.shards[i] = nil
-		}
-	}
-
-	fe.idx = 0
-	fe.shardSize = 0
-
-	return parityPackets
-}
-
-func (fe *FECEncoder) reset() {
-	for i := 0; i < len(fe.shards); i++ {
-		if fe.shards[i] != nil {
-			packetPool.Put(fe.shards[i])
-			fe.shards[i] = nil
-		}
-	}
-	fe.idx = 0
-	fe.shardSize = 0
-}
-
-type FECDecoder struct {
-	k             int
-	m             int
-	packetBuffer  map[uint32][]byte
-	bufferMutex   sync.RWMutex
-	recoveryCount int
-	totalPackets  int
-}
-
-func NewFECDecoder(k, m int) *FECDecoder {
-	return &FECDecoder{
-		k:            k,
-		m:            m,
-		packetBuffer: make(map[uint32][]byte),
-	}
-}
-
-func (fd *FECDecoder) DecodeFEC(packet []byte, seqNum uint32) (recovered []byte, canRecover bool) {
-	fd.bufferMutex.Lock()
-	defer fd.bufferMutex.Unlock()
-
-	fd.totalPackets++
-
-	if len(packet) < 7 {
-		return nil, false
-	}
-
-	if packet[0] != 0xFF {
-		return packet[7:], false
-	}
-
-	recvSeqNum := binary.BigEndian.Uint32(packet[1:5])
-
-	fd.packetBuffer[recvSeqNum] = packet[7:]
-
-	return nil, false
-}
-
-func (fd *FECDecoder) Reconstruct(blockStartSeq uint32, k, m int) [][]byte {
-	shards := make([][]byte, k+m)
-	haveObj := 0
-
-	for i := 0; i < k+m; i++ {
-		seq := blockStartSeq + uint32(i)
-		if data, ok := fd.packetBuffer[seq]; ok {
-			shards[i] = data
-			haveObj++
-		}
-	}
-
-	if haveObj < k {
-		return nil
-	}
-
-	enc, err := reedsolomon.New(k, m)
-	if err != nil {
-		return nil
-	}
-
-	if err := enc.Reconstruct(shards); err != nil {
-		return nil
-	}
-
-	var recovered [][]byte
-	for i := 0; i < k; i++ {
-		seq := blockStartSeq + uint32(i)
-		if _, ok := fd.packetBuffer[seq]; !ok {
-			shard := shards[i]
-			if len(shard) < 2 {
-				continue
-			}
-			dataLen := binary.BigEndian.Uint16(shard[0:2])
-			if int(dataLen)+2 > len(shard) {
-				continue
-			}
-			data := shard[2 : 2+dataLen]
-
-			res := packetPool.Get().([]byte)
-			if cap(res) < len(data) {
-				packetPool.Put(res)
-				res = make([]byte, len(data))
-			}
-			res = res[:len(data)]
-			copy(res, data)
-
-			recovered = append(recovered, res)
-		}
-	}
-
-	return recovered
-}
-
-type SACKTracker struct {
-	receivedRanges []PacketRange
-	mutex          sync.RWMutex
-	maxSeqNum      uint32
-	packetCount    int
-	lossCount      int
-}
-
-type PacketRange struct {
-	Start uint32
-	End   uint32
-}
-
-func NewSACKTracker() *SACKTracker {
-	return &SACKTracker{
-		receivedRanges: make([]PacketRange, 0),
-		packetCount:    0,
-		lossCount:      0,
-	}
-}
-
-func (st *SACKTracker) RecordPacket(seqNum uint32) {
-	st.mutex.Lock()
-	defer st.mutex.Unlock()
-
-	st.packetCount++
-
-	if seqNum > st.maxSeqNum {
-		for missing := st.maxSeqNum + 1; missing < seqNum; missing++ {
-			st.lossCount++
-		}
-		st.maxSeqNum = seqNum
-	}
-
-	st.addToRanges(seqNum)
-}
-
-func (st *SACKTracker) addToRanges(seqNum uint32) {
-	found := false
-	for i := range st.receivedRanges {
-		if seqNum >= st.receivedRanges[i].Start-1 && seqNum <= st.receivedRanges[i].End+1 {
-			if seqNum < st.receivedRanges[i].Start {
-				st.receivedRanges[i].Start = seqNum
-			}
-			if seqNum > st.receivedRanges[i].End {
-				st.receivedRanges[i].End = seqNum
-			}
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		st.receivedRanges = append(st.receivedRanges, PacketRange{Start: seqNum, End: seqNum})
-	}
-}
-
-func (st *SACKTracker) GetMissingPackets(upTo uint32) []uint32 {
-	st.mutex.RLock()
-	defer st.mutex.RUnlock()
-
-	missing := make([]uint32, 0)
-
-	lastEnd := uint32(0)
-	for _, r := range st.receivedRanges {
-		for seq := lastEnd + 1; seq < r.Start; seq++ {
-			if seq <= upTo {
-				missing = append(missing, seq)
-			}
-		}
-		lastEnd = r.End
-	}
-
-	for seq := lastEnd + 1; seq <= upTo; seq++ {
-		missing = append(missing, seq)
-	}
-
-	return missing
-}
-
-func (st *SACKTracker) GetPacketLossRate() float32 {
-	st.mutex.RLock()
-	defer st.mutex.RUnlock()
-
-	if st.packetCount == 0 {
-		return 0
-	}
-
-	return float32(st.lossCount) / float32(st.packetCount+st.lossCount) * 100
 }
 
 func (s *Stream) GetFECStats() map[string]interface{} {

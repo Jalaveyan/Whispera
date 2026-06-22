@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,6 +114,12 @@ type Server struct {
 
 	log *logger.Logger
 	mu  sync.RWMutex
+}
+
+type copyResult struct {
+	n   int64
+	err error
+	dir string
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -442,7 +449,14 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 				"bytes_read", atomic.LoadInt64(&bc.n),
 			)
 			if streamObf {
-				go io.Copy(io.Discard, transport.WrapStreamTLS(stream))
+				go func() {
+					defer func() {
+						if r := recover(); r != nil {
+							s.log.Error("PANIC in control stream io.Copy: %v\n%s", r, debug.Stack())
+						}
+					}()
+					io.Copy(io.Discard, transport.WrapStreamTLS(stream))
+				}()
 			} else {
 				go s.serveControlStream(stream)
 			}
@@ -470,8 +484,14 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 
 func (s *Server) serveControlStream(stream net.Conn) {
 	defer stream.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("PANIC in serveControlStream: %v\n%s", r, debug.Stack())
+		}
+	}()
 	hdr := make([]byte, 8)
 	for {
+		stream.SetReadDeadline(time.Now().Add(90 * time.Second))
 		if _, err := io.ReadFull(stream, hdr); err != nil {
 			return
 		}
@@ -497,6 +517,13 @@ func (s *Server) serveControlStream(stream net.Conn) {
 
 func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.Conn) {
 	defer stream.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("PANIC in handleProxyStream: %v\n%s", r, debug.Stack())
+		}
+	}()
+
+	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
 
 	hdr := make([]byte, 3)
 	if _, err := io.ReadFull(stream, hdr); err != nil {
@@ -514,6 +541,8 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	}
 	addr := string(rest[:addrLen])
 	port := binary.BigEndian.Uint16(rest[addrLen:])
+
+	stream.SetReadDeadline(time.Time{})
 
 	streamStart := time.Now()
 	logger.Trace().Infow("proxy_stream_start",
@@ -606,16 +635,16 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		tcpTarget.SetKeepAlivePeriod(45 * time.Second)
 	}
 
-	type copyResult struct {
-		n   int64
-		err error
-		dir string
-	}
 	resCh := make(chan copyResult, 2)
 
 	if network == "udp" {
 		go func() {
 			defer target.Close()
+			defer func() {
+				if r := recover(); r != nil {
+					s.log.Error("PANIC in UDP upstream copy: %v\n%s", r, debug.Stack())
+				}
+			}()
 			bufp := udpCopyBufPool.Get().(*[]byte)
 			defer udpCopyBufPool.Put(bufp)
 			localBuf := *bufp
@@ -666,6 +695,11 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	} else {
 		go func() {
 			defer target.Close()
+			defer func() {
+				if r := recover(); r != nil {
+					s.log.Error("PANIC in TCP upstream copy: %v\n%s", r, debug.Stack())
+				}
+			}()
 			n, err := buf.Copy(buf.NewReader(stream), buf.NewWriter(target))
 			if tc, ok := target.(*net.TCPConn); ok {
 				tc.CloseWrite()
