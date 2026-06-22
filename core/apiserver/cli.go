@@ -13,7 +13,7 @@ import (
 	"whispera/core/config"
 )
 
-func ComputeChameleonCertPin(certPath string) (string, error) {
+func ComputeWhisperaCertPin(certPath string) (string, error) {
 	if certPath == "" {
 		return "", fmt.Errorf("no certificate path configured")
 	}
@@ -33,7 +33,7 @@ func ComputeChameleonCertPin(certPath string) (string, error) {
 	return base64.StdEncoding.EncodeToString(sum[:]), nil
 }
 
-func CLIUpsertUser(username string, trafficLimit int64) (privateKeyB64, publicKeyB64 string, err error) {
+func CLIUpsertUser(username string, trafficLimit int64, disableNeural bool) (privateKeyB64, publicKeyB64 string, err error) {
 	loadUsers()
 
 	userStoreMu.Lock()
@@ -42,6 +42,7 @@ func CLIUpsertUser(username string, trafficLimit int64) (privateKeyB64, publicKe
 			if trafficLimit > 0 {
 				u.TrafficLimit = trafficLimit
 			}
+			u.DisableNeural = disableNeural
 			privateKeyB64, publicKeyB64 = u.PrivateKey, u.PublicKey
 			userStoreMu.Unlock()
 			saveUsers()
@@ -55,13 +56,14 @@ func CLIUpsertUser(username string, trafficLimit int64) (privateKeyB64, publicKe
 		return "", "", err
 	}
 	user := &User{
-		ID:           nextUserID,
-		Username:     username,
-		PrivateKey:   keys.PrivateKey,
-		PublicKey:    keys.PublicKey,
-		TrafficLimit: trafficLimit,
-		Status:       "active",
-		CreatedAt:    time.Now(),
+		ID:            nextUserID,
+		Username:      username,
+		PrivateKey:    keys.PrivateKey,
+		PublicKey:     keys.PublicKey,
+		TrafficLimit:  trafficLimit,
+		DisableNeural: disableNeural,
+		Status:        "active",
+		CreatedAt:     time.Now(),
 	}
 	userStore[nextUserID] = user
 	nextUserID++
@@ -71,7 +73,22 @@ func CLIUpsertUser(username string, trafficLimit int64) (privateKeyB64, publicKe
 	return keys.PrivateKey, keys.PublicKey, nil
 }
 
-func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport, chameleonCertPin string) (string, error) {
+type WhisperaKeyOptions struct {
+	Addr     string
+	SNI      string
+	QUICAddr string
+	CertPin  string
+}
+
+type AltTransportKeyOptions struct {
+	GRPCAddr         string
+	GRPCServerName   string
+	GRPCUseTLS       bool
+	YaDiskOAuthToken string
+	YaDiskSessionID  string
+}
+
+func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport string, whispera WhisperaKeyOptions, alt AltTransportKeyOptions) (string, error) {
 	loadUsers()
 
 	userStoreMu.Lock()
@@ -96,11 +113,18 @@ func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport, cha
 		Transport:        transport,
 		ObfsPreset:       "default",
 		ObfsProfile:      "vk",
-		EnableML:         true,
-		EnableFTE:        true,
+		DisableNeural:    user.DisableNeural,
 		EnableASNBypass:  true,
 		TLSFingerprint:   "chrome",
-		ChameleonCertPin: chameleonCertPin,
+		WhisperaAddr:     whispera.Addr,
+		WhisperaSNI:      whispera.SNI,
+		WhisperaQUICAddr: whispera.QUICAddr,
+		WhisperaCertPin:  whispera.CertPin,
+		GRPCAddr:         alt.GRPCAddr,
+		GRPCServerName:   alt.GRPCServerName,
+		GRPCUseTLS:       alt.GRPCUseTLS,
+		YaDiskOAuthToken: alt.YaDiskOAuthToken,
+		YaDiskSessionID:  alt.YaDiskSessionID,
 	}
 	data, err := json.Marshal(ck)
 	if err != nil {

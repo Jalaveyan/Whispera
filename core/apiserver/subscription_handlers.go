@@ -216,16 +216,16 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 		servers = append(servers, entry)
 	}
 
-	if cfg.Chameleon.Enabled && cfg.Chameleon.ListenAddr != "" && (len(transportSet) == 0 || transportSet["chameleon"]) {
-		_, port, _ := splitHostPort(cfg.Chameleon.ListenAddr)
+	if cfg.Whispera.Enabled && cfg.Whispera.ListenAddr != "" && (len(transportSet) == 0 || transportSet["whispera"]) {
+		_, port, _ := splitHostPort(cfg.Whispera.ListenAddr)
 		cEntry := map[string]interface{}{
-			"name":      "chameleon",
+			"name":      "whispera",
 			"address":   serverIP,
 			"port":      port,
-			"transport": "chameleon",
+			"transport": "whispera",
 		}
-		if cfg.Chameleon.Domain != "" {
-			cEntry["sni"] = cfg.Chameleon.Domain
+		if cfg.Whispera.Domain != "" {
+			cEntry["sni"] = cfg.Whispera.Domain
 		}
 		servers = append(servers, cEntry)
 	}
