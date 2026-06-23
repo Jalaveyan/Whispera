@@ -266,8 +266,10 @@ func (l *camouflageListener) acceptLoop() {
 }
 
 func (l *camouflageListener) handle(conn net.Conn) {
+	remote := conn.RemoteAddr().String()
 	ph, err := peekClientHello(conn)
 	if err == nil && camoMarkerMatches(l.keysFn(), ph.random, ph.keyShare) {
+		traceLog.Infow("camo_authenticated", "remote", remote, "sni", ph.sni)
 		pc := &prefixConn{Conn: conn, prefix: ph.raw}
 		select {
 		case l.ready <- pc:
@@ -277,10 +279,13 @@ func (l *camouflageListener) handle(conn net.Conn) {
 		return
 	}
 	if len(ph.raw) == 0 {
+		traceLog.Infow("camo_no_hello", "remote", remote, "err", err)
 		conn.Close()
 		return
 	}
-	relayToOrigin(conn, ph.raw, l.decoyAddr(ph.sni))
+	target := l.decoyAddr(ph.sni)
+	traceLog.Infow("camo_relay_decoy", "remote", remote, "sni", ph.sni, "hello_err", err, "target", target)
+	relayToOrigin(conn, ph.raw, target)
 }
 
 func (l *camouflageListener) Accept() (net.Conn, error) {
