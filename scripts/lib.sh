@@ -215,19 +215,29 @@ _enable_whispera_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
 
+    local inherited_listen_addr="" inherited_tls_cert="" inherited_tls_key=""
+    local inherited_domain="" inherited_acme_dir="" inherited_decoy_origin=""
+
     if grep -q "^chameleon:" "$cfg"; then
+        inherited_listen_addr=$(awk '/^chameleon:/{f=1;next} f && /^[[:space:]]+listen_addr:/{print $2; exit} f && /^[^[:space:]]/{exit}' "$cfg" | tr -d '"')
+        inherited_tls_cert=$(awk '/^chameleon:/{f=1;next} f && /^[[:space:]]+tls_cert:/{print $2; exit} f && /^[^[:space:]]/{exit}' "$cfg" | tr -d '"')
+        inherited_tls_key=$(awk '/^chameleon:/{f=1;next} f && /^[[:space:]]+tls_key:/{print $2; exit} f && /^[^[:space:]]/{exit}' "$cfg" | tr -d '"')
+        inherited_domain=$(awk '/^chameleon:/{f=1;next} f && /^[[:space:]]+domain:/{print $2; exit} f && /^[^[:space:]]/{exit}' "$cfg" | tr -d '"')
+        inherited_acme_dir=$(awk '/^chameleon:/{f=1;next} f && /^[[:space:]]+acme_dir:/{print $2; exit} f && /^[^[:space:]]/{exit}' "$cfg" | tr -d '"')
+        inherited_decoy_origin=$(awk '/^chameleon:/{f=1;next} f && /^[[:space:]]+decoy_origin:/{print $2; exit} f && /^[^[:space:]]/{exit}' "$cfg" | tr -d '"')
+
         awk '
             /^chameleon:[[:space:]]*$/ { skip=1; next }
             skip && /^[^[:space:]]/ { skip=0 }
             skip { next }
             { print }
         ' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
-        log_info "Removed stale chameleon: config block (superseded by whispera:)"
+        log_info "Removed stale chameleon: config block (superseded by whispera:); carrying over tls_cert/tls_key/domain/decoy_origin if set"
     fi
 
     local decoy_first="${WHISPERA_DECOY_SITES%%,*}"
     decoy_first="${decoy_first:-https://ria.ru/}"
-    local decoy_origin="${decoy_first%%/}"
+    local decoy_origin="${inherited_decoy_origin:-${decoy_first%%/}}"
 
     if grep -q "^whispera:" "$cfg"; then
         sed -i '/^whispera:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
@@ -258,8 +268,12 @@ PYEOF
             log_info "Whispera: decoy_origin set to $decoy_origin (TLS cert will be auto-cloned from it on first start)"
         fi
     else
-        printf '\nwhispera:\n  enabled: true\n  listen_addr: ":443"\n  tls_cert: ""\n  tls_key: ""\n  domain: ""\n  acme_dir: "/var/lib/whispera/acme"\n  decoy_origin: "%s"\n' \
-            "${decoy_origin}" >> "$cfg"
+        printf '\nwhispera:\n  enabled: true\n  listen_addr: "%s"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: "%s"\n  acme_dir: "%s"\n  decoy_origin: "%s"\n' \
+            "${inherited_listen_addr:-:443}" "${inherited_tls_cert}" "${inherited_tls_key}" \
+            "${inherited_domain}" "${inherited_acme_dir:-/var/lib/whispera/acme}" "${decoy_origin}" >> "$cfg"
+        if [[ -n "$inherited_tls_cert" || -n "$inherited_domain" ]]; then
+            log_success "Whispera: carried over tls_cert/tls_key/domain from the old chameleon: block"
+        fi
     fi
     if command -v ufw &>/dev/null; then
         ufw allow 443/tcp >/dev/null 2>&1 || true
