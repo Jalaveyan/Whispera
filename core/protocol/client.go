@@ -94,6 +94,18 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			}
 		} else {
 			uConn = utls.UClient(rawConn, uCfg, helloID)
+			if err := uConn.BuildHandshakeState(); err != nil {
+				rawConn.Close()
+				return nil, fmt.Errorf("whispera: build hello: %w", err)
+			}
+		}
+		if camoKey := deriveCamoKey(cfg.SharedSecret); camoKey != nil {
+			if hello := uConn.HandshakeState.Hello; hello != nil && len(hello.Random) == 32 {
+				if keyShare := extractX25519KeyShare(hello.KeyShares); len(keyShare) > 0 {
+					marker := buildCamoMarker(camoKey, keyShare)
+					copy(hello.Random, marker[:])
+				}
+			}
 		}
 		if err := uConn.HandshakeContext(ctx); err != nil {
 			rawConn.Close()

@@ -186,13 +186,17 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		srv.Close()
 	}()
 
+	camoKeys := camoKeysFunc(cfg)
+	camoAddr := camoDecoyAddr(cfg.DecoyOrigin)
+
 	for _, extraAddr := range cfg.ExtraListenAddrs {
 		extraAddr := extraAddr
 		extraLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", extraAddr)
 		if err != nil {
 			continue
 		}
-		extraTLSLn := tls.NewListener(&noDelayListener{TCPListener: extraLn.(*net.TCPListener)}, tlsCfg)
+		extraBase := &noDelayListener{TCPListener: extraLn.(*net.TCPListener)}
+		extraTLSLn := tls.NewListener(newCamouflageListener(extraBase, camoKeys, camoAddr), tlsCfg)
 		go srv.Serve(extraTLSLn)
 	}
 
@@ -200,7 +204,8 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	if err != nil {
 		return fmt.Errorf("whispera: listen: %w", err)
 	}
-	tlsLn := tls.NewListener(&noDelayListener{TCPListener: rawLn.(*net.TCPListener)}, tlsCfg)
+	baseLn := &noDelayListener{TCPListener: rawLn.(*net.TCPListener)}
+	tlsLn := tls.NewListener(newCamouflageListener(baseLn, camoKeys, camoAddr), tlsCfg)
 	return srv.Serve(tlsLn)
 }
 

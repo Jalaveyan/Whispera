@@ -2,17 +2,21 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -735,7 +739,7 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 	}
 
 	if sc.Whispera.Enabled && sc.Whispera.Domain == "" {
-		ensureWhisperaDecoyCert(sc)
+		ensureWhisperaServerCert(sc)
 	}
 
 	if sc.Whispera.Enabled && (sc.Whispera.TLSCert != "" || sc.Whispera.Domain != "") {
@@ -813,20 +817,8 @@ func initAPIServer(m *lifecycle.Manager, sc *config.ServerConfig) error {
 	return nil
 }
 
-func ensureWhisperaDecoyCert(sc *config.ServerConfig) {
-	if sc.Whispera.TLSCert != "" || sc.Whispera.DecoyOrigin == "" {
-		return
-	}
-
-	u, err := url.Parse(sc.Whispera.DecoyOrigin)
-	if err != nil || u.Hostname() == "" {
-		return
-	}
-	host := u.Hostname()
-	if strings.EqualFold(host, "localhost") {
-		return
-	}
-	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified()) {
+func ensureWhisperaServerCert(sc *config.ServerConfig) {
+	if sc.Whispera.TLSCert != "" {
 		return
 	}
 
@@ -839,16 +831,58 @@ func ensureWhisperaDecoyCert(sc *config.ServerConfig) {
 	}
 
 	os.MkdirAll(filepath.Dir(certPath), 0755)
-	info, err := protocol2.CloneCertToFiles(host, certPath, keyPath)
-	if err != nil {
-		log.Warn("whispera: auto decoy-cert generation from %s failed: %v", host, err)
+	if err := generateSelfSignedCert(certPath, keyPath); err != nil {
+		log.Warn("whispera: auto cert generation failed: %v", err)
 		return
 	}
 
-	log.Info("whispera: auto-generated decoy TLS cert cloned from %s (subject=%s, valid %s -> %s)",
-		host, info.Subject, info.NotBefore.Format(time.RFC3339), info.NotAfter.Format(time.RFC3339))
+	log.Info("whispera: generated self-signed server cert at %s", certPath)
 	sc.Whispera.TLSCert = certPath
 	sc.Whispera.TLSKey = keyPath
+}
+
+func generateSelfSignedCert(certPath, keyPath string) error {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return err
+	}
+	notBefore := time.Now().Add(-24 * time.Hour)
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    notBefore,
+		NotAfter:     notBefore.Add(825 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, pub, priv)
+	if err != nil {
+		return err
+	}
+
+	certOut, err := os.OpenFile(certPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	defer certOut.Close()
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		return err
+	}
+
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return err
+	}
+	keyOut, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer keyOut.Close()
+	return pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes})
 }
 
 func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context, reactor *threatReactor) {
