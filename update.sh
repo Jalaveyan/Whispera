@@ -679,15 +679,11 @@ show_extras_menu() {
 
         local SRV_IP=$(get_public_ip)
         local ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
-        echo ""
-        echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
-        echo -e "${GREEN} WEB PANEL${PLAIN}"
-        echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
 
         echo ""
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
-        _row "          WHISPERA MANAGEMENT MENU"
-        _row "     Config: /etc/whispera/config.yaml"
+        _row "                  WHISPERA MANAGEMENT MENU"
+        _row "              Config: /etc/whispera/config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
         _row "  1.  BBR           - Faster TCP (recommended)"

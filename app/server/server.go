@@ -427,6 +427,10 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	}
 	globalServerConfig = serverConfig
 
+	if !*debug && serverConfig.Logging.Level != "" {
+		log.SetLevel(logger.ParseLevel(serverConfig.Logging.Level))
+	}
+
 	if serverConfig.API.AuthToken == "" && *configFile != "" {
 		tokenBytes := make([]byte, 32)
 		if _, err := rand.Read(tokenBytes); err == nil {

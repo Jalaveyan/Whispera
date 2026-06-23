@@ -244,6 +244,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 			handleRESTDownload(w, r, cfg)
 			return
 		}
+		traceLog.Infow("handle_request_decoy_fallback", "reason", "no_session_cookie", "method", r.Method, "remote", r.RemoteAddr)
 		serveDecoy(w, r, cfg)
 		return
 	case http.MethodPost, http.MethodPut, http.MethodPatch:
@@ -255,6 +256,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 			}
 			return
 		}
+		traceLog.Infow("handle_request_decoy_fallback", "reason", "no_session_cookie", "method", r.Method, "remote", r.RemoteAddr)
 		serveDecoy(w, r, cfg)
 		return
 	default:
@@ -307,6 +309,7 @@ func handleFingerprintSync(w http.ResponseWriter, r *http.Request, cfg *ServerCo
 func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	tokenHdr := r.Header.Get(headerToken)
 	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
+		traceLog.Infow("client_stream_decoy_fallback", "reason", "missing_or_malformed_token_header", "remote", r.RemoteAddr)
 		serveDecoy(w, r, cfg)
 		return
 	}
@@ -314,21 +317,25 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 
 	sessCookie, err := r.Cookie(sessionCookie)
 	if err != nil {
+		traceLog.Infow("client_stream_decoy_fallback", "reason", "missing_session_cookie", "remote", r.RemoteAddr)
 		serveDecoy(w, r, cfg)
 		return
 	}
 	sessionID, _, err := decodeSession(sessCookie.Value)
 	if err != nil {
+		traceLog.Infow("client_stream_decoy_fallback", "reason", "session_decode_failed", "remote", r.RemoteAddr)
 		serveDecoy(w, r, cfg)
 		return
 	}
 
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
+		traceLog.Infow("client_stream_decoy_fallback", "reason", "secret_not_resolved", "remote", r.RemoteAddr)
 		serveDecoy(w, r, cfg)
 		return
 	}
 	if !cfg.consumeToken(token) {
+		traceLog.Infow("client_stream_decoy_fallback", "reason", "token_replay_or_expired", "remote", r.RemoteAddr, "user", userID)
 		serveDecoy(w, r, cfg)
 		return
 	}
