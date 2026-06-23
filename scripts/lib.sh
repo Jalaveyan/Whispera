@@ -265,7 +265,7 @@ text = re.sub(r'^whispera:.*?(?=\n\S|\Z)', patch_block, text, flags=re.S|re.M)
 with open(path, 'w') as f:
     f.write(text)
 PYEOF
-            log_info "Whispera: decoy_origin set to $decoy_origin (TLS cert will be auto-cloned from it on first start)"
+            log_info "Whispera: decoy_origin set to $decoy_origin (fallback target for unauthenticated probes; per-key TLS certs are cloned by 'whispera create-key -sni <domain>')"
         fi
     else
         printf '\nwhispera:\n  enabled: true\n  listen_addr: "%s"\n  tls_cert: "%s"\n  tls_key: "%s"\n  domain: "%s"\n  acme_dir: "%s"\n  decoy_origin: "%s"\n' \

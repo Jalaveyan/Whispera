@@ -984,7 +984,7 @@ generate_config() {
     local DECOY_FIRST_SITE="${WHISPERA_DECOY_SITES%%,*}"
     DECOY_FIRST_SITE="${DECOY_FIRST_SITE:-https://ria.ru/}"
     local DECOY_ORIGIN="${DECOY_FIRST_SITE%%/}"
-    log_info "Whispera decoy origin: $DECOY_ORIGIN (TLS cert will be auto-cloned from it on first start)"
+    log_info "Whispera decoy origin: $DECOY_ORIGIN (fallback target for unauthenticated probes; per-key TLS certs are cloned by 'whispera create-key -sni <domain>')"
 
     cat > "$CONF_PATH/config.yaml" <<EOF
 server:

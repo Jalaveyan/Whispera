@@ -135,7 +135,7 @@ func RunCreateKeyCmd() {
 	yadiskToken := createKeyCmd.String("yadisk-token", "", "Yandex.Disk OAuth token (only with -transport yadisk; saved to server config if not already set there)")
 	yadiskSession := createKeyCmd.String("yadisk-session", "", "Yandex.Disk session/folder id (only with -transport yadisk; auto-generated if empty)")
 	neuralFlag := createKeyCmd.String("neural", "enable", "Use neural-network traffic shaping (RL agents + GAN padding) for this user (enable/disable)")
-	sniFlag := createKeyCmd.String("sni", "", "Clone this real domain's TLS certificate and present it via SNI for this key (only with -transport whispera; empty = server's default self-signed/decoy cert)")
+	sniFlag := createKeyCmd.String("sni", "", "Clone this real domain's TLS certificate and present it via SNI for this key (only with -transport whispera; empty = auto-picked from a default pool, or the server's ACME domain if configured)")
 
 	createKeyCmd.Parse(os.Args[2:])
 
@@ -374,19 +374,27 @@ func RunCreateKeyCmd() {
 		}
 
 		whisperaSNI := sc.Whispera.Domain
-		if *sniFlag != "" {
-			certPath, keyPath, ok := protocol.SNICertPaths(decoyCertDir, *sniFlag)
+		sniToClone := *sniFlag
+		if sniToClone == "" && whisperaSNI == "" {
+			// No explicit -sni and no ACME domain to fall back to: pick a
+			// stable default rather than leave this key without any SNI,
+			// which would make the client fall back to its unbacked random
+			// pool and get a server cert that doesn't match what it sent.
+			sniToClone = protocol.DefaultSNIFor(*user)
+		}
+		if sniToClone != "" {
+			certPath, keyPath, ok := protocol.SNICertPaths(decoyCertDir, sniToClone)
 			if !ok {
-				fmt.Fprintf(os.Stderr, "Warning: -sni %q is not a valid hostname — falling back to the server's default cert\n", *sniFlag)
+				fmt.Fprintf(os.Stderr, "Warning: SNI %q is not a valid hostname — falling back to the server's default cert\n", sniToClone)
 			} else {
 				os.MkdirAll(decoyCertDir, 0755)
-				info, err := protocol.CloneCertToFiles(*sniFlag, certPath, keyPath)
+				info, err := protocol.CloneCertToFiles(sniToClone, certPath, keyPath)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to clone certificate for -sni %q: %v — falling back to the server's default cert\n", *sniFlag, err)
+					fmt.Fprintf(os.Stderr, "Warning: failed to clone certificate for SNI %q: %v — falling back to the server's default cert\n", sniToClone, err)
 				} else {
-					whisperaSNI = *sniFlag
+					whisperaSNI = sniToClone
 					fmt.Printf("Cloned TLS certificate for SNI %s (subject=%s, valid %s -> %s)\n",
-						*sniFlag, info.Subject, info.NotBefore.Format(time.RFC3339), info.NotAfter.Format(time.RFC3339))
+						sniToClone, info.Subject, info.NotBefore.Format(time.RFC3339), info.NotAfter.Format(time.RFC3339))
 				}
 			}
 		}

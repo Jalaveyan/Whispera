@@ -87,6 +87,18 @@ func validSNI(s string) bool {
 	return s != "" && net.ParseIP(s) == nil
 }
 
+// DefaultSNIFor deterministically picks a domain from the built-in SNI pool
+// for a given seed (typically a username). It exists so that a key issued
+// without an explicit -sni still gets a stable, real-cert-backed SNI on the
+// server instead of falling back to the client's unbacked random pool at
+// connect time (see pickSNI) - every key the server knows about should have
+// a matching cloned certificate, not just the ones an admin remembered to
+// pass -sni for.
+func DefaultSNIFor(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return defaultSNIPool[int(sum[0])%len(defaultSNIPool)]
+}
+
 func pickSNI(cfg *ClientConfig) string {
 	pool := make([]string, 0, len(cfg.ServerNames)+1)
 	for _, s := range cfg.ServerNames {
