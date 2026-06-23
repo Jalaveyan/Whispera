@@ -826,9 +826,12 @@ func ensureWhisperaServerCert(sc *config.ServerConfig) {
 	certPath := whisperaCertPath
 	keyPath := whisperaKeyPath
 	if _, err := os.Stat(certPath); err == nil {
-		sc.Whispera.TLSCert = certPath
-		sc.Whispera.TLSKey = keyPath
-		return
+		if !certHasStaleSigAlg(certPath) {
+			sc.Whispera.TLSCert = certPath
+			sc.Whispera.TLSKey = keyPath
+			return
+		}
+		log.Warn("whispera: server cert at %s uses a signature algorithm most clients reject (e.g. Ed25519) — regenerating as ECDSA", certPath)
 	}
 
 	os.MkdirAll(filepath.Dir(certPath), 0755)
@@ -840,6 +843,26 @@ func ensureWhisperaServerCert(sc *config.ServerConfig) {
 	log.Info("whispera: generated self-signed server cert at %s", certPath)
 	sc.Whispera.TLSCert = certPath
 	sc.Whispera.TLSKey = keyPath
+}
+
+// certHasStaleSigAlg reports whether the PEM certificate at path was signed
+// with a key type (e.g. Ed25519) that real browsers/uTLS fingerprints don't
+// advertise in signature_algorithms, which breaks the TLS handshake even
+// though the certificate file itself loads fine.
+func certHasStaleSigAlg(certPath string) bool {
+	data, err := os.ReadFile(certPath)
+	if err != nil {
+		return false
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false
+	}
+	return cert.PublicKeyAlgorithm != x509.ECDSA
 }
 
 func generateSelfSignedCert(certPath, keyPath string) error {

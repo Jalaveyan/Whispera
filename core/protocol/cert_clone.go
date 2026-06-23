@@ -149,6 +149,14 @@ func loadSNICert(decoyCertDir, sni string) (*tls.Certificate, bool) {
 		return nil, false
 	}
 
+	if leaf, err := x509.ParseCertificate(cert.Certificate[0]); err == nil && leaf.PublicKeyAlgorithm != x509.ECDSA {
+		if _, err := CloneCertToFiles(sni, certPath, keyPath); err == nil {
+			if fixed, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+				cert = fixed
+			}
+		}
+	}
+
 	sniCertCacheMu.Lock()
 	sniCertCache[sni] = &cert
 	sniCertCacheMu.Unlock()
