@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"fmt"
 	mrand "math/rand"
 	"sync/atomic"
 	"time"
@@ -62,6 +63,28 @@ func (k *keepaliveController) stop() {
 	}
 }
 
+const minMissedKeepalives = 3
+
+func (k *keepaliveController) missedThreshold(m *Manager) int {
+	threshold := m.config.QualityMissedKeepalives
+	if threshold <= 0 {
+		threshold = minMissedKeepalives
+	}
+	return threshold
+}
+
+func (k *keepaliveController) reconnectOnMissed(m *Manager, reason string) {
+	missed := atomic.AddInt32(&m.missedKAs, 1)
+	if int(missed) < k.missedThreshold(m) {
+		return
+	}
+	atomic.StoreInt32(&m.missedKAs, 0)
+	if m.GetState() == StateConnected {
+		log.Warn("keepalive: reconnecting after %d missed pings (%s)", missed, reason)
+		go m.Reconnect(m.Context())
+	}
+}
+
 func (k *keepaliveController) send() {
 	m := k.m
 
@@ -69,24 +92,20 @@ func (k *keepaliveController) send() {
 		silentDuration := time.Since(m.lastPong)
 		maxSilence := 90 * time.Second
 		if silentDuration > maxSilence {
+			log.Warn("keepalive: reconnecting after %s without a pong", silentDuration)
 			go m.Reconnect(m.Context())
 			return
 		}
 
 		if !m.lastKeepalive.IsZero() && m.lastPong.Before(m.lastKeepalive) {
-			missed := atomic.AddInt32(&m.missedKAs, 1)
 			if m.ml.kaAgent != nil {
 				m.ml.kaAgent.RecordOutcome(0)
 			}
 			if m.ml.jitterAgent != nil {
 				m.ml.jitterAgent.RecordOutcome(0)
 			}
-			threshold := m.config.QualityMissedKeepalives
-			if threshold > 0 && int(missed) >= threshold {
-				atomic.StoreInt32(&m.missedKAs, 0)
-				go m.Reconnect(m.Context())
-				return
-			}
+			k.reconnectOnMissed(m, "no pong since last ping")
+			return
 		}
 
 		halfInterval := m.config.KeepaliveInterval / 2
@@ -111,15 +130,11 @@ func (k *keepaliveController) send() {
 	select {
 	case err := <-done:
 		if err != nil {
-			if m.GetState() == StateConnected {
-				go m.Reconnect(m.Context())
-			}
+			k.reconnectOnMissed(m, fmt.Sprintf("ping send failed: %v", err))
 		} else {
 			m.lastKeepalive = time.Now()
 		}
 	case <-time.After(sendTimeout):
-		if m.GetState() == StateConnected {
-			go m.Reconnect(m.Context())
-		}
+		k.reconnectOnMissed(m, "ping send timed out")
 	}
 }
