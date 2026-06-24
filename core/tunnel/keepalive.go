@@ -135,6 +135,6 @@ func (k *keepaliveController) send() {
 			m.lastKeepalive = time.Now()
 		}
 	case <-time.After(sendTimeout):
-		k.reconnectOnMissed(m, "ping send timed out")
+		atomic.AddInt32(&m.missedKAs, 1)
 	}
 }
