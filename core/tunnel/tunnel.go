@@ -535,7 +535,9 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	firstConnErr := make(chan error, targetPoolSize)
 
 	spawnConnection := func(idx int) {
-		mc, err := m.dialManagedConn(ctx, fmt.Sprintf("pool-%d-%d", time.Now().Unix(), idx))
+		dialCtx, dialCancel := context.WithTimeout(ctx, m.config.ConnectionTimeout)
+		defer dialCancel()
+		mc, err := m.dialManagedConn(dialCtx, fmt.Sprintf("pool-%d-%d", time.Now().Unix(), idx))
 		if err != nil {
 			select {
 			case firstConnErr <- err:
