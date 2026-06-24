@@ -65,6 +65,13 @@ func (k *keepaliveController) stop() {
 
 const minMissedKeepalives = 3
 
+// recentActivityWindow guards against false-positive reconnects: a pooled
+// connection that's busy carrying a backlog of bulk data shares the same
+// FIFO write queue (bufferedPipeWriter, see core/protocol/h2conn.go) as the
+// keepalive ping, so the ping can legitimately queue behind it and miss its
+// deadline on a perfectly healthy, just-busy connection.
+const recentActivityWindow = 10 * time.Second
+
 func (k *keepaliveController) missedThreshold(m *Manager) int {
 	threshold := m.config.QualityMissedKeepalives
 	if threshold <= 0 {
@@ -74,6 +81,10 @@ func (k *keepaliveController) missedThreshold(m *Manager) int {
 }
 
 func (k *keepaliveController) reconnectOnMissed(m *Manager, reason string) {
+	if time.Since(m.LastActivity()) < recentActivityWindow {
+		atomic.StoreInt32(&m.missedKAs, 0)
+		return
+	}
 	missed := atomic.AddInt32(&m.missedKAs, 1)
 	if int(missed) < k.missedThreshold(m) {
 		return
@@ -91,13 +102,16 @@ func (k *keepaliveController) send() {
 	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
 		silentDuration := time.Since(m.lastPong)
 		maxSilence := 90 * time.Second
-		if silentDuration > maxSilence {
+		if silentDuration > maxSilence && time.Since(m.LastActivity()) > recentActivityWindow {
 			log.Warn("keepalive: reconnecting after %s without a pong", silentDuration)
 			go m.Reconnect(m.Context())
 			return
 		}
 
 		if !m.lastKeepalive.IsZero() && m.lastPong.Before(m.lastKeepalive) {
+			if time.Since(m.LastActivity()) < recentActivityWindow {
+				return
+			}
 			if m.ml.kaAgent != nil {
 				m.ml.kaAgent.RecordOutcome(0)
 			}
@@ -128,6 +142,8 @@ func (k *keepaliveController) send() {
 			m.lastKeepalive = time.Now()
 		}
 	case <-time.After(sendTimeout):
-		atomic.AddInt32(&m.missedKAs, 1)
+		if time.Since(m.LastActivity()) >= recentActivityWindow {
+			atomic.AddInt32(&m.missedKAs, 1)
+		}
 	}
 }
