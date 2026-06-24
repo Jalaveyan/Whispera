@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -95,7 +96,7 @@ func (u *Updater) CheckForUpdate() (*VersionInfo, error) {
 	}
 
 	var manifest Manifest
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("parse manifest: %w", err)
 	}
 

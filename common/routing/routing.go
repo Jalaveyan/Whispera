@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type RuleType string
@@ -251,12 +252,12 @@ func (r *Router) Match(destIP net.IP, destDomain string, destPort int) Action {
 		}
 
 		if matched {
-			r.matches++
+			atomic.AddUint64(&r.matches, 1)
 			return rule.Action
 		}
 	}
 
-	r.misses++
+	atomic.AddUint64(&r.misses, 1)
 	return ActionProxy
 }
 
@@ -356,9 +357,7 @@ func parseIntFromString(s string, result *int) (bool, error) {
 }
 
 func (r *Router) Stats() (matches, misses uint64) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.matches, r.misses
+	return atomic.LoadUint64(&r.matches), atomic.LoadUint64(&r.misses)
 }
 
 func (r *Router) GetCategories() []string {

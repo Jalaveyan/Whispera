@@ -30,6 +30,9 @@ func NewLRUCache[V any](capacity int) *LRUCache[V] {
 }
 
 func (m *LRUCache[V]) Get(_ context.Context, key string) (V, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	e, ok := m.c.Get(key)
 	if !ok {
 		var zero V
@@ -44,6 +47,9 @@ func (m *LRUCache[V]) Get(_ context.Context, key string) (V, error) {
 }
 
 func (m *LRUCache[V]) Set(_ context.Context, key string, value V, ttl time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	e := &lruEntry[V]{value: value}
 	if ttl > 0 {
 		e.expiresAt = time.Now().Add(ttl)
@@ -53,11 +59,17 @@ func (m *LRUCache[V]) Set(_ context.Context, key string, value V, ttl time.Durat
 }
 
 func (m *LRUCache[V]) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.c.Remove(key)
 	return nil
 }
 
 func (m *LRUCache[V]) Exists(_ context.Context, key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	e, ok := m.c.Get(key)
 	if !ok {
 		return false
@@ -105,9 +117,13 @@ func (m *LRUCache[V]) Ping(_ context.Context) error { return nil }
 func (m *LRUCache[V]) Type() string { return "lru" }
 
 func (m *LRUCache[V]) Clear() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.c.Purge()
 }
 
 func (m *LRUCache[V]) Len() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.c.Len()
 }

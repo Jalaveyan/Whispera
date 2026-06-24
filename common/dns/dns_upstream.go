@@ -112,7 +112,7 @@ func (r *Resolver) resolveDoH(ctx context.Context, endpoint, domain string) ([]n
 	dialFn := r.dialCtx
 	r.dialCtxMu.RUnlock()
 
-	msg := buildDNSMsg(domain)
+	msg, qID := buildDNSMsg(domain)
 
 	var transport http.RoundTripper
 	if dialFn != nil {
@@ -151,7 +151,7 @@ func (r *Resolver) resolveDoH(ctx context.Context, endpoint, domain string) ([]n
 		return nil, fmt.Errorf("doh: read body: %w", err)
 	}
 
-	return parseDNSResponse(body)
+	return parseDNSResponse(body, qID)
 }
 
 func (r *Resolver) resolveTCPDNS(ctx context.Context, dialFn func(context.Context, string, string) (net.Conn, error), upstream, domain string) ([]net.IP, error) {
@@ -166,7 +166,7 @@ func (r *Resolver) resolveTCPDNS(ctx context.Context, dialFn func(context.Contex
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	msg := buildDNSMsg(domain)
+	msg, qID := buildDNSMsg(domain)
 	lenBuf := [2]byte{byte(len(msg) >> 8), byte(len(msg))}
 	conn.Write(lenBuf[:])
 	conn.Write(msg)
@@ -182,7 +182,7 @@ func (r *Resolver) resolveTCPDNS(ctx context.Context, dialFn func(context.Contex
 	if _, err := io.ReadFull(conn, resp); err != nil {
 		return nil, fmt.Errorf("tcp dns read body: %w", err)
 	}
-	return parseDNSResponse(resp)
+	return parseDNSResponse(resp, qID)
 }
 
 func splitHostPortDefault(upstream, defaultPort string) (host, addr string) {
@@ -218,7 +218,7 @@ func (r *Resolver) resolveDoT(ctx context.Context, upstream, domain string) ([]n
 		return nil, fmt.Errorf("dot: handshake: %w", err)
 	}
 
-	msg := buildDNSMsg(domain)
+	msg, qID := buildDNSMsg(domain)
 	lenBuf := [2]byte{byte(len(msg) >> 8), byte(len(msg))}
 	if _, err := conn.Write(lenBuf[:]); err != nil {
 		return nil, fmt.Errorf("dot: write len: %w", err)
@@ -238,7 +238,7 @@ func (r *Resolver) resolveDoT(ctx context.Context, upstream, domain string) ([]n
 	if _, err := io.ReadFull(conn, resp); err != nil {
 		return nil, fmt.Errorf("dot: read body: %w", err)
 	}
-	return parseDNSResponse(resp)
+	return parseDNSResponse(resp, qID)
 }
 
 func (r *Resolver) resolveDoQ(ctx context.Context, upstream, domain string) ([]net.IP, error) {
@@ -264,8 +264,11 @@ func (r *Resolver) resolveDoQ(ctx context.Context, upstream, domain string) ([]n
 		return nil, fmt.Errorf("doq: open stream: %w", err)
 	}
 
-	msg := buildDNSMsg(domain)
+	msg, _ := buildDNSMsg(domain)
+	// RFC 9250 §4.2.1: the DNS message ID MUST be 0 over DoQ since the
+	// QUIC stream itself provides query/response correlation.
 	msg[0], msg[1] = 0, 0
+	doqID := [2]byte{0, 0}
 
 	lenBuf := [2]byte{byte(len(msg) >> 8), byte(len(msg))}
 	if _, err := stream.Write(lenBuf[:]); err != nil {
@@ -287,5 +290,5 @@ func (r *Resolver) resolveDoQ(ctx context.Context, upstream, domain string) ([]n
 	if _, err := io.ReadFull(stream, resp); err != nil {
 		return nil, fmt.Errorf("doq: read body: %w", err)
 	}
-	return parseDNSResponse(resp)
+	return parseDNSResponse(resp, doqID)
 }

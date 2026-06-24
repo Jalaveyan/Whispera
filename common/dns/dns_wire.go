@@ -1,13 +1,17 @@
 package dns
 
 import (
+	"crypto/rand"
 	"fmt"
 	"net"
 	"strings"
 )
 
-func buildDNSMsg(domain string) []byte {
-	id := [2]byte{0x12, 0x34}
+func buildDNSMsg(domain string) ([]byte, [2]byte) {
+	var id [2]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		id = [2]byte{0x12, 0x34}
+	}
 	buf := []byte{
 		id[0], id[1],
 		0x01, 0x00,
@@ -23,12 +27,15 @@ func buildDNSMsg(domain string) []byte {
 	buf = append(buf, 0x00)
 	buf = append(buf, 0x00, 0x01)
 	buf = append(buf, 0x00, 0x01)
-	return buf
+	return buf, id
 }
 
-func parseDNSResponse(response []byte) ([]net.IP, error) {
+func parseDNSResponse(response []byte, wantID [2]byte) ([]net.IP, error) {
 	if len(response) < 12 {
 		return nil, fmt.Errorf("dns response too short (%d bytes)", len(response))
+	}
+	if response[0] != wantID[0] || response[1] != wantID[1] {
+		return nil, fmt.Errorf("dns: transaction id mismatch")
 	}
 	rcode := response[3] & 0x0F
 	if rcode != 0 {

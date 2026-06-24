@@ -11,7 +11,7 @@ func (u *Updater) Apply(info VersionInfo) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	tmpFile, err := u.download(info.URL)
+	tmpFile, err := u.download(info.URL, info.Size)
 	if err != nil {
 		return fmt.Errorf("download: %w", err)
 	}

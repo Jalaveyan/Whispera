@@ -2,6 +2,7 @@ package events
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type Event struct {
 }
 
 type subscription struct {
+	id      int64
 	ch      chan Event
 	handler EventHandler
 }
@@ -29,6 +31,7 @@ type eventBus struct {
 	bufferSize  int
 	closed      bool
 	wg          sync.WaitGroup
+	subIDSeq    int64
 }
 
 type EventBusError struct {
@@ -144,7 +147,8 @@ func (eb *eventBus) SubscribeFunc(eventType string, handler EventHandler) func()
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
-	sub := subscription{handler: handler}
+	id := atomic.AddInt64(&eb.subIDSeq, 1)
+	sub := subscription{id: id, handler: handler}
 	eb.subscribers[eventType] = append(eb.subscribers[eventType], sub)
 
 	return func() {
@@ -153,7 +157,7 @@ func (eb *eventBus) SubscribeFunc(eventType string, handler EventHandler) func()
 
 		subs := eb.subscribers[eventType]
 		for i, s := range subs {
-			if s.handler != nil && &s.handler == &handler {
+			if s.id == id {
 				eb.subscribers[eventType] = append(subs[:i], subs[i+1:]...)
 				break
 			}

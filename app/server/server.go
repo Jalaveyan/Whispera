@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"flag"
@@ -1052,6 +1054,13 @@ func initUpdater(m *lifecycle.Manager, sc *config.ServerConfig) {
 		ManifestURL:    sc.Update.ManifestURL,
 		CurrentVersion: Version,
 		CheckInterval:  sc.Update.CheckInterval.D(),
+	}
+	if sc.Update.PublicKey != "" {
+		if pk, err := hex.DecodeString(sc.Update.PublicKey); err == nil && len(pk) == ed25519.PublicKeySize {
+			updateConfig.PublicKey = ed25519.PublicKey(pk)
+		} else {
+			log.Warn("update: public_key is set but invalid (must be %d-byte hex) — signature verification disabled", ed25519.PublicKeySize)
+		}
 	}
 	if updateConfig.CheckInterval <= 0 {
 		updateConfig.CheckInterval = 1 * time.Hour

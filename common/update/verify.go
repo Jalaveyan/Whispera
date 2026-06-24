@@ -9,9 +9,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 )
 
-func (u *Updater) download(url string) (string, error) {
+const defaultMaxBinarySize = 200 * 1024 * 1024 // 200MB safety cap when manifest doesn't specify a size
+
+func (u *Updater) download(url string, maxSize int64) (string, error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -26,15 +29,32 @@ func (u *Updater) download(url string) (string, error) {
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	tmpFile, err := os.CreateTemp("", "whispera-update-*")
-	if err != nil {
-		return "", err
+	if maxSize <= 0 {
+		maxSize = defaultMaxBinarySize
 	}
 
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+	// Create the temp file next to the target binary so the final os.Rename
+	// in atomicReplace stays on the same filesystem (cross-device renames fail).
+	tmpDir := filepath.Dir(u.config.BinaryPath)
+	tmpFile, err := os.CreateTemp(tmpDir, "whispera-update-*")
+	if err != nil {
+		tmpFile, err = os.CreateTemp("", "whispera-update-*")
+		if err != nil {
+			return "", err
+		}
+	}
+
+	limited := io.LimitReader(resp.Body, maxSize+1)
+	n, err := io.Copy(tmpFile, limited)
+	if err != nil {
 		tmpFile.Close()
 		os.Remove(tmpFile.Name())
 		return "", err
+	}
+	if n > maxSize {
+		tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("update payload exceeds size limit (%d bytes)", maxSize)
 	}
 	tmpFile.Close()
 	return tmpFile.Name(), nil

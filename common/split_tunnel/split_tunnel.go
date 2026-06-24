@@ -67,8 +67,10 @@ func (stm *SplitTunnelManager) LoadConfig(filename string) error {
 		return fmt.Errorf("failed to parse split tunnel config: %w", err)
 	}
 
+	stm.mu.Lock()
 	stm.config = &config
 	stm.rules = config.Rules
+	stm.mu.Unlock()
 
 	return nil
 }
@@ -82,15 +84,25 @@ func (stm *SplitTunnelManager) AddRule(rule *SplitTunnelRule) {
 }
 
 func (stm *SplitTunnelManager) SetMode(mode string) {
+	stm.mu.Lock()
 	stm.config.Mode = mode
+	stm.mu.Unlock()
 }
 
 func (stm *SplitTunnelManager) SetEnabled(enabled bool) {
+	stm.mu.Lock()
 	stm.config.Enabled = enabled
+	stm.mu.Unlock()
+}
+
+func (stm *SplitTunnelManager) isEnabled() bool {
+	stm.mu.RLock()
+	defer stm.mu.RUnlock()
+	return stm.config.Enabled
 }
 
 func (stm *SplitTunnelManager) ShouldBypass(addr string, port uint16) bool {
-	if !stm.config.Enabled {
+	if !stm.isEnabled() {
 		return false
 	}
 	if net.ParseIP(addr) != nil {
@@ -100,7 +112,7 @@ func (stm *SplitTunnelManager) ShouldBypass(addr string, port uint16) bool {
 }
 
 func (stm *SplitTunnelManager) ShouldBypassByIP(ipStr string) bool {
-	if !stm.config.Enabled {
+	if !stm.isEnabled() {
 		return false
 	}
 	stm.mu.RLock()
@@ -118,7 +130,7 @@ func (stm *SplitTunnelManager) ShouldBypassByIP(ipStr string) bool {
 }
 
 func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
-	if !stm.config.Enabled {
+	if !stm.isEnabled() {
 		return false
 	}
 	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
