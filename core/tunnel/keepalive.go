@@ -107,13 +107,6 @@ func (k *keepaliveController) send() {
 			k.reconnectOnMissed(m, "no pong since last ping")
 			return
 		}
-
-		halfInterval := m.config.KeepaliveInterval / 2
-		if halfInterval > 0 && silentDuration < halfInterval {
-			m.lastKeepalive = time.Now()
-			atomic.StoreInt32(&m.missedKAs, 0)
-			return
-		}
 	}
 
 	pingFrame := make([]byte, 8)
