@@ -65,11 +65,6 @@ func (k *keepaliveController) stop() {
 
 const minMissedKeepalives = 3
 
-// recentActivityWindow guards against false-positive reconnects: a pooled
-// connection that's busy carrying a backlog of bulk data shares the same
-// FIFO write queue (bufferedPipeWriter, see core/protocol/h2conn.go) as the
-// keepalive ping, so the ping can legitimately queue behind it and miss its
-// deadline on a perfectly healthy, just-busy connection.
 const recentActivityWindow = 10 * time.Second
 
 func (k *keepaliveController) missedThreshold(m *Manager) int {
@@ -99,8 +94,9 @@ func (k *keepaliveController) reconnectOnMissed(m *Manager, reason string) {
 func (k *keepaliveController) send() {
 	m := k.m
 
-	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
-		silentDuration := time.Since(m.lastPong)
+	lastPong := atomic.LoadInt64(&m.lastPong)
+	if lastPong != 0 && m.GetState() == StateConnected {
+		silentDuration := time.Since(time.Unix(0, lastPong))
 		maxSilence := 90 * time.Second
 		if silentDuration > maxSilence && time.Since(m.LastActivity()) > recentActivityWindow {
 			log.Warn("keepalive: reconnecting after %s without a pong", silentDuration)
@@ -108,7 +104,8 @@ func (k *keepaliveController) send() {
 			return
 		}
 
-		if !m.lastKeepalive.IsZero() && m.lastPong.Before(m.lastKeepalive) {
+		lastKeepalive := atomic.LoadInt64(&m.lastKeepalive)
+		if lastKeepalive != 0 && lastPong < lastKeepalive {
 			if time.Since(m.LastActivity()) < recentActivityWindow {
 				return
 			}
@@ -132,14 +129,18 @@ func (k *keepaliveController) send() {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- m.Send(pingFrame) }()
+	go func() {
+		err := m.Send(pingFrame)
+		if err == nil {
+			atomic.StoreInt64(&m.lastKeepalive, time.Now().UnixNano())
+		}
+		done <- err
+	}()
 
 	select {
 	case err := <-done:
 		if err != nil {
 			k.reconnectOnMissed(m, fmt.Sprintf("ping send failed: %v", err))
-		} else {
-			m.lastKeepalive = time.Now()
 		}
 	case <-time.After(sendTimeout):
 		if time.Since(m.LastActivity()) >= recentActivityWindow {

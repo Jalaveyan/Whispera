@@ -295,8 +295,8 @@ type Manager struct {
 	reconnecting      int32
 	bytesUp           uint64
 	bytesDown         uint64
-	lastKeepalive     time.Time
-	lastPong          time.Time
+	lastKeepalive     int64
+	lastPong          int64
 	connectedAt       time.Time
 
 	reconnectDone chan struct{}
@@ -639,7 +639,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.startRekey()
 		m.startConnRateSampler()
 		m.connectedAt = time.Now()
-		m.lastPong = time.Now()
+		atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
 		m.setState(StateConnected)
 
 		m.connMu.RLock()
@@ -1147,10 +1147,10 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 		if len(frameData) >= 3 && frameData[2] == 0x07 {
 			now := time.Now()
-			m.lastPong = now
+			atomic.StoreInt64(&m.lastPong, now.UnixNano())
 			var rttMs float64
-			if !m.lastKeepalive.IsZero() {
-				rtt := now.Sub(m.lastKeepalive)
+			if ka := atomic.LoadInt64(&m.lastKeepalive); ka != 0 {
+				rtt := now.Sub(time.Unix(0, ka))
 				m.updateQualityRTT(rtt)
 				rttMs = float64(rtt.Milliseconds())
 			}
@@ -1169,12 +1169,12 @@ func (m *Manager) readLoop(mc *managedConn) {
 		}
 
 		if len(frameData) >= 3 && frameData[2] == FrameTypeRekey {
-			m.lastPong = time.Now()
+			atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
 			b.Release()
 			continue
 		}
 
-		m.lastPong = time.Now()
+		atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
 
 		streamID := binary.BigEndian.Uint16(frameData[0:2])
 
@@ -1299,7 +1299,7 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		}
 		return nil, fmt.Errorf("open stream: %w", err)
 	}
-	m.lastPong = time.Now()
+	atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
 
 	var proxyStream net.Conn = stream
 
