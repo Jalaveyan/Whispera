@@ -271,10 +271,6 @@ const (
 	decoyRateMax    = 20
 )
 
-// decoyIPRateAllow caps how many decoy-relay dials a single source IP can
-// trigger per window — without this, a scanner hammering the camouflage gate
-// with a non-matching ClientHello can force unbounded real outbound TCP
-// connections to the decoy origin (each handle() call dials out for free).
 func decoyIPRateAllow(remote string) bool {
 	ip := remote
 	if h, _, err := net.SplitHostPort(remote); err == nil {
