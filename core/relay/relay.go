@@ -392,6 +392,9 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
+	const firstStreamTimeout = 3 * time.Second
+	_ = conn.SetReadDeadline(time.Now().Add(firstStreamTimeout))
+
 	muxCfg := &mux2.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     1 << 28,
@@ -442,6 +445,7 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		}
 		if firstStream {
 			firstStream = false
+			_ = conn.SetReadDeadline(time.Time{})
 			logger.Trace().Infow("control_stream_accepted",
 				"trace_id", traceID,
 				"client", clientID,
