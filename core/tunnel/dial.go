@@ -18,7 +18,13 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		return nil, err
 	}
 
-	sess, err := mux.Client(conn, m.getMuxConfig())
+	padMax := m.config.PaddingMaxSize
+	if padMax <= 0 {
+		padMax = 128
+	}
+	paddedConn := mux.NewPaddedConn(conn, padMax)
+
+	sess, err := mux.Client(paddedConn, m.getMuxConfig())
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("mux: %w", err)

@@ -982,7 +982,7 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 			neural.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), neural.FlowTunnel)
 			tracked := stats.WrapConn(conn, userID)
 			go func() {
-				globalRelay.ServeTunnelRaw(tracked, false)
+				globalRelay.ServeTunnel(tracked, false)
 				neural.FlowRegistry.DeleteConn(conn.LocalAddr(), conn.RemoteAddr())
 				log.Info("whispera: tunnel closed userID=%s remote=%s", userID, conn.RemoteAddr())
 			}()
