@@ -345,7 +345,6 @@ func (c *RTDatagramClient) Close() {
 	c.cancel()
 }
 
-
 type rtServerSession struct {
 	conn     *quicgo.Conn
 	sender   *rtFECSender
@@ -404,7 +403,7 @@ func (s *rtServerSession) handlePayload(payload []byte) {
 	uc, exists := s.targets[key]
 	if !exists {
 		var err error
-		uc, err = net.Dial("udp", key)
+		uc, err = (&net.Dialer{}).DialContext(context.Background(), "udp", key)
 		if err != nil {
 			s.mu.Unlock()
 			traceLog.Infow("rt_datagram_target_dial_failed", "target", key, "err", err.Error())

@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"errors"
 	"net"
 	"sync"
@@ -24,7 +25,7 @@ func newQUICDecoySession(listenConn net.PacketConn, clientAddr net.Addr, target 
 	if target == "" {
 		return nil, errors.New("whispera: quic decoy: no target")
 	}
-	upstream, err := net.Dial("udp", target)
+	upstream, err := (&net.Dialer{}).DialContext(context.Background(), "udp", target)
 	if err != nil {
 		return nil, err
 	}

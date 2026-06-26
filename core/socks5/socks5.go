@@ -326,7 +326,6 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 					continue
 				}
 				streams[dstKey] = stream
-				hasStream = true
 
 				go func(stream net.Conn, dstKey, dstHost string, dstPort uint16) {
 					defer func() {

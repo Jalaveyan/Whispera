@@ -171,7 +171,7 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 			QUICConfig:  chromeLikeQUICConfig(),
 			ConnContext: quicConnContext,
 		}
-		if pconn, err := net.ListenPacket("udp", cfg.QUICListenAddr); err == nil {
+		if pconn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", cfg.QUICListenAddr); err == nil {
 			camoConn := newQUICCamoConn(pconn, camoKeys, camoAddr)
 			go func() {
 				if err := h3srv.Serve(camoConn); err != nil {
@@ -188,7 +188,7 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 				ConnContext: quicConnContext,
 			}
 			extraH3srvs = append(extraH3srvs, extraH3srv)
-			if pconn, err := net.ListenPacket("udp", extraQUICAddr); err == nil {
+			if pconn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", extraQUICAddr); err == nil {
 				camoConn := newQUICCamoConn(pconn, camoKeys, camoAddr)
 				go func() {
 					if err := extraH3srv.Serve(camoConn); err != nil {
