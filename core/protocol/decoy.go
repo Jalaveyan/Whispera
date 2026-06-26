@@ -19,6 +19,17 @@ type decoyProxy struct {
 	rp     *httputil.ReverseProxy
 }
 
+const jitterCharset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+func randomJitter(minLen, maxLen int) string {
+	n := minLen + mrand.Intn(maxLen-minLen+1)
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = jitterCharset[mrand.Intn(len(jitterCharset))]
+	}
+	return string(b)
+}
+
 func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	if cfg != nil && cfg.proxy != nil {
 		cfg.proxy.serve(w, r)
@@ -34,15 +45,18 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	var ct, body string
 	switch {
 	case strings.HasSuffix(path, ".js"):
-		ct, body = "application/javascript; charset=utf-8", "(function(){'use strict';})();\n"
+		ct = "application/javascript; charset=utf-8"
+		body = "(function(){'use strict';/*" + randomJitter(8, 220) + "*/})();\n"
 		w.Header().Set("Cache-Control", "public, max-age=31536000")
 	case strings.HasSuffix(path, ".css"):
-		ct, body = "text/css; charset=utf-8", "*{box-sizing:border-box}body{margin:0}\n"
+		ct = "text/css; charset=utf-8"
+		body = "*{box-sizing:border-box}body{margin:0}/*" + randomJitter(8, 220) + "*/\n"
 		w.Header().Set("Cache-Control", "public, max-age=31536000")
 	case strings.HasSuffix(path, ".json") ||
 		strings.HasSuffix(path, "health") ||
 		strings.HasSuffix(path, "config"):
-		ct, body = "application/json; charset=utf-8", `{"status":"ok","version":"1.0.0"}`+"\n"
+		ct = "application/json; charset=utf-8"
+		body = `{"status":"ok","version":"1.0.0","_t":"` + randomJitter(4, 96) + `"}` + "\n"
 		w.Header().Set("Cache-Control", "no-cache")
 	case strings.HasSuffix(path, ".png") ||
 		strings.HasSuffix(path, ".ico") ||
@@ -55,16 +69,19 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 		case strings.HasSuffix(path, ".woff2"):
 			ct = "font/woff2"
 		}
+		body = randomJitter(180, 4096)
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 	case path == "/robots.txt":
-		ct, body = "text/plain; charset=utf-8", "User-agent: *\nDisallow: /api/\n"
+		ct = "text/plain; charset=utf-8"
+		body = "User-agent: *\nDisallow: /api/\n# " + randomJitter(4, 96) + "\n"
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 	case path == "/manifest.json":
 		ct = "application/json; charset=utf-8"
-		body = `{"name":"","short_name":"","start_url":"/","display":"standalone","icons":[]}` + "\n"
+		body = `{"name":"","short_name":"","start_url":"/","display":"standalone","icons":[],"_t":"` + randomJitter(4, 96) + `"}` + "\n"
 		w.Header().Set("Cache-Control", "public, max-age=3600")
 	default:
-		ct, body = "text/html; charset=utf-8", "<!DOCTYPE html><html><head><title></title></head><body></body></html>\n"
+		ct = "text/html; charset=utf-8"
+		body = "<!DOCTYPE html><html><head><title></title></head><body><!--" + randomJitter(16, 600) + "--></body></html>\n"
 		w.Header().Set("Cache-Control", "max-age=3600")
 	}
 
