@@ -148,3 +148,29 @@ func (k *keepaliveController) send() {
 		}
 	}
 }
+
+// probeNow sends one ping and waits up to timeout for its pong, bypassing
+// the regular interval/jitter/recent-activity gating in send(). Used by
+// OpenStream to confirm a possibly-stale connection is actually alive before
+// handing it to a caller — this measures pure tunnel round-trip time, unlike
+// the connect-ack (which also includes however long the server takes to
+// dial the real destination), so a short timeout here doesn't risk false
+// positives on slow-but-legitimate destination dials.
+func (k *keepaliveController) probeNow(timeout time.Duration) bool {
+	m := k.m
+	pingFrame := make([]byte, 8)
+	pingFrame[2] = 0x06
+	if err := m.Send(pingFrame); err != nil {
+		return false
+	}
+	sentAt := time.Now().UnixNano()
+	atomic.StoreInt64(&m.lastKeepalive, sentAt)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt64(&m.lastPong) >= sentAt {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}

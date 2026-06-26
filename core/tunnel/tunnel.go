@@ -37,6 +37,7 @@ type ackStripConn struct {
 	once      sync.Once
 	ackErr    error
 	onClose   func()
+	onAckFail func()
 	closeOnce sync.Once
 }
 
@@ -310,7 +311,7 @@ type Manager struct {
 	isTransportSecure bool
 
 	poolHealth *poolHealthSampler
-	gameLane   *gameLaneManager
+	rtLane   *rtLaneManager
 	ml         *mlOrchestrator
 
 	boFailCount     int32
@@ -381,7 +382,7 @@ func New(cfg *Config) (*Manager, error) {
 	m.keepalive = newKeepaliveController(m)
 	m.rotation = newRotationManager(m)
 	m.poolHealth = newPoolHealthSampler(m)
-	m.gameLane = newGameLaneManager(m)
+	m.rtLane = newRTLaneManager(m)
 	m.cb = newCircuitBreaker()
 	m.sm = newTunnelStateMachine(m.onStateTransition)
 	m.initStreamShards()
@@ -1270,9 +1271,10 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 
 	var sess *mux.Session
 	var onClose func()
+	var mcForFail *managedConn
 	if proto == protoUDP && m.config.EnableWhispera {
-		if gs, gerr := m.gameSession(ctx); gerr == nil {
-			sess, onClose = gs, m.gameStreamClosed
+		if gs, gerr := m.rtSession(ctx); gerr == nil {
+			sess, onClose = gs, m.rtStreamClosed
 		}
 	}
 	if sess == nil {
@@ -1292,6 +1294,20 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 			}
 		}
 		sess = mc.session
+		mcForFail = mc
+
+		const openStreamFreshnessWindow = 5 * time.Second
+		const openStreamProbeTimeout = time.Second
+		lastPong := atomic.LoadInt64(&m.lastPong)
+		if lastPong == 0 || time.Since(time.Unix(0, lastPong)) > openStreamFreshnessWindow {
+			if !m.keepalive.probeNow(openStreamProbeTimeout) {
+				if onClose != nil {
+					onClose()
+				}
+				m.forceReconnectFromStreamFailure(mc, "liveness probe timed out")
+				return nil, fmt.Errorf("tunnel unresponsive")
+			}
+		}
 	}
 
 	stream, err := sess.OpenStream()
@@ -1299,9 +1315,11 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		if onClose != nil {
 			onClose()
 		}
+		if mcForFail != nil {
+			m.forceReconnectFromStreamFailure(mcForFail, "open stream: "+err.Error())
+		}
 		return nil, fmt.Errorf("open stream: %w", err)
 	}
-	atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
 
 	var proxyStream net.Conn = stream
 
@@ -1317,22 +1335,72 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		if onClose != nil {
 			onClose()
 		}
+		if mcForFail != nil {
+			m.forceReconnectFromStreamFailure(mcForFail, "write connect header: "+err.Error())
+		}
 		return nil, fmt.Errorf("write connect header: %w", err)
 	}
 
-	return &ackStripConn{Conn: proxyStream, stream: stream, onClose: onClose}, nil
+	return &ackStripConn{
+		Conn:    proxyStream,
+		stream:  stream,
+		onClose: onClose,
+		onAckFail: func() {
+			if mcForFail != nil {
+				m.forceReconnectFromStreamFailure(mcForFail, "connect ack timeout")
+			}
+		},
+	}, nil
 }
+
+func (m *Manager) forceReconnectFromStreamFailure(mc *managedConn, reason string) {
+	m.connMu.RLock()
+	isActive := (mc == m.activeConn)
+	m.connMu.RUnlock()
+	if isActive && m.GetState() == StateConnected {
+		log.Warn("stream failure (%s) — forcing reconnect", reason)
+		m.sm.SetError(fmt.Errorf("stream failure: %s", reason))
+		if m.GetState() == StateConnected {
+			go m.Reconnect(m.Context())
+		}
+	}
+}
+
+// The relay sends a stream-alive marker as soon as it parses the CONNECT
+// header (before dialing the target), then a separate connect-result byte
+// once the target dial completes. Splitting the wait this way lets a dead
+// tunnel be detected in ~1s without misfiring on a merely slow target, whose
+// dial can legitimately take seconds even with a perfectly healthy tunnel.
+const (
+	rtStreamAliveMarker byte = 0x02
+	rtConnectOK         byte = 0x00
+)
+
+const (
+	streamAliveWait = 1 * time.Second
+	connectAckWait  = 17 * time.Second
+)
 
 func (c *ackStripConn) Read(b []byte) (int, error) {
 	c.once.Do(func() {
-		c.Conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		c.Conn.SetReadDeadline(time.Now().Add(streamAliveWait))
+		var marker [1]byte
+		if _, err := io.ReadFull(c.Conn, marker[:]); err != nil {
+			c.ackErr = fmt.Errorf("read stream-alive marker: %w", err)
+			if c.onAckFail != nil {
+				c.onAckFail()
+			}
+			return
+		}
+
+		c.Conn.SetReadDeadline(time.Now().Add(connectAckWait))
 		var ack [1]byte
 		if _, err := io.ReadFull(c.Conn, ack[:]); err != nil {
 			c.ackErr = fmt.Errorf("read connect response: %w", err)
 			return
 		}
 		c.Conn.SetReadDeadline(time.Time{})
-		if ack[0] != 0x00 {
+		if ack[0] != rtConnectOK {
 			c.ackErr = fmt.Errorf("relay refused connection")
 		}
 	})
@@ -1539,23 +1607,23 @@ const (
 	chScaleShrinkPerConn = 256 * 1024
 	scaleEvalBytes       = 2 * 1024 * 1024
 	browserConnBudget    = 2
-	chGameLaneReserve    = 1
-	gameIdleTimeout      = 15 * time.Second
+	chRTLaneReserve    = 1
+	rtIdleTimeout      = 15 * time.Second
 	protoTCP             = 0x06
 	protoUDP             = 0x11
 )
 
-func (m *Manager) gameDial() func(context.Context) (net.Conn, error) { return m.gameLane.dial() }
+func (m *Manager) rtDial() func(context.Context) (net.Conn, error) { return m.rtLane.dial() }
 
-func (m *Manager) gameSession(ctx context.Context) (*mux.Session, error) {
-	return m.gameLane.session(ctx)
+func (m *Manager) rtSession(ctx context.Context) (*mux.Session, error) {
+	return m.rtLane.session(ctx)
 }
 
-func (m *Manager) gameLaneActive() bool { return m.gameLane.active() }
+func (m *Manager) rtLaneActive() bool { return m.rtLane.active() }
 
-func (m *Manager) gameStreamClosed() { m.gameLane.streamClosed() }
+func (m *Manager) rtStreamClosed() { m.rtLane.streamClosed() }
 
-func (m *Manager) feedScale(n int) { m.gameLane.feedScale(n) }
+func (m *Manager) feedScale(n int) { m.rtLane.feedScale(n) }
 
 func (m *Manager) GetState() TunnelState { return m.sm.Get() }
 

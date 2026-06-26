@@ -48,6 +48,12 @@ const (
 	ModuleVersion = "1.0.0"
 )
 
+const (
+	streamAliveMarker byte = 0x02
+	connectOK         byte = 0x00
+	connectFail       byte = 0x01
+)
+
 type ResponseWriter interface {
 	Write(data []byte) error
 	RemoteAddr() net.Addr
@@ -430,6 +436,10 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 
 	stream.SetReadDeadline(time.Time{})
 
+	if _, err := stream.Write([]byte{streamAliveMarker}); err != nil {
+		return
+	}
+
 	streamStart := time.Now()
 	logger.Trace().Infow("proxy_stream_start",
 		"trace_id", tunnelID,
@@ -459,7 +469,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 				case interfaces.DestinationDirect:
 					dialer = proxy.Direct
 				case interfaces.DestinationBlock:
-					stream.Write([]byte{0x01})
+					stream.Write([]byte{connectFail})
 					return
 				default:
 					if dest.Tag != "" {
@@ -490,7 +500,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	}
 	dialDur := time.Since(dialStart)
 	if err != nil {
-		stream.Write([]byte{0x01})
+		stream.Write([]byte{connectFail})
 		logger.Trace().Warnw("proxy_stream_dial_fail",
 			"trace_id", tunnelID,
 			"target", targetAddr,
@@ -510,7 +520,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	}
 
 	ackStart := time.Now()
-	if _, err := stream.Write([]byte{0x00}); err != nil {
+	if _, err := stream.Write([]byte{connectOK}); err != nil {
 		return
 	}
 	if d := time.Since(ackStart); d > 200*time.Millisecond {
