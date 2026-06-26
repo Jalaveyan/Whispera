@@ -94,15 +94,32 @@ func TestPaddedConn_OverflowClampNoDesync(t *testing.T) {
 	}
 }
 
-func TestPaddedConn_BucketPadding(t *testing.T) {
+func TestPaddedConn_PaddingIsContinuousNotBucketed(t *testing.T) {
 	conn := &padTestConn{}
 	pc := NewPaddedConn(conn, 128)
-	if _, err := pc.Write([]byte("0123456789")); err != nil {
-		t.Fatalf("Write: %v", err)
+
+	payload := []byte("0123456789")
+	sizes := make(map[int]bool)
+	min, max := -1, -1
+	for i := 0; i < 64; i++ {
+		conn.buf.Reset()
+		if _, err := pc.Write(payload); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		onWire := conn.buf.Len()
+		sizes[onWire] = true
+		if min == -1 || onWire < min {
+			min = onWire
+		}
+		if onWire > max {
+			max = onWire
+		}
 	}
-	onWire := conn.buf.Len()
-	if onWire < 256 || onWire > 256+32 {
-		t.Fatalf("on-wire frame size %d not bucketed to 256(+overshoot<32)", onWire)
+	if len(sizes) < 8 {
+		t.Fatalf("on-wire sizes too clustered: only %d distinct values across 64 writes (%v)", len(sizes), sizes)
+	}
+	if max-min < 16 {
+		t.Fatalf("on-wire size spread too narrow: min=%d max=%d", min, max)
 	}
 }
 

@@ -84,27 +84,19 @@ func (pc *PaddedConn) writeFrame(data []byte) error {
 func (pc *PaddedConn) computePad(dataLen int) int {
 	wireBase := 4 + dataLen
 
-	var bucket int
-	switch {
-	case wireBase <= 256:
-		bucket = 256
-	case wireBase <= 512:
-		bucket = 512
-	case wireBase <= 1024:
-		bucket = 1024
-	default:
-		return rand.Intn(pc.maxPad + 1)
+	additive := rand.Intn(pc.maxPad + 1)
+
+	multiplicative := 0
+	if wireBase > 0 {
+		multiplicative = rand.Intn(wireBase/2 + 1)
 	}
 
-	remainder := wireBase % bucket
-	padNeeded := 0
-	if remainder != 0 {
-		padNeeded = bucket - remainder
+	total := additive + multiplicative
+	if max := 65000 - dataLen; total > max {
+		total = max
 	}
-	overshoot := rand.Intn(32)
-	total := padNeeded + overshoot
-	if total > 65000-dataLen {
-		total = padNeeded
+	if total < 0 {
+		total = 0
 	}
 	return total
 }
