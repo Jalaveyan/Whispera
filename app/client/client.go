@@ -1004,17 +1004,7 @@ func main() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		var primaryReconnecting int32
-		var primaryFailStreak int32
-		backoffForStreak := func(streak int32) time.Duration {
-			d := time.Second
-			for i := int32(0); i < streak && d < 60*time.Second; i++ {
-				d *= 2
-			}
-			if d > 60*time.Second {
-				d = 60 * time.Second
-			}
-			return d
-		}
+		const primaryReconnectBackoff = 2 * time.Second
 		for {
 			select {
 			case <-ctx.Done():
@@ -1089,7 +1079,7 @@ func main() {
 				if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
 					go func() {
 						defer atomic.StoreInt32(&primaryReconnecting, 0)
-						time.Sleep(backoffForStreak(atomic.LoadInt32(&primaryFailStreak)))
+						time.Sleep(primaryReconnectBackoff)
 
 						if globalAgent != nil {
 							if recTr, _ := globalAgent.SelectTransport(); recTr != "" {
@@ -1105,17 +1095,15 @@ func main() {
 						stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
 
 						targetCfg := buildBaseCfg(primaryEntry)
+						targetCfg.ConnectionTimeout = 2 * time.Second
 
 						restartEntry(primaryEntry, targetCfg)
 						primaryEntry.mu.Lock()
 						connected := primaryEntry.Status == connStatusConnected && primaryEntry.mgr != nil
 						primaryEntry.mu.Unlock()
 						if connected {
-							atomic.StoreInt32(&primaryFailStreak, 0)
 							socksMod.SetTunnel(primaryEntry.mgr)
 							stdlog.Printf("Transport watchdog: primary reconnected, SOCKS restored")
-						} else {
-							atomic.AddInt32(&primaryFailStreak, 1)
 						}
 					}()
 				}
