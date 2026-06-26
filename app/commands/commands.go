@@ -239,6 +239,21 @@ func RunCreateKeyCmd() {
 			}
 		}
 		if !portTaken {
+			conflict := *port == chmPort
+			for _, p := range sc.Whispera.ExtraPorts {
+				if p == *port {
+					conflict = true
+				}
+			}
+			for _, in := range sc.Inbounds {
+				if in.Port == *port {
+					conflict = true
+				}
+			}
+			if conflict {
+				fmt.Fprintf(os.Stderr, "Error: port %d is already bound by another listener — gRPC can't also bind it. Pick a different -port, or use %d (grpc.listen_addr) directly.\n", *port, grpcPort)
+				os.Exit(1)
+			}
 			err = cfgProvider.Update(func(sc *config.ServerConfig) {
 				sc.GRPC.ExtraPorts = append(sc.GRPC.ExtraPorts, *port)
 			})
@@ -332,6 +347,9 @@ func RunCreateKeyCmd() {
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: invalid whispera.quic_listen_addr %q: %v — key generated without QUIC\n", sc.Whispera.QUICListenAddr, err)
 				} else {
+					if ip := net.ParseIP(quicHost); quicHost == "" || (ip != nil && ip.IsUnspecified()) {
+						quicHost = serverHost
+					}
 					effectiveQUICPortStr := quicListenPortStr
 					if *quicPort != 0 && strconv.Itoa(*quicPort) != quicListenPortStr {
 						effectiveQUICPortStr = strconv.Itoa(*quicPort)
