@@ -311,7 +311,7 @@ type Manager struct {
 	isTransportSecure bool
 
 	poolHealth *poolHealthSampler
-	rtLane   *rtLaneManager
+	rtLane     *rtLaneManager
 	ml         *mlOrchestrator
 
 	boFailCount     int32
@@ -1297,10 +1297,14 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		mcForFail = mc
 
 		const openStreamFreshnessWindow = 5 * time.Second
-		const openStreamProbeTimeout = time.Second
+		const openStreamProbeTimeout = 3 * time.Second
 		lastPong := atomic.LoadInt64(&m.lastPong)
 		if lastPong == 0 || time.Since(time.Unix(0, lastPong)) > openStreamFreshnessWindow {
-			if !m.keepalive.probeNow(openStreamProbeTimeout) {
+			alive := false
+			for attempt := 0; attempt < 2 && !alive; attempt++ {
+				alive = m.keepalive.probeNow(openStreamProbeTimeout)
+			}
+			if !alive {
 				if onClose != nil {
 					onClose()
 				}
@@ -1366,11 +1370,6 @@ func (m *Manager) forceReconnectFromStreamFailure(mc *managedConn, reason string
 	}
 }
 
-// The relay sends a stream-alive marker as soon as it parses the CONNECT
-// header (before dialing the target), then a separate connect-result byte
-// once the target dial completes. Splitting the wait this way lets a dead
-// tunnel be detected in ~1s without misfiring on a merely slow target, whose
-// dial can legitimately take seconds even with a perfectly healthy tunnel.
 const (
 	rtStreamAliveMarker byte = 0x02
 	rtConnectOK         byte = 0x00
@@ -1607,8 +1606,8 @@ const (
 	chScaleShrinkPerConn = 256 * 1024
 	scaleEvalBytes       = 2 * 1024 * 1024
 	browserConnBudget    = 2
-	chRTLaneReserve    = 1
-	rtIdleTimeout      = 15 * time.Second
+	chRTLaneReserve      = 1
+	rtIdleTimeout        = 15 * time.Second
 	protoTCP             = 0x06
 	protoUDP             = 0x11
 )
