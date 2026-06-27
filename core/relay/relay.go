@@ -285,8 +285,8 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 
 	muxCfg := &mux2.Config{
 		MaxFrameSize:         65535,
-		MaxReceiveBuffer:     1 << 28,
-		MaxStreamBuffer:      1 << 26,
+		MaxReceiveBuffer:     1 << 25,
+		MaxStreamBuffer:      1 << 23,
 		DisableKeepAlive:     true,
 		MaxConcurrentStreams: s.config.MaxConcurrentStreams,
 	}
