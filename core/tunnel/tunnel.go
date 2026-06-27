@@ -1216,10 +1216,9 @@ func (m *Manager) handleReadError(mc *managedConn, err error) {
 	m.connMu.RUnlock()
 
 	if isActive && m.GetState() == StateConnected {
+		log.Warn("active connection read error (%v) — forcing reconnect", err)
 		m.sm.SetError(err)
-		if m.GetState() == StateConnected {
-			go m.Reconnect(m.Context())
-		}
+		go m.Reconnect(m.Context())
 	}
 }
 
@@ -1364,9 +1363,7 @@ func (m *Manager) forceReconnectFromStreamFailure(mc *managedConn, reason string
 	if isActive && m.GetState() == StateConnected {
 		log.Warn("stream failure (%s) — forcing reconnect", reason)
 		m.sm.SetError(fmt.Errorf("stream failure: %s", reason))
-		if m.GetState() == StateConnected {
-			go m.Reconnect(m.Context())
-		}
+		go m.Reconnect(m.Context())
 	}
 }
 

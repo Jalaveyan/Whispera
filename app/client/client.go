@@ -1046,6 +1046,12 @@ func main() {
 						activated = true
 						break
 					}
+					if status == connStatusConnected && e != primaryEntry && (mgr == nil || !mgr.IsConnected()) {
+						e.mu.Lock()
+						e.Status = connStatusStandby
+						e.mu.Unlock()
+						stdlog.Printf("Transport watchdog: %s dropped, marking standby for retry", e.Transport)
+					}
 				}
 
 				if !activated {
