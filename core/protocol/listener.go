@@ -391,6 +391,11 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	conn := newHTTPStreamConn(r.Body, w, flusher.Flush, local, remote, effectiveGANDecide(cfg, userID))
 	fc := NewFrameConn(conn)
 
+	defer func() {
+		fc.Close()
+		<-fc.writerDone
+	}()
+
 	if quicConn, ok := r.Context().Value(rtConnContextKey).(*quicgo.Conn); ok {
 		RegisterRTQUICConn(sessionID, quicConn)
 	}

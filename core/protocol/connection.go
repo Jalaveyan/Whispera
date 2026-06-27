@@ -20,11 +20,12 @@ type frameReq struct {
 
 type FrameConn struct {
 	net.Conn
-	writeCh   chan *frameReq
-	closed    chan struct{}
-	closeOnce sync.Once
-	buf       []byte
-	recvBuf   []byte
+	writeCh    chan *frameReq
+	closed     chan struct{}
+	writerDone chan struct{} // closed when writer() has fully exited
+	closeOnce  sync.Once
+	buf        []byte
+	recvBuf    []byte
 
 	bytesRecent uint64
 }
@@ -71,9 +72,10 @@ func connRemote(c net.Conn) string {
 
 func NewFrameConn(conn net.Conn) *FrameConn {
 	fc := &FrameConn{
-		Conn:    conn,
-		writeCh: make(chan *frameReq, 128),
-		closed:  make(chan struct{}),
+		Conn:       conn,
+		writeCh:    make(chan *frameReq, 128),
+		closed:     make(chan struct{}),
+		writerDone: make(chan struct{}),
 	}
 	go fc.writer()
 	return fc
@@ -85,6 +87,12 @@ func (fc *FrameConn) Close() error {
 }
 
 func (fc *FrameConn) writer() {
+	defer close(fc.writerDone)
+	defer func() {
+		if r := recover(); r != nil {
+			traceLog.Warnw("frameconn_writer_panic", "err", fmt.Sprintf("%v", r))
+		}
+	}()
 	var scratch []byte
 	var batch []*frameReq
 	for {

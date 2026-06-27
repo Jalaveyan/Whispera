@@ -81,6 +81,8 @@ type Transport struct {
 	server     *grpc.Server
 	mu         sync.RWMutex
 	acceptChan chan net.Conn
+	stopChan   chan struct{}
+	stopOnce   sync.Once
 
 	connCount   int64
 	bytesRx     uint64
@@ -100,6 +102,7 @@ func New(cfg *Config) (*Transport, error) {
 		Module:     base.NewModule(ModuleName, ModuleVersion, nil),
 		config:     cfg,
 		acceptChan: make(chan net.Conn, 1000),
+		stopChan:   make(chan struct{}),
 	}
 
 	return t, nil
@@ -189,7 +192,7 @@ func (t *Transport) Stop() error {
 	}
 	t.mu.Unlock()
 
-	close(t.acceptChan)
+	t.stopOnce.Do(func() { close(t.stopChan) })
 
 	t.PublishEvent(events.EventTypeModuleStopped, nil)
 	return t.Module.Stop()
@@ -233,11 +236,12 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 }
 
 func (t *Transport) Accept() (net.Conn, error) {
-	conn, ok := <-t.acceptChan
-	if !ok {
+	select {
+	case conn := <-t.acceptChan:
+		return conn, nil
+	case <-t.stopChan:
 		return nil, fmt.Errorf("transport stopped")
 	}
-	return conn, nil
 }
 
 func (t *Transport) Close() error {
@@ -369,6 +373,9 @@ func (s *tunnelServer) Tunnel(stream TunnelService_TunnelServer) error {
 
 	select {
 	case s.transport.acceptChan <- conn:
+	case <-s.transport.stopChan:
+		atomic.AddInt64(&s.transport.activeConns, -1)
+		return fmt.Errorf("transport stopped")
 	default:
 		atomic.AddInt64(&s.transport.activeConns, -1)
 		return fmt.Errorf("accept channel full")

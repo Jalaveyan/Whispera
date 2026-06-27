@@ -186,11 +186,23 @@ func (c *httpStreamConn) Write(b []byte) (int, error) {
 		atomic.AddInt64(&c.downBytes, int64(n))
 	}
 	if err == nil {
-		c.flush()
+		c.safeFlush()
 	}
 	return n, err
 }
 func (c *httpStreamConn) FlushWrite() {
+	c.safeFlush()
+}
+
+// safeFlush skips the flush once the stream is done; flushing a finished
+// http2 handler's ResponseWriter panics ("Header called after Handler finished").
+func (c *httpStreamConn) safeFlush() {
+	select {
+	case <-c.done:
+		return
+	default:
+	}
+	defer func() { _ = recover() }()
 	c.flush()
 }
 func (c *httpStreamConn) Close() error {

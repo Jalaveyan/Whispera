@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,9 +18,18 @@ type testConn struct {
 	writeErr    error
 	writes      []byte
 	writeCount  int32
+	release     chan struct{}
+	entered     chan struct{}
+	enterOnce   sync.Once
 }
 
 func (c *testConn) Write(p []byte) (int, error) {
+	if c.entered != nil {
+		c.enterOnce.Do(func() { close(c.entered) })
+	}
+	if c.release != nil {
+		<-c.release
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	atomic.AddInt32(&c.writeCount, 1)
@@ -133,23 +143,39 @@ func TestFrameConn_ErrorPropagates(t *testing.T) {
 }
 
 func TestFrameConn_ConcurrentWritesCoalesce(t *testing.T) {
-	tc := &testConn{mode: "normal"}
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	tc := &testConn{mode: "normal", release: release, entered: entered}
 	fc := NewFrameConn(tc)
 	defer fc.Close()
 
 	const N = 100
 	var wg sync.WaitGroup
-	wg.Add(N)
-	for i := 0; i < N; i++ {
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := fc.Write([]byte{0}); err != nil {
+			t.Errorf("Write err: %v", err)
+		}
+	}()
+	<-entered
+
+	for i := 1; i < N; i++ {
 		i := i
+		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			payload := []byte{byte(i)}
-			if _, err := fc.Write(payload); err != nil {
+			if _, err := fc.Write([]byte{byte(i)}); err != nil {
 				t.Errorf("Write err: %v", err)
 			}
 		}()
 	}
+	for len(fc.writeCh) < N-1 {
+		runtime.Gosched()
+	}
+
+	close(release)
 	wg.Wait()
 
 	got := tc.bytesWritten()

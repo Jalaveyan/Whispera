@@ -246,7 +246,7 @@ func (l *camouflageListener) acceptLoop() {
 	for {
 		conn, err := l.Listener.Accept()
 		if err != nil {
-			close(l.ready)
+			l.closeOnce.Do(func() { close(l.closed) })
 			return
 		}
 		go l.handle(conn)
@@ -337,11 +337,12 @@ func (l *camouflageListener) handle(conn net.Conn) {
 }
 
 func (l *camouflageListener) Accept() (net.Conn, error) {
-	conn, ok := <-l.ready
-	if !ok {
+	select {
+	case conn := <-l.ready:
+		return conn, nil
+	case <-l.closed:
 		return nil, fmt.Errorf("whispera: camouflage listener closed")
 	}
-	return conn, nil
 }
 
 func (l *camouflageListener) Close() error {
