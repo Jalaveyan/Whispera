@@ -28,6 +28,10 @@ func NewSessionCache(capacity int) any {
 	return utls.NewLRUClientSessionCache(capacity)
 }
 
+var sharedSessionCache = NewSessionCache(256)
+
+func SharedSessionCache() any { return sharedSessionCache }
+
 var decoyGraph = [4][]string{
 	{"/api/v1/config", "/cdn/app/index.js", "/assets/main.css"},
 	{"/static/vendor.js", "/static/app.js", "/assets/theme.css", "/cdn/fonts/roboto.woff2"},

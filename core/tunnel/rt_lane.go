@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	asnbypass "whispera/core/asn_bypass"
 	"whispera/core/protocol"
 	"whispera/core/transport/grpc"
 	"whispera/core/transport/yadisk"
@@ -17,6 +16,8 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 	"whispera/common/mux"
 )
+
+const defaultWhisperaSNI = "vk.com"
 
 const altTransportSessionIDLen = 8
 
@@ -64,7 +65,7 @@ type rtLaneManager struct {
 }
 
 func newRTLaneManager(m *Manager) *rtLaneManager {
-	return &rtLaneManager{m: m, sessionCache: protocol.NewSessionCache(128)}
+	return &rtLaneManager{m: m, sessionCache: protocol.SharedSessionCache()}
 }
 
 func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error), bool) {
@@ -77,10 +78,8 @@ func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error)
 		addr = m.config.ServerAddr
 	}
 	sni := m.config.WhisperaSNI
-	var sniList []string
 	if sni == "" || net.ParseIP(sni) != nil {
-		sni = ""
-		sniList = asnbypass.WhitelistSNIPool()
+		sni = defaultWhisperaSNI
 	}
 	var tcpDialer func(context.Context, string, string) (net.Conn, error)
 	if m.asnBypassDialer != nil {
@@ -89,7 +88,6 @@ func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error)
 	cCfg := &protocol.ClientConfig{
 		ServerAddr:    addr,
 		ServerName:    sni,
-		ServerNames:   sniList,
 		SharedSecret:  m.config.WhisperaSecret,
 		ServerCertPin: m.config.WhisperaCertPin,
 		SessionCache:  rl.sessionCache,
