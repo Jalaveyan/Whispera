@@ -7,11 +7,6 @@ import (
 	"time"
 )
 
-// Regression test for a bug where handleReadError called m.sm.SetError(err)
-// (which moves the state machine to StateError) and then checked
-// m.GetState() == StateConnected before triggering Reconnect() — a check
-// that was always false right after SetError, so Reconnect() was dead code
-// on every real read error (RST, broken pipe, EOF...).
 func TestHandleReadErrorTriggersReconnect(t *testing.T) {
 	m := newTestManager(t)
 	m.config.ServerAddr = "127.0.0.1:1"
@@ -53,9 +48,6 @@ func TestHandleReadErrorIgnoresTimeout(t *testing.T) {
 	}
 }
 
-// Same bug as TestHandleReadErrorTriggersReconnect, but for the
-// forceReconnectFromStreamFailure path (connect-ack timeout / stream write
-// failure), which had its own copy of the SetError-then-recheck mistake.
 func TestForceReconnectFromStreamFailureTriggersReconnect(t *testing.T) {
 	m := newTestManager(t)
 	m.config.ServerAddr = "127.0.0.1:1"

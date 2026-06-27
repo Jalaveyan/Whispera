@@ -945,7 +945,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 	consecutiveGarbage := 0
 	const maxTLSDrain = 50
 
-	mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
 
 	for {
 		select {
@@ -957,10 +956,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 		if !m.isTransportSecure || m.connCfg.ForceObfuscation() != 0 {
 			peek, err := reader.Peek(5)
 			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
-					continue
-				}
 				m.handleReadError(mc, err)
 				return
 			}
@@ -1076,10 +1071,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 		tlsDrainCount = 0
 
 		if _, err := io.ReadFull(reader, header); err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
-				continue
-			}
 			m.handleReadError(mc, err)
 			return
 		}

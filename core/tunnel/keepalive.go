@@ -97,7 +97,7 @@ func (k *keepaliveController) send() {
 	lastPong := atomic.LoadInt64(&m.lastPong)
 	if lastPong != 0 && m.GetState() == StateConnected {
 		silentDuration := time.Since(time.Unix(0, lastPong))
-		maxSilence := 90 * time.Second
+		maxSilence := time.Duration(k.missedThreshold(m)) * m.config.KeepaliveInterval
 		if silentDuration > maxSilence && time.Since(m.LastActivity()) > recentActivityWindow {
 			log.Warn("keepalive: reconnecting after %s without a pong", silentDuration)
 			go m.Reconnect(m.Context())
@@ -149,13 +149,6 @@ func (k *keepaliveController) send() {
 	}
 }
 
-// probeNow sends one ping and waits up to timeout for its pong, bypassing
-// the regular interval/jitter/recent-activity gating in send(). Used by
-// OpenStream to confirm a possibly-stale connection is actually alive before
-// handing it to a caller — this measures pure tunnel round-trip time, unlike
-// the connect-ack (which also includes however long the server takes to
-// dial the real destination), so a short timeout here doesn't risk false
-// positives on slow-but-legitimate destination dials.
 func (k *keepaliveController) probeNow(timeout time.Duration) bool {
 	m := k.m
 	pingFrame := make([]byte, 8)
