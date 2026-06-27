@@ -634,7 +634,7 @@ func main() {
 		e.mu.Unlock()
 
 		if oldMgr != nil {
-			oldMgr.Disconnect()
+			oldMgr.Stop()
 		}
 
 		newMgr, err := tunnel.New(tunnelCfg)
@@ -654,6 +654,7 @@ func main() {
 		}
 
 		newCtx, newCancel := context.WithCancel(ctx)
+		newMgr.Init(newCtx, nil)
 		e.mu.Lock()
 		e.mgr = newMgr
 		e.cancel = newCancel
@@ -875,6 +876,7 @@ func main() {
 		pool.Add(entry)
 
 		connCtx, connCancel := context.WithCancel(bridgeCtx)
+		m.Init(connCtx, nil)
 		entry.mu.Lock()
 		entry.cancel = connCancel
 		entry.mu.Unlock()
