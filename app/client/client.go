@@ -1016,7 +1016,9 @@ func main() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		var primaryReconnecting int32
+		var primaryReconnectFails int32
 		const primaryReconnectBackoff = 2 * time.Second
+		const primaryReconnectMaxBackoff = 10 * time.Second
 		for {
 			select {
 			case <-ctx.Done():
@@ -1097,7 +1099,13 @@ func main() {
 				if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
 					go func() {
 						defer atomic.StoreInt32(&primaryReconnecting, 0)
-						time.Sleep(primaryReconnectBackoff)
+						if fails := atomic.LoadInt32(&primaryReconnectFails); fails > 0 {
+							backoff := time.Duration(fails) * primaryReconnectBackoff
+							if backoff > primaryReconnectMaxBackoff {
+								backoff = primaryReconnectMaxBackoff
+							}
+							time.Sleep(backoff)
+						}
 
 						if globalAgent != nil {
 							if recTr, _ := globalAgent.SelectTransport(); recTr != "" {
@@ -1120,8 +1128,11 @@ func main() {
 						connected := primaryEntry.Status == connStatusConnected && primaryEntry.mgr != nil
 						primaryEntry.mu.Unlock()
 						if connected {
+							atomic.StoreInt32(&primaryReconnectFails, 0)
 							socksMod.SetTunnel(primaryEntry.mgr)
 							stdlog.Printf("Transport watchdog: primary reconnected, SOCKS restored")
+						} else {
+							atomic.AddInt32(&primaryReconnectFails, 1)
 						}
 					}()
 				}
