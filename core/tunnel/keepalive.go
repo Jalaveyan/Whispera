@@ -87,7 +87,7 @@ func (k *keepaliveController) reconnectOnMissed(m *Manager, reason string) {
 	atomic.StoreInt32(&m.missedKAs, 0)
 	if m.GetState() == StateConnected {
 		log.Warn("keepalive: reconnecting after %d missed pings (%s)", missed, reason)
-		go m.Reconnect(m.Context())
+		m.triggerReconnect()
 	}
 }
 
@@ -100,7 +100,7 @@ func (k *keepaliveController) send() {
 		maxSilence := time.Duration(k.missedThreshold(m)) * m.config.KeepaliveInterval
 		if silentDuration > maxSilence && time.Since(m.LastActivity()) > recentActivityWindow {
 			log.Warn("keepalive: reconnecting after %s without a pong", silentDuration)
-			go m.Reconnect(m.Context())
+			m.triggerReconnect()
 			return
 		}
 

@@ -20,7 +20,7 @@ func (m *Manager) updateQualityRTT(rtt time.Duration) {
 
 	threshold := m.config.QualityThresholdRTT
 	if threshold > 0 && time.Duration(newEWMA) > threshold {
-		go m.Reconnect(m.Context())
+		m.triggerReconnect()
 	}
 }
 

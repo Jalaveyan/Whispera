@@ -141,6 +141,7 @@ type Config struct {
 	ReconnectInterval    time.Duration
 	ReconnectMaxDelay    time.Duration
 	MaxReconnectAttempts int
+	DisableAutoReconnect bool
 	ConnectionTimeout    time.Duration
 	EnableRotation       bool
 	RotationInterval     time.Duration
@@ -773,6 +774,14 @@ func (m *Manager) Disconnect() {
 	m.PublishEvent("tunnel.disconnected", nil)
 }
 
+func (m *Manager) triggerReconnect() {
+	if m.config.DisableAutoReconnect {
+		m.Disconnect()
+		return
+	}
+	go m.Reconnect(m.Context())
+}
+
 func (m *Manager) Reconnect(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1073,7 +1082,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 						consecutiveGarbage++
 						if consecutiveGarbage > 20 {
 							log.Error("Too much garbage data (%d packets), triggering reconnect", consecutiveGarbage)
-							go m.Reconnect(m.Context())
+							m.triggerReconnect()
 							return
 						}
 					}
@@ -1225,7 +1234,7 @@ func (m *Manager) handleReadError(mc *managedConn, err error) {
 	if isActive && m.GetState() == StateConnected {
 		log.Warn("active connection read error (%v) — forcing reconnect", err)
 		m.sm.SetError(err)
-		go m.Reconnect(m.Context())
+		m.triggerReconnect()
 	}
 }
 
@@ -1370,7 +1379,7 @@ func (m *Manager) forceReconnectFromStreamFailure(mc *managedConn, reason string
 	if isActive && m.GetState() == StateConnected {
 		log.Warn("stream failure (%s) — forcing reconnect", reason)
 		m.sm.SetError(fmt.Errorf("stream failure: %s", reason))
-		go m.Reconnect(m.Context())
+		m.triggerReconnect()
 	}
 }
 
