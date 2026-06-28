@@ -1,5 +1,7 @@
 # Whispera
 
+<img width="1254" height="1254" alt="image" src="https://github.com/user-attachments/assets/f6d72c9f-4b01-43ec-bbda-edd7c5615b89" />
+
 It is a fast, easy-to-use and easy-to-install censorship-bypassing proxy server disguised as a regular HTTPS connection and powered by built-in neural networks written in Go.
 
 ## Install and Update
