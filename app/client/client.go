@@ -84,6 +84,7 @@ var (
 	weightsURL       = flag.String("weights-url", "", "Server weights URL for warm-start (e.g. https://server:8080/api/ml/weights)")
 	bypassDNS        = flag.String("bypass-dns", "77.88.8.8:53", "DNS server used for bypass resolver (never goes through tunnel)")
 	hwidFlag         = flag.Bool("hwid", true, "Send a persistent per-device ID in the handshake (false = random ID per connection)")
+	forceFingerprint = flag.String("force-fingerprint", "", "Force a specific TLS fingerprint for the main tunnel handshake: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge. Empty = auto/random (default)")
 )
 
 func pickServerAddress(cfg *config.ClientConfig, transport string) string {
@@ -426,6 +427,10 @@ func main() {
 	debug.SetMemoryLimit(200 << 20)
 
 	flag.Parse()
+
+	if *forceFingerprint != "" {
+		protocol.SetForcedFingerprint(*forceFingerprint)
+	}
 
 	if *mlServerURL != "" {
 		neural.SetMLServerURL(*mlServerURL, *mlTokenFlag)
