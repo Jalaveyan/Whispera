@@ -83,6 +83,7 @@ var (
 	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
 	weightsURL       = flag.String("weights-url", "", "Server weights URL for warm-start (e.g. https://server:8080/api/ml/weights)")
 	bypassDNS        = flag.String("bypass-dns", "77.88.8.8:53", "DNS server used for bypass resolver (never goes through tunnel)")
+	hwidFlag         = flag.Bool("hwid", true, "Send a persistent per-device ID in the handshake (false = random ID per connection)")
 )
 
 func pickServerAddress(cfg *config.ClientConfig, transport string) string {
@@ -451,11 +452,15 @@ func main() {
 		Timeout:   10 * time.Second,
 	})
 	hsMod.SetDependencies(cryptoMod, sessMod)
-	if deviceID, devErr := auth.LoadOrCreateDeviceID(); devErr == nil {
-		hsMod.SetDeviceID(deviceID)
-		stdlog.Printf("Device ID: %x", deviceID[:8])
+	if *hwidFlag {
+		if deviceID, devErr := auth.LoadOrCreateDeviceID(); devErr == nil {
+			hsMod.SetDeviceID(deviceID)
+			stdlog.Printf("Device ID: %x", deviceID[:8])
+		} else {
+			stdlog.Printf("WARNING: Could not load/create device ID: %v", devErr)
+		}
 	} else {
-		stdlog.Printf("WARNING: Could not load/create device ID: %v", devErr)
+		stdlog.Printf("HWID disabled: using a random per-connection ID")
 	}
 
 	dnsUpstreamAddr := ""
