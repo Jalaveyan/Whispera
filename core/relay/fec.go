@@ -202,6 +202,9 @@ func (fd *FECDecoder) Forget(blockStartSeq uint32, k, m int) {
 }
 
 func (fd *FECDecoder) Reconstruct(blockStartSeq uint32, k, m int) [][]byte {
+	fd.bufferMutex.RLock()
+	defer fd.bufferMutex.RUnlock()
+
 	shards := make([][]byte, k+m)
 	haveObj := 0
 	maxLen := 0
