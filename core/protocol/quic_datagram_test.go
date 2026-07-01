@@ -122,6 +122,8 @@ func TestRTFECRandomLossAcrossManyBlocks(t *testing.T) {
 
 	recoverable := 0
 	recoveredOK := 0
+	totalPayloads := 0
+	deliveredPayloads := 0
 
 	for b := 0; b < numBlocks; b++ {
 		var allPkts [][]byte
@@ -154,6 +156,8 @@ func TestRTFECRandomLossAcrossManyBlocks(t *testing.T) {
 		receiver.deliverBlock(blockStart, func(p []byte) {
 			delivered = append(delivered, append([]byte{}, p...))
 		})
+		totalPayloads += rtFECK
+		deliveredPayloads += len(delivered)
 
 		if lost <= rtFECM {
 			recoverable++
@@ -176,6 +180,9 @@ func TestRTFECRandomLossAcrossManyBlocks(t *testing.T) {
 	rate := float64(recoveredOK) / float64(recoverable) * 100
 	t.Logf("blocks within FEC tolerance (loss<=%d/%d): %d/%d, correctly recovered: %d (%.1f%%)",
 		rtFECM, blockSize, recoverable, numBlocks, recoveredOK, rate)
+	effectiveLoss := 100 * (1 - float64(deliveredPayloads)/float64(totalPayloads))
+	t.Logf("raw loss=%.0f%%, payloads delivered: %d/%d, effective residual loss after FEC: %.2f%%",
+		lossRate*100, deliveredPayloads, totalPayloads, effectiveLoss)
 
 	if recoveredOK != recoverable {
 		t.Fatalf("expected all %d in-tolerance blocks to recover, got %d (%.1f%%)", recoverable, recoveredOK, rate)
