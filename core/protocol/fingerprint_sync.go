@@ -3,7 +3,6 @@ package protocol
 import (
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -27,7 +26,7 @@ func FetchServerFingerprints(ctx context.Context, cfg *ClientConfig) (int, error
 	helloID, helloSpec, uaID := pickFingerprint()
 	prof := newBrowserProfile(uaID)
 
-	dialFn := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+	dialFn := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		var rawConn net.Conn
 		var err error
 		if cfg.TCPDialer != nil {
@@ -60,7 +59,14 @@ func FetchServerFingerprints(ctx context.Context, cfg *ClientConfig) (int, error
 		return uConn, nil
 	}
 
-	client := &http.Client{Transport: newH2Transport(dialFn), Timeout: 15 * time.Second}
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialTLSContext:     dialFn,
+			ForceAttemptHTTP2:  true,
+			DisableCompression: true,
+		},
+		Timeout: 15 * time.Second,
+	}
 
 	url := fmt.Sprintf("https://%s/video/sync", cfg.ServerAddr)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

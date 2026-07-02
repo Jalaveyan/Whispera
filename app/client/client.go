@@ -250,12 +250,16 @@ func newBypassDNSResolver() *net.Resolver {
 	}
 }
 
-func runFingerprintSync(cfg *config.ClientConfig, secret []byte) {
+func runFingerprintSync(cfg *config.ClientConfig, secret []byte, resolver *net.Resolver) {
 	pCfg := &protocol.ClientConfig{
 		ServerAddr:    cfg.WhisperaAddr,
 		ServerName:    cfg.WhisperaSNI,
 		SharedSecret:  secret,
 		ServerCertPin: cfg.WhisperaCertPin,
+		TCPDialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := &net.Dialer{Timeout: 10 * time.Second, Resolver: resolver}
+			return d.DialContext(ctx, network, addr)
+		},
 	}
 
 	sync := func() {
@@ -520,7 +524,7 @@ func main() {
 	transports := rp.transports
 
 	if len(whisperaSecret) == 32 && cfg.WhisperaAddr != "" {
-		go runFingerprintSync(cfg, whisperaSecret)
+		go runFingerprintSync(cfg, whisperaSecret, bypassDNSResolver)
 	}
 
 	newTunnelMod := func(tr string) *tunnel.Manager {
