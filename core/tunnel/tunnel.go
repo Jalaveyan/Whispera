@@ -1232,7 +1232,7 @@ func (m *Manager) handleReadError(mc *managedConn, err error) {
 	m.connMu.RUnlock()
 
 	if isActive && m.GetState() == StateConnected {
-		log.Warn("active connection read error (%v) — forcing reconnect", err)
+		log.Error("active connection read error (%v) — forcing reconnect", err)
 		m.sm.SetError(err)
 		m.triggerReconnect()
 	}
