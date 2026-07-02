@@ -995,8 +995,8 @@ func main() {
 		stdlog.Printf("DNS now routed through tunnel")
 
 		if *noInternalTun {
-			stdlog.Printf("External TUN mode: Mihomo will handle TUN/routing")
-			stdlog.Printf("SOCKS5 proxy ready for Mihomo at %s", *socksAddr)
+			stdlog.Printf("External TUN mode: external router will handle TUN/routing")
+			stdlog.Printf("SOCKS5 proxy ready at %s", *socksAddr)
 			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
 				proxyServerIP := net.ParseIP(host)
 				proxyPort := 8443
