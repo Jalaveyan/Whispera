@@ -694,6 +694,8 @@ func main() {
 		connStart := time.Now()
 		if err := newMgr.Connect(newCtx); err != nil {
 			stdlog.Printf("restartEntry %s connect failed: %v", e.ID, err)
+			newCancel()
+			newMgr.Stop()
 			e.mu.Lock()
 			e.Status = connStatusFailed
 			e.Error = err.Error()
@@ -1131,7 +1133,6 @@ func main() {
 						stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
 
 						targetCfg := buildBaseCfg(primaryEntry)
-						targetCfg.ConnectionTimeout = 2 * time.Second
 
 						restartEntry(primaryEntry, targetCfg)
 						primaryEntry.mu.Lock()
