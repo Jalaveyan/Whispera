@@ -834,13 +834,12 @@ build_whispera() {
     local ARCH="amd64"
     [[ $(uname -m) == "aarch64" ]] && ARCH="arm64"
 
-    log_info "Checking for latest release on GitHub..."
-    local RELEASE_JSON=$(curl -s https://api.github.com/repos/Jalaveyan/Whispera/releases/latest)
-    local DOWNLOAD_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "whispera-server-linux-$ARCH.tar.gz" | head -n 1 | cut -d '"' -f 4)
+    log_info "Fetching prebuilt server binary from GitHub Release..."
+    local DOWNLOAD_URL="https://github.com/Jalaveyan/Whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
 
     if [[ -n "$DOWNLOAD_URL" ]]; then
         log_info "Downloading binary from $DOWNLOAD_URL..."
-        if curl -L -o whispera-server.tar.gz "$DOWNLOAD_URL"; then
+        if curl -fL --retry 3 --retry-delay 2 -o whispera-server.tar.gz "$DOWNLOAD_URL"; then
             if tar -xzf whispera-server.tar.gz; then
                 rm -f whispera-server.tar.gz
                 
