@@ -859,8 +859,8 @@ build_whispera() {
     fi
 
     log_info "Building from source..."
-    
-    install_obfuscation_tools
+
+    [[ -z "${WHISPERA_DOMAIN:-}" ]] && install_obfuscation_tools
     export CGO_ENABLED=0
     
     rm -f whispera-server
