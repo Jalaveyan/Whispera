@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sync"
 	"time"
+	"whispera/common/fsown"
 )
 
 type ClonedCertInfo struct {
@@ -114,6 +115,9 @@ func CloneCertToFiles(domain, outCert, outKey string) (*ClonedCertInfo, error) {
 	pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes})
 	keyOut.Close()
 
+	fsown.MatchParent(outCert)
+	fsown.MatchParent(outKey)
+
 	return &ClonedCertInfo{
 		Subject:   template.Subject.String(),
 		DNSNames:  template.DNSNames,
@@ -132,8 +136,9 @@ func SNICertPaths(decoyCertDir, sni string) (certPath, keyPath string, ok bool) 
 }
 
 var (
-	sniCertCacheMu sync.RWMutex
-	sniCertCache   = map[string]*tls.Certificate{}
+	sniCertCacheMu    sync.RWMutex
+	sniCertCache      = map[string]*tls.Certificate{}
+	sniCertLoadFailed sync.Map
 )
 
 func loadSNICert(decoyCertDir, sni string) (*tls.Certificate, bool) {
@@ -151,6 +156,13 @@ func loadSNICert(decoyCertDir, sni string) (*tls.Certificate, bool) {
 
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
+		if _, statErr := os.Stat(certPath); statErr == nil {
+			if _, seen := sniCertLoadFailed.LoadOrStore(sni, true); !seen {
+				traceLog.Errorw("decoy_sni_cert_load_failed", "sni", sni,
+					"hint", "clone exists but unreadable (check ownership: must match the service user); serving static cert -> client cert-pin mismatch",
+					"err", err.Error())
+			}
+		}
 		return nil, false
 	}
 

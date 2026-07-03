@@ -192,6 +192,10 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	}
 
 	camoKeys := camoKeysFunc(cfg)
+	if len(camoKeys()) == 0 {
+		traceLog.Errorw("camo_gate_no_keys",
+			"hint", "no registered users with a 32-byte PSK; every TLS connection is relayed to the decoy — register a user and check /etc/whispera/users.json is readable by the service user")
+	}
 	camoAddr := camoDecoyAddr(cfg.DecoyOrigin)
 
 	var h3srv *http3.Server

@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"whispera/common/fsown"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -96,12 +97,17 @@ func saveUsers() {
 	}
 	if err := os.WriteFile(userDataFile, data, 0600); err != nil {
 		log.Error("failed to save users: %v", err)
+		return
 	}
+	fsown.MatchParent(userDataFile)
 }
 
 func loadUsers() {
 	data, err := os.ReadFile(userDataFile)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Error("cannot read %s (users will be empty, all tunnels rejected): %v", userDataFile, err)
+		}
 		return
 	}
 	var p userPersist

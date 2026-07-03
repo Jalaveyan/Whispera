@@ -442,6 +442,7 @@ if [[ -n "$GO_CHANGED" ]]; then
     go build -trimpath -ldflags "-w -s" -o whispera-server ./app/server 2>/dev/null
     if [[ -f whispera-server ]]; then
         cp whispera-server "$BIN_PATH/whispera"
+        chown -R whispera:whispera /etc/whispera 2>/dev/null || true
         systemctl restart whispera
         echo "whispera-server rebuilt and restarted"
     else

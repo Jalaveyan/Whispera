@@ -607,6 +607,7 @@ if curl -fL --retry 3 --retry-delay 2 -o "$TMP_DIR/whispera.tar.gz" "$DIRECT_URL
         systemctl stop whispera 2>/dev/null || true
         cp "$TMP_DIR/whispera-server" /usr/local/bin/whispera
         chmod +x /usr/local/bin/whispera
+        chown -R whispera:whispera "$CONF_PATH" 2>/dev/null || true
         systemctl start whispera
         echo "Updated successfully"
     else
