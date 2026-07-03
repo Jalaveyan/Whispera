@@ -986,10 +986,22 @@ generate_config() {
     local DECOY_ORIGIN="${DECOY_FIRST_SITE%%/}"
     log_info "Whispera decoy origin: $DECOY_ORIGIN (fallback target for unauthenticated probes; per-key TLS certs are cloned by 'whispera create-key -sni <domain>')"
 
+    local WHISPERA_PUBLIC_URL=""
+    local WHISPERA_DOMAIN_CFG=""
+    local WHISPERA_BACKEND_LINE=""
+    if [[ -n "${WHISPERA_DOMAIN:-}" ]]; then
+        WHISPERA_PUBLIC_URL="https://$WHISPERA_DOMAIN"
+        WHISPERA_DOMAIN_CFG="$WHISPERA_DOMAIN"
+        WHISPERA_BACKEND_LINE='  backend_h2c_addr: "127.0.0.1:8444"'
+        DECOY_ORIGIN="http://127.0.0.1:8081"
+        log_info "Domain mode ($WHISPERA_DOMAIN): whispera serves h2c on 127.0.0.1:8444 behind Caddy; keys use SNI/addr $WHISPERA_DOMAIN:443; decoy served locally by Caddy"
+    fi
+
     cat > "$CONF_PATH/config.yaml" <<EOF
 server:
   name: whispera-server
   listen_addr: "0.0.0.0:443"
+  public_url: "$WHISPERA_PUBLIC_URL"
   private_key: "$PRIVATE_KEY"
   mtu: 1420
   workers: 8
@@ -1005,9 +1017,10 @@ transport:
 whispera:
   enabled: true
   listen_addr: ":443"
+$WHISPERA_BACKEND_LINE
   tls_cert: ""
   tls_key: ""
-  domain: ""
+  domain: "$WHISPERA_DOMAIN_CFG"
   acme_dir: "/var/lib/whispera/acme"
   decoy_origin: "$DECOY_ORIGIN"
 
@@ -1179,6 +1192,75 @@ NGINX
         log_success "Nginx reverse proxy configured"
     else
         log_warn "Nginx config test failed — check /etc/nginx/conf.d/whispera-ui.conf"
+    fi
+}
+
+setup_caddy_front() {
+    [[ -z "${WHISPERA_DOMAIN:-}" ]] && return 0
+    log_info "Domain mode: configuring Caddy TLS front for $WHISPERA_DOMAIN"
+
+    local SERVER_IP RESOLVED
+    SERVER_IP=$(get_public_ip)
+    RESOLVED=$(getent hosts "$WHISPERA_DOMAIN" 2>/dev/null | awk '{print $1}' | head -n1)
+    if [[ -n "$RESOLVED" && -n "$SERVER_IP" && "$RESOLVED" != "$SERVER_IP" ]]; then
+        log_warn "DNS: $WHISPERA_DOMAIN resolves to $RESOLVED but this server is $SERVER_IP — Caddy cert issuance will fail until the A-record points here"
+    elif [[ -z "$RESOLVED" ]]; then
+        log_warn "DNS: $WHISPERA_DOMAIN does not resolve yet — set the A-record to $SERVER_IP or Caddy cannot obtain a certificate"
+    fi
+
+    if ! command -v caddy &>/dev/null; then
+        log_info "Installing Caddy..."
+        if command -v apt-get &>/dev/null; then
+            apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg >/dev/null 2>&1
+            curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+            curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null 2>&1
+            apt-get update >/dev/null 2>&1 && apt-get install -y caddy >/dev/null 2>&1
+        elif command -v dnf &>/dev/null; then
+            dnf install -y 'dnf-command(copr)' >/dev/null 2>&1
+            dnf copr enable -y @caddy/caddy >/dev/null 2>&1
+            dnf install -y caddy >/dev/null 2>&1
+        else
+            log_warn "Auto-install of Caddy unsupported on this distro — install caddy manually, then re-run"
+            return 1
+        fi
+    fi
+    if ! command -v caddy &>/dev/null; then
+        log_warn "Caddy install failed — domain mode NOT active; whispera h2c backend on 127.0.0.1:8444 has no public TLS front"
+        return 1
+    fi
+
+    mkdir -p /var/www/whispera-decoy
+    setup_decoy_refresh
+    /usr/local/bin/whispera-refresh-decoy.sh >/dev/null 2>&1 || true
+
+    mkdir -p /etc/caddy
+    cat > /etc/caddy/Caddyfile <<CADDY
+{
+    auto_https disable_redirects
+}
+
+$WHISPERA_DOMAIN {
+    reverse_proxy 127.0.0.1:8444 {
+        transport http {
+            versions h2c
+        }
+    }
+}
+
+http://127.0.0.1:8081 {
+    root * /var/www/whispera-decoy
+    file_server
+}
+CADDY
+
+    fw_allow_port 443 tcp
+    systemctl enable caddy >/dev/null 2>&1
+    if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+        systemctl restart caddy
+        log_success "Caddy front configured for $WHISPERA_DOMAIN (auto-TLS via Let's Encrypt, TLS-ALPN-01 on 443)"
+        log_info "Issue client keys with SNI/addr = $WHISPERA_DOMAIN, e.g.: whispera create-key -sni $WHISPERA_DOMAIN"
+    else
+        log_warn "Caddyfile validation failed — check /etc/caddy/Caddyfile"
     fi
 }
 
@@ -1519,8 +1601,8 @@ main() {
     install_go
     clone_or_update_repo
     build_whispera
-    install_panel
-    
+    [[ -z "${WHISPERA_DOMAIN:-}" ]] && install_panel
+
     if [[ ! -f "$CONF_PATH/config.yaml" ]]; then
         generate_keys
         generate_config
@@ -1532,7 +1614,8 @@ main() {
     setup_network
     setup_firewall
     setup_systemd
-    setup_nginx_proxy
+    [[ -z "${WHISPERA_DOMAIN:-}" ]] && setup_nginx_proxy
+    setup_caddy_front
 
     _enable_whispera_in_config
     refresh_config

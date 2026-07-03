@@ -752,6 +752,124 @@ show_extras_menu() {
 }
 
 
+migrate_whispera_to_backend() {
+    [[ -z "${WHISPERA_DOMAIN:-}" ]] && return 0
+    [[ -f "$CONF_PATH/config.yaml" ]] || return 0
+    grep -q 'backend_h2c_addr:' "$CONF_PATH/config.yaml" && return 0
+    command -v python3 >/dev/null 2>&1 || { log_warn "python3 missing — migrate whispera block manually for domain mode"; return 0; }
+
+    cp -a "$CONF_PATH/config.yaml" "$CONF_PATH/config.yaml.premigrate.$(date +%s)"
+    log_info "Domain mode: migrating whispera → h2c backend (127.0.0.1:8444), SNI/addr $WHISPERA_DOMAIN"
+    if python3 - "$CONF_PATH/config.yaml" "$WHISPERA_DOMAIN" <<'PY'
+import sys, re
+p, domain = sys.argv[1], sys.argv[2]
+lines = open(p, encoding='utf-8').read().split('\n')
+has_backend = any('backend_h2c_addr:' in l for l in lines)
+out, section, server_line, pub_done, listen_seen = [], None, None, False, False
+for ln in lines:
+    m = re.match(r'^(\S[^:]*):\s*$', ln)
+    if m:
+        section = m.group(1)
+        out.append(ln)
+        if section == 'server':
+            server_line = len(out) - 1
+        continue
+    if section == 'whispera' and re.match(r'^\s+domain:', ln):
+        out.append('  domain: "%s"' % domain); continue
+    if section == 'whispera' and re.match(r'^\s+decoy_origin:', ln):
+        out.append('  decoy_origin: "http://127.0.0.1:8081"'); continue
+    if section == 'whispera' and re.match(r'^\s+listen_addr:', ln):
+        out.append(ln); listen_seen = True
+        if not has_backend:
+            out.append('  backend_h2c_addr: "127.0.0.1:8444"')
+        continue
+    if section == 'server' and re.match(r'^\s+public_url:', ln):
+        out.append('  public_url: "https://%s"' % domain); pub_done = True; continue
+    out.append(ln)
+if not pub_done and server_line is not None:
+    out.insert(server_line + 1, '  public_url: "https://%s"' % domain)
+if listen_seen:
+    open(p, 'w', encoding='utf-8').write('\n'.join(out))
+sys.exit(0 if listen_seen else 3)
+PY
+    then
+        load_integrity_key
+        "$BIN_PATH/whispera" update-checksum "$CONF_PATH/config.yaml" >/dev/null 2>&1 && log_info "checksum updated (post-migrate)" || log_warn "post-migrate checksum failed"
+        log_success "config.yaml migrated to h2c backend mode"
+    else
+        log_warn "Auto-migration didn't find whispera listen_addr — edit config manually (listen_addr: \"\" + backend_h2c_addr: \"127.0.0.1:8444\")"
+    fi
+}
+
+setup_caddy_front() {
+    [[ -z "${WHISPERA_DOMAIN:-}" ]] && return 0
+    log_info "Domain mode: configuring Caddy TLS front for $WHISPERA_DOMAIN"
+
+    local SERVER_IP RESOLVED
+    SERVER_IP=$(get_public_ip)
+    RESOLVED=$(getent hosts "$WHISPERA_DOMAIN" 2>/dev/null | awk '{print $1}' | head -n1)
+    if [[ -n "$RESOLVED" && -n "$SERVER_IP" && "$RESOLVED" != "$SERVER_IP" ]]; then
+        log_warn "DNS: $WHISPERA_DOMAIN resolves to $RESOLVED but this server is $SERVER_IP — Caddy cert issuance will fail until the A-record points here"
+    elif [[ -z "$RESOLVED" ]]; then
+        log_warn "DNS: $WHISPERA_DOMAIN does not resolve yet — set the A-record to $SERVER_IP first"
+    fi
+
+    if ! command -v caddy &>/dev/null; then
+        log_info "Installing Caddy..."
+        if command -v apt-get &>/dev/null; then
+            apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg >/dev/null 2>&1
+            curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+            curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null 2>&1
+            apt-get update >/dev/null 2>&1 && apt-get install -y caddy >/dev/null 2>&1
+        elif command -v dnf &>/dev/null; then
+            dnf install -y 'dnf-command(copr)' >/dev/null 2>&1
+            dnf copr enable -y @caddy/caddy >/dev/null 2>&1
+            dnf install -y caddy >/dev/null 2>&1
+        else
+            log_warn "Auto-install of Caddy unsupported on this distro — install caddy manually, then re-run"
+            return 1
+        fi
+    fi
+    if ! command -v caddy &>/dev/null; then
+        log_warn "Caddy install failed — domain mode NOT active; whispera h2c backend on 127.0.0.1:8444 has no public TLS front"
+        return 1
+    fi
+
+    mkdir -p /var/www/whispera-decoy
+    setup_decoy_refresh
+    /usr/local/bin/whispera-refresh-decoy.sh >/dev/null 2>&1 || true
+
+    mkdir -p /etc/caddy
+    cat > /etc/caddy/Caddyfile <<CADDY
+{
+    auto_https disable_redirects
+}
+
+$WHISPERA_DOMAIN {
+    reverse_proxy 127.0.0.1:8444 {
+        transport http {
+            versions h2c
+        }
+    }
+}
+
+http://127.0.0.1:8081 {
+    root * /var/www/whispera-decoy
+    file_server
+}
+CADDY
+
+    command -v ufw >/dev/null 2>&1 && ufw allow 443/tcp >/dev/null 2>&1 || true
+    systemctl enable caddy >/dev/null 2>&1
+    if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+        systemctl restart caddy
+        log_success "Caddy front configured for $WHISPERA_DOMAIN (auto-TLS via Let's Encrypt, TLS-ALPN-01 on 443)"
+        log_info "Issue client keys with SNI/addr = $WHISPERA_DOMAIN, e.g.: whispera create-key -sni $WHISPERA_DOMAIN"
+    else
+        log_warn "Caddyfile validation failed — check /etc/caddy/Caddyfile"
+    fi
+}
+
 do_update() {
     trap 'systemctl is-active --quiet whispera 2>/dev/null || { systemctl daemon-reload 2>/dev/null; systemctl start whispera 2>/dev/null || true; }' EXIT
 
@@ -988,7 +1106,7 @@ do_update() {
         "$BIN_PATH/whispera" update-checksum "$CONF_PATH/config.yaml" && log_info "Config checksum updated" || log_warn "Config checksum update failed (non-fatal)"
     fi
 
-    setup_nginx_proxy
+    [[ -n "${WHISPERA_DOMAIN:-}" ]] || setup_nginx_proxy
     log_info "Starting service..."
     systemctl daemon-reload
     if ! systemctl start whispera; then
@@ -1002,6 +1120,21 @@ do_update() {
         log_err "Whispera service started but is not active after 3s!"
         journalctl -u whispera -n 20 --no-pager 2>/dev/null || true
         restore
+    fi
+
+    if [[ -n "${WHISPERA_DOMAIN:-}" ]]; then
+        migrate_whispera_to_backend
+        if grep -q 'backend_h2c_addr:' "$CONF_PATH/config.yaml" 2>/dev/null; then
+            systemctl restart whispera && sleep 2
+            if ! systemctl is-active --quiet whispera; then
+                log_err "whispera failed to start in h2c backend mode — check config"
+                journalctl -u whispera -n 20 --no-pager 2>/dev/null || true
+            fi
+            setup_caddy_front
+            if systemctl is-active --quiet caddy 2>/dev/null; then
+                systemctl disable --now nginx >/dev/null 2>&1 && log_info "nginx stopped (decoy now served by Caddy on :8081)" || true
+            fi
+        fi
     fi
 
     PUBLIC_KEY=$(cat "$CONF_PATH/server.pub" 2>/dev/null)
