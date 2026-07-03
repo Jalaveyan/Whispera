@@ -98,6 +98,10 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 				rawConn.Close()
 				return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
 			}
+			if err := uConn.BuildHandshakeState(); err != nil {
+				rawConn.Close()
+				return nil, fmt.Errorf("whispera: build hello: %w", err)
+			}
 		} else {
 			uConn = utls.UClient(rawConn, uCfg, helloID)
 			if err := uConn.BuildHandshakeState(); err != nil {
