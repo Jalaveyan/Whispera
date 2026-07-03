@@ -303,8 +303,9 @@ func decoyIPRateAllow(remote string) bool {
 
 func (l *camouflageListener) handle(conn net.Conn) {
 	remote := conn.RemoteAddr().String()
+	keys := l.keysFn()
 	ph, err := peekClientHello(conn)
-	if err == nil && camoMarkerMatches(l.keysFn(), ph.random, ph.keyShare) {
+	if err == nil && camoMarkerMatches(keys, ph.random, ph.keyShare) {
 		traceLog.Infow("camo_authenticated", "remote", remote, "sni", ph.sni)
 		pc := &prefixConn{Conn: conn, prefix: ph.raw}
 		select {
@@ -320,7 +321,7 @@ func (l *camouflageListener) handle(conn net.Conn) {
 		return
 	}
 	if err == nil {
-		if drift, found := probeCamoMarkerDrift(l.keysFn(), ph.random, ph.keyShare); found {
+		if drift, found := probeCamoMarkerDrift(keys, ph.random, ph.keyShare); found {
 			traceLog.Warnw("camo_marker_drift_suspected", "remote", remote, "sni", ph.sni,
 				"drift_windows", drift, "drift_seconds", drift*camoWindowSeconds)
 		}
@@ -332,7 +333,8 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	}
 
 	target := l.decoyAddr(ph.sni)
-	traceLog.Infow("camo_relay_decoy", "remote", remote, "sni", ph.sni, "hello_err", err, "target", target)
+	traceLog.Infow("camo_relay_decoy", "remote", remote, "sni", ph.sni, "hello_err", err,
+		"camo_keys", len(keys), "has_keyshare", len(ph.keyShare) > 0, "target", target)
 	relayToOrigin(conn, ph.raw, target)
 }
 
