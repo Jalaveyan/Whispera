@@ -162,11 +162,14 @@ func RunCreateKeyCmd() {
 	yadiskSession := createKeyCmd.String("yadisk-session", "", "Yandex.Disk session/folder id (only with -transport yadisk; auto-generated if empty)")
 	neuralFlag := createKeyCmd.String("neural", "enable", "Use neural-network traffic shaping (RL agents + GAN padding) for this user (enable/disable)")
 	sniFlag := createKeyCmd.String("sni", "", "Clone this real domain's TLS certificate and present it via SNI for this key (only with -transport whispera; empty = auto-picked from a default pool, or the server's ACME domain if configured)")
+	selfCertFlag := createKeyCmd.String("self-cert", "", "Clone a self-signed cert for the SNI and pin it in the key (enable/disable; default: auto from server config)")
+	ownDomainFlag := createKeyCmd.String("own-domain", "", "Key targets a Caddy + real-domain front: SNI/addr = the domain, no cert pin (enable/disable; default: auto from server config)")
+	domainFlag := createKeyCmd.String("domain", "", "Real domain for -own-domain mode (Caddy front); addr and SNI of the key are set to this. Empty = whispera.domain from config")
 
 	createKeyCmd.Parse(os.Args[2:])
 
 	if *user == "" || *port == 0 {
-		fmt.Fprintln(os.Stderr, "whispera create-key -user <name> -port <port> [-config <path>] [-traffic-limit <bytes>] [-quic enable|disable] [-quic-port <port>] [-transport whispera|grpc|yadisk] [-yadisk-token <token>] [-yadisk-session <id>] [-neural enable|disable] [-sni <real-domain>]")
+		fmt.Fprintln(os.Stderr, "whispera create-key -user <name> -port <port> [-config <path>] [-traffic-limit <bytes>] [-quic enable|disable] [-quic-port <port>] [-transport whispera|grpc|yadisk] [-yadisk-token <token>] [-yadisk-session <id>] [-neural enable|disable] [-sni <real-domain>] [-self-cert enable|disable] [-own-domain enable|disable]")
 		os.Exit(1)
 	}
 	disableNeural := strings.EqualFold(*neuralFlag, "disable")
@@ -407,44 +410,80 @@ func RunCreateKeyCmd() {
 			}
 		}
 
-		whisperaSNI := sc.Whispera.Domain
-		sniToClone := *sniFlag
-		if sniToClone == "" && whisperaSNI == "" {
-			sniToClone = protocol.DefaultSNIFor(*user)
+		domainMode := sc.Whispera.BackendH2CAddr != ""
+		switch strings.ToLower(*ownDomainFlag) {
+		case "enable":
+			domainMode = true
+		case "disable":
+			domainMode = false
 		}
-		servedCertPath := sc.Whispera.TLSCert
-		if sniToClone != "" {
-			certPath, keyPath, ok := protocol.SNICertPaths(decoyCertDir, sniToClone)
+		useSelfCert := !domainMode
+		switch strings.ToLower(*selfCertFlag) {
+		case "enable":
+			useSelfCert = true
+		case "disable":
+			useSelfCert = false
+		}
+
+		ownDomain := *domainFlag
+		if ownDomain == "" {
+			ownDomain = sc.Whispera.Domain
+		}
+		if domainMode && ownDomain == "" {
+			fmt.Fprintln(os.Stderr, "Error: domain/Caddy mode needs a domain — pass -domain <real-domain> (or set whispera.domain in config)")
+			os.Exit(1)
+		}
+
+		addrHost := serverHost
+		var whisperaSNI string
+		if domainMode {
+			whisperaSNI = ownDomain
+			addrHost = ownDomain
+			serverAddr = fmt.Sprintf("%s:%s", ownDomain, chmPortStr)
+		} else {
+			whisperaSNI = *sniFlag
+			if whisperaSNI == "" {
+				whisperaSNI = sc.Whispera.Domain
+			}
+			if whisperaSNI == "" {
+				whisperaSNI = protocol.DefaultSNIFor(*user)
+			}
+		}
+
+		servedCertPath := ""
+		if useSelfCert && whisperaSNI != "" {
+			servedCertPath = sc.Whispera.TLSCert
+			certPath, keyPath, ok := protocol.SNICertPaths(decoyCertDir, whisperaSNI)
 			if !ok {
-				fmt.Fprintf(os.Stderr, "Warning: SNI %q is not a valid hostname — falling back to the server's default cert\n", sniToClone)
+				fmt.Fprintf(os.Stderr, "Warning: SNI %q is not a valid hostname — falling back to the server's default cert\n", whisperaSNI)
 			} else {
 				os.MkdirAll(decoyCertDir, 0755)
-				info, err := protocol.CloneCertToFiles(sniToClone, certPath, keyPath)
+				info, err := protocol.CloneCertToFiles(whisperaSNI, certPath, keyPath)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to clone certificate for SNI %q: %v — falling back to the server's default cert\n", sniToClone, err)
+					fmt.Fprintf(os.Stderr, "Warning: failed to clone certificate for SNI %q: %v — falling back to the server's default cert\n", whisperaSNI, err)
 				} else {
-					whisperaSNI = sniToClone
 					servedCertPath = certPath
 					fmt.Printf("Cloned TLS certificate for SNI %s (subject=%s, valid %s -> %s)\n",
-						sniToClone, info.Subject, info.NotBefore.Format(time.RFC3339), info.NotAfter.Format(time.RFC3339))
+						whisperaSNI, info.Subject, info.NotBefore.Format(time.RFC3339), info.NotAfter.Format(time.RFC3339))
 				}
 			}
 		}
 
 		whisperaCertPin := ""
-		if servedCertPath != "" {
+		if useSelfCert && servedCertPath != "" {
 			pin, pinErr := apiserver.ComputeWhisperaCertPin(servedCertPath)
 			if pinErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not compute whispera cert pin: %v (client will not pin the server cert — vulnerable to MITM)\n", pinErr)
 			} else {
 				whisperaCertPin = pin
 			}
-		} else {
-			fmt.Fprintln(os.Stderr, "Warning: no static cert file to pin (pure ACME mode) — client will not pin the server cert and is vulnerable to MITM")
+		}
+		if domainMode {
+			fmt.Printf("Domain/Caddy mode: key SNI/addr = %s, no cert pin (real cert expected on the front)\n", whisperaSNI)
 		}
 
 		whisperaOpts = apiserver.WhisperaKeyOptions{
-			Addr:     fmt.Sprintf("%s:%s", serverHost, chmPortStr),
+			Addr:     fmt.Sprintf("%s:%s", addrHost, chmPortStr),
 			SNI:      whisperaSNI,
 			QUICAddr: whisperaQUICAddr,
 			CertPin:  whisperaCertPin,
