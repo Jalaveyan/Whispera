@@ -122,7 +122,7 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		tlsCfg = &tls.Config{
 			Certificates:     []tls.Certificate{cert},
 			NextProtos:       []string{"h2", "http/1.1"},
-			MinVersion:       tls.VersionTLS12,
+			MinVersion:       tls.VersionTLS13,
 			CipherSuites:     cdnCipherSuites,
 			CurvePreferences: cdnCurves,
 			GetConfigForClient: func(hi *tls.ClientHelloInfo) (*tls.Config, error) {

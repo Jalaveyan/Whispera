@@ -76,7 +76,31 @@ func cloneCertTemplate(real *x509.Certificate) (*x509.Certificate, error) {
 	}, nil
 }
 
+func existingValidClone(certPath, keyPath string) (*ClonedCertInfo, bool) {
+	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil || len(pair.Certificate) == 0 {
+		return nil, false
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil || leaf.PublicKeyAlgorithm != x509.ECDSA {
+		return nil, false
+	}
+	if time.Now().After(leaf.NotAfter.Add(-24 * time.Hour)) {
+		return nil, false
+	}
+	return &ClonedCertInfo{
+		Subject:   leaf.Subject.String(),
+		DNSNames:  leaf.DNSNames,
+		NotBefore: leaf.NotBefore,
+		NotAfter:  leaf.NotAfter,
+	}, true
+}
+
 func CloneCertToFiles(domain, outCert, outKey string) (*ClonedCertInfo, error) {
+	if info, ok := existingValidClone(outCert, outKey); ok {
+		return info, nil
+	}
+
 	real, err := fetchRealCert(domain)
 	if err != nil {
 		return nil, fmt.Errorf("fetch real certificate from %s: %w", domain, err)
