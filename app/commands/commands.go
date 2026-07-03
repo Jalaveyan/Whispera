@@ -146,6 +146,7 @@ func RunDeleteKeyCmd() {
 		os.Exit(1)
 	}
 	fmt.Printf("Deleted key/user %q. Restart to drop any active session: systemctl restart whispera\n", *user)
+	os.Exit(0)
 }
 
 func RunCreateKeyCmd() {
