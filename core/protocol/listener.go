@@ -55,6 +55,43 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		}
 	}()
 
+	if cfg.BackendH2CAddr != "" {
+		backendLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.BackendH2CAddr)
+		if err != nil {
+			return fmt.Errorf("whispera: backend h2c listen: %w", err)
+		}
+		defer backendLn.Close()
+		go func() {
+			<-ctx.Done()
+			backendLn.Close()
+		}()
+
+		h2s := &http2.Server{
+			MaxUploadBufferPerConnection: 1 << 28,
+			MaxUploadBufferPerStream:     1 << 26,
+		}
+		opts := &http2.ServeConnOpts{
+			Handler:    mux,
+			BaseConfig: &http.Server{ErrorLog: stdlog.New(serverErrLogWriter{}, "", 0)},
+		}
+		for {
+			conn, err := backendLn.Accept()
+			if err != nil {
+				select {
+				case <-ctx.Done():
+					return nil
+				default:
+					continue
+				}
+			}
+			go func(c net.Conn) {
+				traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", "active")
+				h2s.ServeConn(c, opts)
+				traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", "closed")
+			}(conn)
+		}
+	}
+
 	listenAddr := cfg.ListenAddr
 	if listenAddr == "" {
 		listenAddr = ":443"

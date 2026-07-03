@@ -176,6 +176,7 @@ type SniffingConfig struct {
 type WhisperaConfig struct {
 	Enabled        bool   `yaml:"enabled" json:"enabled"`
 	ListenAddr     string `yaml:"listen_addr" json:"listen_addr"`
+	BackendH2CAddr string `yaml:"backend_h2c_addr" json:"backend_h2c_addr"`
 	TLSCert        string `yaml:"tls_cert" json:"tls_cert"`
 	TLSKey         string `yaml:"tls_key" json:"tls_key"`
 	Domain         string `yaml:"domain" json:"domain"`

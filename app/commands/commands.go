@@ -123,6 +123,31 @@ func RunCreateAdminCmd() {
 	os.Exit(0)
 }
 
+func RunDeleteKeyCmd() {
+	deleteKeyCmd := flag.NewFlagSet("delete-key", flag.ExitOnError)
+	user := deleteKeyCmd.String("user", "", "User identifier to delete")
+	deleteKeyCmd.Parse(os.Args[2:])
+
+	if *user == "" && deleteKeyCmd.NArg() > 0 {
+		*user = deleteKeyCmd.Arg(0)
+	}
+	if *user == "" {
+		fmt.Fprintln(os.Stderr, "whispera delete-key <user>   (or: whispera delete-key -user <name>)")
+		os.Exit(1)
+	}
+
+	deleted, err := apiserver.CLIDeleteUser(*user)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to delete key for %q: %v\n", *user, err)
+		os.Exit(1)
+	}
+	if !deleted {
+		fmt.Fprintf(os.Stderr, "No key found for user %q\n", *user)
+		os.Exit(1)
+	}
+	fmt.Printf("Deleted key/user %q. Restart to drop any active session: systemctl restart whispera\n", *user)
+}
+
 func RunCreateKeyCmd() {
 	createKeyCmd := flag.NewFlagSet("create-key", flag.ExitOnError)
 	user := createKeyCmd.String("user", "", "User identifier (used as the whispera auth username)")

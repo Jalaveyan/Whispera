@@ -26,6 +26,7 @@ type ClientConfig struct {
 type ServerConfig struct {
 	ListenAddr       string
 	ExtraListenAddrs []string
+	BackendH2CAddr   string
 	TLSCert          string
 	TLSKey           string
 	Domain           string

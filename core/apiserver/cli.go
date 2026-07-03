@@ -33,6 +33,28 @@ func ComputeWhisperaCertPin(certPath string) (string, error) {
 	return base64.StdEncoding.EncodeToString(sum[:]), nil
 }
 
+func CLIDeleteUser(username string) (bool, error) {
+	loadUsers()
+
+	userStoreMu.Lock()
+	foundID := -1
+	for id, u := range userStore {
+		if u.Username == username {
+			foundID = id
+			break
+		}
+	}
+	if foundID == -1 {
+		userStoreMu.Unlock()
+		return false, nil
+	}
+	delete(userStore, foundID)
+	userStoreMu.Unlock()
+
+	saveUsers()
+	return true, nil
+}
+
 func CLIUpsertUser(username string, trafficLimit int64, disableNeural bool) (privateKeyB64, publicKeyB64 string, err error) {
 	loadUsers()
 

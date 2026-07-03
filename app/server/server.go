@@ -284,6 +284,8 @@ func main() {
 			commands.RunCreateAdminCmd()
 		case "create-key":
 			commands.RunCreateKeyCmd()
+		case "delete-key":
+			commands.RunDeleteKeyCmd()
 		case "gen-decoy-cert":
 			commands.RunGenDecoyCertCmd()
 		case "generate-sub":
@@ -810,13 +812,14 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 				SegShrink: a.SegShrink * lambda,
 			}
 		},
-		ListenAddr:   sc.Whispera.ListenAddr,
-		TLSCert:      sc.Whispera.TLSCert,
-		TLSKey:       sc.Whispera.TLSKey,
-		Domain:       sc.Whispera.Domain,
-		DecoyCertDir: whisperaDecoyCertDir,
-		ACMEDir:      sc.Whispera.ACMEDir,
-		DecoyOrigin:  sc.Whispera.DecoyOrigin,
+		ListenAddr:     sc.Whispera.ListenAddr,
+		BackendH2CAddr: sc.Whispera.BackendH2CAddr,
+		TLSCert:        sc.Whispera.TLSCert,
+		TLSKey:         sc.Whispera.TLSKey,
+		Domain:         sc.Whispera.Domain,
+		DecoyCertDir:   whisperaDecoyCertDir,
+		ACMEDir:        sc.Whispera.ACMEDir,
+		DecoyOrigin:    sc.Whispera.DecoyOrigin,
 		GetUsers: func() []protocol2.UserEntry {
 			registered := apiserver.GetRegisteredUsers()
 			entries := make([]protocol2.UserEntry, 0, len(registered))
@@ -1066,4 +1069,3 @@ func initYaDisk(m *lifecycle.Manager, sc *config.ServerConfig) error {
 	}()
 	return nil
 }
-
