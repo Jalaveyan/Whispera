@@ -10,6 +10,7 @@ import (
 	"math"
 	mrand "math/rand"
 	"net"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -246,14 +247,15 @@ type managedConn struct {
 	idleSamples      atomic.Int64
 }
 
-// The whispera connection pool mimics a browser's per-host connections: a warm
-// baseline is opened up front so multiplexed flows spread across sockets the
-// instant traffic starts (no reactive ramp), growing to Chrome's 6-per-host
-// limit under heavier load and shrinking back to the baseline when idle.
-const (
-	whisperaPoolWarm = 4
-	whisperaPoolMax  = 6
-)
+const whisperaPoolMin = 1
+
+func whisperaPoolCap() int {
+	n := runtime.GOMAXPROCS(0)
+	if n < whisperaPoolMin {
+		return whisperaPoolMin
+	}
+	return n
+}
 
 const (
 	streamShardCount = 16
@@ -557,7 +559,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	targetPoolSize := 2
 	if m.config.EnableWhispera {
-		targetPoolSize = whisperaPoolWarm
+		targetPoolSize = whisperaPoolMin
 	}
 	var connectedPool []*managedConn
 	var poolMu sync.Mutex
@@ -759,10 +761,6 @@ func (m *Manager) removeDeadConn(mc *managedConn) {
 	m.connMu.Unlock()
 }
 
-// maybeGrowPool adds one more authenticated connection to the whispera pool
-// (up to whisperaPoolMax) when demand warrants it, so multiplexed flows spread
-// across sockets instead of serialising through one. Non-blocking and
-// single-flight; the caller's stream still uses an existing connection.
 func (m *Manager) maybeGrowPool(target int) {
 	if !m.config.EnableWhispera {
 		return
@@ -770,8 +768,8 @@ func (m *Manager) maybeGrowPool(target int) {
 	if atomic.LoadInt32(&m.reconnecting) == 1 {
 		return
 	}
-	if target > whisperaPoolMax {
-		target = whisperaPoolMax
+	if maxConns := whisperaPoolCap(); target > maxConns {
+		target = maxConns
 	}
 	for {
 		m.connMu.RLock()
@@ -799,7 +797,7 @@ func (m *Manager) spawnPoolConn() {
 			return
 		}
 		m.connMu.Lock()
-		if len(m.activePool) == 0 || len(m.activePool) >= whisperaPoolMax {
+		if len(m.activePool) == 0 || len(m.activePool) >= whisperaPoolCap() {
 			m.connMu.Unlock()
 			mc.Close()
 			return
@@ -1373,7 +1371,7 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		sess = mc.session
 		mcForFail = mc
 
-		if m.config.EnableWhispera && len(pool) < whisperaPoolMax {
+		if m.config.EnableWhispera && len(pool) < whisperaPoolCap() {
 			active := 1
 			for _, c := range pool {
 				if c != nil && c.session != nil {
