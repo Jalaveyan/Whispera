@@ -33,7 +33,7 @@ Available options
 
 -port <port> required — dedicated listening port for this user
 
--delete-key <your user> - deletes an unnecessary user-specific key
+-delete-key <your user> — deletes an unnecessary user-specific key
 
 -transport whispera|grpc|yadisk (default: whispera)
 
