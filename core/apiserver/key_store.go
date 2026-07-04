@@ -35,12 +35,15 @@ type User struct {
 	DisableNeural bool `json:"disableNeural,omitempty"`
 }
 
-const userDataFile = "/etc/whispera/users.json"
+var userDataFile = "/etc/whispera/users.json"
+
+const userStoreReloadInterval = 5 * time.Second
 
 var (
-	userStore   = make(map[int]*User)
-	userStoreMu sync.RWMutex
-	nextUserID  = 1
+	userStore        = make(map[int]*User)
+	userStoreMu      sync.RWMutex
+	usersFileModTime time.Time
+	nextUserID       = 1
 )
 
 type userPersist struct {
@@ -103,6 +106,11 @@ func saveUsers() {
 }
 
 func loadUsers() {
+	applyUsersFromFile()
+}
+
+func applyUsersFromFile() {
+	info, statErr := os.Stat(userDataFile)
 	data, err := os.ReadFile(userDataFile)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -115,14 +123,40 @@ func loadUsers() {
 		log.Error("failed to load users: %v", err)
 		return
 	}
-	userStoreMu.Lock()
+	fresh := make(map[int]*User, len(p.Users))
 	for _, u := range p.Users {
-		userStore[u.ID] = u
+		fresh[u.ID] = u
 	}
+	userStoreMu.Lock()
+	userStore = fresh
 	if p.NextUserID > nextUserID {
 		nextUserID = p.NextUserID
 	}
+	if statErr == nil {
+		usersFileModTime = info.ModTime()
+	}
 	userStoreMu.Unlock()
+}
+
+// startUserStoreWatcher reloads users.json when it changes on disk so keys
+// created or deleted by the CLI take effect without restarting the service.
+func startUserStoreWatcher() {
+	go func() {
+		t := time.NewTicker(userStoreReloadInterval)
+		defer t.Stop()
+		for range t.C {
+			info, err := os.Stat(userDataFile)
+			if err != nil {
+				continue
+			}
+			userStoreMu.RLock()
+			unchanged := info.ModTime().Equal(usersFileModTime)
+			userStoreMu.RUnlock()
+			if !unchanged {
+				applyUsersFromFile()
+			}
+		}
+	}()
 }
 
 func generateX25519Keys() (*KeyPair, error) {

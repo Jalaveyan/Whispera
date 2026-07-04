@@ -150,6 +150,7 @@ func New(cfg *Config) (*Server, error) {
 	}
 
 	loadUsers()
+	startUserStoreWatcher()
 	loadSubscriptions()
 
 	sessionToken := loadOrCreateSessionToken()
