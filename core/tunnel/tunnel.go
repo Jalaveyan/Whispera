@@ -775,7 +775,11 @@ func (m *Manager) maybeGrowPool() {
 	m.poolGrowInflight.Add(1)
 	safeGo("growPool", func() {
 		defer m.poolGrowInflight.Add(-1)
-		ctx, cancel := context.WithTimeout(m.Context(), m.config.ConnectionTimeout)
+		parent := m.Context()
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, m.config.ConnectionTimeout)
 		defer cancel()
 		mc, err := m.dialManagedConn(ctx, fmt.Sprintf("grow-%d", time.Now().UnixNano()))
 		if err != nil {
