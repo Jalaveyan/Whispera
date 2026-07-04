@@ -246,10 +246,14 @@ type managedConn struct {
 	idleSamples      atomic.Int64
 }
 
-// whisperaPoolMax caps the elastic connection pool at Chrome's per-host
-// concurrent-connection limit — enough to parallelise multiplexed flows across
-// sockets (like a browser loading a page) without looking unusual.
-const whisperaPoolMax = 6
+// The whispera connection pool mimics a browser's per-host connections: a warm
+// baseline is opened up front so multiplexed flows spread across sockets the
+// instant traffic starts (no reactive ramp), growing to Chrome's 6-per-host
+// limit under heavier load and shrinking back to the baseline when idle.
+const (
+	whisperaPoolWarm = 4
+	whisperaPoolMax  = 6
+)
 
 const (
 	streamShardCount = 16
@@ -553,7 +557,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	targetPoolSize := 2
 	if m.config.EnableWhispera {
-		targetPoolSize = 1
+		targetPoolSize = whisperaPoolWarm
 	}
 	var connectedPool []*managedConn
 	var poolMu sync.Mutex
@@ -759,20 +763,29 @@ func (m *Manager) removeDeadConn(mc *managedConn) {
 // (up to whisperaPoolMax) when demand warrants it, so multiplexed flows spread
 // across sockets instead of serialising through one. Non-blocking and
 // single-flight; the caller's stream still uses an existing connection.
-func (m *Manager) maybeGrowPool() {
+func (m *Manager) maybeGrowPool(target int) {
 	if !m.config.EnableWhispera {
 		return
 	}
 	if atomic.LoadInt32(&m.reconnecting) == 1 {
 		return
 	}
-	m.connMu.RLock()
-	cur := len(m.activePool)
-	m.connMu.RUnlock()
-	if cur == 0 || cur+int(m.poolGrowInflight.Load()) >= whisperaPoolMax {
-		return
+	if target > whisperaPoolMax {
+		target = whisperaPoolMax
 	}
-	m.poolGrowInflight.Add(1)
+	for {
+		m.connMu.RLock()
+		cur := len(m.activePool)
+		m.connMu.RUnlock()
+		if cur == 0 || cur+int(m.poolGrowInflight.Load()) >= target {
+			return
+		}
+		m.poolGrowInflight.Add(1)
+		m.spawnPoolConn()
+	}
+}
+
+func (m *Manager) spawnPoolConn() {
 	safeGo("growPool", func() {
 		defer m.poolGrowInflight.Add(-1)
 		parent := m.Context()
@@ -1360,8 +1373,14 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		sess = mc.session
 		mcForFail = mc
 
-		if m.config.EnableWhispera && len(pool) < whisperaPoolMax && mc.session.NumStreams() >= 1 {
-			m.maybeGrowPool()
+		if m.config.EnableWhispera && len(pool) < whisperaPoolMax {
+			active := 1
+			for _, c := range pool {
+				if c != nil && c.session != nil {
+					active += c.session.NumStreams()
+				}
+			}
+			m.maybeGrowPool(active)
 		}
 
 		const openStreamFreshnessWindow = 5 * time.Second

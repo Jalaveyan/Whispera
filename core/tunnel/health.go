@@ -79,13 +79,15 @@ func (p *poolHealthSampler) sample() {
 	p.shrinkIdle()
 }
 
-// shrinkIdle closes elastic pool connections that have carried no streams for
-// two samples (~6s), keeping the primary (index 0) so the pool idles at 1.
+// shrinkIdle closes pool connections above the warm baseline that have carried
+// no streams for two samples (~6s), so the pool falls back to whisperaPoolWarm
+// when idle but keeps that baseline ready for instant throughput.
 func (p *poolHealthSampler) shrinkIdle() {
 	m := p.m
 	var toClose []*managedConn
 	m.connMu.Lock()
-	for i := 1; i < len(m.activePool); i++ {
+	closable := len(m.activePool) - whisperaPoolWarm
+	for i := len(m.activePool) - 1; i >= 1 && len(toClose) < closable; i-- {
 		mc := m.activePool[i]
 		if mc == nil || mc.session == nil {
 			continue
