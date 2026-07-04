@@ -35,6 +35,8 @@ Available options
 
 -delete-key <your user> — deletes an unnecessary user-specific key
 
+-fingerprint chrome|chrome_120|chrome_115|firefox|firefox_120|safari|ios|android|edge|random and the most recent Chrome fingerprint is used by default, unless you want to specify the `-fingerprint` flag.
+
 -transport whispera|grpc|yadisk (default: whispera)
 
 -quic enable/disable tunneling over QUIC instead of TCP
