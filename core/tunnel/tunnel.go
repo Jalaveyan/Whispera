@@ -243,7 +243,13 @@ type managedConn struct {
 	lastSampledBytes atomic.Uint64
 	lastSampleNs     atomic.Int64
 	rateMbpsX100     atomic.Int64
+	idleSamples      atomic.Int64
 }
+
+// whisperaPoolMax caps the elastic connection pool at Chrome's per-host
+// concurrent-connection limit — enough to parallelise multiplexed flows across
+// sockets (like a browser loading a page) without looking unusual.
+const whisperaPoolMax = 6
 
 const (
 	streamShardCount = 16
@@ -296,6 +302,7 @@ type Manager struct {
 
 	reconnectAttempts uint32
 	reconnecting      int32
+	poolGrowInflight  atomic.Int32
 	bytesUp           uint64
 	bytesDown         uint64
 	lastKeepalive     int64
@@ -746,6 +753,44 @@ func (m *Manager) removeDeadConn(mc *managedConn) {
 		}
 	}
 	m.connMu.Unlock()
+}
+
+// maybeGrowPool adds one more authenticated connection to the whispera pool
+// (up to whisperaPoolMax) when demand warrants it, so multiplexed flows spread
+// across sockets instead of serialising through one. Non-blocking and
+// single-flight; the caller's stream still uses an existing connection.
+func (m *Manager) maybeGrowPool() {
+	if !m.config.EnableWhispera {
+		return
+	}
+	if atomic.LoadInt32(&m.reconnecting) == 1 {
+		return
+	}
+	m.connMu.RLock()
+	cur := len(m.activePool)
+	m.connMu.RUnlock()
+	if cur == 0 || cur+int(m.poolGrowInflight.Load()) >= whisperaPoolMax {
+		return
+	}
+	m.poolGrowInflight.Add(1)
+	safeGo("growPool", func() {
+		defer m.poolGrowInflight.Add(-1)
+		ctx, cancel := context.WithTimeout(m.Context(), m.config.ConnectionTimeout)
+		defer cancel()
+		mc, err := m.dialManagedConn(ctx, fmt.Sprintf("grow-%d", time.Now().UnixNano()))
+		if err != nil {
+			return
+		}
+		m.connMu.Lock()
+		if len(m.activePool) == 0 || len(m.activePool) >= whisperaPoolMax {
+			m.connMu.Unlock()
+			mc.Close()
+			return
+		}
+		m.activePool = append(m.activePool, mc)
+		m.connMu.Unlock()
+		safeGo("readLoop", func() { m.readLoop(mc) })
+	})
 }
 
 func (m *Manager) Disconnect() {
@@ -1310,6 +1355,10 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		}
 		sess = mc.session
 		mcForFail = mc
+
+		if m.config.EnableWhispera && len(pool) < whisperaPoolMax && mc.session.NumStreams() >= 1 {
+			m.maybeGrowPool()
+		}
 
 		const openStreamFreshnessWindow = 5 * time.Second
 		const openStreamProbeTimeout = 3 * time.Second

@@ -75,6 +75,39 @@ func (p *poolHealthSampler) sample() {
 		mbps := float64(delta) * 8 / (float64(elapsedNs) / 1e9) / 1e6
 		mc.rateMbpsX100.Store(int64(mbps * 100))
 	}
+
+	p.shrinkIdle()
+}
+
+// shrinkIdle closes elastic pool connections that have carried no streams for
+// two samples (~6s), keeping the primary (index 0) so the pool idles at 1.
+func (p *poolHealthSampler) shrinkIdle() {
+	m := p.m
+	var toClose []*managedConn
+	m.connMu.Lock()
+	for i := 1; i < len(m.activePool); i++ {
+		mc := m.activePool[i]
+		if mc == nil || mc.session == nil {
+			continue
+		}
+		if mc.session.NumStreams() == 0 {
+			if mc.idleSamples.Add(1) >= 2 {
+				toClose = append(toClose, mc)
+			}
+		} else {
+			mc.idleSamples.Store(0)
+		}
+	}
+	m.connMu.Unlock()
+
+	for _, mc := range toClose {
+		if mc.session != nil && mc.session.NumStreams() > 0 {
+			mc.idleSamples.Store(0)
+			continue
+		}
+		mc.Close()
+		m.removeDeadConn(mc)
+	}
 }
 
 func (p *poolHealthSampler) healthy(pool []*managedConn) []*managedConn {
