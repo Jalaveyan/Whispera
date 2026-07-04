@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"crypto/sha256"
-	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
@@ -116,20 +115,4 @@ func pickSNI(cfg *ClientConfig) string {
 func SPKIPin(cert *x509.Certificate) string {
 	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	return base64.StdEncoding.EncodeToString(sum[:])
-}
-
-func pinVerifier(pin string) func([][]byte, [][]*x509.Certificate) error {
-	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return fmt.Errorf("whispera: no server certificate to pin")
-		}
-		cert, err := x509.ParseCertificate(rawCerts[0])
-		if err != nil {
-			return fmt.Errorf("whispera: parse server cert: %w", err)
-		}
-		if subtle.ConstantTimeCompare([]byte(SPKIPin(cert)), []byte(pin)) != 1 {
-			return fmt.Errorf("whispera: server cert pin mismatch")
-		}
-		return nil
-	}
 }
