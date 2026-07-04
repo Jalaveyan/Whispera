@@ -197,6 +197,10 @@ func (g *TrafficGAN) addDecoy(features []float64, score float64) {
 }
 
 func (g *TrafficGAN) Train(lf LabeledFlow) {
+	if lf.Label == FlowExcluded {
+		return
+	}
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
 

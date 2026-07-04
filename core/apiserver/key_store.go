@@ -84,6 +84,20 @@ func IsNeuralDisabled(userID string) bool {
 	return false
 }
 
+// AnyNeuralEnabled reports whether at least one registered user opted into
+// neural. The server uses it to keep the GAN runner (packet capture + training)
+// off unless some key was created with -neural enable.
+func AnyNeuralEnabled() bool {
+	userStoreMu.RLock()
+	defer userStoreMu.RUnlock()
+	for _, u := range userStore {
+		if !u.DisableNeural {
+			return true
+		}
+	}
+	return false
+}
+
 func saveUsers() {
 	userStoreMu.RLock()
 	list := make([]*User, 0, len(userStore))

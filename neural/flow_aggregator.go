@@ -8,6 +8,7 @@ const (
 	FlowUnknown FlowLabel = iota
 	FlowTunnel
 	FlowDecoy
+	FlowExcluded
 )
 
 type FlowFeatures struct {

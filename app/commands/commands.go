@@ -160,7 +160,7 @@ func RunCreateKeyCmd() {
 	transportFlag := createKeyCmd.String("transport", "whispera", "Base transport for this key: whispera, grpc, or yadisk")
 	yadiskToken := createKeyCmd.String("yadisk-token", "", "Yandex.Disk OAuth token (only with -transport yadisk; saved to server config if not already set there)")
 	yadiskSession := createKeyCmd.String("yadisk-session", "", "Yandex.Disk session/folder id (only with -transport yadisk; auto-generated if empty)")
-	neuralFlag := createKeyCmd.String("neural", "enable", "Use neural-network traffic shaping (RL agents + GAN padding) for this user (enable/disable)")
+	neuralFlag := createKeyCmd.String("neural", "disable", "Per-user neural (default off): client-side RL agents + seeding this user's flow into the server GAN. The GAN runner only starts if at least one user has -neural enable (enable/disable)")
 	sniFlag := createKeyCmd.String("sni", "", "Clone this real domain's TLS certificate and present it via SNI for this key (only with -transport whispera; empty = auto-picked from a default pool, or the server's ACME domain if configured)")
 	fingerprintFlag := createKeyCmd.String("fingerprint", "auto", "TLS fingerprint for the tunnel ClientHello: auto (embed freshest harvested chrome), or a named uTLS profile: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random")
 	selfCertFlag := createKeyCmd.String("self-cert", "", "Clone a self-signed cert for the SNI and pin it in the key (enable/disable; default: auto from server config)")

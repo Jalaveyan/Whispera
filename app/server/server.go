@@ -789,7 +789,9 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		log.Error("GAN: failed to create model dir %s: %v", ganModelDir, err)
 	}
 	ganRunner := neural.NewGANRunner(ganIface, ganPort, ganSavePath)
-	if err := ganRunner.Start(); err != nil {
+	if !apiserver.AnyNeuralEnabled() {
+		log.Info("GAN: no neural-enabled users — traffic-shaping runner stays off (no packet capture/training)")
+	} else if err := ganRunner.Start(); err != nil {
 		log.Error("GAN: failed to start traffic-shaping runner: %v", err)
 	} else {
 		m.OnStop(func() error {
@@ -835,7 +837,11 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		},
 		OnConn: func(conn net.Conn, userID string) {
 			log.Info("whispera: tunnel connected userID=%s remote=%s", userID, conn.RemoteAddr())
-			neural.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), neural.FlowTunnel)
+			flowLabel := neural.FlowTunnel
+			if apiserver.IsNeuralDisabled(userID) {
+				flowLabel = neural.FlowExcluded
+			}
+			neural.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), flowLabel)
 			tracked := stats.WrapConn(conn, userID)
 			go func() {
 				globalRelay.ServeTunnel(tracked, false)
