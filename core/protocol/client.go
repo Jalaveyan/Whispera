@@ -85,8 +85,8 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			ServerName:         sni,
 			InsecureSkipVerify: true,
 		}
-		if cfg.ServerCertPin != "" {
-			uCfg.VerifyPeerCertificate = pinVerifier(cfg.ServerCertPin)
+		if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
+			uCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
 		}
 		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
 			uCfg.ClientSessionCache = sc
@@ -165,8 +165,8 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			ServerName:         sni,
 			InsecureSkipVerify: true,
 		}
-		if cfg.ServerCertPin != "" {
-			tlsCfgQUIC.VerifyPeerCertificate = pinVerifier(cfg.ServerCertPin)
+		if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
+			tlsCfgQUIC.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
 		}
 		tunnelTransport = &http3.Transport{
 			TLSClientConfig:    tlsCfgQUIC,

@@ -7,6 +7,8 @@ import (
 	"whispera/core/protocol"
 )
 
+const FingerprintStoreDir = "/etc/whispera/fingerprints"
+
 func (s *Server) handleGetFingerprints(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
@@ -36,13 +38,14 @@ func (s *Server) handleSetFingerprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := protocol.HarvestRawClientHello(record); err != nil {
+	if err := protocol.PersistRawFingerprint(FingerprintStoreDir, record); err != nil {
 		s.jsonError(w, http.StatusBadRequest, "fingerprint: "+err.Error())
 		return
 	}
+	_ = protocol.HarvestRawClientHello(record)
 
 	s.jsonOK(w, map[string]interface{}{
-		"message":         "fingerprint harvested",
+		"message":         "fingerprint stored",
 		"harvested_count": protocol.HarvestedFingerprintCount(),
 	})
 }

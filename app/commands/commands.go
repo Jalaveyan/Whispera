@@ -162,6 +162,7 @@ func RunCreateKeyCmd() {
 	yadiskSession := createKeyCmd.String("yadisk-session", "", "Yandex.Disk session/folder id (only with -transport yadisk; auto-generated if empty)")
 	neuralFlag := createKeyCmd.String("neural", "enable", "Use neural-network traffic shaping (RL agents + GAN padding) for this user (enable/disable)")
 	sniFlag := createKeyCmd.String("sni", "", "Clone this real domain's TLS certificate and present it via SNI for this key (only with -transport whispera; empty = auto-picked from a default pool, or the server's ACME domain if configured)")
+	fingerprintFlag := createKeyCmd.String("fingerprint", "auto", "TLS fingerprint for the tunnel ClientHello: auto (embed freshest harvested chrome), or a named uTLS profile: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random")
 	selfCertFlag := createKeyCmd.String("self-cert", "", "Clone a self-signed cert for the SNI and pin it in the key (enable/disable; default: auto from server config)")
 	ownDomainFlag := createKeyCmd.String("own-domain", "", "Key targets a Caddy + real-domain front: SNI/addr = the domain, no cert pin (enable/disable; default: auto from server config)")
 	domainFlag := createKeyCmd.String("domain", "", "Real domain for -own-domain mode (Caddy front); addr and SNI of the key are set to this. Empty = whispera.domain from config")
@@ -169,7 +170,11 @@ func RunCreateKeyCmd() {
 	createKeyCmd.Parse(os.Args[2:])
 
 	if *user == "" || *port == 0 {
-		fmt.Fprintln(os.Stderr, "whispera create-key -user <name> -port <port> [-config <path>] [-traffic-limit <bytes>] [-quic enable|disable] [-quic-port <port>] [-transport whispera|grpc|yadisk] [-yadisk-token <token>] [-yadisk-session <id>] [-neural enable|disable] [-sni <real-domain>] [-self-cert enable|disable] [-own-domain enable|disable]")
+		fmt.Fprintln(os.Stderr, "whispera create-key -user <name> -port <port> [-config <path>] [-traffic-limit <bytes>] [-quic enable|disable] [-quic-port <port>] [-transport whispera|grpc|yadisk] [-yadisk-token <token>] [-yadisk-session <id>] [-neural enable|disable] [-sni <real-domain>] [-fingerprint <name>] [-self-cert enable|disable] [-own-domain enable|disable]")
+		os.Exit(1)
+	}
+	if *fingerprintFlag != "auto" && !protocol.IsKnownFingerprint(*fingerprintFlag) {
+		fmt.Fprintf(os.Stderr, "Error: unknown -fingerprint %q (auto, chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random)\n", *fingerprintFlag)
 		os.Exit(1)
 	}
 	disableNeural := strings.EqualFold(*neuralFlag, "disable")
@@ -450,6 +455,14 @@ func RunCreateKeyCmd() {
 			}
 		}
 
+		whisperaIDPub := ""
+		if useSelfCert {
+			if id, err := protocol.LoadOrCreateCertIdentity("/etc/whispera/identity_ed25519.key"); err == nil {
+				protocol.SetCertIdentity(id)
+				whisperaIDPub = id.PubB64()
+			}
+		}
+
 		servedCertPath := ""
 		if useSelfCert && whisperaSNI != "" {
 			servedCertPath = sc.Whispera.TLSCert
@@ -482,11 +495,27 @@ func RunCreateKeyCmd() {
 			fmt.Printf("Domain/Caddy mode: key SNI/addr = %s, no cert pin (real cert expected on the front)\n", whisperaSNI)
 		}
 
+		fpName := *fingerprintFlag
+		fpRaw := ""
+		if fpName == "auto" {
+			if raw, ok := protocol.FreshestRawFingerprint(apiserver.FingerprintStoreDir, "chrome"); ok {
+				fpRaw = base64.StdEncoding.EncodeToString(raw)
+				fpName = "chrome"
+				fmt.Printf("Embedded freshest harvested chrome fingerprint (%d bytes) from %s\n", len(raw), apiserver.FingerprintStoreDir)
+			} else {
+				fpName = "chrome"
+				fmt.Printf("No harvested fingerprint in %s — using named uTLS chrome\n", apiserver.FingerprintStoreDir)
+			}
+		}
+
 		whisperaOpts = apiserver.WhisperaKeyOptions{
-			Addr:     fmt.Sprintf("%s:%s", addrHost, chmPortStr),
-			SNI:      whisperaSNI,
-			QUICAddr: whisperaQUICAddr,
-			CertPin:  whisperaCertPin,
+			Addr:        fmt.Sprintf("%s:%s", addrHost, chmPortStr),
+			SNI:         whisperaSNI,
+			QUICAddr:    whisperaQUICAddr,
+			CertPin:     whisperaCertPin,
+			IDPub:       whisperaIDPub,
+			Fingerprint: fpName,
+			FPRaw:       fpRaw,
 		}
 	}
 

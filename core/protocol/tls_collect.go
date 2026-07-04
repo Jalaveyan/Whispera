@@ -1,12 +1,109 @@
 package protocol
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
+	"whispera/common/fsown"
 
 	utls "github.com/refraction-networking/utls"
 )
+
+func kindFromName(name string) browserKind {
+	switch name {
+	case "firefox", "firefox_120":
+		return kindFirefox
+	case "safari", "ios":
+		return kindSafari
+	default:
+		return kindChromium
+	}
+}
+
+// PersistRawFingerprint validates a raw ClientHello record and writes it to the
+// store dir (deduped by extension-set hash, mtime bumped to now so "freshest"
+// reflects the latest capture). Server-side store for embedding into new keys.
+func PersistRawFingerprint(dir string, raw []byte) error {
+	fp := &utls.Fingerprinter{AllowBluntMimicry: true}
+	if _, err := fp.FingerprintClientHello(raw); err != nil {
+		return err
+	}
+	key, ok := harvestKey(raw)
+	if !ok {
+		return fmt.Errorf("whispera: not a client hello")
+	}
+	if dir == "" {
+		return fmt.Errorf("whispera: no fingerprint store dir")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, key+".bin")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	now := time.Now()
+	_ = os.Chtimes(path, now, now)
+	fsown.MatchParent(path)
+	return nil
+}
+
+// FreshestRawFingerprint returns the most recently stored raw ClientHello whose
+// browser class matches kind ("chrome", "firefox", "safari"), by file mtime.
+func FreshestRawFingerprint(dir, kind string) ([]byte, bool) {
+	if dir == "" {
+		return nil, false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, false
+	}
+	want := kindFromName(kind)
+	var best []byte
+	var bestMod time.Time
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".bin" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		if classifyClientHello(data) != want {
+			continue
+		}
+		if best == nil || info.ModTime().After(bestMod) {
+			best = data
+			bestMod = info.ModTime()
+		}
+	}
+	return best, best != nil
+}
+
+// looksLikeRealBrowser is a cheap filter for auto-harvest: real Chrome/Firefox/
+// Safari send GREASE; most scanners/bots do not.
+func looksLikeRealBrowser(raw []byte) bool {
+	exts, ok := clientHelloExtTypes(raw)
+	if !ok {
+		return false
+	}
+	for _, t := range exts {
+		if isGREASE(t) {
+			return true
+		}
+	}
+	return false
+}
 
 var harvestOnce sync.Once
 

@@ -108,6 +108,7 @@ type WhisperaOptions struct {
 	WhisperaSNI      string
 	WhisperaSecret   []byte
 	WhisperaCertPin  string
+	WhisperaIDPub    string
 	WhisperaQUICAddr string
 	WhisperaMux      int
 
@@ -969,7 +970,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 	tlsDrainCount := 0
 	consecutiveGarbage := 0
 	const maxTLSDrain = 50
-
 
 	for {
 		select {

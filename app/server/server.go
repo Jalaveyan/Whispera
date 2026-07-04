@@ -60,6 +60,7 @@ const (
 	whisperaCertPath     = "/etc/whispera/whispera.crt"
 	whisperaKeyPath      = "/etc/whispera/whispera.key"
 	whisperaDecoyCertDir = "/etc/whispera/decoy_certs"
+	whisperaIdentityFile = "/etc/whispera/identity_ed25519.key"
 )
 
 var (
@@ -861,6 +862,12 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 			}
 			cCfg.ExtraQUICListenAddrs = append(cCfg.ExtraQUICListenAddrs, net.JoinHostPort(quicHost, strconv.Itoa(p)))
 		}
+	}
+	protocol2.SetHarvestDir(apiserver.FingerprintStoreDir)
+	if id, err := protocol2.LoadOrCreateCertIdentity(whisperaIdentityFile); err != nil {
+		log.Warn("whispera: cert identity unavailable (verify-by-key disabled): %v", err)
+	} else {
+		protocol2.SetCertIdentity(id)
 	}
 	go func() { _ = protocol2.ListenAndServe(ctx, cCfg) }()
 }

@@ -3,8 +3,6 @@ package protocol
 import (
 	"context"
 	"crypto/tls"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	stdlog "log"
 	mrand "math/rand"
@@ -298,10 +296,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 		return
 	case http.MethodGet:
 		path := r.URL.Path
-		if path == "/video/sync" {
-			handleFingerprintSync(w, r, cfg)
-			return
-		}
 		if strings.HasPrefix(path, "/video/") {
 			if strings.HasSuffix(path, ".m3u8") {
 				handleHLSPlaylist(w, r, cfg)
@@ -333,47 +327,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 		serveDecoy(w, r, cfg)
 		return
 	}
-}
-
-func handleFingerprintSync(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
-	tokenHdr := r.Header.Get(headerToken)
-	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
-		serveDecoy(w, r, cfg)
-		return
-	}
-	token := tokenHdr[7:]
-
-	sessCookie, err := r.Cookie(sessionCookie)
-	if err != nil {
-		serveDecoy(w, r, cfg)
-		return
-	}
-	sessionID, _, err := decodeSession(sessCookie.Value)
-	if err != nil {
-		serveDecoy(w, r, cfg)
-		return
-	}
-
-	secret, _ := resolveSecret(cfg, token, sessionID)
-	if secret == nil {
-		serveDecoy(w, r, cfg)
-		return
-	}
-	if !cfg.consumeToken(token) {
-		serveDecoy(w, r, cfg)
-		return
-	}
-
-	records := HarvestedRawRecords()
-	encoded := make([]string, 0, len(records))
-	for _, rec := range records {
-		encoded = append(encoded, base64.StdEncoding.EncodeToString(rec))
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{"fingerprints": encoded})
 }
 
 func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {

@@ -15,6 +15,7 @@ type ClientConfig struct {
 	ServerNames   []string
 	SharedSecret  []byte
 	ServerCertPin string
+	ServerIDPub   string
 	SessionCache  any
 	TCPDialer     func(ctx context.Context, network, addr string) (net.Conn, error)
 

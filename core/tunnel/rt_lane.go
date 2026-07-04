@@ -90,6 +90,7 @@ func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error)
 		ServerName:    sni,
 		SharedSecret:  m.config.WhisperaSecret,
 		ServerCertPin: m.config.WhisperaCertPin,
+		ServerIDPub:   m.config.WhisperaIDPub,
 		SessionCache:  rl.sessionCache,
 		TCPDialer:     tcpDialer,
 		EnableQUIC:    m.config.WhisperaQUICAddr != "",

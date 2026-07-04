@@ -40,6 +40,30 @@ var (
 	forcedFingerprintID utls.ClientHelloID
 )
 
+var (
+	forcedRawMu   sync.RWMutex
+	forcedRawSpec *utls.ClientHelloSpec
+	forcedRawKind browserKind
+)
+
+// SetForcedRawFingerprint pins an exact captured ClientHello (raw record) for
+// the tunnel handshake, parsed once. Takes priority over any named fingerprint.
+func SetForcedRawFingerprint(raw []byte) {
+	var spec *utls.ClientHelloSpec
+	kind := kindChromium
+	if len(raw) > 0 {
+		fp := &utls.Fingerprinter{AllowBluntMimicry: true}
+		if s, err := fp.FingerprintClientHello(raw); err == nil {
+			spec = s
+			kind = classifyClientHello(raw)
+		}
+	}
+	forcedRawMu.Lock()
+	forcedRawSpec = spec
+	forcedRawKind = kind
+	forcedRawMu.Unlock()
+}
+
 var namedFingerprints = map[string]utls.ClientHelloID{
 	"chrome":      utls.HelloChrome_Auto,
 	"chrome_120":  utls.HelloChrome_120,
@@ -50,6 +74,14 @@ var namedFingerprints = map[string]utls.ClientHelloID{
 	"ios":         utls.HelloIOS_Auto,
 	"android":     utls.HelloAndroid_11_OkHttp,
 	"edge":        utls.HelloEdge_Auto,
+}
+
+func IsKnownFingerprint(name string) bool {
+	if name == "random" {
+		return true
+	}
+	_, ok := namedFingerprints[name]
+	return ok
 }
 
 func SetForcedFingerprint(name string) {
@@ -141,6 +173,14 @@ func HarvestedFingerprintCapacity() int {
 }
 
 func pickFingerprint() (id utls.ClientHelloID, spec *utls.ClientHelloSpec, uaID utls.ClientHelloID) {
+	forcedRawMu.RLock()
+	rawSpec := forcedRawSpec
+	rawKind := forcedRawKind
+	forcedRawMu.RUnlock()
+	if rawSpec != nil {
+		return utls.HelloCustom, rawSpec, repIDForKind(rawKind)
+	}
+
 	forcedFingerprintMu.RLock()
 	forced := forcedFingerprintID
 	forcedFingerprintMu.RUnlock()

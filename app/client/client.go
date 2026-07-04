@@ -250,39 +250,6 @@ func newBypassDNSResolver() *net.Resolver {
 	}
 }
 
-func runFingerprintSync(cfg *config.ClientConfig, secret []byte, resolver *net.Resolver) {
-	pCfg := &protocol.ClientConfig{
-		ServerAddr:    cfg.WhisperaAddr,
-		ServerName:    cfg.WhisperaSNI,
-		SharedSecret:  secret,
-		ServerCertPin: cfg.WhisperaCertPin,
-		TCPDialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			d := &net.Dialer{Timeout: 10 * time.Second, Resolver: resolver}
-			return d.DialContext(ctx, network, addr)
-		},
-	}
-
-	sync := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		n, err := protocol.FetchServerFingerprints(ctx, pCfg)
-		cancel()
-		if err != nil {
-			stdlog.Printf("Fingerprint sync failed: %v", err)
-			return
-		}
-		if n > 0 {
-			stdlog.Printf("Fingerprint sync: merged %d fingerprint(s) from server", n)
-		}
-	}
-
-	sync()
-	ticker := time.NewTicker(30 * time.Minute)
-	defer ticker.Stop()
-	for range ticker.C {
-		sync()
-	}
-}
-
 func setupSplitTunnel(cfg *config.ClientConfig, bypassDNS *net.Resolver) *split_tunnel.SplitTunnelManager {
 	stm := split_tunnel.NewSplitTunnelManager()
 	stm.AddRussianWhitelist()
@@ -333,6 +300,15 @@ func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
 		asnBypassEnabled = true
 		if cfg.ASNBypass.TLSFingerprint != "" {
 			asnBypassFingerprint = cfg.ASNBypass.TLSFingerprint
+		}
+	}
+
+	if *forceFingerprint == "" && asnBypassFingerprint != "" {
+		protocol.SetForcedFingerprint(asnBypassFingerprint)
+	}
+	if *forceFingerprint == "" && cfg.WhisperaFPRaw != "" {
+		if raw, err := base64.StdEncoding.DecodeString(cfg.WhisperaFPRaw); err == nil {
+			protocol.SetForcedRawFingerprint(raw)
 		}
 	}
 
@@ -523,10 +499,6 @@ func main() {
 	srvList := rp.srvList
 	transports := rp.transports
 
-	if len(whisperaSecret) == 32 && cfg.WhisperaAddr != "" {
-		go runFingerprintSync(cfg, whisperaSecret, bypassDNSResolver)
-	}
-
 	newTunnelMod := func(tr string) *tunnel.Manager {
 		m, _ := tunnel.New(&tunnel.Config{
 			ServerAddr:              serverAddress,
@@ -549,6 +521,7 @@ func main() {
 				WhisperaSNI:      cfg.WhisperaSNI,
 				WhisperaQUICAddr: cfg.WhisperaQUICAddr,
 				WhisperaCertPin:  cfg.WhisperaCertPin,
+				WhisperaIDPub:    cfg.WhisperaIDPub,
 				EnableGRPC:       cfg.GRPCAddr != "",
 				GRPCAddr:         cfg.GRPCAddr,
 				GRPCServerName:   cfg.GRPCServerName,
@@ -615,6 +588,7 @@ func main() {
 				WhisperaSNI:      cfg.WhisperaSNI,
 				WhisperaQUICAddr: cfg.WhisperaQUICAddr,
 				WhisperaCertPin:  cfg.WhisperaCertPin,
+				WhisperaIDPub:    cfg.WhisperaIDPub,
 				EnableGRPC:       cfg.GRPCAddr != "",
 				GRPCAddr:         cfg.GRPCAddr,
 				GRPCServerName:   cfg.GRPCServerName,
@@ -850,6 +824,7 @@ func main() {
 				WhisperaSNI:      cfg.WhisperaSNI,
 				WhisperaQUICAddr: cfg.WhisperaQUICAddr,
 				WhisperaCertPin:  cfg.WhisperaCertPin,
+				WhisperaIDPub:    cfg.WhisperaIDPub,
 				EnableGRPC:       cfg.GRPCAddr != "",
 				GRPCAddr:         cfg.GRPCAddr,
 				GRPCServerName:   cfg.GRPCServerName,

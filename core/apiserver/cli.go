@@ -96,10 +96,13 @@ func CLIUpsertUser(username string, trafficLimit int64, disableNeural bool) (pri
 }
 
 type WhisperaKeyOptions struct {
-	Addr     string
-	SNI      string
-	QUICAddr string
-	CertPin  string
+	Addr        string
+	SNI         string
+	QUICAddr    string
+	CertPin     string
+	IDPub       string
+	Fingerprint string
+	FPRaw       string
 }
 
 type AltTransportKeyOptions struct {
@@ -108,6 +111,13 @@ type AltTransportKeyOptions struct {
 	GRPCUseTLS       bool
 	YaDiskOAuthToken string
 	YaDiskSessionID  string
+}
+
+func fingerprintOrDefault(fp string) string {
+	if fp == "" {
+		return "chrome"
+	}
+	return fp
 }
 
 func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport string, whispera WhisperaKeyOptions, alt AltTransportKeyOptions) (string, error) {
@@ -137,11 +147,13 @@ func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport stri
 		ObfsProfile:      "vk",
 		DisableNeural:    user.DisableNeural,
 		EnableASNBypass:  true,
-		TLSFingerprint:   "chrome",
+		TLSFingerprint:   fingerprintOrDefault(whispera.Fingerprint),
+		WhisperaFPRaw:    whispera.FPRaw,
 		WhisperaAddr:     whispera.Addr,
 		WhisperaSNI:      whispera.SNI,
 		WhisperaQUICAddr: whispera.QUICAddr,
 		WhisperaCertPin:  whispera.CertPin,
+		WhisperaIDPub:    whispera.IDPub,
 		GRPCAddr:         alt.GRPCAddr,
 		GRPCServerName:   alt.GRPCServerName,
 		GRPCUseTLS:       alt.GRPCUseTLS,

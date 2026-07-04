@@ -332,6 +332,13 @@ func (l *camouflageListener) handle(conn net.Conn) {
 		return
 	}
 
+	if err == nil && validSNI(ph.sni) && looksLikeRealBrowser(ph.raw) {
+		if dir := harvestDirPath(); dir != "" {
+			rawCopy := append([]byte(nil), ph.raw...)
+			go func() { _ = PersistRawFingerprint(dir, rawCopy) }()
+		}
+	}
+
 	target := l.decoyAddr(ph.sni)
 	traceLog.Infow("camo_relay_decoy", "remote", remote, "sni", ph.sni, "hello_err", err,
 		"camo_keys", len(keys), "has_keyshare", len(ph.keyShare) > 0, "target", target)

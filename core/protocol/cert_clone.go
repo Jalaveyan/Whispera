@@ -88,6 +88,9 @@ func existingValidClone(certPath, keyPath string) (*ClonedCertInfo, bool) {
 	if time.Now().After(leaf.NotAfter.Add(-24 * time.Hour)) {
 		return nil, false
 	}
+	if activeCertIdentity() != nil && !certHasBinding(leaf) {
+		return nil, false
+	}
 	return &ClonedCertInfo{
 		Subject:   leaf.Subject.String(),
 		DNSNames:  leaf.DNSNames,
@@ -96,24 +99,72 @@ func existingValidClone(certPath, keyPath string) (*ClonedCertInfo, bool) {
 	}, true
 }
 
+func reuseExistingClone(certPath, keyPath string) (*ecdsa.PrivateKey, *x509.Certificate) {
+	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil || len(pair.Certificate) == 0 {
+		return nil, nil
+	}
+	priv, ok := pair.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, nil
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return nil, nil
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, nil
+	}
+	notBefore := time.Now().Add(-24 * time.Hour)
+	validity := leaf.NotAfter.Sub(leaf.NotBefore)
+	if validity <= 0 {
+		validity = 90 * 24 * time.Hour
+	}
+	return priv, &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               leaf.Subject,
+		DNSNames:              leaf.DNSNames,
+		IPAddresses:           leaf.IPAddresses,
+		NotBefore:             notBefore,
+		NotAfter:              notBefore.Add(validity),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+}
+
 func CloneCertToFiles(domain, outCert, outKey string) (*ClonedCertInfo, error) {
 	if info, ok := existingValidClone(outCert, outKey); ok {
 		return info, nil
 	}
 
-	real, err := fetchRealCert(domain)
-	if err != nil {
-		return nil, fmt.Errorf("fetch real certificate from %s: %w", domain, err)
+	priv, template := reuseExistingClone(outCert, outKey)
+	if priv == nil || template == nil {
+		real, err := fetchRealCert(domain)
+		if err != nil {
+			return nil, fmt.Errorf("fetch real certificate from %s: %w", domain, err)
+		}
+		template, err = cloneCertTemplate(real)
+		if err != nil {
+			return nil, fmt.Errorf("build certificate template: %w", err)
+		}
+		priv, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generate keypair: %w", err)
+		}
 	}
 
-	template, err := cloneCertTemplate(real)
-	if err != nil {
-		return nil, fmt.Errorf("build certificate template: %w", err)
-	}
-
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate keypair: %w", err)
+	if id := activeCertIdentity(); id != nil {
+		spki, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("marshal public key: %w", err)
+		}
+		ext, err := id.bindExtension(spki, domain)
+		if err != nil {
+			return nil, fmt.Errorf("build identity binding: %w", err)
+		}
+		template.ExtraExtensions = append(template.ExtraExtensions, ext)
 	}
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
