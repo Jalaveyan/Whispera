@@ -558,9 +558,9 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.setState(StateRotating)
 	}
 
-	targetPoolSize := 2
+	targetPoolSize := whisperaPoolMin
 	if m.config.EnableWhispera {
-		targetPoolSize = whisperaPoolMin
+		targetPoolSize = whisperaPoolCap()
 	}
 	var connectedPool []*managedConn
 	var poolMu sync.Mutex
@@ -838,6 +838,7 @@ func (m *Manager) Disconnect() {
 
 func (m *Manager) triggerReconnect() {
 	if m.config.DisableAutoReconnect {
+		log.Error("tuntrace triggerReconnect -> Disconnect (DisableAutoReconnect) — tearing down whole pool")
 		m.Disconnect()
 		return
 	}
@@ -1142,8 +1143,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 					if !isWrappedFrame {
 						consecutiveGarbage++
 						if consecutiveGarbage > 20 {
-							log.Error("Too much garbage data (%d packets), triggering reconnect", consecutiveGarbage)
-							m.triggerReconnect()
+							m.handleReadError(mc, fmt.Errorf("too much garbage data (%d packets)", consecutiveGarbage))
 							return
 						}
 					}
@@ -1284,19 +1284,37 @@ func (m *Manager) readLoop(mc *managedConn) {
 }
 
 func (m *Manager) handleReadError(mc *managedConn, err error) {
+	isTimeout := false
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		isTimeout = true
+	}
+	log.Error("tuntrace handleReadError id=%s age=%s timeout=%v type=%T err=%v", mc.id, time.Since(mc.createdAt).Round(time.Millisecond), isTimeout, err, err)
+	if isTimeout {
+		return
+	}
+	if m.GetState() != StateConnected {
 		return
 	}
 
 	m.connMu.RLock()
-	isActive := (mc == m.activeConn)
+	inPool := slices.Contains(m.activePool, mc)
+	poolLen := len(m.activePool)
 	m.connMu.RUnlock()
 
-	if isActive && m.GetState() == StateConnected {
-		log.Error("active connection read error (%v) — forcing reconnect", err)
-		m.sm.SetError(err)
-		m.triggerReconnect()
+	if !inPool {
+		return
 	}
+
+	if poolLen > 1 {
+		log.Warn("connection read error (%v) — dropping conn, %d left in pool", err, poolLen-1)
+		m.removeDeadConn(mc)
+		mc.Close()
+		return
+	}
+
+	log.Error("last connection read error (%v) — forcing reconnect", err)
+	m.sm.SetError(err)
+	m.triggerReconnect()
 }
 
 func (m *Manager) Receive(dst []byte) (int, error) {
@@ -1388,9 +1406,13 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		if lastPong == 0 || time.Since(time.Unix(0, lastPong)) > openStreamFreshnessWindow {
 			probeMC := mc
 			safeGo("openStreamProbe", func() {
-				if !m.keepalive.probeNow(openStreamProbeTimeout) {
-					m.forceReconnectFromStreamFailure(probeMC, "liveness probe timed out")
+				if m.keepalive.probeNow(openStreamProbeTimeout) {
+					return
 				}
+				if time.Since(m.LastActivity()) < recentActivityWindow {
+					return
+				}
+				m.forceReconnectFromStreamFailure(probeMC, "liveness probe timed out")
 			})
 		}
 	}
