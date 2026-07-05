@@ -350,7 +350,7 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 					io.Copy(io.Discard, transport.WrapStreamTLS(stream))
 				}()
 			} else {
-				go s.serveControlStream(stream)
+				go s.serveControlStream(stream, session)
 			}
 			continue
 		}
@@ -374,19 +374,40 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	}
 }
 
-func (s *Server) serveControlStream(stream net.Conn) {
+func (s *Server) serveControlStream(stream net.Conn, session *mux2.Session) {
 	defer stream.Close()
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Error("PANIC in serveControlStream: %v\n%s", r, debug.Stack())
 		}
 	}()
+	sessionBytes := func() uint64 {
+		_, _, rx, tx := session.Stats()
+		return rx + tx
+	}
+	const controlPoll = 30 * time.Second
+	const maxIdlePolls = 10
+	lastActive := sessionBytes()
+	idlePolls := 0
 	hdr := make([]byte, 8)
 	for {
-		stream.SetReadDeadline(time.Now().Add(90 * time.Second))
-		if _, err := io.ReadFull(stream, hdr); err != nil {
+		stream.SetReadDeadline(time.Now().Add(controlPoll))
+		n, err := io.ReadFull(stream, hdr)
+		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() && n == 0 {
+				if cur := sessionBytes(); cur != lastActive {
+					lastActive = cur
+					idlePolls = 0
+					continue
+				}
+				if idlePolls++; idlePolls < maxIdlePolls {
+					continue
+				}
+			}
 			return
 		}
+		lastActive = sessionBytes()
+		idlePolls = 0
 		payloadLen := binary.BigEndian.Uint32(hdr[4:8])
 		if payloadLen > 131072 {
 			return
