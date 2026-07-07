@@ -206,6 +206,35 @@ func pickFingerprint() (id utls.ClientHelloID, spec *utls.ClientHelloSpec, uaID 
 	return picked, nil, picked
 }
 
+var (
+	sessionFPOnce sync.Once
+	sessionFPID   utls.ClientHelloID
+	sessionFPSpec *utls.ClientHelloSpec
+	sessionFPUA   utls.ClientHelloID
+)
+
+func sessionFingerprint() (utls.ClientHelloID, *utls.ClientHelloSpec, utls.ClientHelloID) {
+	forcedRawMu.RLock()
+	rawSpec := forcedRawSpec
+	rawKind := forcedRawKind
+	forcedRawMu.RUnlock()
+	if rawSpec != nil {
+		return utls.HelloCustom, rawSpec, repIDForKind(rawKind)
+	}
+
+	forcedFingerprintMu.RLock()
+	forced := forcedFingerprintID
+	forcedFingerprintMu.RUnlock()
+	if forced.Client != "" {
+		return forced, nil, forced
+	}
+
+	sessionFPOnce.Do(func() {
+		sessionFPID, sessionFPSpec, sessionFPUA = pickFingerprint()
+	})
+	return sessionFPID, sessionFPSpec, sessionFPUA
+}
+
 func repIDForKind(k browserKind) utls.ClientHelloID {
 	switch k {
 	case kindFirefox:

@@ -60,7 +60,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	sni := pickSNI(cfg)
 	origin := "https://" + sni
 
-	helloID, helloSpec, uaID := pickFingerprint()
+	helloID, helloSpec, uaID := sessionFingerprint()
 	// One coherent UA/header identity per session, derived from the same
 	// fingerprint the TLS handshake will use (uaID matches harvested specs too).
 	prof := newBrowserProfile(uaID)

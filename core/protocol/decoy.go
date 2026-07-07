@@ -239,7 +239,7 @@ func (d *decoyDriver) run(ctx context.Context) {
 
 func newDecoyClient(cfg *ClientConfig) (*http.Client, browserProfile, string, string, func()) {
 	sni := pickSNI(cfg)
-	helloID, helloSpec, uaID := pickFingerprint()
+	helloID, helloSpec, uaID := sessionFingerprint()
 	prof := newBrowserProfile(uaID)
 
 	var dialedMu sync.Mutex
