@@ -9,6 +9,7 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
@@ -124,8 +125,20 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		return uConn, nil
 	}
 
-	h2Transport := newH2Transport(dialFn)
-	decoyTransport := newH2Transport(dialFn)
+	var dialedMu sync.Mutex
+	var dialed []net.Conn
+	trackedDial := func(ctx context.Context, network, addr string, tcfg *tls.Config) (net.Conn, error) {
+		c, err := dialFn(ctx, network, addr, tcfg)
+		if err == nil && c != nil {
+			dialedMu.Lock()
+			dialed = append(dialed, c)
+			dialedMu.Unlock()
+		}
+		return c, err
+	}
+
+	h2Transport := newH2Transport(trackedDial)
+	decoyTransport := newH2Transport(trackedDial)
 
 	pr, pw := io.Pipe()
 	bpw := newBufferedPipeWriter(pw)
@@ -199,6 +212,22 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 
 	client := &http.Client{Transport: tunnelTransport, CheckRedirect: noRedirect}
 	decoyClient := &http.Client{Transport: decoyTransport, CheckRedirect: noRedirect}
+
+	go func() {
+		<-tunnelCtx.Done()
+		dialedMu.Lock()
+		conns := dialed
+		dialed = nil
+		dialedMu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+		h2Transport.CloseIdleConnections()
+		decoyTransport.CloseIdleConnections()
+		if c, ok := tunnelTransport.(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+	}()
 
 	fc := NewFrameConn(pc)
 
