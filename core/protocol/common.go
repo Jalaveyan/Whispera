@@ -8,6 +8,7 @@ import (
 	"fmt"
 	mrand "math/rand"
 	"net"
+	"sync"
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
@@ -110,6 +111,33 @@ func pickSNI(cfg *ClientConfig) string {
 		pool = defaultSNIPool
 	}
 	return pool[mrand.Intn(len(pool))]
+}
+
+func hasConfiguredSNI(cfg *ClientConfig) bool {
+	for _, s := range cfg.ServerNames {
+		if validSNI(s) {
+			return true
+		}
+	}
+	return validSNI(cfg.ServerName)
+}
+
+var (
+	sessionSNIMu  sync.Mutex
+	sessionSNIVal string
+)
+
+func sessionSNI(cfg *ClientConfig) string {
+	sessionSNIMu.Lock()
+	defer sessionSNIMu.Unlock()
+	if sessionSNIVal != "" {
+		return sessionSNIVal
+	}
+	s := pickSNI(cfg)
+	if hasConfiguredSNI(cfg) {
+		sessionSNIVal = s
+	}
+	return s
 }
 
 func SPKIPin(cert *x509.Certificate) string {

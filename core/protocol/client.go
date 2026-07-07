@@ -57,7 +57,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	path := GeneratePath(bp.PathSeed, windowIdx)
 	token := AuthToken(keys.Auth, anchor.Unix()/authWindowSeconds, sessionID)
 
-	sni := pickSNI(cfg)
+	sni := sessionSNI(cfg)
 	origin := "https://" + sni
 
 	helloID, helloSpec, uaID := sessionFingerprint()
