@@ -499,6 +499,22 @@ func main() {
 	srvList := rp.srvList
 	transports := rp.transports
 
+	decoyGate := protocol.NewDecoyGate()
+	if len(whisperaSecret) == 32 {
+		decoyAddr := cfg.WhisperaAddr
+		if decoyAddr == "" {
+			decoyAddr = serverAddress
+		}
+		protocol.StartDecoy(ctx, decoyGate, &protocol.ClientConfig{
+			ServerAddr:    decoyAddr,
+			ServerName:    cfg.WhisperaSNI,
+			SharedSecret:  whisperaSecret,
+			ServerCertPin: cfg.WhisperaCertPin,
+			ServerIDPub:   cfg.WhisperaIDPub,
+			SessionCache:  protocol.SharedSessionCache(),
+		})
+	}
+
 	newTunnelMod := func(tr string) *tunnel.Manager {
 		m, _ := tunnel.New(&tunnel.Config{
 			ServerAddr:              serverAddress,
@@ -511,6 +527,7 @@ func main() {
 			KeepaliveInterval:       30 * time.Second,
 			QualityMissedKeepalives: 3,
 			DisableAutoReconnect:    true,
+			DecoyGate:               decoyGate,
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
@@ -578,6 +595,7 @@ func main() {
 			KeepaliveInterval:       30 * time.Second,
 			QualityMissedKeepalives: 3,
 			DisableAutoReconnect:    true,
+			DecoyGate:               decoyGate,
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
@@ -814,6 +832,7 @@ func main() {
 			KeepaliveInterval:       30 * time.Second,
 			QualityMissedKeepalives: 3,
 			DisableAutoReconnect:    true,
+			DecoyGate:               decoyGate,
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,

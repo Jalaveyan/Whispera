@@ -138,7 +138,6 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	}
 
 	h2Transport := newH2Transport(trackedDial)
-	decoyTransport := newH2Transport(trackedDial)
 
 	pr, pw := io.Pipe()
 	bpw := newBufferedPipeWriter(pw)
@@ -211,7 +210,6 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	}
 
 	client := &http.Client{Transport: tunnelTransport, CheckRedirect: noRedirect}
-	decoyClient := &http.Client{Transport: decoyTransport, CheckRedirect: noRedirect}
 
 	go func() {
 		<-tunnelCtx.Done()
@@ -223,7 +221,6 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			_ = c.Close()
 		}
 		h2Transport.CloseIdleConnections()
-		decoyTransport.CloseIdleConnections()
 		if c, ok := tunnelTransport.(interface{ Close() error }); ok {
 			_ = c.Close()
 		}
@@ -263,8 +260,6 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		pc.Close()
 		return nil, ctx.Err()
 	}
-
-	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc, prof, dialTimeout)
 
 	return fc, nil
 }

@@ -131,6 +131,11 @@ type MLOptions struct {
 	SNIDomainsURL   string
 }
 
+type decoyActivity interface {
+	Enter()
+	Leave()
+}
+
 type Config struct {
 	ServerAddr           string
 	ServerAddrTCP        string
@@ -144,6 +149,7 @@ type Config struct {
 	ReconnectMaxDelay    time.Duration
 	MaxReconnectAttempts int
 	DisableAutoReconnect bool
+	DecoyGate            decoyActivity
 	ConnectionTimeout    time.Duration
 	EnableRotation       bool
 	RotationInterval     time.Duration
@@ -1448,10 +1454,21 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		return nil, fmt.Errorf("write connect header: %w", err)
 	}
 
+	if m.config.DecoyGate != nil {
+		m.config.DecoyGate.Enter()
+	}
+	streamClose := onClose
 	return &ackStripConn{
-		Conn:    proxyStream,
-		stream:  stream,
-		onClose: onClose,
+		Conn:   proxyStream,
+		stream: stream,
+		onClose: func() {
+			if m.config.DecoyGate != nil {
+				m.config.DecoyGate.Leave()
+			}
+			if streamClose != nil {
+				streamClose()
+			}
+		},
 		onAckFail: func() {
 			if mcForFail != nil {
 				m.forceReconnectFromStreamFailure(mcForFail, "connect ack timeout")

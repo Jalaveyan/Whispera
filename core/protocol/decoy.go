@@ -2,9 +2,11 @@ package protocol
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	mrand "math/rand"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -12,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 type decoyProxy struct {
@@ -96,142 +100,234 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	}
 }
 
-func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams, fc *FrameConn, prof browserProfile, reqTimeout time.Duration) {
-	get := func(path string) {
-		reqCtx, cancel := context.WithTimeout(ctx, reqTimeout)
-		defer cancel()
-		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet,
-			fmt.Sprintf("https://%s%s", serverAddr, path), nil)
-		if err != nil {
-			return
-		}
-		req.Host = sni
-		prof.apply(req, origin)
-		if resp, err := client.Do(req); err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-		}
-	}
+type DecoyGate struct {
+	mu      sync.Mutex
+	cond    *sync.Cond
+	open    int64
+	navEdge chan struct{}
+	closed  atomic.Bool
+	started atomic.Bool
+}
 
-	loadFactor := func() int {
-		if fc == nil {
-			return 1
-		}
-		bytes := fc.SampleAndResetBytes()
-		switch {
-		case bytes > 4<<20:
-			return 8
-		case bytes > 1<<20:
-			return 4
-		case bytes > 256<<10:
-			return 2
+func NewDecoyGate() *DecoyGate {
+	g := &DecoyGate{navEdge: make(chan struct{}, 1)}
+	g.cond = sync.NewCond(&g.mu)
+	return g
+}
+
+func (g *DecoyGate) Enter() {
+	g.mu.Lock()
+	if g.open == 0 {
+		select {
+		case g.navEdge <- struct{}{}:
 		default:
-			return 1
 		}
 	}
+	g.open++
+	g.mu.Unlock()
+}
 
-	burstFor := func(base int) int {
-		if fc == nil {
-			return base
-		}
-		recent := atomic.LoadUint64(&fc.bytesRecent)
-		switch {
-		case recent > 4<<20:
-			return 1
-		case recent > 1<<20:
-			if base > 2 {
-				return 2
-			}
-		}
-		return base
+func (g *DecoyGate) Leave() {
+	g.mu.Lock()
+	if g.open > 0 {
+		g.open--
 	}
-
-	heavyLoad := func() bool {
-		if fc == nil {
-			return false
-		}
-		return atomic.LoadUint64(&fc.bytesRecent) > 4<<20
+	if g.open == 0 {
+		g.cond.Broadcast()
 	}
+	g.mu.Unlock()
+}
 
-	sleep := func(ms int) bool {
-		ms *= loadFactor()
-		jitter := time.Duration(mrand.Intn(ms/4+1)) * time.Millisecond
+func (g *DecoyGate) Close() {
+	g.closed.Store(true)
+	g.mu.Lock()
+	g.cond.Broadcast()
+	g.mu.Unlock()
+}
+
+func (g *DecoyGate) waitIdle() {
+	g.mu.Lock()
+	for g.open > 0 && !g.closed.Load() {
+		g.cond.Wait()
+	}
+	g.mu.Unlock()
+}
+
+func (g *DecoyGate) idle() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.open == 0
+}
+
+type decoyDriver struct {
+	gate       *DecoyGate
+	client     *http.Client
+	prof       browserProfile
+	origin     string
+	serverAddr string
+	sni        string
+}
+
+func idleBeacon() time.Duration {
+	return time.Duration(45000+mrand.Intn(45001)) * time.Millisecond
+}
+
+func pickPath(s []string) string { return s[mrand.Intn(len(s))] }
+
+func (d *decoyDriver) get(ctx context.Context, path string) {
+	d.gate.waitIdle()
+	if ctx.Err() != nil {
+		return
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet,
+		fmt.Sprintf("https://%s%s", d.serverAddr, path), nil)
+	if err != nil {
+		return
+	}
+	req.Host = d.sni
+	d.prof.apply(req, d.origin)
+	if resp, err := d.client.Do(req); err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
+
+func (d *decoyDriver) parallelGet(ctx context.Context, paths []string, n int) {
+	if n > len(paths) {
+		n = len(paths)
+	}
+	if n <= 0 {
+		return
+	}
+	chosen := mrand.Perm(len(paths))[:n]
+	var wg sync.WaitGroup
+	for _, i := range chosen {
+		wg.Add(1)
+		p := paths[i]
+		go func() { defer wg.Done(); d.get(ctx, p) }()
+		time.Sleep(time.Duration(mrand.Intn(20)) * time.Millisecond)
+	}
+	wg.Wait()
+}
+
+func (d *decoyDriver) emitPageLoad(ctx context.Context) {
+	d.get(ctx, pickPath(decoyGraph[0]))
+	d.parallelGet(ctx, decoyGraph[1], 2+mrand.Intn(4))
+	d.parallelGet(ctx, decoyGraph[2], 1+mrand.Intn(2))
+	d.get(ctx, pickPath(decoyGraph[3]))
+}
+
+func (d *decoyDriver) run(ctx context.Context) {
+	beacon := time.NewTimer(idleBeacon())
+	defer beacon.Stop()
+	for {
 		select {
 		case <-ctx.Done():
-			return false
-		case <-time.After(time.Duration(ms)*time.Millisecond + jitter):
-			return true
+			return
+		case <-d.gate.navEdge:
+			d.emitPageLoad(ctx)
+		case <-beacon.C:
+			if d.gate.idle() {
+				d.get(ctx, pickPath(decoyGraph[3]))
+			}
+			beacon.Reset(idleBeacon())
 		}
 	}
+}
 
-	parallel := func(paths []string, n int) {
-		if n > len(paths) {
-			n = len(paths)
+func newDecoyClient(cfg *ClientConfig) (*http.Client, browserProfile, string, string, func()) {
+	sni := pickSNI(cfg)
+	helloID, helloSpec, uaID := pickFingerprint()
+	prof := newBrowserProfile(uaID)
+
+	var dialedMu sync.Mutex
+	var dialed []net.Conn
+
+	dial := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+		var rawConn net.Conn
+		var err error
+		if cfg.TCPDialer != nil {
+			rawConn, err = cfg.TCPDialer(ctx, network, addr)
+		} else {
+			d := &net.Dialer{Timeout: dialTimeout}
+			rawConn, err = d.DialContext(ctx, network, addr)
 		}
-		chosen := mrand.Perm(len(paths))[:n]
-		var wg sync.WaitGroup
-		for _, i := range chosen {
-			wg.Add(1)
-			p := paths[i]
-			go func() { defer wg.Done(); get(p) }()
-			time.Sleep(time.Duration(mrand.Intn(20)) * time.Millisecond)
+		if err != nil {
+			return nil, err
 		}
-		wg.Wait()
+		if tcpConn, ok := rawConn.(*net.TCPConn); ok {
+			tcpConn.SetNoDelay(true)
+		}
+		uCfg := &utls.Config{ServerName: sni, InsecureSkipVerify: true}
+		if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
+			uCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
+		}
+		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
+			uCfg.ClientSessionCache = sc
+		}
+		var uConn *utls.UConn
+		if helloSpec != nil {
+			uConn = utls.UClient(rawConn, uCfg, utls.HelloCustom)
+			if err := uConn.ApplyPreset(helloSpec); err != nil {
+				rawConn.Close()
+				return nil, err
+			}
+		} else {
+			uConn = utls.UClient(rawConn, uCfg, helloID)
+		}
+		if err := uConn.BuildHandshakeState(); err != nil {
+			rawConn.Close()
+			return nil, err
+		}
+		if err := uConn.HandshakeContext(ctx); err != nil {
+			rawConn.Close()
+			return nil, err
+		}
+		dialedMu.Lock()
+		dialed = append(dialed, uConn)
+		dialedMu.Unlock()
+		return uConn, nil
 	}
 
+	t := newH2Transport(dial)
+	client := &http.Client{
+		Transport:     t,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	cleanup := func() {
+		t.CloseIdleConnections()
+		dialedMu.Lock()
+		conns := dialed
+		dialed = nil
+		dialedMu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}
+	return client, prof, "https://" + sni, sni, cleanup
+}
+
+func StartDecoy(ctx context.Context, gate *DecoyGate, cfg *ClientConfig) {
+	if gate == nil || !gate.started.CompareAndSwap(false, true) {
+		return
+	}
+	client, prof, origin, sni, cleanup := newDecoyClient(cfg)
+	d := &decoyDriver{
+		gate:       gate,
+		client:     client,
+		prof:       prof,
+		origin:     origin,
+		serverAddr: cfg.ServerAddr,
+		sni:        sni,
+	}
 	go func() {
-		api := decoyGraph[3]
-		for {
-			ms := 3000 + mrand.Intn(5001)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Duration(ms) * time.Millisecond):
-			}
-			if heavyLoad() {
-				continue
-			}
-			get(api[mrand.Intn(len(api))])
-		}
+		<-ctx.Done()
+		gate.Close()
+		cleanup()
 	}()
-
-	shouldSkip := func() bool {
-		if fc == nil {
-			return false
-		}
-		return atomic.LoadUint64(&fc.bytesRecent) > 8<<20
-	}
-
-	for {
-		if shouldSkip() {
-			if !sleep(bp.ParseDelayMs * 4) {
-				return
-			}
-			continue
-		}
-		nav := decoyGraph[0]
-		get(nav[mrand.Intn(len(nav))])
-		if !sleep(bp.ParseDelayMs) {
-			return
-		}
-
-		parallel(decoyGraph[1], burstFor(bp.BurstSize))
-		if !sleep(20) {
-			return
-		}
-
-		parallel(decoyGraph[2], burstFor(1+mrand.Intn(2)))
-		if !sleep(bp.ParseDelayMs / 2) {
-			return
-		}
-
-		api := decoyGraph[3]
-		get(api[mrand.Intn(len(api))])
-
-		if !sleep(bp.IdleSec * 1000) {
-			return
-		}
-	}
+	go d.run(ctx)
 }
 
 func newDecoyProxy(origin string) *decoyProxy {
