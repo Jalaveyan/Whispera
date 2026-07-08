@@ -17,6 +17,7 @@ func TestHandleReadErrorTriggersReconnect(t *testing.T) {
 	mc := &managedConn{closing: make(chan struct{})}
 	m.connMu.Lock()
 	m.activeConn = mc
+	m.activePool = []*managedConn{mc}
 	m.connMu.Unlock()
 	m.setState(StateConnected)
 
@@ -29,7 +30,36 @@ func TestHandleReadErrorTriggersReconnect(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("handleReadError did not trigger Reconnect() after a non-timeout read error on the active connection")
+	t.Fatal("handleReadError did not trigger Reconnect() after a read error on the last pool connection")
+}
+
+func TestHandleReadErrorFailsOverWithSiblings(t *testing.T) {
+	m := newTestManager(t)
+	m.setState(StateConnected)
+
+	dead := &managedConn{closing: make(chan struct{})}
+	alive := &managedConn{closing: make(chan struct{})}
+	m.connMu.Lock()
+	m.activeConn = dead
+	m.activePool = []*managedConn{dead, alive}
+	m.connMu.Unlock()
+
+	m.handleReadError(dead, errors.New("read tcp: connection reset by peer"))
+
+	time.Sleep(50 * time.Millisecond)
+	if atomic.LoadUint32(&m.reconnectAttempts) != 0 {
+		t.Fatal("failover must not trigger a full reconnect while the pool has healthy siblings")
+	}
+	m.connMu.RLock()
+	poolLen := len(m.activePool)
+	active := m.activeConn
+	m.connMu.RUnlock()
+	if poolLen != 1 {
+		t.Fatalf("pool len = %d, want 1 (dead conn dropped)", poolLen)
+	}
+	if active != alive {
+		t.Fatal("active conn should be promoted to the surviving sibling")
+	}
 }
 
 func TestHandleReadErrorIgnoresTimeout(t *testing.T) {

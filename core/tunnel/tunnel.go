@@ -844,7 +844,6 @@ func (m *Manager) Disconnect() {
 
 func (m *Manager) triggerReconnect() {
 	if m.config.DisableAutoReconnect {
-		log.Error("tuntrace triggerReconnect -> Disconnect (DisableAutoReconnect) — tearing down whole pool")
 		m.Disconnect()
 		return
 	}
@@ -1290,12 +1289,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 }
 
 func (m *Manager) handleReadError(mc *managedConn, err error) {
-	isTimeout := false
 	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		isTimeout = true
-	}
-	log.Error("tuntrace handleReadError id=%s age=%s timeout=%v type=%T err=%v", mc.id, time.Since(mc.createdAt).Round(time.Millisecond), isTimeout, err, err)
-	if isTimeout {
 		return
 	}
 	if m.GetState() != StateConnected {
