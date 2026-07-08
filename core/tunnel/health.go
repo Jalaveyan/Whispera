@@ -20,15 +20,19 @@ func (p *poolHealthSampler) start() {
 	stop := make(chan struct{})
 	p.stopCh = stop
 	go func() {
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
+		sampleTick := time.NewTicker(3 * time.Second)
+		growTick := time.NewTicker(250 * time.Millisecond)
+		defer sampleTick.Stop()
+		defer growTick.Stop()
 		for {
 			select {
 			case <-stop:
 				return
-			case <-ticker.C:
+			case <-sampleTick.C:
+				p.sample()
+			case <-growTick.C:
+				m.growPoolUnderLoad()
 			}
-			p.sample()
 		}
 	}()
 }

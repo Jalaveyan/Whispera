@@ -133,10 +133,6 @@ func (k *keepaliveController) send() {
 		err := m.Send(pingFrame)
 		if err == nil {
 			atomic.StoreInt64(&m.lastKeepalive, time.Now().UnixNano())
-			lp := atomic.LoadInt64(&m.lastPong)
-			log.Error("tuntrace ka_ping_sent lastpong_age=%s idle=%s", time.Since(time.Unix(0, lp)).Round(time.Second), time.Since(m.LastActivity()).Round(time.Second))
-		} else {
-			log.Error("tuntrace ka_ping_send_err: %v", err)
 		}
 		done <- err
 	}()

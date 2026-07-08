@@ -255,6 +255,8 @@ type managedConn struct {
 
 const whisperaPoolMin = 1
 
+const growStaggerNs = int64(250 * time.Millisecond)
+
 func whisperaPoolCap() int {
 	n := runtime.GOMAXPROCS(0)
 	if n < whisperaPoolMin {
@@ -315,6 +317,7 @@ type Manager struct {
 	reconnectAttempts uint32
 	reconnecting      int32
 	poolGrowInflight  atomic.Int32
+	lastGrowNs        int64
 	bytesUp           uint64
 	bytesDown         uint64
 	lastKeepalive     int64
@@ -564,99 +567,24 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.setState(StateRotating)
 	}
 
-	targetPoolSize := whisperaPoolMin
-	if m.config.EnableWhispera {
-		targetPoolSize = whisperaPoolCap()
-	}
-	var connectedPool []*managedConn
-	var poolMu sync.Mutex
-	firstConnReady := make(chan *managedConn, 1)
-	firstConnErr := make(chan error, targetPoolSize)
-
-	spawnConnection := func(idx int) {
-		dialCtx, dialCancel := context.WithTimeout(ctx, m.config.ConnectionTimeout)
-		defer dialCancel()
-		mc, err := m.dialManagedConn(dialCtx, fmt.Sprintf("pool-%d-%d", time.Now().Unix(), idx))
-		if err != nil {
-			select {
-			case firstConnErr <- err:
-			default:
-			}
-			return
-		}
-
-		poolMu.Lock()
-		isFirst := len(connectedPool) == 0
-		connectedPool = append(connectedPool, mc)
-		poolMu.Unlock()
-
-		safeGo("readLoop", func() { m.readLoop(mc) })
-
-		if isFirst {
-			select {
-			case firstConnReady <- mc:
-			default:
-			}
-			return
-		}
-
-		m.connMu.Lock()
-		if !slices.Contains(m.activePool, mc) {
-			m.activePool = append(m.activePool, mc)
-		}
-		m.connMu.Unlock()
-	}
-
-	for i := 0; i < targetPoolSize; i++ {
-		idx := i
-		go func() {
-			if idx > 0 && m.config.EnableWhispera {
-				time.Sleep(time.Duration(mrand.Intn(40)) * time.Millisecond)
-			}
-			spawnConnection(idx)
-		}()
-	}
-
-	var firstConn *managedConn
-	errCount := 0
-	timeout := time.After(m.config.ConnectionTimeout)
-
-	select {
-	case firstConn = <-firstConnReady:
-	case <-timeout:
-		err := fmt.Errorf("connection timeout after %v", m.config.ConnectionTimeout)
+	firstConn, err := m.dialFirstConn(ctx)
+	if err != nil {
 		if !isRotation {
 			m.setError(err)
 		} else {
 			m.setState(StateConnected)
 		}
-		return err
-	case <-ctx.Done():
-		if isRotation {
-			m.setState(StateConnected)
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		return ctx.Err()
+		return err
 	}
 
-	if firstConn == nil {
-		for i := 0; i < targetPoolSize; i++ {
-			select {
-			case <-firstConnErr:
-				errCount++
-			default:
-			}
-		}
-		if errCount == targetPoolSize {
-			err := fmt.Errorf("failed to establish any connection in pool")
-			if !isRotation {
-				m.setError(err)
-			}
-			return err
-		}
-	}
+	safeGo("readLoop", func() { m.readLoop(firstConn) })
+	connectedPool := []*managedConn{firstConn}
 
 	if m.killSwitch != nil && m.config.KillSwitchEnabled {
-		m.enableKillSwitch(connectedPool[0].RemoteAddr())
+		m.enableKillSwitch(firstConn.RemoteAddr())
 	}
 
 	m.connMu.Lock()
@@ -668,7 +596,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	}
 
 	m.activePool = connectedPool
-	m.activeConn = connectedPool[0]
+	m.activeConn = firstConn
 	m.connMu.Unlock()
 
 	for _, mc := range connectedPool {
@@ -705,6 +633,43 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	}
 
 	return nil
+}
+
+func (m *Manager) dialFirstConn(ctx context.Context) (*managedConn, error) {
+	budget := m.config.ConnectionTimeout
+	if budget <= 0 {
+		budget = 30 * time.Second
+	}
+	perAttempt := budget
+	if perAttempt > 20*time.Second {
+		perAttempt = 20 * time.Second
+	}
+	deadline := time.Now().Add(budget)
+	backoff := 300 * time.Millisecond
+	var lastErr error
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		dialCtx, dialCancel := context.WithTimeout(ctx, perAttempt)
+		mc, err := m.dialManagedConn(dialCtx, fmt.Sprintf("pool-%d-0", time.Now().UnixNano()))
+		dialCancel()
+		if err == nil {
+			return mc, nil
+		}
+		lastErr = err
+		if !time.Now().Before(deadline) {
+			return nil, lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < 3*time.Second {
+			backoff *= 2
+		}
+	}
 }
 
 func (m *Manager) enableKillSwitch(remoteAddr net.Addr) {
@@ -778,16 +743,41 @@ func (m *Manager) maybeGrowPool(target int) {
 	if maxConns := whisperaPoolCap(); target > maxConns {
 		target = maxConns
 	}
-	for {
-		m.connMu.RLock()
-		cur := len(m.activePool)
-		m.connMu.RUnlock()
-		if cur == 0 || cur+int(m.poolGrowInflight.Load()) >= target {
-			return
-		}
-		m.poolGrowInflight.Add(1)
-		m.spawnPoolConn()
+	m.connMu.RLock()
+	cur := len(m.activePool)
+	m.connMu.RUnlock()
+	if cur == 0 || cur+int(m.poolGrowInflight.Load()) >= target {
+		return
 	}
+	now := time.Now().UnixNano()
+	last := atomic.LoadInt64(&m.lastGrowNs)
+	if now-last < growStaggerNs {
+		return
+	}
+	if !atomic.CompareAndSwapInt64(&m.lastGrowNs, last, now) {
+		return
+	}
+	m.poolGrowInflight.Add(1)
+	m.spawnPoolConn()
+}
+
+func (m *Manager) growPoolUnderLoad() {
+	if !m.config.EnableWhispera || m.GetState() != StateConnected {
+		return
+	}
+	m.connMu.RLock()
+	cur := len(m.activePool)
+	streams := 0
+	for _, mc := range m.activePool {
+		if mc != nil && mc.session != nil {
+			streams += mc.session.NumStreams()
+		}
+	}
+	m.connMu.RUnlock()
+	if cur == 0 || streams <= cur {
+		return
+	}
+	m.maybeGrowPool(1 + streams)
 }
 
 func (m *Manager) spawnPoolConn() {
@@ -1233,7 +1223,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 		if len(frameData) >= 3 && frameData[2] == 0x07 {
 			now := time.Now()
 			atomic.StoreInt64(&m.lastPong, now.UnixNano())
-			log.Error("tuntrace ka_pong_recv")
 			var rttMs float64
 			if ka := atomic.LoadInt64(&m.lastKeepalive); ka != 0 {
 				rtt := now.Sub(time.Unix(0, ka))

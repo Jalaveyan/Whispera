@@ -964,7 +964,7 @@ func main() {
 	}
 
 	if err := tunnelMod.Connect(ctx); err != nil {
-		stdlog.Printf("WARNING: Failed to connect to proxy server via:")
+		stdlog.Printf("WARNING: Failed to connect to proxy server: %v", err)
 		primaryEntry.mu.Lock()
 		primaryEntry.Status = connStatusFailed
 		primaryEntry.Error = err.Error()
@@ -978,7 +978,7 @@ func main() {
 			}
 		}
 		if !pool.AnyConnected() {
-			stdlog.Printf("Running in local proxy mode (traffic NOT encrypted)")
+			stdlog.Printf("Tunnel down — fail-closed: non-bypass traffic refused until reconnect (no unencrypted fallback); watchdog retrying")
 		}
 	} else {
 		primaryEntry.mu.Lock()
