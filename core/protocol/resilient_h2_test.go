@@ -1,5 +1,3 @@
-//go:build !race
-
 package protocol
 
 import (
@@ -126,12 +124,32 @@ func TestResilientOverRealH2POST(t *testing.T) {
 	lnAddr := freePort(t)
 	nonce, _ := mux2.NewResumeNonce()
 
+	const win = 32
 	type srvSess struct {
-		resumeCh chan net.Conn
-		counter  uint64
+		resumeCh   chan net.Conn
+		windowBase uint64
 	}
-	reg := map[[32]byte]*srvSess{}
+	type tokEntry struct {
+		sess *srvSess
+		n    uint64
+	}
+	reg := map[[32]byte]tokEntry{}
 	var regMu sync.Mutex
+	regWindow := func(s *srvSess, base uint64) {
+		for i := uint64(0); i < win; i++ {
+			var k [32]byte
+			copy(k[:], mux2.ResumeToken(rkey, nonce, base+i))
+			reg[k] = tokEntry{sess: s, n: base + i}
+		}
+		s.windowBase = base
+	}
+	unregWindow := func(s *srvSess) {
+		for i := uint64(0); i < win; i++ {
+			var k [32]byte
+			copy(k[:], mux2.ResumeToken(rkey, nonce, s.windowBase+i))
+			delete(reg, k)
+		}
+	}
 	gotBytes := make(chan []byte, 1)
 
 	onConn := func(conn net.Conn, userID string, sec []byte) {
@@ -142,12 +160,10 @@ func TestResilientOverRealH2POST(t *testing.T) {
 		}
 		switch typ {
 		case mux2.ResumeEstablish:
-			s := &srvSess{resumeCh: make(chan net.Conn, 1), counter: 1}
+			s := &srvSess{resumeCh: make(chan net.Conn, 1)}
 			s.resumeCh <- conn
-			var k [32]byte
-			copy(k[:], mux2.ResumeToken(rkey, payload, 2))
 			regMu.Lock()
-			reg[k] = s
+			regWindow(s, 2)
 			regMu.Unlock()
 			nextUnder := func() (net.Conn, error) {
 				select {
@@ -175,21 +191,18 @@ func TestResilientOverRealH2POST(t *testing.T) {
 			var k [32]byte
 			copy(k[:], payload)
 			regMu.Lock()
-			s := reg[k]
-			if s != nil {
-				delete(reg, k)
-				s.counter++
-				var nk [32]byte
-				copy(nk[:], mux2.ResumeToken(rkey, nonce, s.counter+1))
-				reg[nk] = s
+			ent, ok := reg[k]
+			if ok {
+				unregWindow(ent.sess)
+				regWindow(ent.sess, ent.n+1)
 			}
 			regMu.Unlock()
-			if s == nil {
+			if !ok {
 				conn.Close()
 				return
 			}
 			select {
-			case s.resumeCh <- conn:
+			case ent.sess.resumeCh <- conn:
 			default:
 				conn.Close()
 			}
@@ -231,31 +244,43 @@ func TestResilientOverRealH2POST(t *testing.T) {
 	var cmu sync.Mutex
 	var curFc atomic.Value
 	redial := func() (net.Conn, error) {
-		fc, err := Client(ctx, &ClientConfig{
-			ServerAddr:   proxyAddr,
-			ServerName:   "example.com",
-			SharedSecret: secret,
-		})
-		if err != nil {
-			return nil, err
+		backoff := 100 * time.Millisecond
+		for {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			fc, err := Client(ctx, &ClientConfig{
+				ServerAddr:   proxyAddr,
+				ServerName:   "example.com",
+				SharedSecret: secret,
+			})
+			if err == nil {
+				cmu.Lock()
+				counter++
+				n := counter
+				cmu.Unlock()
+				var typ byte
+				var pl []byte
+				if n == 1 {
+					typ, pl = mux2.ResumeEstablish, nonce
+				} else {
+					typ, pl = mux2.ResumeResume, mux2.ResumeToken(rkey, nonce, n)
+				}
+				if werr := mux2.WriteResumeHeader(fc, typ, pl); werr == nil {
+					curFc.Store(fc)
+					return fc, nil
+				}
+				fc.Close()
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			if backoff < 2*time.Second {
+				backoff *= 2
+			}
 		}
-		cmu.Lock()
-		counter++
-		n := counter
-		cmu.Unlock()
-		var typ byte
-		var pl []byte
-		if n == 1 {
-			typ, pl = mux2.ResumeEstablish, nonce
-		} else {
-			typ, pl = mux2.ResumeResume, mux2.ResumeToken(rkey, nonce, n)
-		}
-		if err := mux2.WriteResumeHeader(fc, typ, pl); err != nil {
-			fc.Close()
-			return nil, err
-		}
-		curFc.Store(fc)
-		return fc, nil
 	}
 
 	rc := mux2.NewResilientConn(strAddrT("cli"), strAddrT("srv"), redial)

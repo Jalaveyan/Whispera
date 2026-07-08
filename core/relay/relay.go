@@ -145,21 +145,45 @@ type Server struct {
 	streamSem chan struct{}
 
 	resilientMu       sync.Mutex
-	resilientSessions map[[32]byte]*resilientSession
+	resilientSessions map[[32]byte]resilientToken
 
 	log *logger.Logger
 	mu  sync.RWMutex
 }
 
 type resilientSession struct {
-	resumeCh  chan net.Conn
-	key       []byte
-	nonce     []byte
-	counter   uint64
-	closeOnce sync.Once
+	resumeCh   chan net.Conn
+	key        []byte
+	nonce      []byte
+	windowBase uint64
+	closeOnce  sync.Once
+}
+
+type resilientToken struct {
+	sess *resilientSession
+	n    uint64
 }
 
 func (rs *resilientSession) shutdown() { rs.closeOnce.Do(func() { close(rs.resumeCh) }) }
+
+const resilientTokenWindow = 32
+
+func (s *Server) registerResilientWindow(sess *resilientSession, base uint64) {
+	for i := uint64(0); i < resilientTokenWindow; i++ {
+		var k [32]byte
+		copy(k[:], mux2.ResumeToken(sess.key, sess.nonce, base+i))
+		s.resilientSessions[k] = resilientToken{sess: sess, n: base + i}
+	}
+	sess.windowBase = base
+}
+
+func (s *Server) unregisterResilientWindow(sess *resilientSession) {
+	for i := uint64(0); i < resilientTokenWindow; i++ {
+		var k [32]byte
+		copy(k[:], mux2.ResumeToken(sess.key, sess.nonce, sess.windowBase+i))
+		delete(s.resilientSessions, k)
+	}
+}
 
 type strAddr string
 
@@ -188,7 +212,7 @@ func New(cfg *Config) (*Server, error) {
 		Module:            base.NewModule(ModuleName, ModuleVersion, nil),
 		config:            cfg,
 		streamSem:         make(chan struct{}, limit),
-		resilientSessions: make(map[[32]byte]*resilientSession),
+		resilientSessions: make(map[[32]byte]resilientToken),
 		log:               logger.Module("relay"),
 	}
 
@@ -319,21 +343,18 @@ func (s *Server) resilientAccept(conn net.Conn, secret []byte, clientID string) 
 		var k [32]byte
 		copy(k[:], payload)
 		s.resilientMu.Lock()
-		sess := s.resilientSessions[k]
-		if sess != nil {
-			delete(s.resilientSessions, k)
-			sess.counter++
-			var nk [32]byte
-			copy(nk[:], mux2.ResumeToken(sess.key, sess.nonce, sess.counter+1))
-			s.resilientSessions[nk] = sess
+		ent, ok := s.resilientSessions[k]
+		if ok {
+			s.unregisterResilientWindow(ent.sess)
+			s.registerResilientWindow(ent.sess, ent.n+1)
 		}
 		s.resilientMu.Unlock()
-		if sess == nil {
+		if !ok {
 			conn.Close()
 			return nil, nil, false
 		}
 		select {
-		case sess.resumeCh <- conn:
+		case ent.sess.resumeCh <- conn:
 		default:
 			conn.Close()
 		}
@@ -343,11 +364,9 @@ func (s *Server) resilientAccept(conn net.Conn, secret []byte, clientID string) 
 		nonce := append([]byte(nil), payload...)
 		resumeCh := make(chan net.Conn, 1)
 		resumeCh <- conn
-		sess := &resilientSession{resumeCh: resumeCh, key: key, nonce: nonce, counter: 1}
-		var firstTok [32]byte
-		copy(firstTok[:], mux2.ResumeToken(key, nonce, 2))
+		sess := &resilientSession{resumeCh: resumeCh, key: key, nonce: nonce}
 		s.resilientMu.Lock()
-		s.resilientSessions[firstTok] = sess
+		s.registerResilientWindow(sess, 2)
 		s.resilientMu.Unlock()
 
 		nextUnder := func() (net.Conn, error) {
@@ -364,11 +383,7 @@ func (s *Server) resilientAccept(conn net.Conn, secret []byte, clientID string) 
 		rc := mux2.NewResilientConn(strAddr(clientID), strAddr(clientID), nextUnder)
 		cleanup := func() {
 			s.resilientMu.Lock()
-			for kk, v := range s.resilientSessions {
-				if v == sess {
-					delete(s.resilientSessions, kk)
-				}
-			}
+			s.unregisterResilientWindow(sess)
 			s.resilientMu.Unlock()
 			sess.shutdown()
 			rc.Close()
