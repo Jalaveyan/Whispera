@@ -3,7 +3,10 @@ package mux
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -194,3 +197,193 @@ func TestResumeHeaderRoundTrip(t *testing.T) {
 		t.Fatal("payload roundtrip mismatch")
 	}
 }
+
+func TestResilientYamuxSurvivesDrop(t *testing.T) {
+	key := DeriveResumeKey(bytes.Repeat([]byte{7}, 32))
+	nonce, err := NewResumeNonce()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	addr := ln.Addr().String()
+
+	type srvSess struct {
+		resumeCh chan net.Conn
+		counter  uint64
+	}
+	reg := map[[32]byte]*srvSess{}
+	var regMu sync.Mutex
+	gotSession := make(chan *Session, 1)
+
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				typ, payload, err := ReadResumeHeader(c)
+				if err != nil {
+					c.Close()
+					return
+				}
+				switch typ {
+				case ResumeEstablish:
+					s := &srvSess{resumeCh: make(chan net.Conn, 1), counter: 1}
+					s.resumeCh <- c
+					var k [32]byte
+					copy(k[:], ResumeToken(key, nonce, 2))
+					regMu.Lock()
+					reg[k] = s
+					regMu.Unlock()
+					nextUnder := func() (net.Conn, error) {
+						select {
+						case cc, ok := <-s.resumeCh:
+							if !ok {
+								return nil, io.EOF
+							}
+							return cc, nil
+						case <-time.After(10 * time.Second):
+							return nil, io.EOF
+						}
+					}
+					rc := NewResilientConn(c.LocalAddr(), c.RemoteAddr(), nextUnder)
+					srv, err := Server(rc, &Config{MaxStreamBuffer: 1 << 20})
+					if err != nil {
+						return
+					}
+					gotSession <- srv
+				case ResumeResume:
+					var k [32]byte
+					copy(k[:], payload)
+					regMu.Lock()
+					s := reg[k]
+					if s != nil {
+						delete(reg, k)
+						s.counter++
+						var nk [32]byte
+						copy(nk[:], ResumeToken(key, nonce, s.counter+1))
+						reg[nk] = s
+					}
+					regMu.Unlock()
+					if s == nil {
+						c.Close()
+						return
+					}
+					select {
+					case s.resumeCh <- c:
+					default:
+						c.Close()
+					}
+				default:
+					c.Close()
+				}
+			}(c)
+		}
+	}()
+
+	var counter uint64
+	var cmu sync.Mutex
+	var curUnder atomic.Value
+	redial := func() (net.Conn, error) {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		cmu.Lock()
+		counter++
+		n := counter
+		cmu.Unlock()
+		var typ byte
+		var payload []byte
+		if n == 1 {
+			typ, payload = ResumeEstablish, nonce
+		} else {
+			typ, payload = ResumeResume, ResumeToken(key, nonce, n)
+		}
+		if err := WriteResumeHeader(c, typ, payload); err != nil {
+			c.Close()
+			return nil, err
+		}
+		curUnder.Store(c)
+		return c, nil
+	}
+
+	clientRC := NewResilientConn(strTestAddr("c"), strTestAddr("s"), redial)
+	cli, err := Client(clientRC, &Config{MaxStreamBuffer: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := cli.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const total = 256 * 1024
+	payload := make([]byte, total)
+	for i := range payload {
+		payload[i] = byte(i * 31)
+	}
+
+	writeErr := make(chan error, 1)
+	go func() {
+		if _, err := stream.Write(payload[:total/2]); err != nil {
+			writeErr <- err
+			return
+		}
+		if c, ok := curUnder.Load().(net.Conn); ok {
+			c.Close()
+		}
+		time.Sleep(150 * time.Millisecond)
+		if _, err := stream.Write(payload[total/2:]); err != nil {
+			writeErr <- err
+			return
+		}
+		stream.Close()
+		writeErr <- nil
+	}()
+
+	var srv *Session
+	select {
+	case srv = <-gotSession:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server session not established")
+	}
+
+	sstream, err := srv.AcceptStream()
+	if err != nil {
+		t.Fatalf("server accept: %v", err)
+	}
+
+	got := make([]byte, 0, total)
+	buf := make([]byte, 32*1024)
+	deadline := time.Now().Add(15 * time.Second)
+	for len(got) < total {
+		sstream.SetReadDeadline(deadline)
+		n, err := sstream.Read(buf)
+		got = append(got, buf[:n]...)
+		if err != nil {
+			break
+		}
+	}
+
+	if err := <-writeErr; err != nil {
+		t.Fatalf("client write: %v", err)
+	}
+	if len(got) != total {
+		t.Fatalf("got %d bytes, want %d", len(got), total)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatal("payload corrupted across transport drop")
+	}
+}
+
+type strTestAddr string
+
+func (a strTestAddr) Network() string { return "tcp" }
+func (a strTestAddr) String() string  { return string(a) }
