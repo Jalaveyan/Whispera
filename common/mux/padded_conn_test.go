@@ -157,3 +157,40 @@ func TestPaddedConn_SkipsZeroDataFrame(t *testing.T) {
 		t.Fatalf("got %q, want %q (zero-data frame not skipped?)", tmp[:n], "world")
 	}
 }
+
+func TestResumeToken(t *testing.T) {
+	key := []byte("session-key-000000000000000000000")
+	nonce := []byte("nonce-1234567890")
+
+	if !bytes.Equal(ResumeToken(key, nonce, 1), ResumeToken(key, nonce, 1)) {
+		t.Fatal("ResumeToken not deterministic")
+	}
+	if bytes.Equal(ResumeToken(key, nonce, 1), ResumeToken(key, nonce, 2)) {
+		t.Fatal("ResumeToken did not roll between counters")
+	}
+	other := []byte("other-nonce-4567")
+	if bytes.Equal(ResumeToken(key, nonce, 1), ResumeToken(key, other, 1)) {
+		t.Fatal("ResumeToken did not depend on nonce")
+	}
+	if len(ResumeToken(key, nonce, 1)) != resumeTokenLen {
+		t.Fatalf("token len = %d, want %d", len(ResumeToken(key, nonce, 1)), resumeTokenLen)
+	}
+}
+
+func TestResumeHeaderRoundTrip(t *testing.T) {
+	tok := ResumeToken([]byte("k"), []byte("n"), 3)
+	var buf bytes.Buffer
+	if err := WriteResumeHeader(&buf, ResumeResume, tok); err != nil {
+		t.Fatal(err)
+	}
+	typ, payload, err := ReadResumeHeader(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if typ != ResumeResume {
+		t.Fatalf("type = %d, want %d", typ, ResumeResume)
+	}
+	if !bytes.Equal(payload, tok) {
+		t.Fatal("payload roundtrip mismatch")
+	}
+}

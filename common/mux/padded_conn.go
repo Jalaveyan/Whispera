@@ -1,7 +1,9 @@
 package mux
 
 import (
+	"crypto/hmac"
 	crand "crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -434,3 +436,54 @@ func (c *ResilientConn) RemoteAddr() net.Addr               { return c.remoteAdd
 func (c *ResilientConn) SetDeadline(t time.Time) error      { return nil }
 func (c *ResilientConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *ResilientConn) SetWriteDeadline(t time.Time) error { return nil }
+
+const (
+	ResumeEstablish byte = 0x01
+	ResumeResume    byte = 0x02
+)
+
+const resumeNonceLen = 16
+const resumeTokenLen = sha256.Size
+
+func NewResumeNonce() ([]byte, error) {
+	n := make([]byte, resumeNonceLen)
+	if _, err := crand.Read(n); err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+func ResumeToken(sessionKey, nonce []byte, counter uint64) []byte {
+	m := hmac.New(sha256.New, sessionKey)
+	m.Write(nonce)
+	var c [8]byte
+	binary.BigEndian.PutUint64(c[:], counter)
+	m.Write(c[:])
+	return m.Sum(nil)
+}
+
+func WriteResumeHeader(w io.Writer, typ byte, payload []byte) error {
+	if len(payload) > 0xffff {
+		return fmt.Errorf("resilient: resume payload too big %d", len(payload))
+	}
+	b := make([]byte, 3+len(payload))
+	b[0] = typ
+	binary.BigEndian.PutUint16(b[1:3], uint16(len(payload)))
+	copy(b[3:], payload)
+	_, err := w.Write(b)
+	return err
+}
+
+func ReadResumeHeader(r io.Reader) (typ byte, payload []byte, err error) {
+	h := make([]byte, 3)
+	if _, err = io.ReadFull(r, h); err != nil {
+		return
+	}
+	typ = h[0]
+	n := binary.BigEndian.Uint16(h[1:3])
+	if n > 0 {
+		payload = make([]byte, n)
+		_, err = io.ReadFull(r, payload)
+	}
+	return
+}
