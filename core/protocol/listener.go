@@ -399,7 +399,7 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	}
 
 	if cfg.OnConn != nil {
-		cfg.OnConn(fc, userID)
+		cfg.OnConn(fc, userID, secret)
 	}
 
 	select {

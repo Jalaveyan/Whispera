@@ -163,9 +163,10 @@ const (
 )
 
 const (
-	resilientMaxUnacked = 16 << 20
-	resilientChunk      = 60000
-	resilientMaxFrame   = 1 << 20
+	resilientMaxUnacked     = 16 << 20
+	resilientChunk          = 60000
+	resilientMaxFrame       = 1 << 20
+	resilientMaxResumeFails = 5
 )
 
 type ResilientConn struct {
@@ -183,6 +184,7 @@ type ResilientConn struct {
 	sendSeq     uint64
 	sendUnacked uint64
 	sendBuf     []byte
+	resumeFails int
 
 	recvSeq uint64
 
@@ -233,8 +235,14 @@ func (c *ResilientConn) run() {
 
 		if err := c.resume(under); err != nil {
 			c.dropUnder(under)
+			c.resumeFails++
+			if c.resumeFails >= resilientMaxResumeFails {
+				c.fail(err)
+				return
+			}
 			continue
 		}
+		c.resumeFails = 0
 		c.readLoop(under)
 		c.dropUnder(under)
 	}

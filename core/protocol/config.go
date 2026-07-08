@@ -41,7 +41,7 @@ type ServerConfig struct {
 	ExtraQUICListenAddrs []string
 
 	GetUsers         func() []UserEntry
-	OnConn           func(conn net.Conn, userID string)
+	OnConn           func(conn net.Conn, userID string, secret []byte)
 	GANDecide        GANDecideFunc
 	IsNeuralDisabled func(userID string) bool
 

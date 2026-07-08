@@ -398,7 +398,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	}
 
 	if cfg.OnConn != nil {
-		cfg.OnConn(fc, userID)
+		cfg.OnConn(fc, userID, nil)
 	}
 
 	<-done
@@ -511,7 +511,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig
 		}
 
 		if cfg.OnConn != nil {
-			cfg.OnConn(fc, userID)
+			cfg.OnConn(fc, userID, nil)
 		}
 		<-done
 	}()

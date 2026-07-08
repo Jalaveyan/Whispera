@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -143,9 +144,27 @@ type Server struct {
 
 	streamSem chan struct{}
 
+	resilientMu       sync.Mutex
+	resilientSessions map[[32]byte]*resilientSession
+
 	log *logger.Logger
 	mu  sync.RWMutex
 }
+
+type resilientSession struct {
+	resumeCh  chan net.Conn
+	key       []byte
+	nonce     []byte
+	counter   uint64
+	closeOnce sync.Once
+}
+
+func (rs *resilientSession) shutdown() { rs.closeOnce.Do(func() { close(rs.resumeCh) }) }
+
+type strAddr string
+
+func (a strAddr) Network() string { return "tcp" }
+func (a strAddr) String() string  { return string(a) }
 
 type copyResult struct {
 	n   int64
@@ -166,10 +185,11 @@ func New(cfg *Config) (*Server, error) {
 		limit = 1024
 	}
 	s := &Server{
-		Module:    base.NewModule(ModuleName, ModuleVersion, nil),
-		config:    cfg,
-		streamSem: make(chan struct{}, limit),
-		log:       logger.Module("relay"),
+		Module:            base.NewModule(ModuleName, ModuleVersion, nil),
+		config:            cfg,
+		streamSem:         make(chan struct{}, limit),
+		resilientSessions: make(map[[32]byte]*resilientSession),
+		log:               logger.Module("relay"),
 	}
 
 	s.proxyDialer = proxy.Direct
@@ -254,34 +274,134 @@ func (c *byteCountConn) Read(b []byte) (int, error) {
 }
 
 func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, true)
+	s.serveTunnel(conn, streamObf, true, nil)
 }
 
 func (s *Server) ServeTunnelRaw(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, false)
+	s.serveTunnel(conn, streamObf, false, nil)
 }
 
-func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
-	defer conn.Close()
+func (s *Server) ServeTunnelResilient(conn net.Conn, streamObf bool, secret []byte) {
+	s.serveTunnel(conn, streamObf, true, secret)
+}
+
+func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool, secret []byte) {
 	clientID := conn.RemoteAddr().String()
+
+	if len(secret) == 32 && os.Getenv("WHISPERA_RESILIENT") == "1" {
+		under, cleanup, ok := s.resilientAccept(conn, secret, clientID)
+		if !ok {
+			return
+		}
+		defer cleanup()
+		s.runSession(under, streamObf, usePadding, clientID)
+		return
+	}
+
+	defer conn.Close()
+	s.runSession(conn, streamObf, usePadding, clientID)
+}
+
+const resilientSessionTTL = 2 * time.Minute
+
+func (s *Server) resilientAccept(conn net.Conn, secret []byte, clientID string) (net.Conn, func(), bool) {
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	typ, payload, err := mux2.ReadResumeHeader(conn)
+	_ = conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		conn.Close()
+		return nil, nil, false
+	}
+	key := mux2.DeriveResumeKey(secret)
+
+	switch typ {
+	case mux2.ResumeResume:
+		var k [32]byte
+		copy(k[:], payload)
+		s.resilientMu.Lock()
+		sess := s.resilientSessions[k]
+		if sess != nil {
+			delete(s.resilientSessions, k)
+			sess.counter++
+			var nk [32]byte
+			copy(nk[:], mux2.ResumeToken(sess.key, sess.nonce, sess.counter+1))
+			s.resilientSessions[nk] = sess
+		}
+		s.resilientMu.Unlock()
+		if sess == nil {
+			conn.Close()
+			return nil, nil, false
+		}
+		select {
+		case sess.resumeCh <- conn:
+		default:
+			conn.Close()
+		}
+		return nil, nil, false
+
+	case mux2.ResumeEstablish:
+		nonce := append([]byte(nil), payload...)
+		resumeCh := make(chan net.Conn, 1)
+		resumeCh <- conn
+		sess := &resilientSession{resumeCh: resumeCh, key: key, nonce: nonce, counter: 1}
+		var firstTok [32]byte
+		copy(firstTok[:], mux2.ResumeToken(key, nonce, 2))
+		s.resilientMu.Lock()
+		s.resilientSessions[firstTok] = sess
+		s.resilientMu.Unlock()
+
+		nextUnder := func() (net.Conn, error) {
+			select {
+			case c, ok := <-resumeCh:
+				if !ok {
+					return nil, io.EOF
+				}
+				return c, nil
+			case <-time.After(resilientSessionTTL):
+				return nil, io.EOF
+			}
+		}
+		rc := mux2.NewResilientConn(strAddr(clientID), strAddr(clientID), nextUnder)
+		cleanup := func() {
+			s.resilientMu.Lock()
+			for kk, v := range s.resilientSessions {
+				if v == sess {
+					delete(s.resilientSessions, kk)
+				}
+			}
+			s.resilientMu.Unlock()
+			sess.shutdown()
+			rc.Close()
+		}
+		return rc, cleanup, true
+
+	default:
+		conn.Close()
+		return nil, nil, false
+	}
+}
+
+func (s *Server) runSession(under net.Conn, streamObf bool, usePadding bool, clientID string) {
 	traceID := atomic.AddUint64(&tunnelTraceSeq, 1)
 	startedAt := time.Now()
 	logger.Trace().Infow("serve_tunnel_enter",
 		"trace_id", traceID,
 		"client", clientID,
-		"conn_type", fmt.Sprintf("%T", conn),
+		"conn_type", fmt.Sprintf("%T", under),
 		"stream_obf", streamObf,
 		"use_padding", usePadding,
 	)
 
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
+	if tcpConn, ok := under.(*net.TCPConn); ok {
 		_ = tcpConn.SetNoDelay(true)
 		_ = tcpConn.SetKeepAlive(true)
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
 	const firstStreamTimeout = 3 * time.Second
-	_ = conn.SetReadDeadline(time.Now().Add(firstStreamTimeout))
+	_ = under.SetReadDeadline(time.Now().Add(firstStreamTimeout))
+
+	conn := under
 
 	muxCfg := &mux2.Config{
 		MaxFrameSize:         65535,

@@ -835,7 +835,7 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 			}
 			return entries
 		},
-		OnConn: func(conn net.Conn, userID string) {
+		OnConn: func(conn net.Conn, userID string, secret []byte) {
 			log.Info("whispera: tunnel connected userID=%s remote=%s", userID, conn.RemoteAddr())
 			flowLabel := neural.FlowTunnel
 			if apiserver.IsNeuralDisabled(userID) {
@@ -844,7 +844,7 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 			neural.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), flowLabel)
 			tracked := stats.WrapConn(conn, userID)
 			go func() {
-				globalRelay.ServeTunnel(tracked, false)
+				globalRelay.ServeTunnelResilient(tracked, false, secret)
 				neural.FlowRegistry.DeleteConn(conn.LocalAddr(), conn.RemoteAddr())
 				log.Info("whispera: tunnel closed userID=%s remote=%s", userID, conn.RemoteAddr())
 			}()
