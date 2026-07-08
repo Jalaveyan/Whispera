@@ -453,6 +453,12 @@ func NewResumeNonce() ([]byte, error) {
 	return n, nil
 }
 
+func DeriveResumeKey(secret []byte) []byte {
+	m := hmac.New(sha256.New, secret)
+	m.Write([]byte("whispera-resilient-resume-v1"))
+	return m.Sum(nil)
+}
+
 func ResumeToken(sessionKey, nonce []byte, counter uint64) []byte {
 	m := hmac.New(sha256.New, sessionKey)
 	m.Write(nonce)
