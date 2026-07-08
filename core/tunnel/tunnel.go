@@ -1233,6 +1233,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 		if len(frameData) >= 3 && frameData[2] == 0x07 {
 			now := time.Now()
 			atomic.StoreInt64(&m.lastPong, now.UnixNano())
+			log.Error("tuntrace ka_pong_recv")
 			var rttMs float64
 			if ka := atomic.LoadInt64(&m.lastKeepalive); ka != 0 {
 				rtt := now.Sub(time.Unix(0, ka))
