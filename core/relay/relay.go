@@ -485,7 +485,7 @@ func (s *Server) runSession(under net.Conn, streamObf bool, usePadding bool, cli
 					io.Copy(io.Discard, transport.WrapStreamTLS(stream))
 				}()
 			} else {
-				go s.serveControlStream(stream, session)
+				go s.serveControlStream(stream, session, clientID)
 			}
 			continue
 		}
@@ -509,8 +509,19 @@ func (s *Server) runSession(under net.Conn, streamObf bool, usePadding bool, cli
 	}
 }
 
-func (s *Server) serveControlStream(stream net.Conn, session *mux2.Session) {
+func (s *Server) serveControlStream(stream net.Conn, session *mux2.Session, clientID string) {
 	defer stream.Close()
+	started := time.Now()
+	pings := 0
+	exitReason := "read-err"
+	defer func() {
+		logger.Trace().Warnw("control_stream_exit",
+			"client", clientID,
+			"pings", pings,
+			"dur_ms", time.Since(started).Milliseconds(),
+			"reason", exitReason,
+		)
+	}()
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Error("PANIC in serveControlStream: %v\n%s", r, debug.Stack())
@@ -538,6 +549,9 @@ func (s *Server) serveControlStream(stream net.Conn, session *mux2.Session) {
 				if idlePolls++; idlePolls < maxIdlePolls {
 					continue
 				}
+				exitReason = "idle-reap"
+			} else {
+				exitReason = fmt.Sprintf("read-err n=%d: %v", n, err)
 			}
 			return
 		}
@@ -545,19 +559,28 @@ func (s *Server) serveControlStream(stream net.Conn, session *mux2.Session) {
 		idlePolls = 0
 		payloadLen := binary.BigEndian.Uint32(hdr[4:8])
 		if payloadLen > 131072 {
+			exitReason = "bad-payload-len"
 			return
 		}
 		if payloadLen > 0 {
 			if _, err := io.CopyN(io.Discard, stream, int64(payloadLen)); err != nil {
+				exitReason = "payload-read-err"
 				return
 			}
 		}
 		if hdr[2] != 0x06 {
 			continue
 		}
+		pings++
+		logger.Trace().Infow("control_ping",
+			"client", clientID,
+			"n", pings,
+			"since_ms", time.Since(started).Milliseconds(),
+		)
 		pong := [8]byte{}
 		pong[2] = 0x07
 		if _, err := stream.Write(pong[:]); err != nil {
+			exitReason = fmt.Sprintf("pong-write-err: %v", err)
 			return
 		}
 	}
