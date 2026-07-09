@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdlog "log"
 	"math"
 	mrand "math/rand"
 	"net"
@@ -822,6 +823,7 @@ func (m *Manager) Disconnect() {
 }
 
 func (m *Manager) triggerReconnect() {
+	stdlog.Printf("[tunnel] reconnect triggered: state=%v lastErr=%v", m.GetState(), m.sm.LastError())
 	if m.config.DisableAutoReconnect {
 		m.Disconnect()
 		return
