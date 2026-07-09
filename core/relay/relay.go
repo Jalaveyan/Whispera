@@ -312,13 +312,27 @@ func (s *Server) ServeTunnelResilient(conn net.Conn, streamObf bool, secret []by
 func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool, secret []byte) {
 	clientID := conn.RemoteAddr().String()
 
-	if len(secret) == 32 && os.Getenv("WHISPERA_RESILIENT") == "1" {
-		under, cleanup, ok := s.resilientAccept(conn, secret, clientID)
-		if !ok {
+	if len(secret) == 32 && os.Getenv("WHISPERA_RESILIENT") != "0" {
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		hdr := make([]byte, mux2.ResumeHeaderPrefixLen)
+		_, err := io.ReadFull(conn, hdr)
+		_ = conn.SetReadDeadline(time.Time{})
+		if err != nil {
+			conn.Close()
 			return
 		}
-		defer cleanup()
-		s.runSession(under, streamObf, usePadding, clientID)
+		if mux2.IsResumeHeader(hdr) {
+			under, cleanup, ok := s.resilientAccept(conn, hdr, secret, clientID)
+			if !ok {
+				return
+			}
+			defer cleanup()
+			s.runSession(under, streamObf, usePadding, clientID)
+			return
+		}
+		pc := &prefixConn{Conn: conn, prefix: hdr}
+		defer pc.Close()
+		s.runSession(pc, streamObf, usePadding, clientID)
 		return
 	}
 
@@ -326,11 +340,28 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool, sec
 	s.runSession(conn, streamObf, usePadding, clientID)
 }
 
+type prefixConn struct {
+	net.Conn
+	prefix []byte
+}
+
+func (c *prefixConn) Read(p []byte) (int, error) {
+	if len(c.prefix) > 0 {
+		n := copy(p, c.prefix)
+		c.prefix = c.prefix[n:]
+		return n, nil
+	}
+	return c.Conn.Read(p)
+}
+
 const resilientSessionTTL = 2 * time.Minute
 
-func (s *Server) resilientAccept(conn net.Conn, secret []byte, clientID string) (net.Conn, func(), bool) {
+func (s *Server) resilientAccept(conn net.Conn, hdr []byte, secret []byte, clientID string) (net.Conn, func(), bool) {
+	typ := hdr[0]
+	n := binary.BigEndian.Uint16(hdr[1:3])
+	payload := make([]byte, n)
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	typ, payload, err := mux2.ReadResumeHeader(conn)
+	_, err := io.ReadFull(conn, payload)
 	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		conn.Close()

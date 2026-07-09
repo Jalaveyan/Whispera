@@ -476,6 +476,23 @@ func ResumeToken(sessionKey, nonce []byte, counter uint64) []byte {
 	return m.Sum(nil)
 }
 
+const ResumeHeaderPrefixLen = 3
+
+func IsResumeHeader(prefix []byte) bool {
+	if len(prefix) < ResumeHeaderPrefixLen {
+		return false
+	}
+	n := binary.BigEndian.Uint16(prefix[1:3])
+	switch prefix[0] {
+	case ResumeEstablish:
+		return n == resumeNonceLen
+	case ResumeResume:
+		return n == resumeTokenLen
+	default:
+		return false
+	}
+}
+
 func WriteResumeHeader(w io.Writer, typ byte, payload []byte) error {
 	if len(payload) > 0xffff {
 		return fmt.Errorf("resilient: resume payload too big %d", len(payload))
