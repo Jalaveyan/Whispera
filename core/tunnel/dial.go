@@ -54,7 +54,7 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 }
 
 func (m *Manager) resilientEnabled() bool {
-	return m.config.EnableWhispera && len(m.config.WhisperaSecret) == 32 && os.Getenv("WHISPERA_RESILIENT") != "0"
+	return m.config.EnableWhispera && len(m.config.WhisperaSecret) == 32 && os.Getenv("WHISPERA_RESILIENT") == "1"
 }
 
 type resilientAddr string
