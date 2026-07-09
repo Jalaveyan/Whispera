@@ -16,15 +16,18 @@ import (
 	http3 "github.com/quic-go/quic-go/http3"
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
+
+	"whispera/common/buf"
 )
 
 const dialTimeout = 10 * time.Second
 
 func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net.Conn, error)) *http2.Transport {
+	budget := buf.PerConnBudget()
 	stub := &http.Transport{
 		HTTP2: &http.HTTP2Config{
-			MaxReceiveBufferPerStream:     h2StreamWindow,
-			MaxReceiveBufferPerConnection: h2ConnWindow,
+			MaxReceiveBufferPerStream:     budget,
+			MaxReceiveBufferPerConnection: budget,
 		},
 	}
 	h2t, err := http2.ConfigureTransports(stub)

@@ -3,12 +3,30 @@ package buf
 import (
 	"errors"
 	"io"
+	"math"
 	"net"
+	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 )
 
 const Size = 66048
+
+func PerConnBudget() int {
+	lim := debug.SetMemoryLimit(-1)
+	if lim <= 0 || lim >= math.MaxInt64/2 {
+		return 16 << 20
+	}
+	b := lim / 2 / int64(runtime.GOMAXPROCS(0))
+	if b < 1<<20 {
+		b = 1 << 20
+	}
+	if b > 1<<26 {
+		b = 1 << 26
+	}
+	return int(b)
+}
 
 var ErrShort = errors.New("buf: short write")
 

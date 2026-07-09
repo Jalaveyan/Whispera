@@ -44,9 +44,6 @@ const (
 	headerToken         = "Authorization"
 	contentType         = "application/octet-stream"
 	contentTypeDownload = "video/mp4"
-
-	h2StreamWindow = 64 << 20
-	h2ConnWindow   = 256 << 20
 )
 
 func chromeLikeQUICConfig() *quicgo.Config {

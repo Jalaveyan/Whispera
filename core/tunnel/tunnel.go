@@ -383,19 +383,8 @@ func (m *Manager) getMuxConfig() *mux.Config {
 }
 
 func muxBufferBudget() (recv, stream int) {
-	const streamWindow = 1 << 24
-	lim := debug.SetMemoryLimit(-1)
-	if lim <= 0 || lim >= math.MaxInt64/2 {
-		return 1 << 25, streamWindow
-	}
-	recv = int(lim / 8)
-	if recv > 1<<26 {
-		recv = 1 << 26
-	}
-	if recv < 1<<22 {
-		recv = 1 << 22
-	}
-	return recv, min(streamWindow, recv)
+	b := buf.PerConnBudget()
+	return b, b
 }
 
 func New(cfg *Config) (*Manager, error) {

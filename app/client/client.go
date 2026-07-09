@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -1185,27 +1184,6 @@ func main() {
 							}
 						}
 					}
-				}
-			}
-		}
-	}()
-
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-		const heapThreshold = 150 << 20
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				var ms runtime.MemStats
-				runtime.ReadMemStats(&ms)
-				if ms.HeapAlloc > heapThreshold {
-					runtime.GC()
-					debug.FreeOSMemory()
-					stdlog.Printf("[mem] heap=%dMB — forced GC (threshold %dMB)",
-						ms.HeapAlloc>>20, heapThreshold>>20)
 				}
 			}
 		}
