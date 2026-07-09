@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"context"
@@ -401,11 +401,13 @@ func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
 	}
 }
 
-func main() {
+func RunMain() {
 	debug.SetGCPercent(100)
 	debug.SetMemoryLimit(200 << 20)
 
-	flag.Parse()
+	if !mobileMode {
+		flag.Parse()
+	}
 
 	if *forceFingerprint != "" {
 		protocol.SetForcedFingerprint(*forceFingerprint)
@@ -423,6 +425,9 @@ func main() {
 		ShutdownTimeout: 30 * time.Second,
 		GracefulStop:    true,
 	})
+	mobileMu.Lock()
+	pkgLC = lc
+	mobileMu.Unlock()
 
 	ctx := lc.Context()
 

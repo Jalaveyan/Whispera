@@ -164,7 +164,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -ldflags "-s -w -X main.Version=$VERSION" \
-            -o whispera-go-client-${{ matrix.triple }}${{ matrix.ext }} ./app/client
+            -o whispera-go-client-${{ matrix.triple }}${{ matrix.ext }} ./app/goclient
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -194,7 +194,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -ldflags "-s -w -X main.Version=$VERSION" \
-            -o whispera-go-client-aarch64-linux-android ./app/client
+            -o whispera-go-client-aarch64-linux-android ./app/goclient
 
       - name: Upload
         uses: actions/upload-artifact@v4
