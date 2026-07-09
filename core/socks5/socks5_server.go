@@ -80,6 +80,8 @@ type SOCKS5Server struct {
 	udpAddr         *net.UDPAddr
 	mu              sync.RWMutex
 	log             *logger.Logger
+	listener        net.Listener
+	closed          bool
 }
 
 func NewSOCKS5Server(addr string, handler func(net.Conn, string, uint16) error) *SOCKS5Server {
@@ -117,17 +119,52 @@ func (s *SOCKS5Server) ListenAndServe() error {
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", s.listenAddr, err)
 	}
-	defer listener.Close()
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		listener.Close()
+		return net.ErrClosed
+	}
+	s.listener = listener
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		if s.listener == listener {
+			s.listener = nil
+		}
+		s.mu.Unlock()
+		listener.Close()
+	}()
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
+			s.mu.RLock()
+			closed := s.closed
+			s.mu.RUnlock()
+			if closed {
+				return net.ErrClosed
+			}
 			s.log.Error("Failed to accept connection: %v", err)
 			continue
 		}
 
 		go s.handleConnection(conn)
 	}
+}
+
+func (s *SOCKS5Server) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	l := s.listener
+	s.listener = nil
+	s.mu.Unlock()
+	if l != nil {
+		return l.Close()
+	}
+	return nil
 }
 
 func (s *SOCKS5Server) handleConnection(conn net.Conn) {

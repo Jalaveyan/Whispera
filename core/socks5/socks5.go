@@ -39,7 +39,6 @@ type Module struct {
 	*base.Module
 	config   *Config
 	server   *SOCKS5Server
-	listener net.Listener
 	tunnel   TunnelManager
 	mu       sync.RWMutex
 	running  int32
@@ -129,10 +128,11 @@ func (m *Module) Start() error {
 func (m *Module) Stop() error {
 	atomic.StoreInt32(&m.running, 0)
 	m.mu.Lock()
-	if m.listener != nil {
-		m.listener.Close()
-	}
+	srv := m.server
 	m.mu.Unlock()
+	if srv != nil {
+		srv.Close()
+	}
 	return m.Module.Stop()
 }
 
