@@ -2,6 +2,7 @@ package mux
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -205,7 +206,7 @@ func TestResilientYamuxSurvivesDrop(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +292,7 @@ func TestResilientYamuxSurvivesDrop(t *testing.T) {
 	var cmu sync.Mutex
 	var curUnder atomic.Value
 	redial := func() (net.Conn, error) {
-		c, err := net.Dial("tcp", addr)
+		c, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", addr)
 		if err != nil {
 			return nil, err
 		}

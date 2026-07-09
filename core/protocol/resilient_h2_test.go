@@ -55,7 +55,7 @@ func genSelfSigned(t *testing.T, dir string) (certPath, keyPath string) {
 
 func freePort(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	l, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ type cuttableProxy struct {
 
 func newProxy(t *testing.T, listen, backend string) *cuttableProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", listen)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", listen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func newProxy(t *testing.T, listen, backend string) *cuttableProxy {
 }
 
 func (p *cuttableProxy) handle(c net.Conn) {
-	b, err := net.Dial("tcp", p.back)
+	b, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", p.back)
 	if err != nil {
 		c.Close()
 		return
@@ -226,7 +226,7 @@ func TestResilientOverRealH2POST(t *testing.T) {
 	// wait for the listener
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		c, err := net.Dial("tcp", lnAddr)
+		c, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", lnAddr)
 		if err == nil {
 			c.Close()
 			break
