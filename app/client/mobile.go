@@ -4,6 +4,7 @@ import (
 	stdlog "log"
 	"runtime"
 	"sync"
+	"time"
 
 	"whispera/common/runtime/lifecycle"
 )
@@ -34,6 +35,12 @@ func Start(key, socks, logFile, fingerprint string, hwid bool) {
 	}
 	mobileMode = true
 	mobileRunning = true
+	// Create the lifecycle up front so Stop() can always find it (no race with
+	// RunMain setting it mid-startup) — the deterministic in-process stop.
+	pkgLC = lifecycle.NewManager(lifecycle.Config{
+		ShutdownTimeout: 1 * time.Second,
+		GracefulStop:    true,
+	})
 	*connKey = key
 	*socksAddr = socks
 	*logFilePath = logFile

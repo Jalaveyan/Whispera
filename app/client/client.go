@@ -420,13 +420,15 @@ func RunMain() {
 
 	cfg := loadClientConfig()
 
-	lc := lifecycle.NewManager(lifecycle.Config{
-		ShutdownTimeout: 30 * time.Second,
-		GracefulStop:    true,
-	})
 	mobileMu.Lock()
-	pkgLC = lc
+	lc := pkgLC
 	mobileMu.Unlock()
+	if lc == nil {
+		lc = lifecycle.NewManager(lifecycle.Config{
+			ShutdownTimeout: 30 * time.Second,
+			GracefulStop:    true,
+		})
+	}
 
 	ctx := lc.Context()
 
