@@ -402,10 +402,9 @@ func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
 }
 
 func RunMain() {
-	debug.SetGCPercent(100)
-	debug.SetMemoryLimit(200 << 20)
-
 	if !mobileMode {
+		debug.SetGCPercent(100)
+		debug.SetMemoryLimit(200 << 20)
 		flag.Parse()
 	}
 
