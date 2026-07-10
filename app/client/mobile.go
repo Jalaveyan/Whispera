@@ -1,10 +1,23 @@
 package client
 
 import (
+	stdlog "log"
+	"runtime"
 	"sync"
 
 	"whispera/common/runtime/lifecycle"
 )
+
+// fatalf ends startup on an unrecoverable error. As a forked CLI that means
+// exiting the process; in-process (mobileMode) it must NOT kill the host app —
+// it logs and unwinds just the client goroutine.
+func fatalf(format string, a ...any) {
+	if mobileMode {
+		stdlog.Printf(format, a...)
+		runtime.Goexit()
+	}
+	stdlog.Fatalf(format, a...)
+}
 
 var (
 	mobileMode    bool
@@ -29,7 +42,17 @@ func Start(key, socks, logFile, fingerprint string, hwid bool) {
 	*noInternalTun = true
 	mobileMu.Unlock()
 
-	go RunMain()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stdlog.Printf("go-client panic: %v", r)
+			}
+			mobileMu.Lock()
+			mobileRunning = false
+			mobileMu.Unlock()
+		}()
+		RunMain()
+	}()
 }
 
 func Stop() {

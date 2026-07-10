@@ -190,7 +190,7 @@ func loadClientConfig() *config.ClientConfig {
 	if *connKey != "" {
 		key, err := config.ParseConnectionKey(*connKey)
 		if err != nil {
-			stdlog.Fatalf("Failed to parse connection key: %v", err)
+			fatalf("Failed to parse connection key: %v", err)
 		}
 		cfg = key.ToClientConfig()
 		stdlog.Printf("Loaded config from key: %s", key.Name)
@@ -199,7 +199,7 @@ func loadClientConfig() *config.ClientConfig {
 		var loadErr error
 		cfg, loadErr = config.LoadClient(*configPath)
 		if loadErr != nil {
-			stdlog.Fatalf("Failed to load config: %v", loadErr)
+			fatalf("Failed to load config: %v", loadErr)
 		}
 	} else {
 		cfg = &config.ClientConfig{
@@ -224,7 +224,7 @@ func loadClientConfig() *config.ClientConfig {
 	}
 
 	if cfg.Server == "" && cfg.ServerTCP == "" {
-		stdlog.Fatalf("No server address specified. Use -server, -key, or -config")
+		fatalf("No server address specified. Use -server, -key, or -config")
 	}
 
 	stdlog.Printf("Starting Whispera Client v%s", Version)
@@ -739,7 +739,7 @@ func RunMain() {
 	globalMultiRouter = multiRouter
 	socksMod.SetTunnel(multiRouter)
 	if err := socksMod.Start(); err != nil {
-		stdlog.Fatalf("Failed to start SOCKS5: %v", err)
+		fatalf("Failed to start SOCKS5: %v", err)
 	}
 
 	primaryEntry := &TransportEntry{
@@ -948,7 +948,7 @@ func RunMain() {
 	startControlServer(ctx)
 
 	if err := lc.Start(); err != nil {
-		stdlog.Fatalf("Failed to start: %v", err)
+		fatalf("Failed to start: %v", err)
 	}
 
 	stdlog.Printf("Connecting to VPN server: %s via %s", serverAddress, transports[0])
