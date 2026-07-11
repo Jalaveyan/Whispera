@@ -48,10 +48,27 @@ var (
 
 // SetForcedRawFingerprint pins an exact captured ClientHello (raw record) for
 // the tunnel handshake, parsed once. Takes priority over any named fingerprint.
+func rawHelloReplayable(raw []byte) bool {
+	hs := raw
+	if len(hs) >= 5 && hs[0] == 0x16 {
+		hs = hs[5:]
+	}
+	msg := utls.UnmarshalClientHello(hs)
+	if msg == nil {
+		return false
+	}
+	for _, ks := range msg.KeyShares {
+		if ks.Group == utls.X25519MLKEM768 || ks.Group == utls.X25519Kyber768Draft00 {
+			return false
+		}
+	}
+	return true
+}
+
 func SetForcedRawFingerprint(raw []byte) {
 	var spec *utls.ClientHelloSpec
 	kind := kindChromium
-	if len(raw) > 0 {
+	if len(raw) > 0 && rawHelloReplayable(raw) {
 		fp := &utls.Fingerprinter{AllowBluntMimicry: true}
 		if s, err := fp.FingerprintClientHello(raw); err == nil {
 			spec = s

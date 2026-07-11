@@ -39,11 +39,19 @@ func TestRawFingerprintStoreAndForce(t *testing.T) {
 		t.Fatalf("freshest chrome not found (classify=%v)", classifyClientHello(raw))
 	}
 
-	SetForcedRawFingerprint(raw)
-	defer SetForcedRawFingerprint(nil)
+	replayable := captureClientHello(t, utls.HelloChrome_120)
+	SetForcedRawFingerprint(replayable)
 	id, spec, _ := pickFingerprint()
 	if id != utls.HelloCustom || spec == nil {
 		t.Fatalf("pickFingerprint did not return the raw spec: id=%v spec=%v", id, spec)
+	}
+	SetForcedRawFingerprint(nil)
+
+	SetForcedRawFingerprint(raw)
+	defer SetForcedRawFingerprint(nil)
+	id, _, _ = pickFingerprint()
+	if id == utls.HelloCustom {
+		t.Fatalf("hybrid PQ capture should be rejected, got HelloCustom")
 	}
 }
 
