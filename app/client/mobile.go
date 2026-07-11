@@ -30,8 +30,20 @@ var (
 func Start(key, socks, logFile, fingerprint string, hwid bool) {
 	mobileMu.Lock()
 	if mobileRunning {
+		old := pkgLC
 		mobileMu.Unlock()
-		return
+		if old != nil {
+			_ = old.Stop()
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			mobileMu.Lock()
+			if !mobileRunning || time.Now().After(deadline) {
+				break
+			}
+			mobileMu.Unlock()
+			time.Sleep(20 * time.Millisecond)
+		}
 	}
 	mobileMode = true
 	mobileRunning = true
