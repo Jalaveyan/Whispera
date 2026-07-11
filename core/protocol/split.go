@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdlog "log"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +15,12 @@ import (
 
 	http2 "golang.org/x/net/http2"
 )
+
+var transportModeOnce sync.Once
+
+func logTransportMode(mode string) {
+	transportModeOnce.Do(func() { stdlog.Printf("whispera: transport=%s", mode) })
+}
 
 const (
 	splitUploadChunkMax = 700 * 1024
@@ -97,6 +104,7 @@ func clientSplit(ctx context.Context, transport *http2.Transport, p splitParams)
 	}
 
 	go c.uploader()
+	logTransportMode("split")
 	return NewFrameConn(c), nil
 }
 

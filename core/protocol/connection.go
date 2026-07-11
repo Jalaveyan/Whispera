@@ -343,14 +343,21 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 
 		var hdr [4]byte
 		if n, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
-			traceLog.Warnw("frameconn_read_err",
-				"phase", "len_header",
-				"got", n,
-				"want", 4,
-				"remote", connRemote(fc.Conn),
-				"err", err.Error(),
-				"err_type", fmt.Sprintf("%T", err),
-			)
+			if n == 0 && err == io.EOF {
+				traceLog.Infow("frameconn_closed",
+					"phase", "len_header",
+					"remote", connRemote(fc.Conn),
+				)
+			} else {
+				traceLog.Warnw("frameconn_read_err",
+					"phase", "len_header",
+					"got", n,
+					"want", 4,
+					"remote", connRemote(fc.Conn),
+					"err", err.Error(),
+					"err_type", fmt.Sprintf("%T", err),
+				)
+			}
 			return 0, err
 		}
 		frameLen := binary.BigEndian.Uint32(hdr[:])

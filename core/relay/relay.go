@@ -546,12 +546,17 @@ func (s *Server) serveControlStream(stream net.Conn, session *mux2.Session, clie
 	pings := 0
 	exitReason := "read-err"
 	defer func() {
-		logger.Trace().Warnw("control_stream_exit",
+		fields := []any{
 			"client", clientID,
 			"pings", pings,
 			"dur_ms", time.Since(started).Milliseconds(),
 			"reason", exitReason,
-		)
+		}
+		if exitReason == "idle-reap" || strings.HasPrefix(exitReason, "read-err n=0:") {
+			logger.Trace().Infow("control_stream_exit", fields...)
+		} else {
+			logger.Trace().Warnw("control_stream_exit", fields...)
+		}
 	}()
 	defer func() {
 		if r := recover(); r != nil {

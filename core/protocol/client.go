@@ -185,6 +185,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		}); serr == nil {
 			return conn, nil
 		}
+		logTransportMode("single-post-fallback")
 	}
 
 	pr, pw := io.Pipe()
