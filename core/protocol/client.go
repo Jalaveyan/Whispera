@@ -68,7 +68,9 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	// fingerprint the TLS handshake will use (uaID matches harvested specs too).
 	prof := newBrowserProfile(uaID)
 
-	dialFn := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+	camoKey := deriveCamoKey(cfg.SharedSecret)
+
+	rawDial := func(ctx context.Context, network, addr string) (net.Conn, error) {
 		var rawConn net.Conn
 		var err error
 		if cfg.TCPDialer != nil {
@@ -85,35 +87,41 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 			tcpConn.SetNoDelay(true)
 		}
+		return rawConn, nil
+	}
+
+	handshake := func(rawConn net.Conn, useSpec bool) (*utls.UConn, error) {
 		uCfg := &utls.Config{
-			ServerName:         sni,
-			InsecureSkipVerify: true,
+			ServerName:                         sni,
+			InsecureSkipVerify:                 true,
+			PreferSkipResumptionOnNilExtension: true,
 		}
 		if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
 			uCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
 		}
-		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
-			uCfg.ClientSessionCache = sc
+		// Enable TLS resumption only when there is no camo marker. The marker
+		// overwrites ClientHello.Random after the PSK binder is computed, so a
+		// resumed handshake ships a stale binder and the server rejects it
+		// ("bad record MAC"). Camo marker and PSK resumption are mutually
+		// exclusive.
+		if camoKey == nil {
+			if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
+				uCfg.ClientSessionCache = sc
+			}
 		}
 		var uConn *utls.UConn
-		if helloSpec != nil {
+		if useSpec && helloSpec != nil {
 			uConn = utls.UClient(rawConn, uCfg, utls.HelloCustom)
 			if err := uConn.ApplyPreset(helloSpec); err != nil {
-				rawConn.Close()
 				return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
-			}
-			if err := uConn.BuildHandshakeState(); err != nil {
-				rawConn.Close()
-				return nil, fmt.Errorf("whispera: build hello: %w", err)
 			}
 		} else {
 			uConn = utls.UClient(rawConn, uCfg, helloID)
-			if err := uConn.BuildHandshakeState(); err != nil {
-				rawConn.Close()
-				return nil, fmt.Errorf("whispera: build hello: %w", err)
-			}
 		}
-		if camoKey := deriveCamoKey(cfg.SharedSecret); camoKey != nil {
+		if err := uConn.BuildHandshakeState(); err != nil {
+			return nil, fmt.Errorf("whispera: build hello: %w", err)
+		}
+		if camoKey != nil {
 			if hello := uConn.HandshakeState.Hello; hello != nil && len(hello.Random) == 32 {
 				if keyShare := extractX25519KeyShare(hello.KeyShares); len(keyShare) > 0 {
 					marker := buildCamoMarker(camoKey, keyShare)
@@ -122,8 +130,28 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			}
 		}
 		if err := uConn.HandshakeContext(ctx); err != nil {
-			rawConn.Close()
 			return nil, fmt.Errorf("whispera: utls handshake: %w", err)
+		}
+		return uConn, nil
+	}
+
+	dialFn := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+		rawConn, err := rawDial(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		uConn, err := handshake(rawConn, true)
+		if err != nil && helloSpec != nil {
+			rawConn.Close()
+			rawConn, err = rawDial(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			uConn, err = handshake(rawConn, false)
+		}
+		if err != nil {
+			rawConn.Close()
+			return nil, err
 		}
 		return uConn, nil
 	}
@@ -141,6 +169,23 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	}
 
 	h2Transport := newH2Transport(trackedDial)
+
+	if splitEnabled() && !cfg.EnableQUIC {
+		addr := cfg.ServerAddr
+		if conn, serr := clientSplit(ctx, h2Transport, splitParams{
+			url:       fmt.Sprintf("https://%s%s", addr, path),
+			sni:       sni,
+			origin:    origin,
+			token:     token,
+			sessionID: sessionID,
+			anchor:    anchor,
+			prof:      prof,
+			local:     staticAddr{"tcp", addr},
+			remote:    staticAddr{"tcp", addr},
+		}); serr == nil {
+			return conn, nil
+		}
+	}
 
 	pr, pw := io.Pipe()
 	bpw := newBufferedPipeWriter(pw)
