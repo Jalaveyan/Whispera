@@ -1469,7 +1469,7 @@ const (
 )
 
 const (
-	streamAliveWait = 1 * time.Second
+	streamAliveWait = 5 * time.Second
 	connectAckWait  = 17 * time.Second
 )
 
