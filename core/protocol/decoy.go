@@ -260,7 +260,7 @@ func newDecoyClient(cfg *ClientConfig) (*http.Client, browserProfile, string, st
 		if tcpConn, ok := rawConn.(*net.TCPConn); ok {
 			tcpConn.SetNoDelay(true)
 		}
-		uCfg := &utls.Config{ServerName: sni, InsecureSkipVerify: true}
+		uCfg := &utls.Config{ServerName: sni, InsecureSkipVerify: true, PreferSkipResumptionOnNilExtension: true}
 		if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
 			uCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
 		}

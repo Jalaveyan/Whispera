@@ -428,10 +428,11 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 	}
 
 	tlsConfig := &utls.Config{
-		ServerName:         sniToUse,
-		InsecureSkipVerify: false,
-		MinVersion:         d.config.TLSMinVersion,
-		MaxVersion:         d.config.TLSMaxVersion,
+		ServerName:                         sniToUse,
+		InsecureSkipVerify:                 false,
+		MinVersion:                         d.config.TLSMinVersion,
+		MaxVersion:                         d.config.TLSMaxVersion,
+		PreferSkipResumptionOnNilExtension: true,
 	}
 
 	interceptor := newInterceptorConn()
@@ -445,6 +446,7 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 	}
 
 	go func() {
+		defer func() { _ = recover() }()
 		_ = uconn.Handshake()
 	}()
 
@@ -496,9 +498,10 @@ func (d *Dialer) dialTLSWithSNI(ctx context.Context, addr, sni string) (net.Conn
 	fingerprint := d.getUTLSFingerprint()
 
 	uconn := utls.UClient(tcpConn, &utls.Config{
-		ServerName: sni,
-		MinVersion: d.config.TLSMinVersion,
-		MaxVersion: d.config.TLSMaxVersion,
+		ServerName:                         sni,
+		MinVersion:                         d.config.TLSMinVersion,
+		MaxVersion:                         d.config.TLSMaxVersion,
+		PreferSkipResumptionOnNilExtension: true,
 	}, *fingerprint)
 
 	if err := uconn.Handshake(); err != nil {
@@ -538,10 +541,11 @@ func (d *Dialer) dialCloudflareBypass(ctx context.Context, addr string) (net.Con
 	host, _, _ := net.SplitHostPort(addr)
 
 	uconn := utls.UClient(tcpConn, &utls.Config{
-		ServerName: host,
-		NextProtos: []string{"h2", "http/1.1"},
-		MinVersion: tls.VersionTLS13,
-		MaxVersion: tls.VersionTLS13,
+		ServerName:                         host,
+		NextProtos:                         []string{"h2", "http/1.1"},
+		MinVersion:                         tls.VersionTLS13,
+		MaxVersion:                         tls.VersionTLS13,
+		PreferSkipResumptionOnNilExtension: true,
 	}, utls.HelloChrome_Auto)
 
 	if err := uconn.BuildHandshakeState(); err == nil {
@@ -785,9 +789,10 @@ func (d *Dialer) wrapWithBrowserTLS(conn net.Conn, addr string) (net.Conn, error
 
 	fingerprint := d.getUTLSFingerprint()
 	uconn := utls.UClient(conn, &utls.Config{
-		ServerName: host,
-		MinVersion: d.config.TLSMinVersion,
-		MaxVersion: d.config.TLSMaxVersion,
+		ServerName:                         host,
+		MinVersion:                         d.config.TLSMinVersion,
+		MaxVersion:                         d.config.TLSMaxVersion,
+		PreferSkipResumptionOnNilExtension: true,
 	}, *fingerprint)
 
 	if err := uconn.Handshake(); err != nil {
