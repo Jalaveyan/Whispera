@@ -23,8 +23,9 @@ func logTransportMode(mode string) {
 }
 
 const (
-	splitUploadChunkMax = 700 * 1024
+	splitUploadChunkMax = 128 * 1024
 	splitFtypPrefix     = 24
+	splitConnectBudget  = 8 * time.Second
 )
 
 var errSplitUnsupported = errors.New("whispera: split not supported by server")
@@ -108,15 +109,44 @@ func clientSplit(ctx context.Context, transport *http2.Transport, p splitParams)
 	return NewFrameConn(c), nil
 }
 
+var splitDownloadBackoff = []time.Duration{
+	0,
+	500 * time.Millisecond,
+	1 * time.Second,
+}
+
 func (c *splitClientConn) startDownload() {
-	fail := func(err error) {
-		c.dnErr = err
-		close(c.dnReady)
+	var lastErr error
+	for i, wait := range splitDownloadBackoff {
+		if wait > 0 {
+			select {
+			case <-time.After(wait):
+			case <-c.ctx.Done():
+				c.dnErr = c.ctx.Err()
+				close(c.dnReady)
+				return
+			}
+		}
+		body, err := c.tryDownload()
+		if err == nil {
+			c.dnBody = body
+			close(c.dnReady)
+			return
+		}
+		lastErr = err
+		if errors.Is(err, errSplitUnsupported) {
+			break
+		}
+		stdlog.Printf("whispera: split download attempt %d/%d failed: %v", i+1, len(splitDownloadBackoff), err)
 	}
+	c.dnErr = lastErr
+	close(c.dnReady)
+}
+
+func (c *splitClientConn) tryDownload() (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.url, nil)
 	if err != nil {
-		fail(err)
-		return
+		return nil, err
 	}
 	req.Host = c.sni
 	req.Header.Set(headerToken, "Bearer "+c.token)
@@ -125,27 +155,22 @@ func (c *splitClientConn) startDownload() {
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		fail(err)
-		return
+		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		fail(fmt.Errorf("download status %d", resp.StatusCode))
-		return
+		return nil, fmt.Errorf("download status %d", resp.StatusCode)
 	}
 	var ftyp [splitFtypPrefix]byte
 	if _, err := io.ReadFull(resp.Body, ftyp[:]); err != nil {
 		resp.Body.Close()
-		fail(err)
-		return
+		return nil, err
 	}
 	if !bytes.Equal(ftyp[:], mp4FtypAtom[:]) {
 		resp.Body.Close()
-		fail(errSplitUnsupported)
-		return
+		return nil, errSplitUnsupported
 	}
-	c.dnBody = resp.Body
-	close(c.dnReady)
+	return resp.Body, nil
 }
 
 func (c *splitClientConn) uploader() {

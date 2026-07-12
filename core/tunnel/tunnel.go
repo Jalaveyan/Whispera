@@ -1456,11 +1456,16 @@ func (m *Manager) forceReconnectFromStreamFailure(mc *managedConn, reason string
 	m.connMu.RLock()
 	isActive := (mc == m.activeConn)
 	m.connMu.RUnlock()
-	if isActive && m.GetState() == StateConnected {
-		log.Warn("stream failure (%s) — forcing reconnect", reason)
-		m.sm.SetError(fmt.Errorf("stream failure: %s", reason))
-		m.triggerReconnect()
+	if !isActive || m.GetState() != StateConnected {
+		return
 	}
+	if lp := atomic.LoadInt64(&m.lastPong); lp != 0 && time.Since(time.Unix(0, lp)) < recentActivityWindow {
+		log.Warn("stream failure (%s) — tunnel active, dropping stream only", reason)
+		return
+	}
+	log.Warn("stream failure (%s) — forcing reconnect", reason)
+	m.sm.SetError(fmt.Errorf("stream failure: %s", reason))
+	m.triggerReconnect()
 }
 
 const (

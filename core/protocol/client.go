@@ -172,7 +172,8 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 
 	if splitEnabled() && !cfg.EnableQUIC {
 		addr := cfg.ServerAddr
-		if conn, serr := clientSplit(ctx, h2Transport, splitParams{
+		splitCtx, splitCancel := context.WithTimeout(ctx, splitConnectBudget)
+		conn, serr := clientSplit(splitCtx, h2Transport, splitParams{
 			url:       fmt.Sprintf("https://%s%s", addr, path),
 			sni:       sni,
 			origin:    origin,
@@ -182,10 +183,12 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			prof:      prof,
 			local:     staticAddr{"tcp", addr},
 			remote:    staticAddr{"tcp", addr},
-		}); serr == nil {
+		})
+		splitCancel()
+		if serr == nil {
 			return conn, nil
 		}
-		logTransportMode("single-post-fallback")
+		logTransportMode("single-post-fallback: " + serr.Error())
 	}
 
 	pr, pw := io.Pipe()
