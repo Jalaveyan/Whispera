@@ -200,28 +200,51 @@ func (c *splitClientConn) fetchSegment(idx uint64) (io.ReadCloser, error) {
 }
 
 type segmentReader struct {
-	c    *splitClientConn
-	idx  uint64
-	body io.ReadCloser
+	c      *splitClientConn
+	idx    uint64
+	mu     sync.Mutex
+	body   io.ReadCloser
+	closed bool
 }
 
 func (s *segmentReader) Read(b []byte) (int, error) {
 	for {
-		if s.body == nil {
-			body, err := s.c.fetchSegment(s.idx)
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return 0, io.EOF
+		}
+		body := s.body
+		s.mu.Unlock()
+
+		if body == nil {
+			nb, err := s.c.fetchSegment(s.idx)
 			if err != nil {
 				return 0, err
 			}
-			s.body = body
+			s.mu.Lock()
+			if s.closed {
+				s.mu.Unlock()
+				nb.Close()
+				return 0, io.EOF
+			}
+			s.body = nb
+			body = nb
+			s.mu.Unlock()
 		}
-		n, err := s.body.Read(b)
+
+		n, err := body.Read(b)
 		if n > 0 {
 			return n, nil
 		}
 		if err == io.EOF {
-			s.body.Close()
-			s.body = nil
-			s.idx++
+			s.mu.Lock()
+			if s.body == body {
+				s.body = nil
+				s.idx++
+			}
+			s.mu.Unlock()
+			body.Close()
 			continue
 		}
 		if err != nil {
@@ -231,9 +254,17 @@ func (s *segmentReader) Read(b []byte) (int, error) {
 }
 
 func (s *segmentReader) Close() {
-	if s.body != nil {
-		s.body.Close()
-		s.body = nil
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	body := s.body
+	s.body = nil
+	s.mu.Unlock()
+	if body != nil {
+		body.Close()
 	}
 }
 
@@ -321,9 +352,6 @@ func (c *splitClientConn) Write(b []byte) (int, error) {
 
 func (c *splitClientConn) closeWithErr(err error) {
 	c.closeOnce.Do(func() {
-		if c.dnErr == nil {
-			c.dnErr = err
-		}
 		close(c.closed)
 		c.cancel()
 		if c.segReader != nil {
