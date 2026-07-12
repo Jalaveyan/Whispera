@@ -402,6 +402,11 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	}
 
 	<-done
+	fc.Close()
+	select {
+	case <-fc.writerDone:
+	case <-time.After(2 * time.Second):
+	}
 }
 
 func runAdaptivePadding(sess *restSession, fc *FrameConn, done <-chan struct{}, decide GANDecideFunc) {
