@@ -63,7 +63,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	sni := sessionSNI(cfg)
 	origin := "https://" + sni
 
-	helloID, helloSpec, uaID := sessionFingerprint()
+	helloID, helloRaw, uaID := sessionFingerprint()
 	// One coherent UA/header identity per session, derived from the same
 	// fingerprint the TLS handshake will use (uaID matches harvested specs too).
 	prof := newBrowserProfile(uaID)
@@ -110,9 +110,13 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			}
 		}
 		var uConn *utls.UConn
-		if useSpec && helloSpec != nil {
+		if useSpec && len(helloRaw) > 0 {
+			spec, err := specFromRaw(helloRaw)
+			if err != nil {
+				return nil, fmt.Errorf("whispera: fingerprint: %w", err)
+			}
 			uConn = utls.UClient(rawConn, uCfg, utls.HelloCustom)
-			if err := uConn.ApplyPreset(helloSpec); err != nil {
+			if err := uConn.ApplyPreset(spec); err != nil {
 				return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
 			}
 		} else {
@@ -141,7 +145,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			return nil, err
 		}
 		uConn, err := handshake(rawConn, true)
-		if err != nil && helloSpec != nil {
+		if err != nil && len(helloRaw) > 0 {
 			rawConn.Close()
 			rawConn, err = rawDial(ctx, network, addr)
 			if err != nil {
@@ -174,7 +178,8 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		addr := cfg.ServerAddr
 		splitCtx, splitCancel := context.WithTimeout(ctx, splitConnectBudget)
 		conn, serr := clientSplit(splitCtx, h2Transport, splitParams{
-			url:       fmt.Sprintf("https://%s%s", addr, path),
+			base:      fmt.Sprintf("https://%s", addr),
+			uploadURL: fmt.Sprintf("https://%s%s", addr, GenerateAPIPath(bp.PathSeed)),
 			sni:       sni,
 			origin:    origin,
 			token:     token,

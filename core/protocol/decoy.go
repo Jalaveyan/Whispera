@@ -239,7 +239,7 @@ func (d *decoyDriver) run(ctx context.Context) {
 
 func newDecoyClient(cfg *ClientConfig) (*http.Client, browserProfile, string, string, func()) {
 	sni := sessionSNI(cfg)
-	helloID, helloSpec, uaID := sessionFingerprint()
+	helloID, helloRaw, uaID := sessionFingerprint()
 	prof := newBrowserProfile(uaID)
 
 	var dialedMu sync.Mutex
@@ -268,9 +268,14 @@ func newDecoyClient(cfg *ClientConfig) (*http.Client, browserProfile, string, st
 			uCfg.ClientSessionCache = sc
 		}
 		var uConn *utls.UConn
-		if helloSpec != nil {
+		if len(helloRaw) > 0 {
+			spec, err := specFromRaw(helloRaw)
+			if err != nil {
+				rawConn.Close()
+				return nil, err
+			}
 			uConn = utls.UClient(rawConn, uCfg, utls.HelloCustom)
-			if err := uConn.ApplyPreset(helloSpec); err != nil {
+			if err := uConn.ApplyPreset(spec); err != nil {
 				rawConn.Close()
 				return nil, err
 			}

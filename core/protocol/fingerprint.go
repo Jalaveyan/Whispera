@@ -4,24 +4,13 @@ import (
 	"encoding/binary"
 	"hash/fnv"
 	mrand "math/rand"
+	"net"
 	"sort"
 	"strconv"
 	"sync"
 
 	utls "github.com/refraction-networking/utls"
 )
-
-var fingerprintPool = []utls.ClientHelloID{
-	utls.HelloChrome_133,
-	utls.HelloChrome_131,
-	utls.HelloChrome_120_PQ,
-	utls.HelloFirefox_148,
-	utls.HelloFirefox_120,
-	utls.HelloEdge_106,
-	utls.HelloSafari_26_3,
-	utls.HelloSafari_16_0,
-	utls.HelloIOS_14,
-}
 
 var (
 	harvestMu    sync.RWMutex
@@ -31,8 +20,6 @@ var (
 	harvestSeen  = map[string]bool{}
 )
 
-var detectedBrowserID utls.ClientHelloID
-
 const maxHarvest = 32
 
 var (
@@ -41,10 +28,23 @@ var (
 )
 
 var (
-	forcedRawMu   sync.RWMutex
-	forcedRawSpec *utls.ClientHelloSpec
-	forcedRawKind browserKind
+	forcedRawMu    sync.RWMutex
+	forcedRawBytes []byte
+	forcedRawKind  browserKind
 )
+
+func specFromRaw(raw []byte) (*utls.ClientHelloSpec, error) {
+	fp := &utls.Fingerprinter{AllowBluntMimicry: true}
+	return fp.FingerprintClientHello(raw)
+}
+
+func specHandshakeReadyRaw(raw []byte) bool {
+	spec, err := specFromRaw(raw)
+	if err != nil {
+		return false
+	}
+	return specHandshakeReady(spec)
+}
 
 // SetForcedRawFingerprint pins an exact captured ClientHello (raw record) for
 // the tunnel handshake, parsed once. Takes priority over any named fingerprint.
@@ -66,17 +66,14 @@ func rawHelloReplayable(raw []byte) bool {
 }
 
 func SetForcedRawFingerprint(raw []byte) {
-	var spec *utls.ClientHelloSpec
+	var stored []byte
 	kind := kindChromium
-	if len(raw) > 0 && rawHelloReplayable(raw) {
-		fp := &utls.Fingerprinter{AllowBluntMimicry: true}
-		if s, err := fp.FingerprintClientHello(raw); err == nil {
-			spec = s
-			kind = classifyClientHello(raw)
-		}
+	if len(raw) > 0 && rawHelloReplayable(raw) && specHandshakeReadyRaw(raw) {
+		stored = append([]byte(nil), raw...)
+		kind = classifyClientHello(raw)
 	}
 	forcedRawMu.Lock()
-	forcedRawSpec = spec
+	forcedRawBytes = stored
 	forcedRawKind = kind
 	forcedRawMu.Unlock()
 }
@@ -112,8 +109,33 @@ func SetForcedFingerprint(name string) {
 	forcedFingerprintID = id
 }
 
-func addHarvestedFingerprint(spec *utls.ClientHelloSpec, raw []byte) {
+func specHandshakeReady(spec *utls.ClientHelloSpec) bool {
 	if spec == nil {
+		return false
+	}
+	c0, c1 := net.Pipe()
+	defer c0.Close()
+	defer c1.Close()
+	u := utls.UClient(c0, &utls.Config{
+		ServerName:                         "example.com",
+		InsecureSkipVerify:                 true,
+		PreferSkipResumptionOnNilExtension: true,
+	}, utls.HelloCustom)
+	if err := u.ApplyPreset(spec); err != nil {
+		return false
+	}
+	if err := u.BuildHandshakeState(); err != nil {
+		return false
+	}
+	hello := u.HandshakeState.Hello
+	if hello == nil || len(hello.Random) != 32 {
+		return false
+	}
+	return len(extractX25519KeyShare(hello.KeyShares)) > 0
+}
+
+func addHarvestedFingerprint(spec *utls.ClientHelloSpec, raw []byte) {
+	if len(raw) == 0 || !specHandshakeReady(spec) {
 		return
 	}
 	key, keyed := harvestKey(raw)
@@ -189,13 +211,13 @@ func HarvestedFingerprintCapacity() int {
 	return maxHarvest
 }
 
-func pickFingerprint() (id utls.ClientHelloID, spec *utls.ClientHelloSpec, uaID utls.ClientHelloID) {
+func pickFingerprint() (id utls.ClientHelloID, raw []byte, uaID utls.ClientHelloID) {
 	forcedRawMu.RLock()
-	rawSpec := forcedRawSpec
+	fraw := forcedRawBytes
 	rawKind := forcedRawKind
 	forcedRawMu.RUnlock()
-	if rawSpec != nil {
-		return utls.HelloCustom, rawSpec, repIDForKind(rawKind)
+	if len(fraw) > 0 {
+		return utls.HelloCustom, append([]byte(nil), fraw...), repIDForKind(rawKind)
 	}
 
 	forcedFingerprintMu.RLock()
@@ -210,33 +232,29 @@ func pickFingerprint() (id utls.ClientHelloID, spec *utls.ClientHelloSpec, uaID 
 	harvestMu.RLock()
 	defer harvestMu.RUnlock()
 
-	if len(harvestSpecs) > 0 {
-		i := mrand.Intn(len(harvestSpecs))
-		return utls.HelloCustom, harvestSpecs[i], repIDForKind(harvestKinds[i])
+	if len(harvestRaw) > 0 {
+		i := mrand.Intn(len(harvestRaw))
+		return utls.HelloCustom, append([]byte(nil), harvestRaw[i]...), repIDForKind(harvestKinds[i])
 	}
 
-	if detectedBrowserID.Client != "" {
-		return detectedBrowserID, nil, detectedBrowserID
-	}
-
-	picked := fingerprintPool[mrand.Intn(len(fingerprintPool))]
-	return picked, nil, picked
+	traceLog.Errorw("fingerprint_pool_empty_emergency_hello")
+	return utls.HelloChrome_Auto, nil, utls.HelloChrome_Auto
 }
 
 var (
 	sessionFPOnce sync.Once
 	sessionFPID   utls.ClientHelloID
-	sessionFPSpec *utls.ClientHelloSpec
+	sessionFPRaw  []byte
 	sessionFPUA   utls.ClientHelloID
 )
 
-func sessionFingerprint() (utls.ClientHelloID, *utls.ClientHelloSpec, utls.ClientHelloID) {
+func sessionFingerprint() (utls.ClientHelloID, []byte, utls.ClientHelloID) {
 	forcedRawMu.RLock()
-	rawSpec := forcedRawSpec
+	fraw := forcedRawBytes
 	rawKind := forcedRawKind
 	forcedRawMu.RUnlock()
-	if rawSpec != nil {
-		return utls.HelloCustom, rawSpec, repIDForKind(rawKind)
+	if len(fraw) > 0 {
+		return utls.HelloCustom, append([]byte(nil), fraw...), repIDForKind(rawKind)
 	}
 
 	forcedFingerprintMu.RLock()
@@ -247,9 +265,9 @@ func sessionFingerprint() (utls.ClientHelloID, *utls.ClientHelloSpec, utls.Clien
 	}
 
 	sessionFPOnce.Do(func() {
-		sessionFPID, sessionFPSpec, sessionFPUA = pickFingerprint()
+		sessionFPID, sessionFPRaw, sessionFPUA = pickFingerprint()
 	})
-	return sessionFPID, sessionFPSpec, sessionFPUA
+	return sessionFPID, append([]byte(nil), sessionFPRaw...), sessionFPUA
 }
 
 func repIDForKind(k browserKind) utls.ClientHelloID {

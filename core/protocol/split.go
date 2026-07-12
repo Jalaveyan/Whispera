@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -24,8 +25,8 @@ func logTransportMode(mode string) {
 
 const (
 	splitUploadChunkMax = 128 * 1024
-	splitFtypPrefix     = 24
 	splitConnectBudget  = 8 * time.Second
+	hlsPlaylistMarker   = "#EXTM3U"
 )
 
 var errSplitUnsupported = errors.New("whispera: split not supported by server")
@@ -33,7 +34,8 @@ var errSplitUnsupported = errors.New("whispera: split not supported by server")
 func splitEnabled() bool { return os.Getenv("WHISPERA_SPLIT") != "0" }
 
 type splitParams struct {
-	url       string
+	base      string
+	uploadURL string
 	sni       string
 	origin    string
 	token     string
@@ -51,16 +53,17 @@ type splitClientConn struct {
 	transport *http2.Transport
 	client    *http.Client
 
-	url    string
-	sni    string
-	origin string
-	token  string
-	cookie string
-	prof   browserProfile
+	videoBase string
+	uploadURL string
+	sni       string
+	origin    string
+	token     string
+	cookie    string
+	prof      browserProfile
 
-	dnReady chan struct{}
-	dnBody  io.ReadCloser
-	dnErr   error
+	dnReady   chan struct{}
+	segReader *segmentReader
+	dnErr     error
 
 	upCh chan []byte
 
@@ -78,7 +81,8 @@ func clientSplit(ctx context.Context, transport *http2.Transport, p splitParams)
 		cancel:    cancel,
 		transport: transport,
 		client:    &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
-		url:       p.url,
+		videoBase: fmt.Sprintf("%s/video/%s", p.base, hex.EncodeToString(p.sessionID)),
+		uploadURL: p.uploadURL,
 		sni:       p.sni,
 		origin:    p.origin,
 		token:     p.token,
@@ -127,9 +131,9 @@ func (c *splitClientConn) startDownload() {
 				return
 			}
 		}
-		body, err := c.tryDownload()
+		err := c.openPlaylist()
 		if err == nil {
-			c.dnBody = body
+			c.segReader = &segmentReader{c: c}
 			close(c.dnReady)
 			return
 		}
@@ -143,8 +147,39 @@ func (c *splitClientConn) startDownload() {
 	close(c.dnReady)
 }
 
-func (c *splitClientConn) tryDownload() (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, c.url, nil)
+func (c *splitClientConn) openPlaylist() error {
+	url := c.videoBase + "/master.m3u8"
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Host = c.sni
+	req.Header.Set(headerToken, "Bearer "+c.token)
+	c.prof.apply(req, c.origin)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: c.cookie})
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("playlist status %d", resp.StatusCode)
+	}
+	head := make([]byte, len(hlsPlaylistMarker))
+	if _, err := io.ReadFull(resp.Body, head); err != nil {
+		return err
+	}
+	if !bytes.Equal(head, []byte(hlsPlaylistMarker)) {
+		return errSplitUnsupported
+	}
+	io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+func (c *splitClientConn) fetchSegment(idx uint64) (io.ReadCloser, error) {
+	url := fmt.Sprintf("%s/seg%04d.ts", c.videoBase, idx)
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -159,18 +194,47 @@ func (c *splitClientConn) tryDownload() (io.ReadCloser, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return nil, fmt.Errorf("download status %d", resp.StatusCode)
-	}
-	var ftyp [splitFtypPrefix]byte
-	if _, err := io.ReadFull(resp.Body, ftyp[:]); err != nil {
-		resp.Body.Close()
-		return nil, err
-	}
-	if !bytes.Equal(ftyp[:], mp4FtypAtom[:]) {
-		resp.Body.Close()
-		return nil, errSplitUnsupported
+		return nil, fmt.Errorf("segment status %d", resp.StatusCode)
 	}
 	return resp.Body, nil
+}
+
+type segmentReader struct {
+	c    *splitClientConn
+	idx  uint64
+	body io.ReadCloser
+}
+
+func (s *segmentReader) Read(b []byte) (int, error) {
+	for {
+		if s.body == nil {
+			body, err := s.c.fetchSegment(s.idx)
+			if err != nil {
+				return 0, err
+			}
+			s.body = body
+		}
+		n, err := s.body.Read(b)
+		if n > 0 {
+			return n, nil
+		}
+		if err == io.EOF {
+			s.body.Close()
+			s.body = nil
+			s.idx++
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+	}
+}
+
+func (s *segmentReader) Close() {
+	if s.body != nil {
+		s.body.Close()
+		s.body = nil
+	}
 }
 
 func (c *splitClientConn) uploader() {
@@ -209,7 +273,7 @@ func (c *splitClientConn) uploader() {
 }
 
 func (c *splitClientConn) postChunk(chunk []byte) error {
-	req, err := http.NewRequestWithContext(c.ctx, http.MethodPost, c.url, bytes.NewReader(chunk))
+	req, err := http.NewRequestWithContext(c.ctx, http.MethodPost, c.uploadURL, bytes.NewReader(chunk))
 	if err != nil {
 		return err
 	}
@@ -236,10 +300,10 @@ func (c *splitClientConn) Read(b []byte) (int, error) {
 	if c.dnErr != nil {
 		return 0, c.dnErr
 	}
-	if c.dnBody == nil {
+	if c.segReader == nil {
 		return 0, io.EOF
 	}
-	return c.dnBody.Read(b)
+	return c.segReader.Read(b)
 }
 
 func (c *splitClientConn) Write(b []byte) (int, error) {
@@ -262,8 +326,8 @@ func (c *splitClientConn) closeWithErr(err error) {
 		}
 		close(c.closed)
 		c.cancel()
-		if c.dnBody != nil {
-			c.dnBody.Close()
+		if c.segReader != nil {
+			c.segReader.Close()
 		}
 		c.transport.CloseIdleConnections()
 	})
@@ -273,8 +337,8 @@ func (c *splitClientConn) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.closed)
 		c.cancel()
-		if c.dnBody != nil {
-			c.dnBody.Close()
+		if c.segReader != nil {
+			c.segReader.Close()
 		}
 		c.transport.CloseIdleConnections()
 	})

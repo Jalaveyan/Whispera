@@ -41,6 +41,18 @@ func GeneratePath(seed uint64, seq int) string {
 	return fmt.Sprintf("%s%s%s", prefix, string(b), ext)
 }
 
+var (
+	apiPrefixes  = []string{"/api/v1/", "/api/v2/", "/api/"}
+	apiEndpoints = []string{"events", "log", "track", "telemetry", "metrics", "beacon", "collect", "stats", "session", "batch"}
+)
+
+func GenerateAPIPath(seed uint64) string {
+	rng := rand.New(rand.NewSource(int64(seed) ^ 0x2545f4914f6cdd1d))
+	prefix := apiPrefixes[rng.Intn(len(apiPrefixes))]
+	ep := apiEndpoints[rng.Intn(len(apiEndpoints))]
+	return prefix + ep
+}
+
 func AuthToken(authKey []byte, window int64, sessionID []byte) string {
 	mac := hmac.New(sha256.New, authKey)
 	var wb [8]byte

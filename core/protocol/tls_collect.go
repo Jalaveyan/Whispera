@@ -184,6 +184,7 @@ func LoadHarvestDir(dir string) (int, error) {
 }
 
 func initHarvest() {
+	loadSeedFingerprints()
 	dir := harvestDirPath()
 	if dir == "" {
 		return

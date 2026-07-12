@@ -49,9 +49,11 @@ func TestRawFingerprintStoreAndForce(t *testing.T) {
 
 	SetForcedRawFingerprint(raw)
 	defer SetForcedRawFingerprint(nil)
-	id, _, _ = pickFingerprint()
-	if id == utls.HelloCustom {
-		t.Fatalf("hybrid PQ capture should be rejected, got HelloCustom")
+	forcedRawMu.RLock()
+	fb := forcedRawBytes
+	forcedRawMu.RUnlock()
+	if fb != nil {
+		t.Fatalf("hybrid PQ capture should be rejected as forced-raw")
 	}
 }
 

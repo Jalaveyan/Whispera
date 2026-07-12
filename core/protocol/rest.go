@@ -19,9 +19,20 @@ type uploadBody struct {
 }
 
 type segSlot struct {
-	w     io.Writer
-	flush func()
-	done  chan struct{}
+	w      io.Writer
+	flush  func()
+	done   chan struct{}
+	mu     sync.Mutex
+	closed bool
+}
+
+func (s *segSlot) markClosed() {
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		close(s.done)
+	}
+	s.mu.Unlock()
 }
 
 type segmentRouter struct {
@@ -46,7 +57,7 @@ type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
 
 type restSession struct {
 	uploadCh          chan *uploadBody
-	segCh             chan segSlot
+	segCh             chan *segSlot
 	closed            chan struct{}
 	secret            []byte
 	uploadBytes       int64
@@ -148,7 +159,7 @@ func (r *segmentRouter) acquireSlot() (*segSlot, error) {
 			return nil, io.ErrClosedPipe
 		}
 		r.mu.Lock()
-		r.curSlot = &s
+		r.curSlot = s
 		r.bytesInSeg = 0
 		base := DeriveSegmentSize(r.behaviorKey, r.segIdx)
 		if atomic.LoadInt32(&r.sess.bulkMode) == 0 {
@@ -161,7 +172,7 @@ func (r *segmentRouter) acquireSlot() (*segSlot, error) {
 			r.segSize = base
 		}
 		r.mu.Unlock()
-		return &s, nil
+		return s, nil
 	case <-r.connDone:
 		return nil, io.ErrClosedPipe
 	case <-t.C:
@@ -175,8 +186,17 @@ func (r *segmentRouter) Write(b []byte) (int, error) {
 		return 0, err
 	}
 
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		r.mu.Lock()
+		r.curSlot = nil
+		r.mu.Unlock()
+		return 0, io.ErrClosedPipe
+	}
 	n, err := s.w.Write(b)
 	s.flush()
+	s.mu.Unlock()
 
 	r.mu.Lock()
 	r.bytesInSeg += n
@@ -188,7 +208,7 @@ func (r *segmentRouter) Write(b []byte) (int, error) {
 	r.mu.Unlock()
 
 	if full {
-		close(s.done)
+		s.markClosed()
 	}
 	return n, err
 }
@@ -477,7 +497,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig
 
 	sess := &restSession{
 		uploadCh: make(chan *uploadBody, 512),
-		segCh:    make(chan segSlot, 1),
+		segCh:    make(chan *segSlot, 1),
 		closed:   make(chan struct{}),
 		secret:   secret,
 	}
@@ -547,7 +567,7 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *ServerConfig)
 	w.WriteHeader(http.StatusOK)
 
 	slotDone := make(chan struct{})
-	slot := segSlot{w: w, flush: flusher.Flush, done: slotDone}
+	slot := &segSlot{w: w, flush: flusher.Flush, done: slotDone}
 
 	select {
 	case sess.segCh <- slot:
@@ -562,6 +582,7 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *ServerConfig)
 	case <-sess.closed:
 	case <-r.Context().Done():
 	}
+	slot.markClosed()
 }
 
 func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
