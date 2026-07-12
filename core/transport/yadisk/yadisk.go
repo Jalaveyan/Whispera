@@ -42,6 +42,8 @@ type Config struct {
 	SessionID string
 
 	BufferSize int
+
+	BaseURL string
 }
 
 func DefaultConfig() *Config {
@@ -50,8 +52,9 @@ func DefaultConfig() *Config {
 
 type Transport struct {
 	*base.Module
-	config *Config
-	client *http.Client
+	config  *Config
+	client  *http.Client
+	baseURL string
 
 	writeSeq uint64
 	readSeq  uint64
@@ -83,10 +86,15 @@ func New(cfg *Config) (*Transport, error) {
 	if cfg.BufferSize == 0 {
 		cfg.BufferSize = 64 * 1024
 	}
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = webdavBase
+	}
 	t := &Transport{
 		Module:  base.NewModule(ModuleName, ModuleVersion, nil),
 		config:  cfg,
 		client:  &http.Client{Timeout: 30 * time.Second},
+		baseURL: baseURL,
 		dataIn:  make(chan []byte, 128),
 		dataOut: make(chan []byte, 128),
 		connCh:  make(chan net.Conn, 1),
@@ -121,8 +129,7 @@ func (t *Transport) Start() error {
 		"/whispera/" + t.config.SessionID,
 		t.writeDir,
 	} {
-		if err := t.mkdir(ctx, dir); err != nil {
-		}
+		_ = t.mkdir(ctx, dir)
 	}
 
 	go t.sendLoop()
@@ -185,9 +192,19 @@ func (t *Transport) runSendLoop() {
 		case data := <-t.dataOut:
 			seq := atomic.AddUint64(&t.writeSeq, 1) - 1
 			path := fmt.Sprintf("%s/%010d", t.writeDir, seq)
-			ctx, cancel := context.WithTimeout(context.Background(), chunkTimeout)
-			_ = t.putFile(ctx, path, data)
-			cancel()
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), chunkTimeout)
+				err := t.putFile(ctx, path, data)
+				cancel()
+				if err == nil {
+					break
+				}
+				select {
+				case <-t.stopCh:
+					return
+				case <-time.After(pollInterval):
+				}
+			}
 		}
 	}
 }
@@ -243,7 +260,7 @@ func (t *Transport) auth(req *http.Request) {
 
 func (t *Transport) putFile(ctx context.Context, path string, data []byte) error {
 	req, err := http.NewRequestWithContext(ctx, "PUT",
-		webdavBase+path, bytes.NewReader(data))
+		t.baseURL+path, bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -261,7 +278,7 @@ func (t *Transport) putFile(ctx context.Context, path string, data []byte) error
 }
 
 func (t *Transport) getFile(ctx context.Context, path string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", webdavBase+path, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", t.baseURL+path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +298,7 @@ func (t *Transport) getFile(ctx context.Context, path string) ([]byte, error) {
 }
 
 func (t *Transport) deleteFile(ctx context.Context, path string) {
-	req, _ := http.NewRequestWithContext(ctx, "DELETE", webdavBase+path, nil)
+	req, _ := http.NewRequestWithContext(ctx, "DELETE", t.baseURL+path, nil)
 	t.auth(req)
 	resp, _ := t.client.Do(req)
 	if resp != nil {
@@ -290,7 +307,7 @@ func (t *Transport) deleteFile(ctx context.Context, path string) {
 }
 
 func (t *Transport) mkdir(ctx context.Context, path string) error {
-	req, err := http.NewRequestWithContext(ctx, "MKCOL", webdavBase+path, nil)
+	req, err := http.NewRequestWithContext(ctx, "MKCOL", t.baseURL+path, nil)
 	if err != nil {
 		return err
 	}
@@ -337,6 +354,7 @@ func (c *diskConn) Read(p []byte) (int, error) {
 }
 
 func (c *diskConn) Write(p []byte) (int, error) {
+	total := len(p)
 	for len(p) > 0 {
 		end := len(p)
 		if end > maxChunkSize {
@@ -347,11 +365,11 @@ func (c *diskConn) Write(p []byte) (int, error) {
 		select {
 		case c.t.dataOut <- cp:
 		case <-c.t.stopCh:
-			return 0, fmt.Errorf("yadisk: closed")
+			return total - len(p), fmt.Errorf("yadisk: closed")
 		}
 		p = p[end:]
 	}
-	return len(p), nil
+	return total, nil
 }
 
 func (c *diskConn) Close() error                       { return c.t.Stop() }
