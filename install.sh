@@ -1,7 +1,7 @@
 #!/bin/bash
 
 
-REPO_URL="https://github.com/Jalaveyan/Whispera.git"
+REPO_URL="https://github.com/nekoskin/whispera.git"
 BRANCH="main"
 WORK_DIR="/opt/whispera"
 DAT_PATH="/usr/local/share/whispera"
@@ -21,7 +21,7 @@ log_success() { echo -e "${GREEN}[OK]${PLAIN} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERR]${PLAIN} $1"; }
 
-WHISPERA_LIB_URL="https://raw.githubusercontent.com/Jalaveyan/Whispera/main/scripts/lib.sh"
+WHISPERA_LIB_URL="https://raw.githubusercontent.com/nekoskin/whispera/main/scripts/lib.sh"
 __wsp_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 if [[ -n "$__wsp_script_dir" && -f "$__wsp_script_dir/scripts/lib.sh" ]]; then
     source "$__wsp_script_dir/scripts/lib.sh"
@@ -598,7 +598,7 @@ echo "=== $(date) ==="
 
 ARCH="amd64"
 [[ $(uname -m) == "aarch64" ]] && ARCH="arm64"
-DIRECT_URL="https://github.com/Jalaveyan/Whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
+DIRECT_URL="https://github.com/nekoskin/whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -758,7 +758,7 @@ show_extras_menu() {
             16) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
             17)
                 pkill -9 whispera 2>/dev/null
-                bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/update.sh)
+                bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera/main/update.sh)
                 ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
@@ -836,7 +836,7 @@ build_whispera() {
     [[ $(uname -m) == "aarch64" ]] && ARCH="arm64"
 
     log_info "Fetching prebuilt server binary from GitHub Release..."
-    local DOWNLOAD_URL="https://github.com/Jalaveyan/Whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
+    local DOWNLOAD_URL="https://github.com/nekoskin/whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
 
     if [[ -n "$DOWNLOAD_URL" ]]; then
         log_info "Downloading binary from $DOWNLOAD_URL..."
@@ -1294,7 +1294,7 @@ setup_systemd() {
     cat > /etc/systemd/system/whispera.service <<EOF
 [Unit]
 Description=Whispera Server (Backend)
-Documentation=https://github.com/Jalaveyan/Whispera
+Documentation=https://github.com/nekoskin/whispera
 After=network.target network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=300
@@ -1756,7 +1756,7 @@ case "${1:-}" in
         echo "  status      Show status"
         echo ""
         echo "One-liner install:"
-        echo "  bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)"
+        echo "  bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera/main/install.sh)"
         ;;
     *)
         main "$@"

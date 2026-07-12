@@ -19,7 +19,7 @@ log_info() { echo -e "${BLUE}[INFO]${PLAIN} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERR]${PLAIN} $1"; }
 
-WHISPERA_LIB_URL="https://raw.githubusercontent.com/Jalaveyan/Whispera/main/scripts/lib.sh"
+WHISPERA_LIB_URL="https://raw.githubusercontent.com/nekoskin/whispera/main/scripts/lib.sh"
 __wsp_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
 if [[ -n "$__wsp_script_dir" && -f "$__wsp_script_dir/scripts/lib.sh" ]]; then
     source "$__wsp_script_dir/scripts/lib.sh"
@@ -729,7 +729,7 @@ show_extras_menu() {
             14) systemctl status whispera ;;
             15) journalctl -u whispera -f ;;
             16) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
-            17) bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/update.sh) ;;
+            17) bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera/main/update.sh) ;;
             18)
                 read -rp "  New password (leave empty to generate): " NEW_PASS
                 if [[ -z "$NEW_PASS" ]]; then
@@ -905,10 +905,10 @@ do_update() {
 
     log_info "Fetching latest release info..."
     local RELEASE_JSON
-    RELEASE_JSON=$(curl -s https://api.github.com/repos/Jalaveyan/Whispera/releases/latest)
+    RELEASE_JSON=$(curl -s https://api.github.com/repos/nekoskin/whispera/releases/latest)
 
     log_info "Downloading latest release from GitHub..."
-    local DIRECT_URL="https://github.com/Jalaveyan/Whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
+    local DIRECT_URL="https://github.com/nekoskin/whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
 
     local BIN_FOUND=false
 

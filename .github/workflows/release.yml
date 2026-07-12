@@ -365,6 +365,6 @@ jobs:
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.WHISP_DISPATCH_TOKEN }}
-          repository: Jalaveyan/Whisp
+          repository: nekoskin/Whisp
           event-type: upstream-release
           client-payload: '{"version": "${{ needs.prepare.outputs.version }}"}'
