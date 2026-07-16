@@ -374,6 +374,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 		uploadCh: make(chan *uploadBody, 512),
 		closed:   make(chan struct{}),
 		secret:   secret,
+		bulkMode: 1,
 	}
 	sessionKey := hex.EncodeToString(sessionID)
 	cfg.storeSession(sessionKey, sess)
@@ -500,6 +501,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig
 		segCh:    make(chan *segSlot, 1),
 		closed:   make(chan struct{}),
 		secret:   secret,
+		bulkMode: 1,
 	}
 	sessionKey := hlsSessionKey(sessionID)
 	cfg.storeSession(sessionKey, sess)
