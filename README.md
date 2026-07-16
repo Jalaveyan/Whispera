@@ -26,6 +26,24 @@ This is for creating a key
 whispera create-key -user <your_username> -port <your_port> -sni <realdomain>
 ```
 
+This is for creating a sub
+
+```bash
+whispera generate-sub -name "" -users <john, ...> 
+```
+
+This is for delete key
+
+```bash
+whispera delete-key <your user>
+```
+
+This allows you to view all keys
+
+```bash
+whispera view-keys
+```
+
 Available options
 
 ```
@@ -33,11 +51,9 @@ Available options
 
 -port <port> required — dedicated listening port for this user
 
--delete-key <your user> — deletes an unnecessary user-specific key
+-fingerprint chrome||safari|ios|android|edge|random and the most recent Chrome fingerprint is used by default, unless you want to specify the `-fingerprint` flag and if you don't want to change the fingerprint, simply don't set this flag.
 
--fingerprint chrome|chrome_120|chrome_115|firefox|firefox_120|safari|ios|android|edge|random and the most recent Chrome fingerprint is used by default, unless you want to specify the `-fingerprint` flag.
-
--transport whispera|grpc|yadisk (default: whispera)
+-transport whispera|grpc|yadisk (default: whispera) and if you don't want to change the transport, simply don't set this flag.
 
 -quic enable/disable tunneling over QUIC instead of TCP
 
@@ -48,18 +64,6 @@ Available options
 -yadisk-session <id> Yandex.Disk session/folder ID (automatically generated if empty)
 
 -neural enable/disable RL agents + GAN seeding for this user
-```
-
-This is for creating a sub
-
-```bash
-whispera generate-sub -name "" -users <john, ...> 
-```
-
-This allows you to view all keys
-
-```bash
-whispera view-keys
 ```
 
 ## Build from source
