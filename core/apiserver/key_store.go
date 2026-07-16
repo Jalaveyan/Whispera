@@ -5,10 +5,10 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"github.com/nekoskin/whispera/common/fsown"
 	"os"
 	"sync"
 	"time"
-	"whispera/common/fsown"
 
 	"golang.org/x/crypto/curve25519"
 )

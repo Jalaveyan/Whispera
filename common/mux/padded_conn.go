@@ -6,12 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"github.com/nekoskin/whispera/common/buf"
 	"io"
 	"math/rand"
 	"net"
 	"sync"
 	"time"
-	"whispera/common/buf"
 )
 
 type PaddedConn struct {

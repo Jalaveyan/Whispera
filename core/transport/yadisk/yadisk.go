@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/common/log"
+	"github.com/nekoskin/whispera/common/runtime/base"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/runtime/registry"
 	"io"
 	"net"
 	"net/http"
@@ -11,10 +15,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
-	"whispera/common/runtime/base"
-	"whispera/common/runtime/interfaces"
-	"whispera/common/runtime/registry"
 )
 
 var log = logger.Module("transport_yadisk")

@@ -3,12 +3,12 @@ package dataplane
 import (
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/common/runtime/base"
+	"github.com/nekoskin/whispera/common/runtime/events"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/runtime/registry"
 	"sync"
 	"sync/atomic"
-	"whispera/common/runtime/base"
-	"whispera/common/runtime/events"
-	"whispera/common/runtime/interfaces"
-	"whispera/common/runtime/registry"
 )
 
 func init() {

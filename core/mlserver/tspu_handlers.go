@@ -2,9 +2,9 @@ package mlserver
 
 import (
 	"encoding/json"
+	"github.com/nekoskin/whispera/neural"
 	"net/http"
 	"time"
-	"whispera/neural"
 )
 
 func (s *MLServer) handleTSPUStats(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,11 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/common/runtime/base"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/runtime/registry"
+	"github.com/nekoskin/whispera/neural"
+	"github.com/nekoskin/whispera/neural/evasion"
 	"net"
 	"net/http"
 	"os"
@@ -12,11 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"whispera/common/runtime/base"
-	"whispera/common/runtime/interfaces"
-	"whispera/common/runtime/registry"
-	"whispera/neural"
-	"whispera/neural/evasion"
 )
 
 func init() {

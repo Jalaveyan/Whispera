@@ -5,6 +5,8 @@ package neural
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/common/log"
+	"github.com/nekoskin/whispera/neural/gnet"
 	"math"
 	mrand "math/rand"
 	"os"
@@ -12,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"whispera/common/log"
-	"whispera/neural/gnet"
 )
 
 var log = logger.Module("neural")

@@ -2,11 +2,11 @@ package protocol
 
 import (
 	"fmt"
+	"github.com/nekoskin/whispera/common/fsown"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
-	"whispera/common/fsown"
 
 	utls "github.com/refraction-networking/utls"
 )

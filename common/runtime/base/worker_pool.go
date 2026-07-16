@@ -2,9 +2,9 @@ package base
 
 import (
 	"context"
+	"github.com/nekoskin/whispera/common/log"
 	"runtime/debug"
 	"sync"
-	"whispera/common/log"
 )
 
 var workerPoolLog = logger.Module("worker_pool")

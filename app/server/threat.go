@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"whispera/core/config"
-	"whispera/neural/evasion"
+	"github.com/nekoskin/whispera/core/config"
+	"github.com/nekoskin/whispera/neural/evasion"
 )
 
 func envInt(name string, fallback int) int {

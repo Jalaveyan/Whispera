@@ -5,16 +5,16 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"github.com/nekoskin/whispera/core/protocol"
+	"github.com/nekoskin/whispera/core/transport/grpc"
+	"github.com/nekoskin/whispera/core/transport/yadisk"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/core/protocol"
-	"whispera/core/transport/grpc"
-	"whispera/core/transport/yadisk"
 
+	"github.com/nekoskin/whispera/common/mux"
 	quicgo "github.com/quic-go/quic-go"
-	"whispera/common/mux"
 )
 
 const defaultWhisperaSNI = "vk.com"

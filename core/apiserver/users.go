@@ -2,12 +2,12 @@ package apiserver
 
 import (
 	"encoding/json"
+	"github.com/nekoskin/whispera/app/auth"
+	db2 "github.com/nekoskin/whispera/app/db"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
-	"whispera/app/auth"
-	db2 "whispera/app/db"
 
 	"github.com/google/uuid"
 )

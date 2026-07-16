@@ -1,8 +1,8 @@
 package tunnel
 
 import (
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	"io"
-	"whispera/common/runtime/interfaces"
 )
 
 type deobfuscatingReader struct {

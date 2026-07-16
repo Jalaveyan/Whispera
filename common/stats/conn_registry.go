@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	logger "whispera/common/log"
+	logger "github.com/nekoskin/whispera/common/log"
 )
 
 var resetTraceLog = logger.Trace()

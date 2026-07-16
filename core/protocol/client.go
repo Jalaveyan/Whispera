@@ -18,7 +18,7 @@ import (
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
 
-	"whispera/common/buf"
+	"github.com/nekoskin/whispera/common/buf"
 )
 
 const dialTimeout = 10 * time.Second

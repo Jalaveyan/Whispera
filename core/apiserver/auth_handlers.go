@@ -8,13 +8,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/app/auth"
+	"github.com/nekoskin/whispera/app/db"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
-	"whispera/app/auth"
-	"whispera/app/db"
 
 	"golang.org/x/crypto/bcrypt"
 )

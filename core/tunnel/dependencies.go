@@ -2,10 +2,10 @@ package tunnel
 
 import (
 	"context"
+	"github.com/nekoskin/whispera/neural"
+	"github.com/nekoskin/whispera/neural/gnet"
 	"net"
 	"time"
-	"whispera/neural"
-	"whispera/neural/gnet"
 )
 
 type killSwitchController interface {

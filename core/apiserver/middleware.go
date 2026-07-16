@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"github.com/nekoskin/whispera/app/auth"
 	"net"
 	"net/http"
 	"runtime"
 	"strings"
 	"time"
-	"whispera/app/auth"
 )
 
 func (s *Server) corsMiddleware(next http.Handler) http.Handler {

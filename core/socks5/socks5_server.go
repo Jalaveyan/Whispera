@@ -5,12 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/nekoskin/whispera/common/log"
 	"io"
 	"net"
 	"runtime/debug"
 	"sync"
 	"time"
-	"whispera/common/log"
 )
 
 const (

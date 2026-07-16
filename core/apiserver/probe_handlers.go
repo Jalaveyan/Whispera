@@ -2,8 +2,8 @@ package apiserver
 
 import (
 	"encoding/json"
+	"github.com/nekoskin/whispera/core/probedetector"
 	"net/http"
-	"whispera/core/probedetector"
 )
 
 func (s *Server) SetProbeDetector(d *probedetector.Detector) {

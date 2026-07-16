@@ -3,11 +3,11 @@ package registry
 import (
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/common/runtime/events"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	"log"
 	"sync"
 	"time"
-	"whispera/common/runtime/events"
-	"whispera/common/runtime/interfaces"
 )
 
 type Registry interface {

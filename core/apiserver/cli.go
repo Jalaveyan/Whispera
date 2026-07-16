@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"github.com/nekoskin/whispera/core/config"
 	"os"
 	"sort"
 	"time"
-	"whispera/core/config"
 )
 
 func ComputeWhisperaCertPin(certPath string) (string, error) {

@@ -1,4 +1,4 @@
-module whispera
+module github.com/nekoskin/whispera
 
 go 1.26
 

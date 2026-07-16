@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/core/agent"
 	"io"
 	stdlog "log"
 	"net"
@@ -11,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"whispera/core/agent"
 
 	"golang.org/x/net/proxy"
 )

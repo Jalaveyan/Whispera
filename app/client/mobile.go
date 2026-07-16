@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"whispera/common/runtime/lifecycle"
+	"github.com/nekoskin/whispera/common/runtime/lifecycle"
 )
 
 // fatalf ends startup on an unrecoverable error. As a forked CLI that means

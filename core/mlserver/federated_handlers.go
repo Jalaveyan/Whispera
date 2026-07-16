@@ -3,12 +3,12 @@ package mlserver
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/neural"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
-	"whispera/neural"
 )
 
 func (s *MLServer) handleFedExport(w http.ResponseWriter, r *http.Request) {

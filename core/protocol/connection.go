@@ -4,11 +4,11 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"github.com/nekoskin/whispera/common/buf"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
-	"whispera/common/buf"
 )
 
 type frameReq struct {

@@ -3,10 +3,10 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/neural"
 	mrand "math/rand"
 	"sync/atomic"
 	"time"
-	"whispera/neural"
 )
 
 type keepaliveController struct {

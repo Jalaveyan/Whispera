@@ -3,9 +3,9 @@ package commands
 import (
 	"flag"
 	"fmt"
+	"github.com/nekoskin/whispera/core/protocol"
 	"os"
 	"time"
-	"whispera/core/protocol"
 )
 
 func RunGenDecoyCertCmd() {

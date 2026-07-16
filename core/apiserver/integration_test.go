@@ -4,14 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/nekoskin/whispera/app/auth"
+	"github.com/nekoskin/whispera/common/runtime/base"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
-	"whispera/app/auth"
-	"whispera/common/runtime/base"
 )
 
 func newTestServer(t *testing.T) *Server {

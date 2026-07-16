@@ -14,7 +14,7 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 	utls "github.com/refraction-networking/utls"
 
-	"whispera/common/log"
+	"github.com/nekoskin/whispera/common/log"
 )
 
 type UserEntry struct {

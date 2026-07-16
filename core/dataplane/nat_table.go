@@ -1,11 +1,11 @@
 package dataplane
 
 import (
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/util"
 	"net"
 	"sync/atomic"
 	"time"
-	"whispera/common/runtime/interfaces"
-	"whispera/common/util"
 )
 
 type natEntry struct {

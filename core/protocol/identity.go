@@ -13,7 +13,7 @@ import (
 	"os"
 	"sync"
 
-	"whispera/common/fsown"
+	"github.com/nekoskin/whispera/common/fsown"
 )
 
 var certBindOID = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 58888, 1, 1}

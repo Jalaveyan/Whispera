@@ -1,9 +1,9 @@
 package neural
 
 import (
+	"github.com/nekoskin/whispera/neural/gnet"
 	"math"
 	mrand "math/rand"
-	"whispera/neural/gnet"
 )
 
 const (

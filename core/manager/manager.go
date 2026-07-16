@@ -2,10 +2,10 @@ package manager
 
 import (
 	"fmt"
+	"github.com/nekoskin/whispera/core/config"
 	"log"
 	"net"
 	"sync"
-	"whispera/core/config"
 )
 
 type Manager struct {

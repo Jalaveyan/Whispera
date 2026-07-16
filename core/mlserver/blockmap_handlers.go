@@ -2,11 +2,11 @@ package mlserver
 
 import (
 	"encoding/json"
+	"github.com/nekoskin/whispera/neural"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
-	"whispera/neural"
 )
 
 func bmKey(cc, asn string) string { return cc + "|" + asn }

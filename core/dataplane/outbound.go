@@ -5,15 +5,15 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"github.com/nekoskin/whispera/common/log"
+	"github.com/nekoskin/whispera/core/config"
+	"github.com/nekoskin/whispera/core/crypto"
+	"github.com/nekoskin/whispera/core/handshake"
+	"github.com/nekoskin/whispera/core/session"
+	"github.com/nekoskin/whispera/core/tunnel"
 	"net"
 	"sync"
 	"time"
-	"whispera/common/log"
-	"whispera/core/config"
-	"whispera/core/crypto"
-	"whispera/core/handshake"
-	"whispera/core/session"
-	"whispera/core/tunnel"
 )
 
 type OutboundManager struct {

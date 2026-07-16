@@ -3,15 +3,15 @@ package config
 import (
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/common/runtime/base"
+	"github.com/nekoskin/whispera/common/runtime/events"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
-	"whispera/common/runtime/base"
-	"whispera/common/runtime/events"
-	"whispera/common/runtime/interfaces"
 
 	"gopkg.in/yaml.v3"
 )

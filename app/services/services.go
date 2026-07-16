@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/runtime/lifecycle"
+	"github.com/nekoskin/whispera/core/crypto"
+	"github.com/nekoskin/whispera/core/session"
 	"log"
 	"net/http"
 	"os"
 	"time"
-	"whispera/common/runtime/interfaces"
-	"whispera/common/runtime/lifecycle"
-	"whispera/core/crypto"
-	"whispera/core/session"
 
 	_ "go.uber.org/automaxprocs"
 )

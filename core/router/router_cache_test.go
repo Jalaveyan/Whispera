@@ -5,7 +5,7 @@ import (
 	"net"
 	"testing"
 
-	"whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
 )
 
 func TestRouteCachesDestinationAcrossCalls(t *testing.T) {

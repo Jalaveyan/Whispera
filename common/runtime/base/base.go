@@ -2,10 +2,10 @@ package base
 
 import (
 	"context"
+	"github.com/nekoskin/whispera/common/runtime/events"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	"sync"
 	"time"
-	"whispera/common/runtime/events"
-	"whispera/common/runtime/interfaces"
 )
 
 type Module struct {

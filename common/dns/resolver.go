@@ -3,13 +3,13 @@ package dns
 import (
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/common/cache"
+	"github.com/nekoskin/whispera/common/runtime/base"
 	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/cache"
-	"whispera/common/runtime/base"
 )
 
 const (

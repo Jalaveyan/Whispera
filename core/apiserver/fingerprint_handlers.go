@@ -3,8 +3,8 @@ package apiserver
 import (
 	"encoding/base64"
 	"encoding/json"
+	"github.com/nekoskin/whispera/core/protocol"
 	"net/http"
-	"whispera/core/protocol"
 )
 
 const FingerprintStoreDir = "/etc/whispera/fingerprints"

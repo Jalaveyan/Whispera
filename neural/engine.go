@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/neural/gnet"
+	"github.com/nekoskin/whispera/neural/types"
 	"math"
 	"math/cmplx"
 	"os"
@@ -14,8 +16,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/neural/gnet"
-	"whispera/neural/types"
 
 	"gorgonia.org/gorgonia"
 	"gorgonia.org/tensor"

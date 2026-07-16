@@ -1,8 +1,8 @@
 package neural
 
 import (
+	"github.com/nekoskin/whispera/neural/gnet"
 	"sync/atomic"
-	"whispera/neural/gnet"
 )
 
 type WeightSnapshot struct {

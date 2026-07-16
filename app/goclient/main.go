@@ -1,6 +1,6 @@
 package main
 
-import "whispera/app/client"
+import "github.com/nekoskin/whispera/app/client"
 
 func main() {
 	client.RunMain()

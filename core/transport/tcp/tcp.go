@@ -3,14 +3,14 @@ package tcp
 import (
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/common/runtime/base"
+	"github.com/nekoskin/whispera/common/runtime/events"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/runtime/registry"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/runtime/base"
-	"whispera/common/runtime/events"
-	"whispera/common/runtime/interfaces"
-	"whispera/common/runtime/registry"
 )
 
 func init() {

@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/common/app_detection"
 	"net"
 	"os"
 	"strings"
 	"sync"
 	"time"
-	"whispera/common/app_detection"
 )
 
 type SplitTunnelRule struct {

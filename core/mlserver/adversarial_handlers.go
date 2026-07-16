@@ -2,8 +2,8 @@ package mlserver
 
 import (
 	"encoding/json"
+	"github.com/nekoskin/whispera/neural/evasion"
 	"net/http"
-	"whispera/neural/evasion"
 )
 
 func (s *MLServer) handleAdversarialStatus(w http.ResponseWriter, r *http.Request) {

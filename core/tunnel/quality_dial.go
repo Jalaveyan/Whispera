@@ -1,10 +1,10 @@
 package tunnel
 
 import (
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	mrand "math/rand"
 	"sync/atomic"
 	"time"
-	"whispera/common/runtime/interfaces"
 )
 
 func (m *Manager) updateQualityRTT(rtt time.Duration) {

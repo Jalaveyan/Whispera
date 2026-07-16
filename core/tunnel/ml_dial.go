@@ -2,7 +2,7 @@ package tunnel
 
 import (
 	"context"
-	"whispera/neural"
+	"github.com/nekoskin/whispera/neural"
 )
 
 func (m *Manager) pickServer(ctx context.Context) string { return m.ml.pickServer(ctx) }

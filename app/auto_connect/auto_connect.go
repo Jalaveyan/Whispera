@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/nekoskin/whispera/core/config"
 	"log"
 	"net"
 	"net/http"
@@ -17,7 +18,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"whispera/core/config"
 
 	_ "go.uber.org/automaxprocs"
 )

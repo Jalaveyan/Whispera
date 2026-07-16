@@ -4,10 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/nekoskin/whispera/core/mlserver"
 	"os"
 	"os/signal"
 	"syscall"
-	"whispera/core/mlserver"
 
 	_ "go.uber.org/automaxprocs"
 )

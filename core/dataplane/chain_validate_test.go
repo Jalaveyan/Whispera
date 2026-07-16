@@ -1,8 +1,8 @@
 package dataplane
 
 import (
+	"github.com/nekoskin/whispera/core/config"
 	"testing"
-	"whispera/core/config"
 )
 
 func TestValidateChainGraphCycle(t *testing.T) {

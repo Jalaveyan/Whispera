@@ -2,13 +2,13 @@ package protocol
 
 import (
 	"fmt"
+	"github.com/nekoskin/whispera/common/buf"
 	"io"
 	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/buf"
 )
 
 type bufferedPipeWriter struct {

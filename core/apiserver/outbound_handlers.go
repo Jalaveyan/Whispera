@@ -3,9 +3,9 @@ package apiserver
 import (
 	"encoding/json"
 	"fmt"
+	config2 "github.com/nekoskin/whispera/core/config"
 	"net/http"
 	"time"
-	config2 "whispera/core/config"
 )
 
 func (s *Server) getConfigProvider() (interface{}, error) {

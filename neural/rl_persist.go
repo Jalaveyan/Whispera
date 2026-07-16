@@ -2,9 +2,9 @@ package neural
 
 import (
 	"encoding/json"
+	"github.com/nekoskin/whispera/neural/gnet"
 	"os"
 	"path/filepath"
-	"whispera/neural/gnet"
 )
 
 const rlPolicyVersion = 2

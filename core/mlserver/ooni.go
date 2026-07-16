@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/neural"
 	"io"
 	"net/http"
 	"time"
-	"whispera/neural"
 )
 
 var ooniClient = &http.Client{Timeout: 20 * time.Second}

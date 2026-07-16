@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"github.com/nekoskin/whispera/common/buf"
+	"github.com/nekoskin/whispera/common/runtime/base"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/core/protocol"
 	"io"
 	stdlog "log"
 	"net"
@@ -11,10 +15,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/buf"
-	"whispera/common/runtime/base"
-	"whispera/common/runtime/interfaces"
-	"whispera/core/protocol"
 )
 
 const (

@@ -1,9 +1,9 @@
 package apiserver
 
 import (
+	logger "github.com/nekoskin/whispera/common/log"
 	"net/http"
 	"strconv"
-	logger "whispera/common/log"
 )
 
 func (s *Server) handleGetLogs(w http.ResponseWriter, r *http.Request) {

@@ -1,8 +1,8 @@
 package registry
 
 import (
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	"sync"
-	"whispera/common/runtime/interfaces"
 )
 
 type ModuleFactory func(cfg interface{}) (interfaces.Module, error)

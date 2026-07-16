@@ -2,10 +2,10 @@ package tunnel
 
 import (
 	"context"
+	"github.com/nekoskin/whispera/neural"
 	"math"
 	"net"
 	"time"
-	"whispera/neural"
 
 	"github.com/sourcegraph/conc/iter"
 )

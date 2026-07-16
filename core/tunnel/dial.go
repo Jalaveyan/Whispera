@@ -3,11 +3,11 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/common/mux"
 	"net"
 	"os"
 	"sync"
 	"time"
-	"whispera/common/mux"
 )
 
 func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn, error) {

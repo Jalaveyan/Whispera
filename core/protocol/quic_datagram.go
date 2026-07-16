@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nekoskin/whispera/core/relay"
 	quicgo "github.com/quic-go/quic-go"
-	"whispera/core/relay"
 )
 
 const (

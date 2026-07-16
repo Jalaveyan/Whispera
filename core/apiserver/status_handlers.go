@@ -2,11 +2,11 @@ package apiserver
 
 import (
 	"context"
+	"github.com/nekoskin/whispera/app/db"
+	"github.com/nekoskin/whispera/common/stats"
+	config2 "github.com/nekoskin/whispera/core/config"
 	"net/http"
 	"time"
-	"whispera/app/db"
-	"whispera/common/stats"
-	config2 "whispera/core/config"
 )
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

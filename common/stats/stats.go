@@ -2,10 +2,10 @@ package stats
 
 import (
 	"fmt"
+	"github.com/nekoskin/whispera/common/log"
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/log"
 )
 
 type TrafficStats struct {

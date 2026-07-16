@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/neural"
 	"net"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
-	"whispera/neural"
 )
 
 func (s *MLServer) handleNetworkAnalyze(w http.ResponseWriter, r *http.Request) {

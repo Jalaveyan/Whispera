@@ -2,13 +2,13 @@ package neural
 
 import (
 	"encoding/json"
+	"github.com/nekoskin/whispera/neural/gnet"
 	"math"
 	mrand "math/rand"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"whispera/neural/gnet"
 )
 
 const (

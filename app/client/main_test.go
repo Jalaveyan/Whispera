@@ -1,8 +1,8 @@
 package client
 
 import (
+	"github.com/nekoskin/whispera/core/config"
 	"testing"
-	"whispera/core/config"
 )
 
 func TestPickServerAddressTCP(t *testing.T) {

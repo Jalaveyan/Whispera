@@ -3,15 +3,15 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/common/runtime/events"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/runtime/registry"
 	"log"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
-	"whispera/common/runtime/events"
-	"whispera/common/runtime/interfaces"
-	"whispera/common/runtime/registry"
 )
 
 type Manager struct {

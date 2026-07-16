@@ -6,15 +6,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/nekoskin/whispera/common/dns"
+	"github.com/nekoskin/whispera/core/agent"
+	"github.com/nekoskin/whispera/core/config"
+	"github.com/nekoskin/whispera/core/socks5"
+	"github.com/nekoskin/whispera/core/tunnel"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/dns"
-	"whispera/core/agent"
-	"whispera/core/config"
-	"whispera/core/socks5"
-	"whispera/core/tunnel"
 )
 
 type connStatus string

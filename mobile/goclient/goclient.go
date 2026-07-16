@@ -1,6 +1,6 @@
 package goclient
 
-import "whispera/app/client"
+import "github.com/nekoskin/whispera/app/client"
 
 // Start runs the Whispera go-client in-process (Android/iOS via gomobile) so it
 // is not a forked child that Android's phantom-process killer reaps. Non-blocking.

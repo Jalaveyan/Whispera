@@ -5,14 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/nekoskin/whispera/common/ipdetect"
+	"github.com/nekoskin/whispera/core/config"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
-	"whispera/common/ipdetect"
-	"whispera/core/config"
 
 	"golang.org/x/crypto/curve25519"
 )

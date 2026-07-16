@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"whispera/core/protocol"
+	"github.com/nekoskin/whispera/core/protocol"
 )
 
 type RouteRule struct {
