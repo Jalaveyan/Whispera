@@ -38,6 +38,37 @@ func specFromRaw(raw []byte) (*utls.ClientHelloSpec, error) {
 	return fp.FingerprintClientHello(raw)
 }
 
+func isPQCurve(g utls.CurveID) bool {
+	return g == utls.X25519MLKEM768 || g == utls.X25519Kyber768Draft00
+}
+
+func dropPQKeyShares(spec *utls.ClientHelloSpec) {
+	for _, ext := range spec.Extensions {
+		switch e := ext.(type) {
+		case *utls.KeyShareExtension:
+			kept := e.KeyShares[:0]
+			for _, k := range e.KeyShares {
+				if isPQCurve(k.Group) {
+					continue
+				}
+				if k.Group != utls.GREASE_PLACEHOLDER && len(k.Data) > 0 {
+					k.Data = nil
+				}
+				kept = append(kept, k)
+			}
+			e.KeyShares = kept
+		case *utls.SupportedCurvesExtension:
+			kept := e.Curves[:0]
+			for _, c := range e.Curves {
+				if !isPQCurve(c) {
+					kept = append(kept, c)
+				}
+			}
+			e.Curves = kept
+		}
+	}
+}
+
 func specHandshakeReadyRaw(raw []byte) bool {
 	spec, err := specFromRaw(raw)
 	if err != nil {

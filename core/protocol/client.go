@@ -108,18 +108,24 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 				uCfg.ClientSessionCache = sc
 			}
 		}
-		var uConn *utls.UConn
+		var spec *utls.ClientHelloSpec
 		if useSpec && len(helloRaw) > 0 {
-			spec, err := specFromRaw(helloRaw)
+			s, err := specFromRaw(helloRaw)
 			if err != nil {
 				return nil, fmt.Errorf("whispera: fingerprint: %w", err)
 			}
-			uConn = utls.UClient(rawConn, uCfg, utls.HelloCustom)
-			if err := uConn.ApplyPreset(spec); err != nil {
-				return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
-			}
+			spec = s
 		} else {
-			uConn = utls.UClient(rawConn, uCfg, helloID)
+			s, err := utls.UTLSIdToSpec(helloID)
+			if err != nil {
+				return nil, fmt.Errorf("whispera: fingerprint: %w", err)
+			}
+			spec = &s
+		}
+		dropPQKeyShares(spec)
+		uConn := utls.UClient(rawConn, uCfg, utls.HelloCustom)
+		if err := uConn.ApplyPreset(spec); err != nil {
+			return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
 		}
 		if err := uConn.BuildHandshakeState(); err != nil {
 			return nil, fmt.Errorf("whispera: build hello: %w", err)
