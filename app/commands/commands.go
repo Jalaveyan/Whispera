@@ -483,7 +483,7 @@ func RunCreateKeyCmd() {
 		}
 
 		whisperaCertPin := ""
-		if useSelfCert && servedCertPath != "" {
+		if useSelfCert && servedCertPath != "" && whisperaIDPub == "" {
 			pin, pinErr := apiserver.ComputeWhisperaCertPin(servedCertPath)
 			if pinErr != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not compute whispera cert pin: %v (client will not pin the server cert — vulnerable to MITM)\n", pinErr)

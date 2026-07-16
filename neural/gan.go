@@ -267,6 +267,12 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 
 const GANDecideThreshold int64 = 500
 
+const latencySensitiveMaxSize = 300.0
+
+func isLatencySensitive(f FlowFeatures) bool {
+	return f.SizeMean > 0 && f.SizeMean < latencySensitiveMaxSize
+}
+
 func (g *TrafficGAN) Decide(f FlowFeatures) GeneratorAction {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -276,7 +282,12 @@ func (g *TrafficGAN) Decide(f FlowFeatures) GeneratorAction {
 	if g.TunnelConfidence < 0.4 {
 		return GeneratorAction{}
 	}
-	return g.smoothed
+	a := g.smoothed
+	if isLatencySensitive(f) {
+		a.SleepMs = 0
+		a.SegShrink = 0
+	}
+	return a
 }
 
 func (g *TrafficGAN) genAction(out []float64) GeneratorAction {

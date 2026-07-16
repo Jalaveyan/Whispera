@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,28 @@ import (
 
 	utls "github.com/refraction-networking/utls"
 )
+
+// errHelloIncomplete marks a ClientHello that stopped arriving mid-flight, as
+// opposed to one that arrived and failed to parse.
+var errHelloIncomplete = errors.New("whispera: ClientHello incomplete")
+
+// readFullIdle fills buf, allowing idle between reads rather than for the whole
+// fill: a peer that keeps making progress never trips the deadline, however many
+// segments its ClientHello is spread over, while a silent peer still dies.
+func readFullIdle(conn net.Conn, buf []byte, idle time.Duration) (int, error) {
+	n := 0
+	for n < len(buf) {
+		if err := conn.SetReadDeadline(time.Now().Add(idle)); err != nil {
+			return n, err
+		}
+		m, err := conn.Read(buf[n:])
+		n += m
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
 
 const (
 	camoWindowSeconds = authWindowSeconds
@@ -107,7 +130,6 @@ type peekedHello struct {
 }
 
 func peekClientHello(conn net.Conn) (*peekedHello, error) {
-	_ = conn.SetReadDeadline(time.Now().Add(camoPeekTimeout))
 	defer conn.SetReadDeadline(time.Time{})
 
 	var raw []byte
@@ -115,8 +137,8 @@ func peekClientHello(conn net.Conn) (*peekedHello, error) {
 
 	for {
 		var hdr [5]byte
-		if _, err := io.ReadFull(conn, hdr[:]); err != nil {
-			return &peekedHello{raw: raw}, err
+		if _, err := readFullIdle(conn, hdr[:], camoPeekTimeout); err != nil {
+			return &peekedHello{raw: raw}, fmt.Errorf("%w: %v", errHelloIncomplete, err)
 		}
 		raw = append(raw, hdr[:]...)
 		if hdr[0] != 0x16 {
@@ -127,8 +149,8 @@ func peekClientHello(conn net.Conn) (*peekedHello, error) {
 			return &peekedHello{raw: raw}, fmt.Errorf("whispera: invalid TLS record length")
 		}
 		payload := make([]byte, recLen)
-		if _, err := io.ReadFull(conn, payload); err != nil {
-			return &peekedHello{raw: raw}, err
+		if _, err := readFullIdle(conn, payload, camoPeekTimeout); err != nil {
+			return &peekedHello{raw: raw}, fmt.Errorf("%w: %v", errHelloIncomplete, err)
 		}
 		raw = append(raw, payload...)
 		hs = append(hs, payload...)
@@ -317,6 +339,15 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	}
 	if len(ph.raw) == 0 {
 		traceLog.Infow("camo_no_hello", "remote", remote, "err", err)
+		conn.Close()
+		return
+	}
+	// A peer that already sent a TLS handshake record header is mid-ClientHello:
+	// it committed to a handshake with us and simply has not finished arriving.
+	// Handing it to the decoy would point its handshake at the wrong origin and
+	// kill it, so only a completed hello decides whether this is a probe.
+	if errors.Is(err, errHelloIncomplete) && ph.raw[0] == 0x16 {
+		traceLog.Infow("camo_partial_hello", "remote", remote, "err", err)
 		conn.Close()
 		return
 	}

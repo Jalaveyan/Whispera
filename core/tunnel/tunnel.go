@@ -195,7 +195,6 @@ type Config struct {
 
 	ForceSNI string
 
-	QualityThresholdRTT     time.Duration
 	QualityMissedKeepalives int
 
 	PaddingMaxSize int
@@ -255,8 +254,6 @@ type managedConn struct {
 }
 
 const whisperaPoolMin = 1
-
-const growStaggerNs = int64(250 * time.Millisecond)
 
 func whisperaPoolCap() int {
 	n := runtime.GOMAXPROCS(0)
@@ -318,7 +315,7 @@ type Manager struct {
 	reconnectAttempts uint32
 	reconnecting      int32
 	poolGrowInflight  atomic.Int32
-	lastGrowNs        int64
+	growRefused       atomic.Bool
 	bytesUp           uint64
 	bytesDown         uint64
 	lastKeepalive     int64
@@ -589,6 +586,8 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	m.activeConn = firstConn
 	m.connMu.Unlock()
 
+	m.growRefused.Store(false)
+
 	for _, mc := range connectedPool {
 		neural.FlowRegistry.RegisterConn(mc.LocalAddr(), mc.RemoteAddr(), neural.FlowTunnel)
 	}
@@ -730,24 +729,23 @@ func (m *Manager) maybeGrowPool(target int) {
 	if atomic.LoadInt32(&m.reconnecting) == 1 {
 		return
 	}
+	// A failed dial means the path is refusing new connections right now. The
+	// pool keeps whatever it reached; growth re-arms on the next fresh connect.
+	if m.growRefused.Load() {
+		return
+	}
 	if maxConns := whisperaPoolCap(); target > maxConns {
 		target = maxConns
 	}
 	m.connMu.RLock()
 	cur := len(m.activePool)
 	m.connMu.RUnlock()
-	if cur == 0 || cur+int(m.poolGrowInflight.Load()) >= target {
+	if cur == 0 || cur >= target {
 		return
 	}
-	now := time.Now().UnixNano()
-	last := atomic.LoadInt64(&m.lastGrowNs)
-	if now-last < growStaggerNs {
+	if !m.poolGrowInflight.CompareAndSwap(0, 1) {
 		return
 	}
-	if !atomic.CompareAndSwapInt64(&m.lastGrowNs, last, now) {
-		return
-	}
-	m.poolGrowInflight.Add(1)
 	m.spawnPoolConn()
 }
 
@@ -781,6 +779,8 @@ func (m *Manager) spawnPoolConn() {
 		defer cancel()
 		mc, err := m.dialManagedConn(ctx, fmt.Sprintf("grow-%d", time.Now().UnixNano()))
 		if err != nil {
+			log.Warn("pool grow refused (%v) — keeping pool at current size", err)
+			m.growRefused.Store(true)
 			return
 		}
 		m.connMu.Lock()
@@ -1453,19 +1453,14 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 }
 
 func (m *Manager) forceReconnectFromStreamFailure(mc *managedConn, reason string) {
-	m.connMu.RLock()
-	isActive := (mc == m.activeConn)
-	m.connMu.RUnlock()
-	if !isActive || m.GetState() != StateConnected {
+	if m.GetState() != StateConnected {
 		return
 	}
 	if lp := atomic.LoadInt64(&m.lastPong); lp != 0 && time.Since(time.Unix(0, lp)) < recentActivityWindow {
 		log.Warn("stream failure (%s) — tunnel active, dropping stream only", reason)
 		return
 	}
-	log.Warn("stream failure (%s) — forcing reconnect", reason)
-	m.sm.SetError(fmt.Errorf("stream failure: %s", reason))
-	m.triggerReconnect()
+	m.handleReadError(mc, fmt.Errorf("stream failure: %s", reason))
 }
 
 const (
@@ -1723,6 +1718,8 @@ func (m *Manager) rtStreamClosed() { m.rtLane.streamClosed() }
 func (m *Manager) feedScale(n int) { m.rtLane.feedScale(n) }
 
 func (m *Manager) GetState() TunnelState { return m.sm.Get() }
+
+func (m *Manager) LastError() error { return m.sm.LastError() }
 
 func (m *Manager) IsConnected() bool { return m.sm.IsConnected() }
 

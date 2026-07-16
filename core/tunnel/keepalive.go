@@ -86,9 +86,20 @@ func (k *keepaliveController) reconnectOnMissed(m *Manager, reason string) {
 	}
 	atomic.StoreInt32(&m.missedKAs, 0)
 	if m.GetState() == StateConnected {
-		log.Error("keepalive: reconnecting after %d missed pings (%s)", missed, reason)
-		m.triggerReconnect()
+		k.retireSilent(m, fmt.Sprintf("%d missed pings (%s)", missed, reason))
 	}
+}
+
+func (k *keepaliveController) retireSilent(m *Manager, reason string) {
+	m.connMu.RLock()
+	mc := m.activeConn
+	m.connMu.RUnlock()
+	if mc == nil {
+		return
+	}
+	atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
+	atomic.StoreInt32(&m.missedKAs, 0)
+	m.handleReadError(mc, fmt.Errorf("keepalive: %s", reason))
 }
 
 func (k *keepaliveController) send() {
@@ -99,8 +110,7 @@ func (k *keepaliveController) send() {
 		silentDuration := time.Since(time.Unix(0, lastPong))
 		maxSilence := time.Duration(k.missedThreshold(m)) * m.config.KeepaliveInterval
 		if silentDuration > maxSilence && time.Since(m.LastActivity()) > recentActivityWindow {
-			log.Error("keepalive: reconnecting after %s without a pong", silentDuration)
-			m.triggerReconnect()
+			k.retireSilent(m, fmt.Sprintf("no pong for %s", silentDuration))
 			return
 		}
 

@@ -1048,13 +1048,19 @@ func RunMain() {
 					continue
 				}
 
-				isRST := wasConnected && (currentMgr == nil || !currentMgr.IsConnected())
-				if isRST {
+				lostPrimary := wasConnected && (currentMgr == nil || !currentMgr.IsConnected())
+				if lostPrimary {
+					reason := "tunnel reported not connected"
+					if currentMgr != nil {
+						if lastErr := currentMgr.LastError(); lastErr != nil {
+							reason = lastErr.Error()
+						}
+					}
 					primaryEntry.mu.Lock()
 					primaryEntry.Status = connStatusRST
-					primaryEntry.Error = "connection reset by peer"
+					primaryEntry.Error = reason
 					primaryEntry.mu.Unlock()
-					stdlog.Printf("Transport watchdog: primary %s got RST", transports[0])
+					stdlog.Printf("Transport watchdog: primary %s is no longer connected (%s)", transports[0], reason)
 				}
 
 				activated := false

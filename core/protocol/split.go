@@ -17,15 +17,12 @@ import (
 	http2 "golang.org/x/net/http2"
 )
 
-var transportModeOnce sync.Once
-
 func logTransportMode(mode string) {
-	transportModeOnce.Do(func() { stdlog.Printf("whispera: transport=%s", mode) })
+	stdlog.Printf("whispera: transport=%s", mode)
 }
 
 const (
 	splitUploadChunkMax = 128 * 1024
-	splitConnectBudget  = 8 * time.Second
 	hlsPlaylistMarker   = "#EXTM3U"
 )
 
@@ -95,7 +92,7 @@ func clientSplit(ctx context.Context, transport *http2.Transport, p splitParams)
 		remote:    p.remote,
 	}
 
-	go c.startDownload()
+	go c.startDownload(ctx)
 
 	select {
 	case <-c.dnReady:
@@ -113,43 +110,26 @@ func clientSplit(ctx context.Context, transport *http2.Transport, p splitParams)
 	return NewFrameConn(c), nil
 }
 
-var splitDownloadBackoff = []time.Duration{
-	0,
-	500 * time.Millisecond,
-	1 * time.Second,
-}
-
-func (c *splitClientConn) startDownload() {
-	var lastErr error
-	for i, wait := range splitDownloadBackoff {
-		if wait > 0 {
-			select {
-			case <-time.After(wait):
-			case <-c.ctx.Done():
-				c.dnErr = c.ctx.Err()
-				close(c.dnReady)
-				return
-			}
-		}
-		err := c.openPlaylist()
-		if err == nil {
-			c.segReader = &segmentReader{c: c}
-			close(c.dnReady)
-			return
-		}
-		lastErr = err
-		if errors.Is(err, errSplitUnsupported) {
-			break
-		}
-		stdlog.Printf("whispera: split download attempt %d/%d failed: %v", i+1, len(splitDownloadBackoff), err)
+// The playlist request opens the download leg and burns the one-shot token that
+// authenticates it, so there is nothing a second attempt could do: the server
+// answers a replay with a decoy. One attempt, bounded by the caller's context.
+func (c *splitClientConn) startDownload(budget context.Context) {
+	err := c.openPlaylist(budget)
+	if err == nil {
+		c.segReader = &segmentReader{c: c}
+		close(c.dnReady)
+		return
 	}
-	c.dnErr = lastErr
+	if !errors.Is(err, errSplitUnsupported) {
+		stdlog.Printf("whispera: split download failed: %v", err)
+	}
+	c.dnErr = err
 	close(c.dnReady)
 }
 
-func (c *splitClientConn) openPlaylist() error {
+func (c *splitClientConn) openPlaylist(ctx context.Context) error {
 	url := c.videoBase + "/master.m3u8"
-	req, err := http.NewRequestWithContext(c.ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}

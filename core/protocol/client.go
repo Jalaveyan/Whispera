@@ -4,6 +4,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	mrand "math/rand"
@@ -36,8 +37,6 @@ func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net
 	}
 	h2t.ConnPool = nil
 	h2t.MaxReadFrameSize = 1 << 20
-	h2t.ReadIdleTimeout = 30 * time.Second
-	h2t.PingTimeout = 15 * time.Second
 	h2t.MaxDecoderHeaderTableSize = 65536
 	h2t.MaxHeaderListSize = 262144
 	h2t.DisableCompression = true
@@ -90,7 +89,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		return rawConn, nil
 	}
 
-	handshake := func(rawConn net.Conn, useSpec bool) (*utls.UConn, error) {
+	handshake := func(ctx context.Context, rawConn net.Conn, useSpec bool) (*utls.UConn, error) {
 		uCfg := &utls.Config{
 			ServerName:                         sni,
 			InsecureSkipVerify:                 true,
@@ -144,14 +143,14 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		uConn, err := handshake(rawConn, true)
+		uConn, err := handshake(ctx, rawConn, true)
 		if err != nil && len(helloRaw) > 0 {
 			rawConn.Close()
 			rawConn, err = rawDial(ctx, network, addr)
 			if err != nil {
 				return nil, err
 			}
-			uConn, err = handshake(rawConn, false)
+			uConn, err = handshake(ctx, rawConn, false)
 		}
 		if err != nil {
 			rawConn.Close()
@@ -176,8 +175,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 
 	if splitEnabled() && !cfg.EnableQUIC {
 		addr := cfg.ServerAddr
-		splitCtx, splitCancel := context.WithTimeout(ctx, splitConnectBudget)
-		conn, serr := clientSplit(splitCtx, h2Transport, splitParams{
+		conn, serr := clientSplit(ctx, h2Transport, splitParams{
 			base:      fmt.Sprintf("https://%s", addr),
 			uploadURL: fmt.Sprintf("https://%s%s", addr, GenerateAPIPath(bp.PathSeed)),
 			sni:       sni,
@@ -189,9 +187,15 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			local:     staticAddr{"tcp", addr},
 			remote:    staticAddr{"tcp", addr},
 		})
-		splitCancel()
 		if serr == nil {
 			return conn, nil
+		}
+		// Only the server telling us it does not speak split is a reason to use
+		// another transport. Anything else is this connection failing, and the
+		// single POST below would fail on the very same connection: it shares
+		// this transport's pool.
+		if !errors.Is(serr, errSplitUnsupported) {
+			return nil, serr
 		}
 		logTransportMode("single-post-fallback: " + serr.Error())
 	}

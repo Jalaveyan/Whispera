@@ -17,11 +17,6 @@ func (m *Manager) updateQualityRTT(rtt time.Duration) {
 		newEWMA = int64(float64(old)*(1-alpha) + float64(rtt)*alpha)
 	}
 	atomic.StoreInt64(&m.qualityRTTEWMA, newEWMA)
-
-	threshold := m.config.QualityThresholdRTT
-	if threshold > 0 && time.Duration(newEWMA) > threshold {
-		m.triggerReconnect()
-	}
 }
 
 func (m *Manager) GetQualityMetrics() (avgRTT time.Duration, missedKeepalives int) {
