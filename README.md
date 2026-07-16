@@ -7,7 +7,7 @@
 ### How to install? (Ubuntu/Debian/Arch) ( only root )
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
+bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera/main/install.sh)
 ```
 
 ### How to update?
@@ -84,7 +84,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 Install a whispera on each relay
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh | bash -s -- relay
+curl -sSL https://raw.githubusercontent.com/nekoskin/whispera/main/install.sh | bash -s -- relay
 ```
 
 Whispera secret (copy to master):
