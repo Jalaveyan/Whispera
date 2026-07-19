@@ -298,82 +298,69 @@ func (s *SOCKS5Server) handleRequest(conn net.Conn) (string, uint16, error) {
 		return "", 0, fmt.Errorf("unsupported command: %d", cmd)
 	}
 
-	atyp := header[3]
-	var addr string
-	var port uint16
-
-	switch atyp {
-	case socks5ATYPIPv4:
-		ip := make([]byte, 4)
-		if _, err := io.ReadFull(conn, ip); err != nil {
-			return "", 0, err
-		}
-		addr = net.IP(ip).String()
-
-	case socks5ATYPIPv6:
-		ip := make([]byte, 16)
-		if _, err := io.ReadFull(conn, ip); err != nil {
-			return "", 0, err
-		}
-		addr = net.IP(ip).String()
-
-	case socks5ATYPDomain:
-		lenBuf := make([]byte, 1)
-		if _, err := io.ReadFull(conn, lenBuf); err != nil {
-			return "", 0, err
-		}
-		domainLen := int(lenBuf[0])
-		domain := make([]byte, domainLen)
-		if _, err := io.ReadFull(conn, domain); err != nil {
-			return "", 0, err
-		}
-		addr = string(domain)
-
-	default:
-		s.sendReply(conn, socks5ReplyAddressTypeNotSupported, nil, 0)
-		return "", 0, fmt.Errorf("unsupported address type: %d", atyp)
+	addr, err := s.readRequestAddr(conn, header[3])
+	if err != nil {
+		return "", 0, err
 	}
 
 	portBuf := make([]byte, 2)
 	if _, err := io.ReadFull(conn, portBuf); err != nil {
 		return "", 0, err
 	}
-	port = binary.BigEndian.Uint16(portBuf)
+	port := binary.BigEndian.Uint16(portBuf)
 
-	switch cmd {
-	case socks5CmdConnect:
-		var replyAddr []byte
-		var replyPort uint16 = 0
+	if err := s.sendConnectReply(conn); err != nil {
+		return "", 0, err
+	}
+	return addr, port, nil
+}
 
-		if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
-			if ip4 := tcpAddr.IP.To4(); ip4 != nil {
-				replyAddr = append([]byte{socks5ATYPIPv4}, ip4...)
-			} else if ip6 := tcpAddr.IP.To16(); ip6 != nil {
-				replyAddr = append([]byte{socks5ATYPIPv6}, ip6...)
-			}
+func (s *SOCKS5Server) readRequestAddr(conn net.Conn, atyp byte) (string, error) {
+	switch atyp {
+	case socks5ATYPIPv4:
+		ip := make([]byte, 4)
+		if _, err := io.ReadFull(conn, ip); err != nil {
+			return "", err
 		}
+		return net.IP(ip).String(), nil
 
-		if replyAddr == nil {
-			replyAddr = []byte{socks5ATYPIPv4, 0, 0, 0, 0}
+	case socks5ATYPIPv6:
+		ip := make([]byte, 16)
+		if _, err := io.ReadFull(conn, ip); err != nil {
+			return "", err
 		}
+		return net.IP(ip).String(), nil
 
-		if err := s.sendReply(conn, socks5ReplySuccess, replyAddr, replyPort); err != nil {
-			return "", 0, err
+	case socks5ATYPDomain:
+		lenBuf := make([]byte, 1)
+		if _, err := io.ReadFull(conn, lenBuf); err != nil {
+			return "", err
 		}
-
-		return addr, port, nil
-
-	case socks5CmdUDP:
-		return s.handleUDPAssociate(conn, atyp)
-
-	case socks5CmdBind:
-		s.sendReply(conn, socks5ReplyCommandNotSupported, nil, 0)
-		return "", 0, fmt.Errorf("BIND command not supported")
+		domain := make([]byte, int(lenBuf[0]))
+		if _, err := io.ReadFull(conn, domain); err != nil {
+			return "", err
+		}
+		return string(domain), nil
 
 	default:
-		s.sendReply(conn, socks5ReplyCommandNotSupported, nil, 0)
-		return "", 0, fmt.Errorf("unsupported command: %d", cmd)
+		s.sendReply(conn, socks5ReplyAddressTypeNotSupported, nil, 0)
+		return "", fmt.Errorf("unsupported address type: %d", atyp)
 	}
+}
+
+func (s *SOCKS5Server) sendConnectReply(conn net.Conn) error {
+	var replyAddr []byte
+	if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+		if ip4 := tcpAddr.IP.To4(); ip4 != nil {
+			replyAddr = append([]byte{socks5ATYPIPv4}, ip4...)
+		} else if ip6 := tcpAddr.IP.To16(); ip6 != nil {
+			replyAddr = append([]byte{socks5ATYPIPv6}, ip6...)
+		}
+	}
+	if replyAddr == nil {
+		replyAddr = []byte{socks5ATYPIPv4, 0, 0, 0, 0}
+	}
+	return s.sendReply(conn, socks5ReplySuccess, replyAddr, 0)
 }
 
 func (s *SOCKS5Server) sendReply(conn net.Conn, reply byte, addr []byte, port uint16) error {
@@ -546,6 +533,7 @@ func (s *SOCKS5Server) handleUDPRelay(udpListener *net.UDPConn, tcpConn net.Conn
 
 		if s.packetHandler != nil {
 			if err := s.packetHandler(buf[:n], addr); err != nil {
+				s.log.Warn("UDP packet handler: %v", err)
 			}
 			continue
 		}

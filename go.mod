@@ -2,14 +2,13 @@ module github.com/nekoskin/whispera
 
 go 1.26
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/gopacket/gopacket v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/hashicorp/yamux v0.1.2
-	github.com/jackc/pgx/v5 v5.8.0
+	github.com/jackc/pgx/v5 v5.9.0
 	github.com/nats-io/nats.go v1.49.0
 	github.com/quic-go/quic-go v0.59.0
 	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af
@@ -20,42 +19,22 @@ require (
 	golang.org/x/net v0.56.0
 	google.golang.org/grpc v1.81.1
 	gopkg.in/yaml.v3 v3.0.1
-	gorgonia.org/gorgonia v0.9.18
-	gorgonia.org/tensor v0.9.24
 )
 
 require (
-	github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40 // indirect
-	github.com/awalterschulze/gographviz v2.0.3+incompatible // indirect
-	github.com/chewxy/hm v1.0.0 // indirect
-	github.com/chewxy/math32 v1.10.1 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/google/flatbuffers v2.0.6+incompatible // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/leesper/go_rng v0.0.0-20190531154944-a612b043e353 // indirect
 	github.com/nats-io/nkeys v0.4.12 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
-	github.com/pkg/errors v0.9.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/xtgo/set v1.0.0 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	go4.org/unsafe/assume-no-moving-gc v0.0.0-20231121144256-b99613f794b6 // indirect
-	golang.org/x/exp v0.0.0-20250911091902-df9299821621 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
-	gonum.org/v1/gonum v0.17.0 // indirect
-	gorgonia.org/cu v0.9.4 // indirect
-	gorgonia.org/dawson v1.2.0 // indirect
-	gorgonia.org/vecf32 v0.9.0 // indirect
-	gorgonia.org/vecf64 v0.9.0 // indirect
 )
 
 replace (
-	golang.org/x/crypto => golang.org/x/crypto v0.41.0
+	golang.org/x/crypto => golang.org/x/crypto v0.53.0
 	golang.org/x/net => golang.org/x/net v0.56.0
 	golang.org/x/sys => golang.org/x/sys v0.35.0
 	golang.org/x/text => golang.org/x/text v0.28.0

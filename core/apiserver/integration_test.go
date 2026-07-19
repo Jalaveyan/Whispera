@@ -9,10 +9,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
 )
+
+var testAdminPassword = func() string {
+	if v := os.Getenv("TEST_ADMIN_PASSWORD"); v != "" {
+		return v
+	}
+	return "testpass123"
+}()
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -24,7 +32,7 @@ func newTestServer(t *testing.T) *Server {
 			ListenAddr:    ":0",
 			EnableCORS:    true,
 			AdminUsername: "admin",
-			AdminPassword: "testpass123",
+			AdminPassword: testAdminPassword,
 		},
 		mux:            http.NewServeMux(),
 		handlers:       make(map[string]http.HandlerFunc),
@@ -90,7 +98,7 @@ func TestLoginV1_Success(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	body := map[string]string{"username": "admin", "password": "testpass123"}
+	body := map[string]string{"username": "admin", "password": testAdminPassword}
 	rec := doRequest(handler, "POST", "/api/login", body, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -131,7 +139,7 @@ func TestLoginV1_InvalidUsername(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	body := map[string]string{"username": "notadmin", "password": "testpass123"}
+	body := map[string]string{"username": "notadmin", "password": testAdminPassword}
 	rec := doRequest(handler, "POST", "/api/login", body, "")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
@@ -158,7 +166,7 @@ func TestLoginV2_Success(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	body := map[string]string{"username": "admin", "password": "testpass123"}
+	body := map[string]string{"username": "admin", "password": testAdminPassword}
 	rec := doRequest(handler, "POST", "/api/v2/auth/login", body, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
@@ -194,7 +202,7 @@ func TestTokenRefresh(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	loginBody := map[string]string{"username": "admin", "password": "testpass123"}
+	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
 	loginRec := doRequest(handler, "POST", "/api/v2/auth/login", loginBody, "")
 	if loginRec.Code != http.StatusOK {
 		t.Fatalf("login failed: %d", loginRec.Code)
@@ -292,7 +300,7 @@ func TestAuthMiddleware_PublicEndpoints(t *testing.T) {
 		t.Error("GET /api/v1/health should not require auth")
 	}
 
-	loginBody := map[string]string{"username": "admin", "password": "testpass123"}
+	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
 	rec = doRequest(handler, "POST", "/api/login", loginBody, "")
 	if rec.Code == http.StatusUnauthorized {
 		result := parseJSON(t, rec)
@@ -314,7 +322,7 @@ func TestLogout_RevokesToken(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	loginBody := map[string]string{"username": "admin", "password": "testpass123"}
+	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
 	loginRec := doRequest(handler, "POST", "/api/login", loginBody, "")
 	loginResult := parseJSON(t, loginRec)
 	token := loginResult["token"].(string)
@@ -339,7 +347,7 @@ func TestLogoutV2_RevokesJWT(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	loginBody := map[string]string{"username": "admin", "password": "testpass123"}
+	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
 	loginRec := doRequest(handler, "POST", "/api/v2/auth/login", loginBody, "")
 	loginResult := parseJSON(t, loginRec)
 	accessToken := loginResult["access_token"].(string)
@@ -400,7 +408,7 @@ func TestFullAuthFlow_V1(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	loginBody := map[string]string{"username": "admin", "password": "testpass123"}
+	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
 	loginRec := doRequest(handler, "POST", "/api/login", loginBody, "")
 	if loginRec.Code != http.StatusOK {
 		t.Fatalf("login failed: %d", loginRec.Code)
@@ -433,7 +441,7 @@ func TestFullAuthFlow_V2(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	loginBody := map[string]string{"username": "admin", "password": "testpass123"}
+	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
 	loginRec := doRequest(handler, "POST", "/api/v2/auth/login", loginBody, "")
 	if loginRec.Code != http.StatusOK {
 		t.Fatalf("v2 login failed: %d", loginRec.Code)

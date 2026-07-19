@@ -3,7 +3,6 @@ package tunnel
 import (
 	"context"
 	"fmt"
-	"github.com/nekoskin/whispera/neural"
 	mrand "math/rand"
 	"sync/atomic"
 	"time"
@@ -28,22 +27,8 @@ func (k *keepaliveController) start() {
 	go func() {
 		m := k.m
 		for {
-			rttMs := float64(atomic.LoadInt64(&m.qualityRTTEWMA)) / 1e6
-			missed := int(atomic.LoadInt32(&m.missedKAs))
-			kaView := neural.KeepaliveView{RTTMs: rttMs, MissedKAs: missed}
-
 			base := m.config.KeepaliveInterval
-			if m.ml.kaAgent != nil {
-				base = m.ml.kaAgent.Decide(kaView)
-			}
-
 			jitterFrac := 0.30
-			if m.ml.jitterAgent != nil {
-				jitterFrac = m.ml.jitterAgent.Decide(neural.JitterView{
-					RTTMs: rttMs, MissedKAs: missed,
-				})
-			}
-
 			jitter := time.Duration(float64(base) * jitterFrac * (2*mrand.Float64() - 1))
 			timer := time.NewTimer(base + jitter)
 			select {
@@ -118,12 +103,6 @@ func (k *keepaliveController) send() {
 		if lastKeepalive != 0 && lastPong < lastKeepalive {
 			if time.Since(m.LastActivity()) < recentActivityWindow {
 				return
-			}
-			if m.ml.kaAgent != nil {
-				m.ml.kaAgent.RecordOutcome(0)
-			}
-			if m.ml.jitterAgent != nil {
-				m.ml.jitterAgent.RecordOutcome(0)
 			}
 			k.reconnectOnMissed(m, "no pong since last ping")
 			return

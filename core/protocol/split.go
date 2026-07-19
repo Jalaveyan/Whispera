@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nekoskin/whispera/common/buf"
 	http2 "golang.org/x/net/http2"
 )
 
@@ -110,13 +111,10 @@ func clientSplit(ctx context.Context, transport *http2.Transport, p splitParams)
 	return NewFrameConn(c), nil
 }
 
-// The playlist request opens the download leg and burns the one-shot token that
-// authenticates it, so there is nothing a second attempt could do: the server
-// answers a replay with a decoy. One attempt, bounded by the caller's context.
 func (c *splitClientConn) startDownload(budget context.Context) {
 	err := c.openPlaylist(budget)
 	if err == nil {
-		c.segReader = &segmentReader{c: c}
+		c.segReader = newSegmentReader(c)
 		close(c.dnReady)
 		return
 	}
@@ -179,12 +177,56 @@ func (c *splitClientConn) fetchSegment(idx uint64) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
+type segFetch struct {
+	idx   uint64
+	body  io.ReadCloser
+	err   error
+	ready chan struct{}
+}
+
 type segmentReader struct {
-	c      *splitClientConn
-	idx    uint64
-	mu     sync.Mutex
-	body   io.ReadCloser
-	closed bool
+	fetch func(idx uint64) (io.ReadCloser, error)
+	depth int
+
+	mu      sync.Mutex
+	queue   []*segFetch
+	nextIdx uint64
+	closed  bool
+}
+
+func newSegmentReader(c *splitClientConn) *segmentReader {
+	return newSegmentReaderFunc(c.fetchSegment, segPrefetchDepth())
+}
+
+func newSegmentReaderFunc(fetch func(uint64) (io.ReadCloser, error), depth int) *segmentReader {
+	if depth < 1 {
+		depth = 1
+	}
+	s := &segmentReader{fetch: fetch, depth: depth}
+	s.mu.Lock()
+	s.refillLocked()
+	s.mu.Unlock()
+	return s
+}
+
+func segPrefetchDepth() int {
+	d := buf.PerConnBudget()/segMinSize + 1
+	if d < 2 {
+		d = 2
+	}
+	return d
+}
+
+func (s *segmentReader) refillLocked() {
+	for len(s.queue) < s.depth && !s.closed {
+		f := &segFetch{idx: s.nextIdx, ready: make(chan struct{})}
+		s.nextIdx++
+		s.queue = append(s.queue, f)
+		go func(f *segFetch) {
+			f.body, f.err = s.fetch(f.idx)
+			close(f.ready)
+		}(f)
+	}
 }
 
 func (s *segmentReader) Read(b []byte) (int, error) {
@@ -194,37 +236,29 @@ func (s *segmentReader) Read(b []byte) (int, error) {
 			s.mu.Unlock()
 			return 0, io.EOF
 		}
-		body := s.body
+		if len(s.queue) == 0 {
+			s.refillLocked()
+		}
+		head := s.queue[0]
 		s.mu.Unlock()
 
-		if body == nil {
-			nb, err := s.c.fetchSegment(s.idx)
-			if err != nil {
-				return 0, err
-			}
-			s.mu.Lock()
-			if s.closed {
-				s.mu.Unlock()
-				nb.Close()
-				return 0, io.EOF
-			}
-			s.body = nb
-			body = nb
-			s.mu.Unlock()
+		<-head.ready
+		if head.err != nil {
+			return 0, head.err
 		}
 
-		n, err := body.Read(b)
+		n, err := head.body.Read(b)
 		if n > 0 {
 			return n, nil
 		}
 		if err == io.EOF {
+			head.body.Close()
 			s.mu.Lock()
-			if s.body == body {
-				s.body = nil
-				s.idx++
+			if len(s.queue) > 0 && s.queue[0] == head {
+				s.queue = s.queue[1:]
 			}
+			s.refillLocked()
 			s.mu.Unlock()
-			body.Close()
 			continue
 		}
 		if err != nil {
@@ -240,11 +274,14 @@ func (s *segmentReader) Close() {
 		return
 	}
 	s.closed = true
-	body := s.body
-	s.body = nil
+	q := s.queue
+	s.queue = nil
 	s.mu.Unlock()
-	if body != nil {
-		body.Close()
+	for _, f := range q {
+		<-f.ready
+		if f.body != nil {
+			f.body.Close()
+		}
 	}
 }
 

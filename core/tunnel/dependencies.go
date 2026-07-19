@@ -2,8 +2,6 @@ package tunnel
 
 import (
 	"context"
-	"github.com/nekoskin/whispera/neural"
-	"github.com/nekoskin/whispera/neural/gnet"
 	"net"
 	"time"
 )
@@ -16,40 +14,6 @@ type killSwitchController interface {
 
 type tcpBypassDialer interface {
 	DialTCP(ctx context.Context, network, addr string) (net.Conn, error)
-}
-
-type weightExportable interface {
-	ExportWeights() []gnet.LayerDef
-	ImportWeights(layers []gnet.LayerDef) bool
-}
-
-type keepaliveDecisionAgent interface {
-	weightExportable
-	Decide(v neural.KeepaliveView) time.Duration
-	RecordOutcome(quality float64)
-}
-
-type backoffDecisionAgent interface {
-	weightExportable
-	Decide(v neural.BackoffView) time.Duration
-	RecordOutcome(success bool)
-}
-
-type jitterDecisionAgent interface {
-	weightExportable
-	Decide(v neural.JitterView) float64
-	RecordOutcome(quality float64)
-}
-
-type serverDecisionAgent interface {
-	weightExportable
-	Decide(probes []neural.ServerProbe) string
-	RecordOutcome(success bool, latencyMs float64)
-}
-
-type chunkDecisionAgent interface {
-	weightExportable
-	Decide(v neural.ChunkView) int
 }
 
 type tspuDetectorIface interface {

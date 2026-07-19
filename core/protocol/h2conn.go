@@ -194,8 +194,6 @@ func (c *httpStreamConn) FlushWrite() {
 	c.safeFlush()
 }
 
-// safeFlush skips the flush once the stream is done; flushing a finished
-// http2 handler's ResponseWriter panics ("Header called after Handler finished").
 func (c *httpStreamConn) safeFlush() {
 	select {
 	case <-c.done:

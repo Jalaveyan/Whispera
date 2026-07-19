@@ -33,6 +33,152 @@ func (serverErrLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+func buildServerTLSConfig(cfg *ServerConfig) (*tls.Config, error) {
+	cdnCipherSuites := []uint16{
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+	}
+	cdnCurves := []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}
+
+	if cfg.TLSCert != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			return nil, fmt.Errorf("whispera: load cert: %w", err)
+		}
+		decoyCertDir := cfg.DecoyCertDir
+		return &tls.Config{
+			Certificates:     []tls.Certificate{cert},
+			NextProtos:       []string{"h2", "http/1.1"},
+			MinVersion:       tls.VersionTLS13,
+			CipherSuites:     cdnCipherSuites,
+			CurvePreferences: cdnCurves,
+			GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+				return nil, nil
+			},
+			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+				if hello.ServerName != "" {
+					if c, ok := loadSNICert(decoyCertDir, hello.ServerName); ok {
+						return c, nil
+					}
+				}
+				return &cert, nil
+			},
+		}, nil
+	}
+
+	if cfg.Domain == "" {
+		return nil, fmt.Errorf("whispera: neither TLSCert nor Domain configured")
+	}
+
+	cacheDir := cfg.ACMEDir
+	if cacheDir == "" {
+		cacheDir = "/var/lib/whispera/acme"
+	}
+	m := &autocert.Manager{
+		Prompt:     autocert.AcceptTOS,
+		HostPolicy: autocert.HostWhitelist(cfg.Domain),
+		Cache:      autocert.DirCache(cacheDir),
+	}
+	go func() { _ = http.ListenAndServe(":80", m.HTTPHandler(nil)) }()
+
+	tlsCfg := m.TLSConfig()
+	tlsCfg.NextProtos = []string{"h2", "http/1.1"}
+	tlsCfg.MinVersion = tls.VersionTLS12
+	tlsCfg.CipherSuites = cdnCipherSuites
+	tlsCfg.CurvePreferences = cdnCurves
+	domain := cfg.Domain
+	origGet := tlsCfg.GetCertificate
+	tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		if hello.ServerName == "" || hello.ServerName != domain {
+			patched := *hello
+			patched.ServerName = domain
+			return origGet(&patched)
+		}
+		return origGet(hello)
+	}
+	return tlsCfg, nil
+}
+
+func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux, tlsCfg *tls.Config, camoKeys func() [][]byte, camoAddr func(sni string) string) (*http3.Server, []*http3.Server) {
+	if cfg.QUICListenAddr == "" || cfg.TLSCert == "" {
+		return nil, nil
+	}
+	_, port, _ := net.SplitHostPort(cfg.QUICListenAddr)
+	if port == "" {
+		port = "443"
+	}
+	cfg.altSvcHeader = fmt.Sprintf(`h3=":%s"; ma=2592000`, port)
+
+	newServer := func() *http3.Server {
+		return &http3.Server{
+			Handler:     mux,
+			TLSConfig:   http3.ConfigureTLSConfig(tlsCfg.Clone()),
+			QUICConfig:  chromeLikeQUICConfig(),
+			ConnContext: quicConnContext,
+		}
+	}
+	serve := func(srv *http3.Server, addr string) {
+		pconn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", addr)
+		if err != nil {
+			return
+		}
+		camoConn := newQUICCamoConn(pconn, camoKeys, camoAddr)
+		go func() { _ = srv.Serve(camoConn) }()
+	}
+
+	h3srv := newServer()
+	serve(h3srv, cfg.QUICListenAddr)
+
+	var extra []*http3.Server
+	for _, addr := range cfg.ExtraQUICListenAddrs {
+		s := newServer()
+		extra = append(extra, s)
+		serve(s, addr)
+	}
+	return h3srv, extra
+}
+
+func serveBackendH2C(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux) error {
+	backendLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.BackendH2CAddr)
+	if err != nil {
+		return fmt.Errorf("whispera: backend h2c listen: %w", err)
+	}
+	defer backendLn.Close()
+	go func() {
+		<-ctx.Done()
+		backendLn.Close()
+	}()
+
+	h2s := &http2.Server{
+		MaxUploadBufferPerConnection: 1 << 28,
+		MaxUploadBufferPerStream:     1 << 26,
+	}
+	opts := &http2.ServeConnOpts{
+		Handler:    mux,
+		BaseConfig: &http.Server{ErrorLog: stdlog.New(serverErrLogWriter{}, "", 0)},
+	}
+	for {
+		conn, err := backendLn.Accept()
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+				continue
+			}
+		}
+		go func(c net.Conn) {
+			traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", "active")
+			h2s.ServeConn(c, opts)
+			traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", "closed")
+		}(conn)
+	}
+}
+
 func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	cfg.initCond()
 	mux := http.NewServeMux()
@@ -54,40 +200,7 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	}()
 
 	if cfg.BackendH2CAddr != "" {
-		backendLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.BackendH2CAddr)
-		if err != nil {
-			return fmt.Errorf("whispera: backend h2c listen: %w", err)
-		}
-		defer backendLn.Close()
-		go func() {
-			<-ctx.Done()
-			backendLn.Close()
-		}()
-
-		h2s := &http2.Server{
-			MaxUploadBufferPerConnection: 1 << 28,
-			MaxUploadBufferPerStream:     1 << 26,
-		}
-		opts := &http2.ServeConnOpts{
-			Handler:    mux,
-			BaseConfig: &http.Server{ErrorLog: stdlog.New(serverErrLogWriter{}, "", 0)},
-		}
-		for {
-			conn, err := backendLn.Accept()
-			if err != nil {
-				select {
-				case <-ctx.Done():
-					return nil
-				default:
-					continue
-				}
-			}
-			go func(c net.Conn) {
-				traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", "active")
-				h2s.ServeConn(c, opts)
-				traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", "closed")
-			}(conn)
-		}
+		return serveBackendH2C(ctx, cfg, mux)
 	}
 
 	listenAddr := cfg.ListenAddr
@@ -95,77 +208,9 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		listenAddr = ":443"
 	}
 
-	cdnCipherSuites := []uint16{
-		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-	}
-	cdnCurves := []tls.CurveID{
-		tls.X25519,
-		tls.CurveP256,
-		tls.CurveP384,
-	}
-
-	var tlsCfg *tls.Config
-
-	if cfg.TLSCert != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
-		if err != nil {
-			return fmt.Errorf("whispera: load cert: %w", err)
-		}
-		decoyCertDir := cfg.DecoyCertDir
-		tlsCfg = &tls.Config{
-			Certificates:     []tls.Certificate{cert},
-			NextProtos:       []string{"h2", "http/1.1"},
-			MinVersion:       tls.VersionTLS13,
-			CipherSuites:     cdnCipherSuites,
-			CurvePreferences: cdnCurves,
-			GetConfigForClient: func(hi *tls.ClientHelloInfo) (*tls.Config, error) {
-				return nil, nil
-			},
-			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				if hello.ServerName != "" {
-					if c, ok := loadSNICert(decoyCertDir, hello.ServerName); ok {
-						return c, nil
-					}
-				}
-				return &cert, nil
-			},
-		}
-	} else if cfg.Domain != "" {
-		cacheDir := cfg.ACMEDir
-		if cacheDir == "" {
-			cacheDir = "/var/lib/whispera/acme"
-		}
-		m := &autocert.Manager{
-			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(cfg.Domain),
-			Cache:      autocert.DirCache(cacheDir),
-		}
-		go func() {
-			if err := http.ListenAndServe(":80", m.HTTPHandler(nil)); err != nil {
-			}
-		}()
-		tlsCfg = m.TLSConfig()
-		tlsCfg.NextProtos = []string{"h2", "http/1.1"}
-		tlsCfg.MinVersion = tls.VersionTLS12
-		tlsCfg.CipherSuites = cdnCipherSuites
-		tlsCfg.CurvePreferences = cdnCurves
-		domain := cfg.Domain
-		origGet := tlsCfg.GetCertificate
-		tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			if hello.ServerName == "" || hello.ServerName != domain {
-				patched := *hello
-				patched.ServerName = domain
-				return origGet(&patched)
-			}
-			return origGet(hello)
-		}
-	} else {
-		return fmt.Errorf("whispera: neither TLSCert nor Domain configured")
+	tlsCfg, err := buildServerTLSConfig(cfg)
+	if err != nil {
+		return err
 	}
 
 	srv := &http.Server{
@@ -196,46 +241,7 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	}
 	camoAddr := camoDecoyAddr(cfg.DecoyOrigin)
 
-	var h3srv *http3.Server
-	var extraH3srvs []*http3.Server
-	if cfg.QUICListenAddr != "" && cfg.TLSCert != "" {
-		_, port, _ := net.SplitHostPort(cfg.QUICListenAddr)
-		if port == "" {
-			port = "443"
-		}
-		cfg.altSvcHeader = fmt.Sprintf(`h3=":%s"; ma=2592000`, port)
-		h3srv = &http3.Server{
-			Handler:     mux,
-			TLSConfig:   http3.ConfigureTLSConfig(tlsCfg.Clone()),
-			QUICConfig:  chromeLikeQUICConfig(),
-			ConnContext: quicConnContext,
-		}
-		if pconn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", cfg.QUICListenAddr); err == nil {
-			camoConn := newQUICCamoConn(pconn, camoKeys, camoAddr)
-			go func() {
-				if err := h3srv.Serve(camoConn); err != nil {
-				}
-			}()
-		}
-
-		for _, extraQUICAddr := range cfg.ExtraQUICListenAddrs {
-			extraQUICAddr := extraQUICAddr
-			extraH3srv := &http3.Server{
-				Handler:     mux,
-				TLSConfig:   http3.ConfigureTLSConfig(tlsCfg.Clone()),
-				QUICConfig:  chromeLikeQUICConfig(),
-				ConnContext: quicConnContext,
-			}
-			extraH3srvs = append(extraH3srvs, extraH3srv)
-			if pconn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", extraQUICAddr); err == nil {
-				camoConn := newQUICCamoConn(pconn, camoKeys, camoAddr)
-				go func() {
-					if err := extraH3srv.Serve(camoConn); err != nil {
-					}
-				}()
-			}
-		}
-	}
+	h3srv, extraH3srvs := startQUICServers(ctx, cfg, mux, tlsCfg, camoKeys, camoAddr)
 
 	go func() {
 		<-ctx.Done()
@@ -249,7 +255,6 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	}()
 
 	for _, extraAddr := range cfg.ExtraListenAddrs {
-		extraAddr := extraAddr
 		extraLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", extraAddr)
 		if err != nil {
 			continue

@@ -58,6 +58,7 @@ type rtLaneManager struct {
 
 	sessionCache any
 	lane         rtLane
+	strategy     *protocol.HandshakeStrategy
 
 	scaleAccBytes uint64
 	scaleLastEval time.Time
@@ -65,7 +66,11 @@ type rtLaneManager struct {
 }
 
 func newRTLaneManager(m *Manager) *rtLaneManager {
-	return &rtLaneManager{m: m, sessionCache: protocol.SharedSessionCache()}
+	return &rtLaneManager{
+		m:            m,
+		sessionCache: protocol.SharedSessionCache(),
+		strategy:     protocol.NewHandshakeStrategy(0.1),
+	}
 }
 
 func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error), bool) {
@@ -116,8 +121,15 @@ func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error)
 			}()
 		},
 	}
+	strategy := rl.strategy
 	return func(ctx context.Context) (net.Conn, error) {
-		return protocol.Client(ctx, cCfg)
+		offset, arm := strategy.SelectSplit(sni)
+		c := *cCfg
+		c.HelloSplitOffset = offset
+		c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
+			strategy.Observe(sni, arm, result)
+		}
+		return protocol.Client(ctx, &c)
 	}, true
 }
 
@@ -318,8 +330,7 @@ func (rl *rtLaneManager) evalScale() {
 	perConn := rate / float64(poolSize)
 
 	if perConn < chScaleShrinkPerConn && poolSize > base {
-		if rl.closeIdlePoolConn(base) {
-		}
+		rl.closeIdlePoolConn(base)
 	}
 }
 

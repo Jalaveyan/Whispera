@@ -22,6 +22,9 @@ type ClientConfig struct {
 	EnableQUIC bool
 	QUICAddr   string
 	OnQUICConn func(*quicgo.Conn)
+
+	HelloSplitOffset int
+	OnHandshake      func(result HandshakeResult, latency time.Duration)
 }
 
 type ServerConfig struct {

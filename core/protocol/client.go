@@ -10,6 +10,7 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,136 @@ import (
 )
 
 const dialTimeout = 10 * time.Second
+
+type helloSplitConn struct {
+	net.Conn
+	splitAt int
+	split   bool
+}
+
+func (c *helloSplitConn) Write(b []byte) (int, error) {
+	if c.split || c.splitAt <= 0 || c.splitAt >= len(b) {
+		c.split = true
+		return c.Conn.Write(b)
+	}
+	c.split = true
+	n1, err := c.Conn.Write(b[:c.splitAt])
+	if err != nil {
+		return n1, err
+	}
+	n2, err := c.Conn.Write(b[c.splitAt:])
+	return n1 + n2, err
+}
+
+type HandshakeResult int
+
+const (
+	HandshakeOK HandshakeResult = iota
+	HandshakeResetFast
+	HandshakeIncomplete
+	HandshakeRejected
+	HandshakeError
+)
+
+const handshakeResetBlockThreshold = 15 * time.Millisecond
+
+func classifyHandshake(err error, latency time.Duration) HandshakeResult {
+	if err == nil {
+		return HandshakeOK
+	}
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "reset"):
+		if latency < handshakeResetBlockThreshold {
+			return HandshakeResetFast
+		}
+		return HandshakeError
+	case strings.Contains(s, "decoding message"), strings.Contains(s, "bad certificate"),
+		strings.Contains(s, "handshake failure"), strings.Contains(s, "alert"):
+		return HandshakeRejected
+	case strings.Contains(s, "deadline exceeded"), strings.Contains(s, "timeout"):
+		return HandshakeIncomplete
+	default:
+		return HandshakeError
+	}
+}
+
+func (r HandshakeResult) Reward() float64 {
+	switch r {
+	case HandshakeOK:
+		return 1.0
+	case HandshakeResetFast:
+		return -1.0
+	case HandshakeRejected:
+		return -0.9
+	case HandshakeIncomplete:
+		return -0.7
+	default:
+		return -0.3
+	}
+}
+
+var splitOffsets = []int{0, 8, 24, 64}
+
+type HandshakeStrategy struct {
+	mu      sync.Mutex
+	epsilon float64
+	rng     *mrand.Rand
+	sum     map[string][]float64
+	cnt     map[string][]int64
+}
+
+func NewHandshakeStrategy(epsilon float64) *HandshakeStrategy {
+	return &HandshakeStrategy{
+		epsilon: epsilon,
+		rng:     mrand.New(mrand.NewSource(time.Now().UnixNano())),
+		sum:     make(map[string][]float64),
+		cnt:     make(map[string][]int64),
+	}
+}
+
+func (h *HandshakeStrategy) ensure(ctx string) {
+	if h.sum[ctx] == nil {
+		h.sum[ctx] = make([]float64, len(splitOffsets))
+		h.cnt[ctx] = make([]int64, len(splitOffsets))
+	}
+}
+
+func armMean(sum float64, cnt int64) float64 {
+	if cnt == 0 {
+		return 0
+	}
+	return sum / float64(cnt)
+}
+
+func (h *HandshakeStrategy) SelectSplit(ctx string) (offset, arm int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ensure(ctx)
+	if h.rng.Float64() < h.epsilon {
+		arm = h.rng.Intn(len(splitOffsets))
+		return splitOffsets[arm], arm
+	}
+	sum, cnt := h.sum[ctx], h.cnt[ctx]
+	bestMean := armMean(sum[0], cnt[0])
+	for i := 1; i < len(splitOffsets); i++ {
+		if m := armMean(sum[i], cnt[i]); m > bestMean {
+			bestMean, arm = m, i
+		}
+	}
+	return splitOffsets[arm], arm
+}
+
+func (h *HandshakeStrategy) Observe(ctx string, arm int, r HandshakeResult) {
+	if arm < 0 || arm >= len(splitOffsets) {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ensure(ctx)
+	h.sum[ctx][arm] += r.Reward()
+	h.cnt[ctx][arm]++
+}
 
 func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net.Conn, error)) *http2.Transport {
 	budget := buf.PerConnBudget()
@@ -63,121 +194,19 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	origin := "https://" + sni
 
 	helloID, helloRaw, uaID := sessionFingerprint()
-	// One coherent UA/header identity per session, derived from the same
-	// fingerprint the TLS handshake will use (uaID matches harvested specs too).
 	prof := newBrowserProfile(uaID)
 
 	camoKey := deriveCamoKey(cfg.SharedSecret)
 
-	rawDial := func(ctx context.Context, network, addr string) (net.Conn, error) {
-		var rawConn net.Conn
-		var err error
-		if cfg.TCPDialer != nil {
-			rawConn, err = cfg.TCPDialer(ctx, network, addr)
-		} else {
-			d := &net.Dialer{Timeout: dialTimeout}
-			rawConn, err = d.DialContext(ctx, network, addr)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if tcpConn, ok := rawConn.(*net.TCPConn); ok {
-			tcpConn.SetKeepAlive(true)
-			tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
-			tcpConn.SetNoDelay(true)
-		}
-		return rawConn, nil
+	d := &clientDialer{
+		cfg:      cfg,
+		sni:      sni,
+		camoKey:  camoKey,
+		helloID:  helloID,
+		helloRaw: helloRaw,
 	}
 
-	handshake := func(ctx context.Context, rawConn net.Conn, useSpec bool) (*utls.UConn, error) {
-		uCfg := &utls.Config{
-			ServerName:                         sni,
-			InsecureSkipVerify:                 true,
-			PreferSkipResumptionOnNilExtension: true,
-		}
-		if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
-			uCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
-		}
-		// Enable TLS resumption only when there is no camo marker. The marker
-		// overwrites ClientHello.Random after the PSK binder is computed, so a
-		// resumed handshake ships a stale binder and the server rejects it
-		// ("bad record MAC"). Camo marker and PSK resumption are mutually
-		// exclusive.
-		if camoKey == nil {
-			if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
-				uCfg.ClientSessionCache = sc
-			}
-		}
-		var spec *utls.ClientHelloSpec
-		if useSpec && len(helloRaw) > 0 {
-			s, err := specFromRaw(helloRaw)
-			if err != nil {
-				return nil, fmt.Errorf("whispera: fingerprint: %w", err)
-			}
-			spec = s
-		} else {
-			s, err := utls.UTLSIdToSpec(helloID)
-			if err != nil {
-				return nil, fmt.Errorf("whispera: fingerprint: %w", err)
-			}
-			spec = &s
-		}
-		dropPQKeyShares(spec)
-		uConn := utls.UClient(rawConn, uCfg, utls.HelloCustom)
-		if err := uConn.ApplyPreset(spec); err != nil {
-			return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
-		}
-		if err := uConn.BuildHandshakeState(); err != nil {
-			return nil, fmt.Errorf("whispera: build hello: %w", err)
-		}
-		if camoKey != nil {
-			if hello := uConn.HandshakeState.Hello; hello != nil && len(hello.Random) == 32 {
-				if keyShare := extractX25519KeyShare(hello.KeyShares); len(keyShare) > 0 {
-					marker := buildCamoMarker(camoKey, keyShare)
-					copy(hello.Random, marker[:])
-				}
-			}
-		}
-		if err := uConn.HandshakeContext(ctx); err != nil {
-			return nil, fmt.Errorf("whispera: utls handshake: %w", err)
-		}
-		return uConn, nil
-	}
-
-	dialFn := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-		rawConn, err := rawDial(ctx, network, addr)
-		if err != nil {
-			return nil, err
-		}
-		uConn, err := handshake(ctx, rawConn, true)
-		if err != nil && len(helloRaw) > 0 {
-			rawConn.Close()
-			rawConn, err = rawDial(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			uConn, err = handshake(ctx, rawConn, false)
-		}
-		if err != nil {
-			rawConn.Close()
-			return nil, err
-		}
-		return uConn, nil
-	}
-
-	var dialedMu sync.Mutex
-	var dialed []net.Conn
-	trackedDial := func(ctx context.Context, network, addr string, tcfg *tls.Config) (net.Conn, error) {
-		c, err := dialFn(ctx, network, addr, tcfg)
-		if err == nil && c != nil {
-			dialedMu.Lock()
-			dialed = append(dialed, c)
-			dialedMu.Unlock()
-		}
-		return c, err
-	}
-
-	h2Transport := newH2Transport(trackedDial)
+	h2Transport := newH2Transport(d.dialTLS)
 
 	if splitEnabled() && !cfg.EnableQUIC {
 		addr := cfg.ServerAddr
@@ -196,15 +225,142 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		if serr == nil {
 			return conn, nil
 		}
-		// Only the server telling us it does not speak split is a reason to use
-		// another transport. Anything else is this connection failing, and the
-		// single POST below would fail on the very same connection: it shares
-		// this transport's pool.
 		if !errors.Is(serr, errSplitUnsupported) {
 			return nil, serr
 		}
 		logTransportMode("single-post-fallback: " + serr.Error())
 	}
+
+	return establishPostTunnel(ctx, d, h2Transport, path, token, origin, prof, sessionID, anchor)
+}
+
+type clientDialer struct {
+	cfg      *ClientConfig
+	sni      string
+	camoKey  []byte
+	helloID  utls.ClientHelloID
+	helloRaw []byte
+
+	mu     sync.Mutex
+	dialed []net.Conn
+}
+
+func (d *clientDialer) dialRaw(ctx context.Context, network, addr string) (net.Conn, error) {
+	var rawConn net.Conn
+	var err error
+	if d.cfg.TCPDialer != nil {
+		rawConn, err = d.cfg.TCPDialer(ctx, network, addr)
+	} else {
+		dl := &net.Dialer{Timeout: dialTimeout}
+		rawConn, err = dl.DialContext(ctx, network, addr)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if tcpConn, ok := rawConn.(*net.TCPConn); ok {
+		tcpConn.SetKeepAlive(true)
+		tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
+		tcpConn.SetNoDelay(true)
+	}
+	if d.cfg.HelloSplitOffset > 0 {
+		rawConn = &helloSplitConn{Conn: rawConn, splitAt: d.cfg.HelloSplitOffset}
+	}
+	return rawConn, nil
+}
+
+func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSpec bool) (*utls.UConn, error) {
+	uCfg := &utls.Config{
+		ServerName:                         d.sni,
+		InsecureSkipVerify:                 true,
+		PreferSkipResumptionOnNilExtension: true,
+	}
+	if d.cfg.ServerCertPin != "" || d.cfg.ServerIDPub != "" {
+		uCfg.VerifyPeerCertificate = certVerifier(d.cfg.ServerCertPin, d.cfg.ServerIDPub, d.sni)
+	}
+	if d.camoKey == nil {
+		if sc, ok := d.cfg.SessionCache.(utls.ClientSessionCache); ok {
+			uCfg.ClientSessionCache = sc
+		}
+	}
+	var spec *utls.ClientHelloSpec
+	if useSpec && len(d.helloRaw) > 0 {
+		s, err := specFromRaw(d.helloRaw)
+		if err != nil {
+			return nil, fmt.Errorf("whispera: fingerprint: %w", err)
+		}
+		spec = s
+	} else {
+		s, err := utls.UTLSIdToSpec(d.helloID)
+		if err != nil {
+			return nil, fmt.Errorf("whispera: fingerprint: %w", err)
+		}
+		spec = &s
+	}
+	dropPQKeyShares(spec)
+	uConn := utls.UClient(rawConn, uCfg, utls.HelloCustom)
+	if err := uConn.ApplyPreset(spec); err != nil {
+		return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
+	}
+	if err := uConn.BuildHandshakeState(); err != nil {
+		return nil, fmt.Errorf("whispera: build hello: %w", err)
+	}
+	if d.camoKey != nil {
+		if hello := uConn.HandshakeState.Hello; hello != nil && len(hello.Random) == 32 {
+			if keyShare := extractX25519KeyShare(hello.KeyShares); len(keyShare) > 0 {
+				marker := buildCamoMarker(d.camoKey, keyShare)
+				copy(hello.Random, marker[:])
+			}
+		}
+	}
+	start := time.Now()
+	hsErr := uConn.HandshakeContext(ctx)
+	if d.cfg.OnHandshake != nil {
+		latency := time.Since(start)
+		d.cfg.OnHandshake(classifyHandshake(hsErr, latency), latency)
+	}
+	if hsErr != nil {
+		return nil, fmt.Errorf("whispera: utls handshake: %w", hsErr)
+	}
+	return uConn, nil
+}
+
+func (d *clientDialer) dialTLS(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+	rawConn, err := d.dialRaw(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	uConn, err := d.tlsHandshake(ctx, rawConn, true)
+	if err != nil && len(d.helloRaw) > 0 {
+		rawConn.Close()
+		rawConn, err = d.dialRaw(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		uConn, err = d.tlsHandshake(ctx, rawConn, false)
+	}
+	if err != nil {
+		rawConn.Close()
+		return nil, err
+	}
+	d.mu.Lock()
+	d.dialed = append(d.dialed, uConn)
+	d.mu.Unlock()
+	return uConn, nil
+}
+
+func (d *clientDialer) closeDialed() {
+	d.mu.Lock()
+	conns := d.dialed
+	d.dialed = nil
+	d.mu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
+func establishPostTunnel(ctx context.Context, d *clientDialer, h2Transport *http2.Transport, path, token, origin string, prof browserProfile, sessionID []byte, anchor time.Time) (net.Conn, error) {
+	cfg := d.cfg
+	sni := d.sni
 
 	pr, pw := io.Pipe()
 	bpw := newBufferedPipeWriter(pw)
@@ -230,48 +386,15 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	prof.apply(req, origin)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: encodeSession(sessionID, anchor)})
 
-	network := "tcp"
-	local := staticAddr{network, tunnelAddr}
-	remote := staticAddr{network, tunnelAddr}
-
+	local := staticAddr{"tcp", tunnelAddr}
+	remote := staticAddr{"tcp", tunnelAddr}
 	pc := newPipelinedConn(pr, bpw, tunnelCancel, local, remote)
 
 	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 	var tunnelTransport http.RoundTripper
 	if cfg.EnableQUIC {
-		tlsCfgQUIC := &tls.Config{
-			ServerName:         sni,
-			InsecureSkipVerify: true,
-		}
-		if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
-			tlsCfgQUIC.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
-		}
-		tunnelTransport = &http3.Transport{
-			TLSClientConfig:    tlsCfgQUIC,
-			QUICConfig:         chromeLikeQUICConfig(),
-			DisableCompression: true,
-			Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, qCfg *quicgo.Config) (*quicgo.Conn, error) {
-				udpAddr, err := net.ResolveUDPAddr("udp", addr)
-				if err != nil {
-					return nil, err
-				}
-				pconn, err := net.ListenUDP("udp", nil)
-				if err != nil {
-					return nil, err
-				}
-				if camoKey := deriveCamoKey(cfg.SharedSecret); camoKey != nil {
-					if probe, perr := buildQUICCamoProbe(camoKey, sni); perr == nil {
-						_, _ = pconn.WriteToUDP(probe, udpAddr)
-					}
-				}
-				qconn, derr := quicgo.Dial(ctx, pconn, udpAddr, tlsConf, qCfg)
-				if derr == nil && cfg.OnQUICConn != nil {
-					cfg.OnQUICConn(qconn)
-				}
-				return qconn, derr
-			},
-		}
+		tunnelTransport = newQUICTransport(cfg, sni)
 	} else {
 		tunnelTransport = h2Transport
 	}
@@ -280,13 +403,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 
 	go func() {
 		<-tunnelCtx.Done()
-		dialedMu.Lock()
-		conns := dialed
-		dialed = nil
-		dialedMu.Unlock()
-		for _, c := range conns {
-			_ = c.Close()
-		}
+		d.closeDialed()
 		h2Transport.CloseIdleConnections()
 		if c, ok := tunnelTransport.(interface{ Close() error }); ok {
 			_ = c.Close()
@@ -329,4 +446,39 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	}
 
 	return fc, nil
+}
+
+func newQUICTransport(cfg *ClientConfig, sni string) http.RoundTripper {
+	tlsCfg := &tls.Config{
+		ServerName:         sni,
+		InsecureSkipVerify: true,
+	}
+	if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
+		tlsCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
+	}
+	return &http3.Transport{
+		TLSClientConfig:    tlsCfg,
+		QUICConfig:         chromeLikeQUICConfig(),
+		DisableCompression: true,
+		Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, qCfg *quicgo.Config) (*quicgo.Conn, error) {
+			udpAddr, err := net.ResolveUDPAddr("udp", addr)
+			if err != nil {
+				return nil, err
+			}
+			pconn, err := net.ListenUDP("udp", nil)
+			if err != nil {
+				return nil, err
+			}
+			if camoKey := deriveCamoKey(cfg.SharedSecret); camoKey != nil {
+				if probe, perr := buildQUICCamoProbe(camoKey, sni); perr == nil {
+					_, _ = pconn.WriteToUDP(probe, udpAddr)
+				}
+			}
+			qconn, derr := quicgo.Dial(ctx, pconn, udpAddr, tlsConf, qCfg)
+			if derr == nil && cfg.OnQUICConn != nil {
+				cfg.OnQUICConn(qconn)
+			}
+			return qconn, derr
+		},
+	}
 }

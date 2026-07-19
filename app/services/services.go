@@ -75,7 +75,6 @@ func main() {
 		EnableKeyPool: true,
 		KeyPoolSize:   50,
 	})
-
 	if err != nil {
 		log.Fatalf("Failed to create crypto provider: %v", err)
 	}
@@ -99,120 +98,125 @@ func main() {
 		log.Fatalf("Failed to start: %v", err)
 	}
 
-	logger := log.New(os.Stdout, "[authsvc] ", log.LstdFlags|log.Lmicroseconds)
+	svc := &authService{
+		crypto:     cryptoProvider,
+		sessions:   sessionMgr,
+		sessionTTL: *sessionTTL,
+		logger:     log.New(os.Stdout, "[authsvc] ", log.LstdFlags|log.Lmicroseconds),
+	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", handleHealthz)
+	mux.HandleFunc("/v1/sessions:open", svc.handleOpen)
+	mux.HandleFunc("/v1/sessions:refresh", svc.handleRefresh)
+	mux.HandleFunc("/v1/sessions:close", svc.handleClose)
 
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	mux.HandleFunc("/v1/sessions:open", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			httpError(w, http.StatusMethodNotAllowed, "POST required")
-			return
-		}
-
-		var req sessionOpenRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("invalid json: %v", err))
-			return
-		}
-
-		seed := make([]byte, 32)
-		cryptoProvider.DeriveKey([]byte(req.ClientID+req.ClientKey), seed, 32)
-
-		aeadKey := make([]byte, 32)
-		cryptoProvider.DeriveKey(seed, aeadKey, 32)
-
-		sess, err := sessionMgr.CreateSession(interfaces.SessionParams{
-			ClientAddr: nil,
-			Seed:       seed,
-			Metadata: map[string]interface{}{
-				"client_id": req.ClientID,
-				"ttl":       *sessionTTL,
-			},
-		})
-		if err != nil {
-			logger.Printf("open session error: %v", err)
-			httpError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-
-		expiresAt := time.Now().Add(*sessionTTL)
-
-		writeJSON(w, http.StatusOK, jsonSessionOpenResponse{
-			SessionID:  fmt.Sprintf("%d", sess.ID()),
-			AEADKey:    base64.StdEncoding.EncodeToString(aeadKey),
-			Seed:       base64.StdEncoding.EncodeToString(seed),
-			InitialSeq: 0,
-			ExpiresAt:  expiresAt.UTC().Format(time.RFC3339Nano),
-		})
-	})
-
-	mux.HandleFunc("/v1/sessions:refresh", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			httpError(w, http.StatusMethodNotAllowed, "POST required")
-			return
-		}
-
-		var req sessionRefreshRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("invalid json: %v", err))
-			return
-		}
-
-		var sessionID uint32
-		fmt.Sscanf(req.SessionID, "%d", &sessionID)
-
-		sess, ok := sessionMgr.GetSession(sessionID)
-		if !ok {
-			httpError(w, http.StatusNotFound, "session not found")
-			return
-		}
-
-		sess.UpdateActivity()
-		expiresAt := time.Now().Add(*sessionTTL)
-
-		writeJSON(w, http.StatusOK, jsonSessionRefreshResponse{
-			Renewed:   true,
-			ExpiresAt: expiresAt.UTC().Format(time.RFC3339Nano),
-			NewSeq:    0,
-		})
-	})
-
-	mux.HandleFunc("/v1/sessions:close", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			httpError(w, http.StatusMethodNotAllowed, "POST required")
-			return
-		}
-
-		var req sessionCloseRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			httpError(w, http.StatusBadRequest, fmt.Sprintf("invalid json: %v", err))
-			return
-		}
-
-		var sessionID uint32
-		fmt.Sscanf(req.SessionID, "%d", &sessionID)
-
-		sessionMgr.RemoveSession(sessionID)
-
-		writeJSON(w, http.StatusOK, jsonSessionCloseResponse{
-			Closed: true,
-		})
-	})
-
-	logger.Printf("listening on %s", *listenAddr)
+	svc.logger.Printf("listening on %s", *listenAddr)
 	server := &http.Server{
 		Addr:              *listenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	if err := server.ListenAndServe(); err != nil {
-		logger.Fatalf("server exited: %v", err)
+		svc.logger.Fatalf("server exited: %v", err)
 	}
+}
+
+type authService struct {
+	crypto     *crypto.Provider
+	sessions   *session.Manager
+	sessionTTL time.Duration
+	logger     *log.Logger
+}
+
+func handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func decodePost(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
+	if r.Method != http.MethodPost {
+		httpError(w, http.StatusMethodNotAllowed, "POST required")
+		return false
+	}
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		httpError(w, http.StatusBadRequest, fmt.Sprintf("invalid json: %v", err))
+		return false
+	}
+	return true
+}
+
+func (a *authService) handleOpen(w http.ResponseWriter, r *http.Request) {
+	var req sessionOpenRequest
+	if !decodePost(w, r, &req) {
+		return
+	}
+
+	seed := make([]byte, 32)
+	a.crypto.DeriveKey([]byte(req.ClientID+req.ClientKey), seed, 32)
+
+	aeadKey := make([]byte, 32)
+	a.crypto.DeriveKey(seed, aeadKey, 32)
+
+	sess, err := a.sessions.CreateSession(interfaces.SessionParams{
+		ClientAddr: nil,
+		Seed:       seed,
+		Metadata: map[string]interface{}{
+			"client_id": req.ClientID,
+			"ttl":       a.sessionTTL,
+		},
+	})
+	if err != nil {
+		a.logger.Printf("open session error: %v", err)
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, jsonSessionOpenResponse{
+		SessionID:  fmt.Sprintf("%d", sess.ID()),
+		AEADKey:    base64.StdEncoding.EncodeToString(aeadKey),
+		Seed:       base64.StdEncoding.EncodeToString(seed),
+		InitialSeq: 0,
+		ExpiresAt:  time.Now().Add(a.sessionTTL).UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func (a *authService) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	var req sessionRefreshRequest
+	if !decodePost(w, r, &req) {
+		return
+	}
+
+	var sessionID uint32
+	fmt.Sscanf(req.SessionID, "%d", &sessionID)
+
+	sess, ok := a.sessions.GetSession(sessionID)
+	if !ok {
+		httpError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	sess.UpdateActivity()
+	writeJSON(w, http.StatusOK, jsonSessionRefreshResponse{
+		Renewed:   true,
+		ExpiresAt: time.Now().Add(a.sessionTTL).UTC().Format(time.RFC3339Nano),
+		NewSeq:    0,
+	})
+}
+
+func (a *authService) handleClose(w http.ResponseWriter, r *http.Request) {
+	var req sessionCloseRequest
+	if !decodePost(w, r, &req) {
+		return
+	}
+
+	var sessionID uint32
+	fmt.Sscanf(req.SessionID, "%d", &sessionID)
+
+	a.sessions.RemoveSession(sessionID)
+	writeJSON(w, http.StatusOK, jsonSessionCloseResponse{
+		Closed: true,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {

@@ -230,6 +230,7 @@ func (s *Server) createBackupSnapshot() {
 		dumpFile := filepath.Join(backupStorageDir, fmt.Sprintf("pgdump-%s.dump", ts))
 		cmd := exec.CommandContext(context.Background(), "pg_dump", "--no-owner", "--no-acl", "--format=custom", "-f", dumpFile, pgURL)
 		if err := cmd.Run(); err != nil {
+			log.Warn("backup: pg_dump failed: %v", err)
 		} else {
 			backup["database_dump"] = dumpFile
 		}

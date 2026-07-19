@@ -40,7 +40,8 @@ func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allo
 			_ = l.disableLocked()
 		}
 	}()
-	if saveErr := l.saveCurrentRules(); saveErr != nil {
+	if serr := l.saveCurrentRules(); serr != nil {
+		log.Warn("killswitch: save current rules: %v", serr)
 	}
 	if err = l.createChain(); err != nil {
 		return fmt.Errorf("failed to create chain: %w", err)
@@ -70,29 +71,23 @@ func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allo
 			"169.254.0.0/16",
 		}
 		for _, cidr := range lanRanges {
-			if err := l.runIPTables("-A", chainName, "-d", cidr, "-j", "ACCEPT"); err != nil {
-			}
-			if err := l.runIPTables("-A", chainName, "-s", cidr, "-j", "ACCEPT"); err != nil {
-			}
+			l.tryRule("-A", chainName, "-d", cidr, "-j", "ACCEPT")
+			l.tryRule("-A", chainName, "-s", cidr, "-j", "ACCEPT")
 		}
 	}
 	if allowDNS {
-		if err := l.runIPTables("-A", chainName, "-p", "udp", "--dport", "53", "-j", "ACCEPT"); err != nil {
-		}
-		if err := l.runIPTables("-A", chainName, "-p", "tcp", "--dport", "53", "-j", "ACCEPT"); err != nil {
-		}
+		l.tryRule("-A", chainName, "-p", "udp", "--dport", "53", "-j", "ACCEPT")
+		l.tryRule("-A", chainName, "-p", "tcp", "--dport", "53", "-j", "ACCEPT")
 	}
 	for _, ip := range allowedIPs {
 		ipStr := ip.String()
-		if err := l.runIPTables("-A", chainName, "-d", ipStr, "-j", "ACCEPT"); err != nil {
-		}
-		if err := l.runIPTables("-A", chainName, "-s", ipStr, "-j", "ACCEPT"); err != nil {
-		}
+		l.tryRule("-A", chainName, "-d", ipStr, "-j", "ACCEPT")
+		l.tryRule("-A", chainName, "-s", ipStr, "-j", "ACCEPT")
 	}
 	tunInterfaces := []string{"tun0", "tun1", "tap0", "tap1", "wg0", "wg1"}
 	for _, iface := range tunInterfaces {
-		_ = l.runIPTables("-A", chainName, "-i", iface, "-j", "ACCEPT")
-		_ = l.runIPTables("-A", chainName, "-o", iface, "-j", "ACCEPT")
+		l.tryRule("-A", chainName, "-i", iface, "-j", "ACCEPT")
+		l.tryRule("-A", chainName, "-o", iface, "-j", "ACCEPT")
 	}
 	if err = l.runIPTables("-A", chainName, "-j", "DROP"); err != nil {
 		return fmt.Errorf("failed to add drop rule: %w", err)
@@ -103,8 +98,7 @@ func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allo
 	if err = l.runIPTables("-I", "OUTPUT", "1", "-j", chainName); err != nil {
 		return fmt.Errorf("failed to insert OUTPUT rule: %w", err)
 	}
-	if fwdErr := l.runIPTables("-I", "FORWARD", "1", "-j", chainName); fwdErr != nil {
-	}
+	l.tryRule("-I", "FORWARD", "1", "-j", chainName)
 
 	l.rulesActive = true
 	return nil
@@ -124,8 +118,7 @@ func (l *LinuxKillSwitch) disableLocked() error {
 	_ = l.runIPTables("-X", chainName)
 
 	l.rulesActive = false
-	if err := l.restoreRules(); err != nil {
-	}
+	_ = l.restoreRules()
 
 	return nil
 }
@@ -137,6 +130,12 @@ func (l *LinuxKillSwitch) IsActive() (bool, error) {
 func (l *LinuxKillSwitch) Cleanup() error {
 	return l.Disable()
 }
+func (l *LinuxKillSwitch) tryRule(args ...string) {
+	if err := l.runIPTables(args...); err != nil {
+		log.Warn("killswitch: rule %v: %v", args, err)
+	}
+}
+
 func (l *LinuxKillSwitch) runIPTables(args ...string) error {
 	cmd := exec.CommandContext(context.Background(), "iptables", args...)
 	output, err := cmd.CombinedOutput()

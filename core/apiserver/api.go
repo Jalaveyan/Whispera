@@ -147,6 +147,7 @@ func New(cfg *Config) (*Server, error) {
 	}
 
 	if err := os.MkdirAll("/etc/whispera", 0755); err != nil {
+		log.Warn("mkdir /etc/whispera: %v", err)
 	}
 
 	loadUsers()
@@ -310,34 +311,7 @@ func (s *Server) Start() error {
 
 	s.startTime = time.Now()
 
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		ctx := s.Module.Context()
-		for {
-			select {
-			case <-ticker.C:
-				cutoff := time.Now().Add(-2 * time.Minute)
-				s.loginAttemptsMu.Lock()
-				for ip, attempts := range s.loginAttempts {
-					var fresh []time.Time
-					for _, t := range attempts {
-						if t.After(cutoff) {
-							fresh = append(fresh, t)
-						}
-					}
-					if len(fresh) == 0 {
-						delete(s.loginAttempts, ip)
-					} else {
-						s.loginAttempts[ip] = fresh
-					}
-				}
-				s.loginAttemptsMu.Unlock()
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	go s.pruneLoginAttemptsLoop(s.Module.Context())
 
 	if !s.config.Enabled {
 		s.SetHealthy(true, "API server disabled")
@@ -364,37 +338,9 @@ func (s *Server) Start() error {
 
 	log.Printf("listening on %s", s.config.ListenAddr)
 
-	go func() {
-		var serveErr error
-		if s.config.TLSCert != "" && s.config.TLSKey != "" {
-			serveErr = s.server.ServeTLS(ln, s.config.TLSCert, s.config.TLSKey)
-		} else {
-			serveErr = s.server.Serve(ln)
-		}
-		if serveErr != nil && serveErr != http.ErrServerClosed {
-			log.Error("HTTP server error: %v", serveErr)
-			s.SetHealthy(false, fmt.Sprintf("HTTP server error: %v", serveErr))
-		}
-	}()
-
-	if s.config.TLSCert != "" && s.config.TLSKey != "" {
-		s.http3Server = &http3.Server{
-			Addr:    s.config.ListenAddr,
-			Handler: handler,
-		}
-		go func() {
-			if err := s.http3Server.ListenAndServeTLS(s.config.TLSCert, s.config.TLSKey); err != nil {
-			}
-		}()
-	}
-
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			s.cleanupRevokedTokens()
-		}
-	}()
+	go s.serveHTTP(ln)
+	s.startHTTP3(handler)
+	go s.cleanupRevokedTokensLoop()
 
 	s.SetHealthy(true, fmt.Sprintf("API server running on %s", s.config.ListenAddr))
 	s.PublishEvent(events.EventTypeModuleStarted, map[string]interface{}{
@@ -402,6 +348,72 @@ func (s *Server) Start() error {
 	})
 
 	return nil
+}
+
+func (s *Server) pruneLoginAttemptsLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.pruneLoginAttempts()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Server) pruneLoginAttempts() {
+	cutoff := time.Now().Add(-2 * time.Minute)
+	s.loginAttemptsMu.Lock()
+	defer s.loginAttemptsMu.Unlock()
+	for ip, attempts := range s.loginAttempts {
+		var fresh []time.Time
+		for _, t := range attempts {
+			if t.After(cutoff) {
+				fresh = append(fresh, t)
+			}
+		}
+		if len(fresh) == 0 {
+			delete(s.loginAttempts, ip)
+		} else {
+			s.loginAttempts[ip] = fresh
+		}
+	}
+}
+
+func (s *Server) serveHTTP(ln net.Listener) {
+	var serveErr error
+	if s.config.TLSCert != "" && s.config.TLSKey != "" {
+		serveErr = s.server.ServeTLS(ln, s.config.TLSCert, s.config.TLSKey)
+	} else {
+		serveErr = s.server.Serve(ln)
+	}
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		log.Error("HTTP server error: %v", serveErr)
+		s.SetHealthy(false, fmt.Sprintf("HTTP server error: %v", serveErr))
+	}
+}
+
+func (s *Server) startHTTP3(handler http.Handler) {
+	if s.config.TLSCert == "" || s.config.TLSKey == "" {
+		return
+	}
+	s.http3Server = &http3.Server{
+		Addr:    s.config.ListenAddr,
+		Handler: handler,
+	}
+	go func() {
+		_ = s.http3Server.ListenAndServeTLS(s.config.TLSCert, s.config.TLSKey)
+	}()
+}
+
+func (s *Server) cleanupRevokedTokensLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.cleanupRevokedTokens()
+	}
 }
 
 func (s *Server) Stop() error {

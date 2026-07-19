@@ -505,8 +505,6 @@ func (d *Detector) autoDetectOwnIPs() {
 			d.ownIPs[ip.String()] = struct{}{}
 		}
 	}
-	if len(d.ownIPs) > 0 {
-	}
 }
 
 func (d *Detector) ownIPsList() []string {

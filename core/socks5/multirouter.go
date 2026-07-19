@@ -183,96 +183,99 @@ func (r *MultiRouter) HTTPHandler() http.Handler {
 	mux.HandleFunc("/multi-bridges", func(w http.ResponseWriter, req *http.Request) {
 		switch req.Method {
 		case http.MethodGet:
-			r.mu.RLock()
-			out := &MultiRouterStatus{}
-			for _, b := range r.bridges {
-				rules := make([]string, 0, len(b.Rules))
-				for _, rule := range b.Rules {
-					rules = append(rules, rule.Pattern)
-				}
-				out.Bridges = append(out.Bridges, &BridgeStatusEntry{
-					ID:        b.ID,
-					Address:   b.Address,
-					Connected: b.tunnel != nil && b.tunnel.IsConnected(),
-					Rules:     rules,
-				})
-			}
-			r.mu.RUnlock()
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(out)
-
+			r.handleListBridges(w, req)
 		case http.MethodPost:
-			var body struct {
-				ID      string   `json:"id"`
-				Address string   `json:"address"`
-				Rules   []string `json:"rules"`
-			}
-			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if body.ID == "" || body.Address == "" {
-				http.Error(w, "id and address required", http.StatusBadRequest)
-				return
-			}
-			r.mu.Lock()
-			found := false
-			for _, b := range r.bridges {
-				if b.ID == body.ID {
-					rr := make([]*RouteRule, 0, len(body.Rules))
-					for _, pat := range body.Rules {
-						rr = append(rr, &RouteRule{
-							ID:       body.ID + ":" + pat,
-							Pattern:  pat,
-							BridgeID: body.ID,
-						})
-					}
-					b.Rules = rr
-					b.Address = body.Address
-					found = true
-					break
-				}
-			}
-			if !found {
-				rr := make([]*RouteRule, 0, len(body.Rules))
-				for _, pat := range body.Rules {
-					rr = append(rr, &RouteRule{
-						ID:       body.ID + ":" + pat,
-						Pattern:  pat,
-						BridgeID: body.ID,
-					})
-				}
-				r.bridges = append(r.bridges, &BridgeEntry{
-					ID:      body.ID,
-					Address: body.Address,
-					Rules:   rr,
-				})
-			}
-			r.mu.Unlock()
-			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `{"ok":true}`)
-
+			r.handleUpsertBridge(w, req)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
-
-	mux.HandleFunc("/multi-bridges/", func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodDelete {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		id := strings.TrimPrefix(req.URL.Path, "/multi-bridges/")
-		if id == "" {
-			http.Error(w, "missing id", http.StatusBadRequest)
-			return
-		}
-		r.RemoveBridge(id)
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"ok":true}`)
-	})
-
+	mux.HandleFunc("/multi-bridges/", r.handleDeleteBridge)
 	return mux
+}
+
+func buildRouteRules(bridgeID string, patterns []string) []*RouteRule {
+	rr := make([]*RouteRule, 0, len(patterns))
+	for _, pat := range patterns {
+		rr = append(rr, &RouteRule{
+			ID:       bridgeID + ":" + pat,
+			Pattern:  pat,
+			BridgeID: bridgeID,
+		})
+	}
+	return rr
+}
+
+func (r *MultiRouter) handleListBridges(w http.ResponseWriter, req *http.Request) {
+	r.mu.RLock()
+	out := &MultiRouterStatus{}
+	for _, b := range r.bridges {
+		rules := make([]string, 0, len(b.Rules))
+		for _, rule := range b.Rules {
+			rules = append(rules, rule.Pattern)
+		}
+		out.Bridges = append(out.Bridges, &BridgeStatusEntry{
+			ID:        b.ID,
+			Address:   b.Address,
+			Connected: b.tunnel != nil && b.tunnel.IsConnected(),
+			Rules:     rules,
+		})
+	}
+	r.mu.RUnlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(out)
+}
+
+func (r *MultiRouter) handleUpsertBridge(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		ID      string   `json:"id"`
+		Address string   `json:"address"`
+		Rules   []string `json:"rules"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.ID == "" || body.Address == "" {
+		http.Error(w, "id and address required", http.StatusBadRequest)
+		return
+	}
+
+	r.mu.Lock()
+	found := false
+	for _, b := range r.bridges {
+		if b.ID == body.ID {
+			b.Rules = buildRouteRules(body.ID, body.Rules)
+			b.Address = body.Address
+			found = true
+			break
+		}
+	}
+	if !found {
+		r.bridges = append(r.bridges, &BridgeEntry{
+			ID:      body.ID,
+			Address: body.Address,
+			Rules:   buildRouteRules(body.ID, body.Rules),
+		})
+	}
+	r.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ok":true}`)
+}
+
+func (r *MultiRouter) handleDeleteBridge(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(req.URL.Path, "/multi-bridges/")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	r.RemoveBridge(id)
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"ok":true}`)
 }
 
 func (r *MultiRouter) AttachBridgeTunnel(id string, t TunnelManager) error {

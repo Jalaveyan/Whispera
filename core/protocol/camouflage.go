@@ -16,13 +16,8 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
-// errHelloIncomplete marks a ClientHello that stopped arriving mid-flight, as
-// opposed to one that arrived and failed to parse.
 var errHelloIncomplete = errors.New("whispera: ClientHello incomplete")
 
-// readFullIdle fills buf, allowing idle between reads rather than for the whole
-// fill: a peer that keeps making progress never trips the deadline, however many
-// segments its ClientHello is spread over, while a silent peer still dies.
 func readFullIdle(conn net.Conn, buf []byte, idle time.Duration) (int, error) {
 	n := 0
 	for n < len(buf) {
@@ -342,10 +337,6 @@ func (l *camouflageListener) handle(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	// A peer that already sent a TLS handshake record header is mid-ClientHello:
-	// it committed to a handshake with us and simply has not finished arriving.
-	// Handing it to the decoy would point its handshake at the wrong origin and
-	// kill it, so only a completed hello decides whether this is a probe.
 	if errors.Is(err, errHelloIncomplete) && ph.raw[0] == 0x16 {
 		traceLog.Infow("camo_partial_hello", "remote", remote, "err", err)
 		conn.Close()

@@ -132,29 +132,6 @@ func TestSetBehavioralProfileWithoutObfuscator(t *testing.T) {
 	}
 }
 
-func TestAddRussianSNIDeduplicates(t *testing.T) {
-	m := newTestManager(t)
-
-	m.AddRussianSNI("vk.com")
-	m.AddRussianSNI("ok.ru")
-	m.AddRussianSNI("vk.com")
-
-	got := m.GetRussianSNIs()
-	if len(got) != 2 {
-		t.Fatalf("GetRussianSNIs() = %v, want 2 unique entries", got)
-	}
-}
-
-func TestAddRussianSNIIgnoresEmpty(t *testing.T) {
-	m := newTestManager(t)
-
-	m.AddRussianSNI("")
-
-	if got := m.GetRussianSNIs(); len(got) != 0 {
-		t.Errorf("GetRussianSNIs() = %v, want empty after adding \"\"", got)
-	}
-}
-
 func TestHealthyPoolFiltersSlowConns(t *testing.T) {
 	m := newTestManager(t)
 
@@ -188,17 +165,6 @@ func TestRTDialNilWithoutWhispera(t *testing.T) {
 	if m.rtLaneActive() {
 		t.Error("rtLaneActive() = true on fresh Manager")
 	}
-}
-
-func TestExportImportMLWeightsRoundTrip(t *testing.T) {
-	m := newTestManager(t)
-
-	snap := m.ExportMLWeights()
-	if snap == nil {
-		t.Fatal("ExportMLWeights() = nil")
-	}
-	m.ImportMLWeights(snap)
-	m.ImportMLWeights(nil)
 }
 
 func TestHealthCheck(t *testing.T) {

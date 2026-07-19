@@ -18,6 +18,62 @@ type uploadBody struct {
 	data []byte
 }
 
+type segHandoff struct {
+	mu      sync.Mutex
+	slots   map[uint64]*segSlot
+	waiters map[uint64]chan *segSlot
+}
+
+func newSegHandoff() *segHandoff {
+	return &segHandoff{
+		slots:   make(map[uint64]*segSlot),
+		waiters: make(map[uint64]chan *segSlot),
+	}
+}
+
+func (h *segHandoff) put(idx uint64, s *segSlot) {
+	h.mu.Lock()
+	if w, ok := h.waiters[idx]; ok {
+		delete(h.waiters, idx)
+		h.mu.Unlock()
+		w <- s
+		return
+	}
+	h.slots[idx] = s
+	h.mu.Unlock()
+}
+
+func (h *segHandoff) get(idx uint64, done <-chan struct{}, timeout time.Duration) (*segSlot, error) {
+	h.mu.Lock()
+	if s, ok := h.slots[idx]; ok {
+		delete(h.slots, idx)
+		h.mu.Unlock()
+		return s, nil
+	}
+	ch := make(chan *segSlot, 1)
+	h.waiters[idx] = ch
+	h.mu.Unlock()
+
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case s := <-ch:
+		return s, nil
+	case <-done:
+		h.dropWaiter(idx)
+		return nil, io.ErrClosedPipe
+	case <-t.C:
+		h.dropWaiter(idx)
+		return nil, fmt.Errorf("whispera: no segment %d in %s", idx, timeout)
+	}
+}
+
+func (h *segHandoff) dropWaiter(idx uint64) {
+	h.mu.Lock()
+	delete(h.waiters, idx)
+	h.mu.Unlock()
+}
+
 type segSlot struct {
 	w      io.Writer
 	flush  func()
@@ -57,7 +113,7 @@ type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
 
 type restSession struct {
 	uploadCh          chan *uploadBody
-	segCh             chan *segSlot
+	segH              *segHandoff
 	closed            chan struct{}
 	secret            []byte
 	uploadBytes       int64
@@ -130,6 +186,22 @@ func hlsKeyFromPath(path string) string {
 	return parts[2]
 }
 
+func segIdxFromPath(path string) (uint64, bool) {
+	parts := strings.SplitN(path, "/", 4)
+	if len(parts) < 4 {
+		return 0, false
+	}
+	name := parts[3]
+	if !strings.HasPrefix(name, "seg") || !strings.HasSuffix(name, ".ts") {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(name[3:len(name)-3], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 func hlsM3U8(startSeg uint64) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n")
@@ -151,33 +223,25 @@ func (r *segmentRouter) acquireSlot() (*segSlot, error) {
 	if s != nil {
 		return s, nil
 	}
-	t := time.NewTimer(10 * time.Second)
-	defer t.Stop()
-	select {
-	case s, ok := <-r.sess.segCh:
-		if !ok {
-			return nil, io.ErrClosedPipe
-		}
-		r.mu.Lock()
-		r.curSlot = s
-		r.bytesInSeg = 0
-		base := DeriveSegmentSize(r.behaviorKey, r.segIdx)
-		if atomic.LoadInt32(&r.sess.bulkMode) == 0 {
-			shrink := float64(atomic.LoadInt64(&r.sess.segShrinkPerMille)) / 1000.0
-			r.segSize = base - int(float64(base)*shrink)
-			if r.segSize < base/4 {
-				r.segSize = base / 4
-			}
-		} else {
-			r.segSize = base
-		}
-		r.mu.Unlock()
-		return s, nil
-	case <-r.connDone:
-		return nil, io.ErrClosedPipe
-	case <-t.C:
-		return nil, fmt.Errorf("whispera: no segment in 10s")
+	s, err := r.sess.segH.get(r.segIdx, r.connDone, 10*time.Second)
+	if err != nil {
+		return nil, err
 	}
+	r.mu.Lock()
+	r.curSlot = s
+	r.bytesInSeg = 0
+	base := DeriveSegmentSize(r.behaviorKey, r.segIdx)
+	if atomic.LoadInt32(&r.sess.bulkMode) == 0 {
+		shrink := float64(atomic.LoadInt64(&r.sess.segShrinkPerMille)) / 1000.0
+		r.segSize = base - int(float64(base)*shrink)
+		if r.segSize < base/4 {
+			r.segSize = base / 4
+		}
+	} else {
+		r.segSize = base
+	}
+	r.mu.Unlock()
+	return s, nil
 }
 
 func (r *segmentRouter) Write(b []byte) (int, error) {
@@ -465,32 +529,37 @@ func runAdaptivePadding(sess *restSession, fc *FrameConn, done <-chan struct{}, 
 }
 
 func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
+	decoy := func(reason string) {
+		traceLog.Infow("hls_playlist_decoy_fallback", "reason", reason, "remote", r.RemoteAddr, "path", r.URL.Path)
+		serveDecoy(w, r, cfg)
+	}
+
 	tokenHdr := r.Header.Get(headerToken)
 	sessCookie, cookieErr := r.Cookie(sessionCookie)
 
 	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
-		serveDecoy(w, r, cfg)
+		decoy("no_bearer_token")
 		return
 	}
 	token := tokenHdr[7:]
 
 	if cookieErr != nil {
-		serveDecoy(w, r, cfg)
+		decoy("no_session_cookie")
 		return
 	}
 	sessionID, _, err := decodeSession(sessCookie.Value)
 	if err != nil {
-		serveDecoy(w, r, cfg)
+		decoy("bad_session")
 		return
 	}
 
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
-		serveDecoy(w, r, cfg)
+		decoy("secret_not_resolved")
 		return
 	}
 	if !cfg.consumeToken(token) {
-		serveDecoy(w, r, cfg)
+		decoy("token_replay_or_expired")
 		return
 	}
 
@@ -498,7 +567,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig
 
 	sess := &restSession{
 		uploadCh: make(chan *uploadBody, 512),
-		segCh:    make(chan *segSlot, 1),
+		segH:     newSegHandoff(),
 		closed:   make(chan struct{}),
 		secret:   secret,
 		bulkMode: 1,
@@ -551,6 +620,12 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *ServerConfig)
 		return
 	}
 
+	segIdx, ok := segIdxFromPath(r.URL.Path)
+	if !ok {
+		serveDecoy(w, r, cfg)
+		return
+	}
+
 	sess, ok := cfg.waitSession(sessionKey, 3*time.Second)
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
@@ -571,13 +646,7 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *ServerConfig)
 	slotDone := make(chan struct{})
 	slot := &segSlot{w: w, flush: flusher.Flush, done: slotDone}
 
-	select {
-	case sess.segCh <- slot:
-	case <-sess.closed:
-		return
-	case <-r.Context().Done():
-		return
-	}
+	sess.segH.put(segIdx, slot)
 
 	select {
 	case <-slotDone:
@@ -651,6 +720,5 @@ func handleRESTOptions(w http.ResponseWriter) {
 func handleRESTDelete(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte(`{"deleted":true}`)); err != nil {
-	}
+	_, _ = w.Write([]byte(`{"deleted":true}`))
 }

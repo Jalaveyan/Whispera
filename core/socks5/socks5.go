@@ -307,15 +307,7 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 				ch, unregister := gd.RegisterTarget(dstHost, dstPort)
 				rtTargets[dstKey] = unregister
 				hasRTTarget = true
-				dstHost, dstPort := dstHost, dstPort
-				go func() {
-					for respPayload := range ch {
-						if clientAddr != nil {
-							reply := buildUDPReply(dstHost, dstPort, respPayload)
-							udpConn.WriteToUDP(reply, clientAddr)
-						}
-					}
-				}()
+				go pumpRTDatagramReplies(ch, udpConn, clientAddr, dstHost, dstPort)
 			} else {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				stream, err = tunnel.OpenStream(ctx, 0x11, dstHost, dstPort)
@@ -327,38 +319,12 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 				}
 				streams[dstKey] = stream
 
-				go func(stream net.Conn, dstKey, dstHost string, dstPort uint16) {
-					defer func() {
-						streamsMu.Lock()
-						delete(streams, dstKey)
-						streamsMu.Unlock()
-						stream.Close()
-					}()
-					defer func() {
-						if r := recover(); r != nil {
-							stdlog.Printf("[SOCKS5-UDP] PANIC in stream reader: %v\n%s", r, debug.Stack())
-						}
-					}()
-
-					hdr := make([]byte, 2)
-					respBuf := make([]byte, 65535)
-					for {
-						if _, err := io.ReadFull(stream, hdr); err != nil {
-							return
-						}
-						sz := int(binary.BigEndian.Uint16(hdr))
-						if sz == 0 || sz > len(respBuf) {
-							return
-						}
-						if _, err := io.ReadFull(stream, respBuf[:sz]); err != nil {
-							return
-						}
-						if clientAddr != nil {
-							reply := buildUDPReply(dstHost, dstPort, respBuf[:sz])
-							udpConn.WriteToUDP(reply, clientAddr)
-						}
-					}
-				}(stream, dstKey, dstHost, dstPort)
+				go pumpUDPStreamReplies(stream, udpConn, clientAddr, dstHost, dstPort, func() {
+					streamsMu.Lock()
+					delete(streams, dstKey)
+					streamsMu.Unlock()
+					stream.Close()
+				})
 			}
 		}
 		streamsMu.Unlock()
@@ -378,6 +344,43 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 			delete(streams, dstKey)
 			streamsMu.Unlock()
 			stream.Close()
+		}
+	}
+}
+
+func pumpRTDatagramReplies(ch <-chan []byte, udpConn *net.UDPConn, clientAddr *net.UDPAddr, dstHost string, dstPort uint16) {
+	for respPayload := range ch {
+		if clientAddr != nil {
+			reply := buildUDPReply(dstHost, dstPort, respPayload)
+			udpConn.WriteToUDP(reply, clientAddr)
+		}
+	}
+}
+
+func pumpUDPStreamReplies(stream net.Conn, udpConn *net.UDPConn, clientAddr *net.UDPAddr, dstHost string, dstPort uint16, cleanup func()) {
+	defer cleanup()
+	defer func() {
+		if r := recover(); r != nil {
+			stdlog.Printf("[SOCKS5-UDP] PANIC in stream reader: %v\n%s", r, debug.Stack())
+		}
+	}()
+
+	hdr := make([]byte, 2)
+	respBuf := make([]byte, 65535)
+	for {
+		if _, err := io.ReadFull(stream, hdr); err != nil {
+			return
+		}
+		sz := int(binary.BigEndian.Uint16(hdr))
+		if sz == 0 || sz > len(respBuf) {
+			return
+		}
+		if _, err := io.ReadFull(stream, respBuf[:sz]); err != nil {
+			return
+		}
+		if clientAddr != nil {
+			reply := buildUDPReply(dstHost, dstPort, respBuf[:sz])
+			udpConn.WriteToUDP(reply, clientAddr)
 		}
 	}
 }

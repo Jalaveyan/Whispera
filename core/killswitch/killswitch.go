@@ -6,7 +6,11 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/nekoskin/whispera/common/log"
 )
+
+var log = logger.Module("killswitch")
 
 type State int
 

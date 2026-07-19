@@ -102,141 +102,156 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid URL key format: %w", err)
 		}
-
-		hostPart := u.Host
-		if hostPart != "" {
-			if decoded, err := base64.StdEncoding.DecodeString(hostPart); err == nil {
-				if json.Valid(decoded) {
-					var ck ConnectionKey
-					if err := json.Unmarshal(decoded, &ck); err == nil {
-						if ck.IsExpired() {
-							return nil, fmt.Errorf("connection key expired")
-						}
-						if ck.Transport == "" {
-							ck.Transport = "auto"
-						}
-						if ck.ObfsPreset == "" {
-							ck.ObfsPreset = "default"
-						}
-						if ck.Version == 0 {
-							ck.Version = 1
-						}
-						q := u.Query()
-						if val := q.Get("ml_token"); val != "" {
-							ck.MLToken = val
-						}
-						if val := q.Get("ml"); val != "" && ck.MLServerURL == "" {
-							ck.MLServerURL = val
-						}
-						if ck.Server == "" && ck.ServerTCP == "" {
-							return nil, fmt.Errorf("key must contain at least one server address (server or server_tcp)")
-						}
-						return &ck, nil
-					}
-				}
-			}
-		}
-
-		ck := &ConnectionKey{
-			Version:     1,
-			Server:      u.Host,
-			Transport:   "auto",
-			ObfsPreset:  "default",
-			ObfsProfile: "vk",
-		}
-
-		q := u.Query()
-		ck.PSK = q.Get("psk")
-		if ck.PSK == "" {
-			ck.PSK = q.Get("key")
-		}
-		ck.ServerPub = q.Get("pub")
-
-		if val := q.Get("obfs"); val != "" {
-			ck.ObfsPreset = val
-		}
-		if val := q.Get("transport"); val != "" {
-			ck.Transport = val
-		}
-		if val := q.Get("name"); val != "" {
-			ck.Name = val
-		}
-
-		if val := q.Get("profile"); val != "" {
-			ck.ObfsProfile = val
-		}
-		if q.Get("asn") == "1" || q.Get("asn_bypass") == "1" {
-			ck.EnableASNBypass = true
-		}
-		if val := q.Get("tls"); val != "" {
-			ck.TLSFingerprint = val
-		}
-		if val := q.Get("pin"); val != "" {
-			ck.WhisperaCertPin = val
-		}
-		if val := q.Get("front"); val != "" {
-			ck.DomainFrontHost = val
-		}
-
-		if val := q.Get("front"); val != "" {
-			ck.DomainFrontHost = val
-		}
-
-		if val := q.Get("russian"); val != "" {
-			ck.RussianService = val
-		} else if val := q.Get("rs"); val != "" {
-			ck.RussianService = val
-		}
-
-		if val := q.Get("ml"); val != "" {
-			ck.MLServerURL = val
-		}
-		if val := q.Get("ml_token"); val != "" {
-			ck.MLToken = val
-		}
-
-		if val := q.Get("kid"); val != "" {
-			ck.KeyID = val
-		}
-		if val := q.Get("exp"); val != "" {
-			var exp int64
-			fmt.Sscanf(val, "%d", &exp)
-			ck.ExpiresAt = exp
-		}
-
-		if ck.IsExpired() {
-			return nil, fmt.Errorf("connection key expired")
-		}
-
-		if val := q.Get("cfg"); val != "" {
-			decoded, err := base64.RawURLEncoding.DecodeString(val)
-			if err == nil {
-				var tc map[string]interface{}
-				if json.Unmarshal(decoded, &tc) == nil {
-					ck.TransportConfig = tc
-				}
-			}
-		}
-
-		if ck.Server == "" && ck.ServerTCP == "" {
-			return nil, fmt.Errorf("key must contain at least one server address (server or server_tcp)")
-		}
-
-		return ck, nil
+		return parseWhisperaURLKey(u)
 	}
 
 	key = strings.TrimPrefix(key, "whispera://")
 	key = strings.TrimPrefix(key, "wpn://")
+	return parseBase64ConnKey(key)
+}
 
+func applyConnKeyDefaults(ck *ConnectionKey) {
+	if ck.Transport == "" {
+		ck.Transport = "auto"
+	}
+	if ck.ObfsPreset == "" {
+		ck.ObfsPreset = "default"
+	}
+	if ck.Version == 0 {
+		ck.Version = 1
+	}
+}
+
+func hasServerAddr(ck *ConnectionKey) bool {
+	return ck.Server != "" || ck.ServerTCP != ""
+}
+
+func parseWhisperaURLKey(u *url.URL) (*ConnectionKey, error) {
+	if ck := decodeJSONHostKey(u.Host); ck != nil {
+		if ck.IsExpired() {
+			return nil, fmt.Errorf("connection key expired")
+		}
+		applyConnKeyDefaults(ck)
+		q := u.Query()
+		if val := q.Get("ml_token"); val != "" {
+			ck.MLToken = val
+		}
+		if val := q.Get("ml"); val != "" && ck.MLServerURL == "" {
+			ck.MLServerURL = val
+		}
+		if !hasServerAddr(ck) {
+			return nil, fmt.Errorf("key must contain at least one server address (server or server_tcp)")
+		}
+		return ck, nil
+	}
+	return parseWhisperaQueryKey(u)
+}
+
+func decodeJSONHostKey(host string) *ConnectionKey {
+	if host == "" {
+		return nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(host)
+	if err != nil || !json.Valid(decoded) {
+		return nil
+	}
+	var ck ConnectionKey
+	if json.Unmarshal(decoded, &ck) != nil {
+		return nil
+	}
+	return &ck
+}
+
+func parseWhisperaQueryKey(u *url.URL) (*ConnectionKey, error) {
+	ck := &ConnectionKey{
+		Version:     1,
+		Server:      u.Host,
+		Transport:   "auto",
+		ObfsPreset:  "default",
+		ObfsProfile: "vk",
+	}
+
+	q := u.Query()
+	ck.PSK = q.Get("psk")
+	if ck.PSK == "" {
+		ck.PSK = q.Get("key")
+	}
+	ck.ServerPub = q.Get("pub")
+
+	if val := q.Get("obfs"); val != "" {
+		ck.ObfsPreset = val
+	}
+	if val := q.Get("transport"); val != "" {
+		ck.Transport = val
+	}
+	if val := q.Get("name"); val != "" {
+		ck.Name = val
+	}
+	if val := q.Get("profile"); val != "" {
+		ck.ObfsProfile = val
+	}
+	if q.Get("asn") == "1" || q.Get("asn_bypass") == "1" {
+		ck.EnableASNBypass = true
+	}
+	if val := q.Get("tls"); val != "" {
+		ck.TLSFingerprint = val
+	}
+	if val := q.Get("pin"); val != "" {
+		ck.WhisperaCertPin = val
+	}
+	if val := q.Get("front"); val != "" {
+		ck.DomainFrontHost = val
+	}
+	if val := q.Get("russian"); val != "" {
+		ck.RussianService = val
+	} else if val := q.Get("rs"); val != "" {
+		ck.RussianService = val
+	}
+	if val := q.Get("ml"); val != "" {
+		ck.MLServerURL = val
+	}
+	if val := q.Get("ml_token"); val != "" {
+		ck.MLToken = val
+	}
+	if val := q.Get("kid"); val != "" {
+		ck.KeyID = val
+	}
+	if val := q.Get("exp"); val != "" {
+		var exp int64
+		fmt.Sscanf(val, "%d", &exp)
+		ck.ExpiresAt = exp
+	}
+
+	if ck.IsExpired() {
+		return nil, fmt.Errorf("connection key expired")
+	}
+
+	if val := q.Get("cfg"); val != "" {
+		decoded, err := base64.RawURLEncoding.DecodeString(val)
+		if err == nil {
+			var tc map[string]interface{}
+			if json.Unmarshal(decoded, &tc) == nil {
+				ck.TransportConfig = tc
+			}
+		}
+	}
+
+	if !hasServerAddr(ck) {
+		return nil, fmt.Errorf("key must contain at least one server address (server or server_tcp)")
+	}
+	return ck, nil
+}
+
+func parseBase64ConnKey(key string) (*ConnectionKey, error) {
 	data, err := base64.StdEncoding.DecodeString(key)
 	if err != nil {
 		data, err = base64.URLEncoding.DecodeString(key)
-		if err != nil {
-			data, err = base64.RawURLEncoding.DecodeString(key)
-			if err != nil {
-				return nil, fmt.Errorf("invalid key encoding: %w", err)
-			}
-		}
+	}
+	if err != nil {
+		data, err = base64.RawURLEncoding.DecodeString(key)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("invalid key encoding: %w", err)
 	}
 
 	var ck ConnectionKey
@@ -247,21 +262,11 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 	if ck.IsExpired() {
 		return nil, fmt.Errorf("connection key expired")
 	}
-
-	if ck.Server == "" && ck.ServerTCP == "" {
+	if !hasServerAddr(&ck) {
 		return nil, fmt.Errorf("key must contain at least one server address (server or server_tcp)")
 	}
 
-	if ck.Transport == "" {
-		ck.Transport = "auto"
-	}
-	if ck.ObfsPreset == "" {
-		ck.ObfsPreset = "default"
-	}
-	if ck.Version == 0 {
-		ck.Version = 1
-	}
-
+	applyConnKeyDefaults(&ck)
 	return &ck, nil
 }
 

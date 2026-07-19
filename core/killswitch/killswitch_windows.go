@@ -68,25 +68,19 @@ func (w *WindowsKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, al
 		}
 		for i, cidr := range lanRanges {
 			ruleName := fmt.Sprintf("%s-%d", ruleAllowLAN, i)
-			if err := w.addRule(ruleName+"-In", "in", "allow", fmt.Sprintf("remoteip=%s", cidr)); err != nil {
-			}
-			if err := w.addRule(ruleName+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", cidr)); err != nil {
-			}
+			w.tryRule(ruleName+"-In", "in", "allow", fmt.Sprintf("remoteip=%s", cidr))
+			w.tryRule(ruleName+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", cidr))
 		}
 	}
 	if allowDNS {
-		if err := w.addRule(ruleAllowDNS+"-UDP-Out", "out", "allow", "protocol=udp remoteport=53"); err != nil {
-		}
-		if err := w.addRule(ruleAllowDNS+"-TCP-Out", "out", "allow", "protocol=tcp remoteport=53"); err != nil {
-		}
+		w.tryRule(ruleAllowDNS+"-UDP-Out", "out", "allow", "protocol=udp remoteport=53")
+		w.tryRule(ruleAllowDNS+"-TCP-Out", "out", "allow", "protocol=tcp remoteport=53")
 	}
 	for i, ip := range allowedIPs {
 		ruleName := fmt.Sprintf("%s-Custom-%d", rulePrefix, i)
 		ipStr := ip.String()
-		if err := w.addRule(ruleName+"-In", "in", "allow", fmt.Sprintf("remoteip=%s", ipStr)); err != nil {
-		}
-		if err := w.addRule(ruleName+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", ipStr)); err != nil {
-		}
+		w.tryRule(ruleName+"-In", "in", "allow", fmt.Sprintf("remoteip=%s", ipStr))
+		w.tryRule(ruleName+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", ipStr))
 	}
 	if err = w.addBlockAllRule(ruleBlockAll+"-In", "in"); err != nil {
 		return fmt.Errorf("failed to block all inbound: %w", err)
@@ -118,6 +112,12 @@ func (w *WindowsKillSwitch) IsActive() (bool, error) {
 func (w *WindowsKillSwitch) Cleanup() error {
 	return w.Disable()
 }
+func (w *WindowsKillSwitch) tryRule(name, direction, action, extra string) {
+	if err := w.addRule(name, direction, action, extra); err != nil {
+		log.Warn("killswitch: rule %s: %v", name, err)
+	}
+}
+
 func (w *WindowsKillSwitch) addRule(name, direction, action, extra string) error {
 	args := []string{
 		"advfirewall", "firewall", "add", "rule",

@@ -77,8 +77,6 @@ func specHandshakeReadyRaw(raw []byte) bool {
 	return specHandshakeReady(spec)
 }
 
-// SetForcedRawFingerprint pins an exact captured ClientHello (raw record) for
-// the tunnel handshake, parsed once. Takes priority over any named fingerprint.
 func rawHelloReplayable(raw []byte) bool {
 	hs := raw
 	if len(hs) >= 5 && hs[0] == 0x16 {

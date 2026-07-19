@@ -398,46 +398,11 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 		return nil, fmt.Errorf("dependencies not set")
 	}
 
-	nonce := make([]byte, 24)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("failed to generate nonce: %w", err)
+	clientUUID, seed, err := h.newHandshakeIdentity()
+	if err != nil {
+		return nil, err
 	}
-
-	h.mu.RLock()
-	clientUUID := h.deviceID
-	h.mu.RUnlock()
-	var zeroID [16]byte
-	if clientUUID == zeroID {
-		if _, err := rand.Read(clientUUID[:]); err != nil {
-			return nil, fmt.Errorf("failed to generate client UUID: %w", err)
-		}
-	}
-
-	seed := make([]byte, 32)
-	if _, err := rand.Read(seed); err != nil {
-		return nil, fmt.Errorf("failed to generate seed: %w", err)
-	}
-
-	sizeBuf := make([]byte, 2)
-	rand.Read(sizeBuf)
-	totalSize := HandshakeMinSize + int(sizeBuf[0])%(HandshakeMaxSize-HandshakeMinSize+1)
-	if totalSize < 54 {
-		totalSize = 54
-	}
-	initPkt := make([]byte, totalSize)
-	initPkt[0] = byte(HandshakeTypeInit)
-	initPkt[1] = 0x01
-	copy(initPkt[2:18], clientUUID[:])
-
-	copy(initPkt[18:50], seed)
-
-	ts := uint32(time.Now().Unix())
-	initPkt[50] = byte(ts >> 24)
-	initPkt[51] = byte(ts >> 16)
-	initPkt[52] = byte(ts >> 8)
-	initPkt[53] = byte(ts)
-
-	rand.Read(initPkt[54:])
+	initPkt := buildHandshakeInit(clientUUID, seed)
 
 	h.PublishEvent(events.EventTypeHandshakeStarted, map[string]interface{}{
 		"address": addr.String(),
@@ -448,6 +413,7 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 		atomic.AddUint64(&h.handshakesFailed, 1)
 		return nil, fmt.Errorf("failed to send handshake init: %w", err)
 	}
+
 	readTimeout := h.config.Timeout
 	if readTimeout == 0 || readTimeout > 5*time.Second {
 		readTimeout = 2 * time.Second
@@ -463,30 +429,17 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 		atomic.AddUint64(&h.handshakesFailed, 1)
 		return nil, fmt.Errorf("failed to read handshake response: %w", err)
 	}
-
 	data := respBuf[:n]
 
-	if len(data) < HandshakeMinSize {
+	sessionID, err := parseInitResponse(data)
+	if err != nil {
 		atomic.AddUint64(&h.handshakesFailed, 1)
-		return nil, fmt.Errorf("invalid handshake response size: %d", len(data))
+		return nil, err
 	}
-
-	if HandshakeType(data[0]) != HandshakeTypeResponse {
-		atomic.AddUint64(&h.handshakesFailed, 1)
-		return nil, fmt.Errorf("invalid handshake response type: %d", data[0])
-	}
-
-	status := data[1]
-	if status != 0x00 {
-		atomic.AddUint64(&h.handshakesFailed, 1)
-		return nil, fmt.Errorf("handshake rejected by server with status: %d", status)
-	}
-
-	sessionID := uint32(data[2])<<24 | uint32(data[3])<<16 | uint32(data[4])<<8 | uint32(data[5])
 
 	session, err := sessionMgr.CreateSession(interfaces.SessionParams{
 		ClientAddr: addr,
-		Seed:       seed, // Our seed
+		Seed:       seed,
 		Metadata: map[string]interface{}{
 			"handshake_type": "response",
 			"session_id":     sessionID,
@@ -505,6 +458,63 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 	})
 
 	return session, nil
+}
+
+func (h *Handler) newHandshakeIdentity() (clientUUID [16]byte, seed []byte, err error) {
+	h.mu.RLock()
+	clientUUID = h.deviceID
+	h.mu.RUnlock()
+
+	var zeroID [16]byte
+	if clientUUID == zeroID {
+		if _, err = rand.Read(clientUUID[:]); err != nil {
+			return clientUUID, nil, fmt.Errorf("failed to generate client UUID: %w", err)
+		}
+	}
+
+	seed = make([]byte, 32)
+	if _, err = rand.Read(seed); err != nil {
+		return clientUUID, nil, fmt.Errorf("failed to generate seed: %w", err)
+	}
+	return clientUUID, seed, nil
+}
+
+func buildHandshakeInit(clientUUID [16]byte, seed []byte) []byte {
+	sizeBuf := make([]byte, 2)
+	rand.Read(sizeBuf)
+	totalSize := HandshakeMinSize + int(sizeBuf[0])%(HandshakeMaxSize-HandshakeMinSize+1)
+	if totalSize < 54 {
+		totalSize = 54
+	}
+
+	initPkt := make([]byte, totalSize)
+	initPkt[0] = byte(HandshakeTypeInit)
+	initPkt[1] = 0x01
+	copy(initPkt[2:18], clientUUID[:])
+	copy(initPkt[18:50], seed)
+
+	ts := uint32(time.Now().Unix())
+	initPkt[50] = byte(ts >> 24)
+	initPkt[51] = byte(ts >> 16)
+	initPkt[52] = byte(ts >> 8)
+	initPkt[53] = byte(ts)
+
+	rand.Read(initPkt[54:])
+	return initPkt
+}
+
+func parseInitResponse(data []byte) (uint32, error) {
+	if len(data) < HandshakeMinSize {
+		return 0, fmt.Errorf("invalid handshake response size: %d", len(data))
+	}
+	if HandshakeType(data[0]) != HandshakeTypeResponse {
+		return 0, fmt.Errorf("invalid handshake response type: %d", data[0])
+	}
+	if status := data[1]; status != 0x00 {
+		return 0, fmt.Errorf("handshake rejected by server with status: %d", status)
+	}
+	sessionID := uint32(data[2])<<24 | uint32(data[3])<<16 | uint32(data[4])<<8 | uint32(data[5])
+	return sessionID, nil
 }
 func (h *Handler) SetRateLimiter(rate float64, burst int) {
 	h.rateLimiter.SetRate(rate, burst)

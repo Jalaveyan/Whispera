@@ -138,8 +138,6 @@ func randomBytes(n int) []byte {
 	return b
 }
 
-// buildMarkedClientHello constructs a realistic TLS 1.3 ClientHello (via uTLS)
-// whose Random field carries the camo HMAC marker bound to its own key share.
 func buildMarkedClientHello(camoKey []byte, sni string) (chBytes, keyShare, random []byte, err error) {
 	uconn := utls.UClient(nil, &utls.Config{ServerName: sni, InsecureSkipVerify: true}, utls.HelloGolang)
 	if err := uconn.BuildHandshakeState(); err != nil {
@@ -153,9 +151,6 @@ func buildMarkedClientHello(camoKey []byte, sni string) (chBytes, keyShare, rand
 	if len(ks) == 0 {
 		return nil, nil, nil, errors.New("whispera: quic probe: no x25519 key share")
 	}
-	// Drop any larger (e.g. post-quantum hybrid) key shares the preset may
-	// have added — this probe is a one-shot throwaway artifact, not a real
-	// handshake, and keeping only X25519 keeps it well under one UDP datagram.
 	for _, share := range hello.KeyShares {
 		if share.Group == utls.X25519 {
 			hello.KeyShares = []utls.KeyShare{share}
@@ -180,11 +175,6 @@ func quicCryptoFrame(data []byte) []byte {
 	return f
 }
 
-// buildQUICCamoProbe builds a one-shot, throwaway, RFC 9001-shaped QUIC v1
-// Initial packet whose embedded ClientHello.Random carries the camo marker.
-// It is never meant to complete a real handshake — its only purpose is to
-// authenticate the source (ip,port) to the server's camouflage gate before
-// the real quic-go dial proceeds from the same local UDP port.
 func buildQUICCamoProbe(camoKey []byte, sni string) ([]byte, error) {
 	dcid := randomBytes(8)
 	scid := randomBytes(8)
@@ -206,12 +196,12 @@ func buildQUICCamoProbe(camoKey []byte, sni string) ([]byte, error) {
 	pnLen := 1
 
 	header := []byte{0xc0 | byte(pnLen-1)}
-	header = append(header, 0x00, 0x00, 0x00, 0x01) // version 1
+	header = append(header, 0x00, 0x00, 0x00, 0x01)
 	header = append(header, byte(len(dcid)))
 	header = append(header, dcid...)
 	header = append(header, byte(len(scid)))
 	header = append(header, scid...)
-	header = append(header, 0x00) // empty token length
+	header = append(header, 0x00)
 
 	const aeadOverhead = 16
 	padTo := quicMinInitialPacket
@@ -275,11 +265,6 @@ type parsedQUICInitial struct {
 	keyShare []byte
 }
 
-// parseQUICInitialClientHello decrypts a client-sent QUIC v1 Initial packet
-// (Initial-level keys are derived solely from the public salt and the
-// packet's own destination connection ID, by design — no secret is needed)
-// and extracts the embedded TLS ClientHello fields needed for camo-marker
-// verification.
 func parseQUICInitialClientHello(packet []byte) (*parsedQUICInitial, error) {
 	if len(packet) < 7 || packet[0]&0x80 == 0 || packet[0]&0x40 == 0 {
 		return nil, errors.New("whispera: not a quic long header packet")
@@ -396,7 +381,7 @@ func extractCryptoFrameData(payload []byte) ([]byte, bool) {
 			continue
 		case quicFrameTypeCrypto:
 			payload = payload[1:]
-			_, n, err := quicVarintParse(payload) // offset
+			_, n, err := quicVarintParse(payload)
 			if err != nil {
 				return nil, false
 			}

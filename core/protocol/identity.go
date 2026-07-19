@@ -111,9 +111,6 @@ func verifyCertBinding(idPubB64, sni string, leaf *x509.Certificate) bool {
 	return ed25519.Verify(ed25519.PublicKey(pub), certBindMessage(leaf.RawSubjectPublicKeyInfo, sni), sig)
 }
 
-// certVerifier trusts the server if it proves control of the identity key
-// (verify-by-key) and falls back to the static SPKI pin when no identity is
-// configured or the cert carries no binding yet.
 func certVerifier(pin, idPubB64, sni string) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {

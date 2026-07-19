@@ -2,36 +2,23 @@ package tunnel
 
 import (
 	"context"
-	"github.com/nekoskin/whispera/neural"
 	"math"
 	"net"
 	"time"
 
+	"github.com/nekoskin/whispera/neural"
 	"github.com/sourcegraph/conc/iter"
 )
 
 type mlOrchestrator struct {
 	m *Manager
 
-	kaAgent      keepaliveDecisionAgent
-	boAgent      backoffDecisionAgent
-	jitterAgent  jitterDecisionAgent
-	serverAgent  serverDecisionAgent
-	chunkAgent   chunkDecisionAgent
 	tspuDetector tspuDetectorIface
 }
 
-func newMLOrchestrator(m *Manager, modelDir string, enabled bool) *mlOrchestrator {
-	if !enabled {
-		return &mlOrchestrator{m: m}
-	}
+func newMLOrchestrator(m *Manager) *mlOrchestrator {
 	return &mlOrchestrator{
 		m:            m,
-		kaAgent:      neural.NewRLKeepaliveAgent(modelDir),
-		boAgent:      neural.NewRLBackoffAgent(modelDir),
-		jitterAgent:  neural.NewRLJitterAgent(modelDir),
-		serverAgent:  neural.NewRLServerAgent(modelDir),
-		chunkAgent:   neural.NewRLChunkAgent(modelDir),
 		tspuDetector: neural.NewTSPUDetector(),
 	}
 }
@@ -49,26 +36,25 @@ func probeLatency(ctx context.Context, addr string, timeout time.Duration) (time
 	return time.Since(start), nil
 }
 
+type serverProbe struct {
+	Addr    string
+	Latency time.Duration
+}
+
 func (ml *mlOrchestrator) pickServer(ctx context.Context) string {
 	candidates := ml.regionCandidates()
 	if len(candidates) == 0 {
 		return ""
 	}
 
-	probes := iter.Map(candidates, func(a *string) neural.ServerProbe {
+	probes := iter.Map(candidates, func(a *string) serverProbe {
 		addr := *a
 		lat, err := probeLatency(ctx, addr, 200*time.Millisecond)
 		if err != nil {
-			return neural.ServerProbe{Addr: addr, Latency: math.MaxInt64}
+			return serverProbe{Addr: addr, Latency: math.MaxInt64}
 		}
-		return neural.ServerProbe{Addr: addr, Latency: lat}
+		return serverProbe{Addr: addr, Latency: lat}
 	})
-
-	if ml.serverAgent != nil {
-		if chosen := ml.serverAgent.Decide(probes); chosen != "" {
-			return chosen
-		}
-	}
 
 	best := probes[0]
 	for _, p := range probes[1:] {
@@ -112,65 +98,4 @@ func (ml *mlOrchestrator) regionCandidates() []string {
 		}
 	}
 	return out
-}
-
-func (ml *mlOrchestrator) runWeightSnapshotLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	neural.SetGlobalSnapshot(ml.exportWeights())
-	for range ticker.C {
-		neural.SetGlobalSnapshot(ml.exportWeights())
-	}
-}
-
-func (ml *mlOrchestrator) exportWeights() *neural.WeightSnapshot {
-	snap := &neural.WeightSnapshot{}
-	if ml.kaAgent != nil {
-		snap.Keepalive = ml.kaAgent.ExportWeights()
-	}
-	if ml.jitterAgent != nil {
-		snap.Jitter = ml.jitterAgent.ExportWeights()
-	}
-	if ml.chunkAgent != nil {
-		snap.Chunk = ml.chunkAgent.ExportWeights()
-	}
-	if ml.boAgent != nil {
-		snap.Backoff = ml.boAgent.ExportWeights()
-	}
-	if ml.serverAgent != nil {
-		snap.Server = ml.serverAgent.ExportWeights()
-	}
-
-	return snap
-}
-
-func (ml *mlOrchestrator) importWeights(snap *neural.WeightSnapshot) {
-	if snap == nil {
-		return
-	}
-	if ml.kaAgent != nil && len(snap.Keepalive) > 0 {
-		if !ml.kaAgent.ImportWeights(snap.Keepalive) {
-			log.Error("ML: keepalive weight import rejected, shape mismatch")
-		}
-	}
-	if ml.jitterAgent != nil && len(snap.Jitter) > 0 {
-		if !ml.jitterAgent.ImportWeights(snap.Jitter) {
-			log.Error("ML: jitter weight import rejected, shape mismatch")
-		}
-	}
-	if ml.chunkAgent != nil && len(snap.Chunk) > 0 {
-		if !ml.chunkAgent.ImportWeights(snap.Chunk) {
-			log.Error("ML: chunk weight import rejected, shape mismatch")
-		}
-	}
-	if ml.boAgent != nil && len(snap.Backoff) > 0 {
-		if !ml.boAgent.ImportWeights(snap.Backoff) {
-			log.Error("ML: backoff weight import rejected, shape mismatch")
-		}
-	}
-	if ml.serverAgent != nil && len(snap.Server) > 0 {
-		if !ml.serverAgent.ImportWeights(snap.Server) {
-			log.Error("ML: server weight import rejected, shape mismatch")
-		}
-	}
 }

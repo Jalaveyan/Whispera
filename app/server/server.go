@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"encoding/pem"
 	"flag"
 	"fmt"
@@ -28,7 +27,6 @@ import (
 	"github.com/nekoskin/whispera/core/dataplane"
 	"github.com/nekoskin/whispera/core/keylimits"
 	server "github.com/nekoskin/whispera/core/manager"
-	"github.com/nekoskin/whispera/core/mlserver"
 	"github.com/nekoskin/whispera/core/probedetector"
 	protocol2 "github.com/nekoskin/whispera/core/protocol"
 	relay2 "github.com/nekoskin/whispera/core/relay"
@@ -36,7 +34,6 @@ import (
 	"github.com/nekoskin/whispera/core/transport/grpc"
 	"github.com/nekoskin/whispera/core/transport/tcp"
 	"github.com/nekoskin/whispera/core/transport/yadisk"
-	"github.com/nekoskin/whispera/neural"
 	"io"
 	"math/big"
 	"net"
@@ -318,6 +315,7 @@ func main() {
 
 	go func() {
 		if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+			log.Warn("pprof server on %s exited: %v", *pprofAddr, err)
 		}
 	}()
 
@@ -358,12 +356,6 @@ func main() {
 	if *validateConfig {
 		os.Exit(0)
 	}
-	manager.OnStop(func() error {
-		if eng := neural.GetNativeEngine(); eng != nil {
-			eng.Close()
-		}
-		return nil
-	})
 
 	if err := manager.Run(); err != nil {
 		log.Fatalf("Application error: %v", err)
@@ -532,63 +524,74 @@ func initTransports(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.C
 	}
 
 	if len(sc.Inbounds) > 0 {
-		for _, inbound := range sc.Inbounds {
-			if inbound.Mode == "reverse" {
-				ib := inbound
-				go StartReverseInbound(ib, ctx.Done())
-				continue
-			}
-			if inbound.Port == 0 {
-				continue
-			}
-			if err := StartInbound(inbound, sc); err != nil {
-			}
-		}
-	} else {
-		if sc.Transport.TCP.Enabled {
-			tcpTransport, err := tcp.New(&tcp.Config{
-				ListenAddr:   sc.Transport.TCP.ListenAddr,
-				ReadTimeout:  30 * time.Second,
-				WriteTimeout: 30 * time.Second,
-				KeepAlive:    30 * time.Second,
-				MaxConns:     10000,
-				BufferSize:   32 * 1024,
-			})
-			if err != nil {
-				return err
-			}
-			if err := m.Register(tcpTransport); err != nil {
-				return err
-			}
-			go func() {
-				time.Sleep(1 * time.Second)
-				backoffTCP := 1 * time.Millisecond
-				for {
-					conn, err := tcpTransport.Accept()
-					if err != nil {
-						acceptBackoff(&backoffTCP)
-						continue
-					}
-					backoffTCP = 1 * time.Millisecond
-					release, ok := acquireConnSlot(conn.RemoteAddr())
-					if !ok {
-						conn.Close()
-						continue
-					}
-					go func() {
-						defer release()
-						if globalRelay != nil {
-							globalRelay.ServeTunnel(stats.WrapConn(conn, conn.RemoteAddr().String()), false)
-						} else {
-							conn.Close()
-						}
-					}()
-				}
-			}()
-		}
+		startConfiguredInbounds(sc, ctx)
+		return nil
 	}
-
+	if sc.Transport.TCP.Enabled {
+		return startFallbackTCP(m, sc)
+	}
 	return nil
+}
+
+func startConfiguredInbounds(sc *config.ServerConfig, ctx context.Context) {
+	for _, inbound := range sc.Inbounds {
+		if inbound.Mode == "reverse" {
+			ib := inbound
+			go StartReverseInbound(ib, ctx.Done())
+			continue
+		}
+		if inbound.Port == 0 {
+			continue
+		}
+		_ = StartInbound(inbound, sc)
+	}
+}
+
+func startFallbackTCP(m *lifecycle.Manager, sc *config.ServerConfig) error {
+	tcpTransport, err := tcp.New(&tcp.Config{
+		ListenAddr:   sc.Transport.TCP.ListenAddr,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		KeepAlive:    30 * time.Second,
+		MaxConns:     10000,
+		BufferSize:   32 * 1024,
+	})
+	if err != nil {
+		return err
+	}
+	if err := m.Register(tcpTransport); err != nil {
+		return err
+	}
+	go acceptTCPLoop(tcpTransport)
+	return nil
+}
+
+func acceptTCPLoop(t *tcp.Transport) {
+	time.Sleep(1 * time.Second)
+	backoff := 1 * time.Millisecond
+	for {
+		conn, err := t.Accept()
+		if err != nil {
+			acceptBackoff(&backoff)
+			continue
+		}
+		backoff = 1 * time.Millisecond
+		release, ok := acquireConnSlot(conn.RemoteAddr())
+		if !ok {
+			conn.Close()
+			continue
+		}
+		go serveTCPConn(conn, release)
+	}
+}
+
+func serveTCPConn(conn net.Conn, release func()) {
+	defer release()
+	if globalRelay == nil {
+		conn.Close()
+		return
+	}
+	globalRelay.ServeTunnel(stats.WrapConn(conn, conn.RemoteAddr().String()), false)
 }
 
 func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context) error {
@@ -615,13 +618,6 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 	if err := initYaDisk(m, sc); err != nil {
 		return err
 	}
-
-	mlServer, err := initMLServer(m, sc)
-	if err != nil {
-		return err
-	}
-	reactor.SetAdversarial(mlServer.Adversarial())
-	neural.GetNativeEngine().SetOnTSPUDetected(reactor.OnTSPUDetected)
 
 	if sc.Update.Enabled && sc.Update.ManifestURL != "" {
 		initUpdater(m, sc)
@@ -653,25 +649,12 @@ func initAPIServer(m *lifecycle.Manager, sc *config.ServerConfig) error {
 		return err
 	}
 
-	apiServer.Handle("/api/ml/weights", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		snap := neural.GetGlobalSnapshot()
-		if snap == nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintf(w, `{"error":"weights not ready yet"}`)
-			return
-		}
-		data, err := json.Marshal(snap)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		w.Write(data)
-	})
-
 	globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
 	globalProbeDetector.Start()
 	apiServer.SetProbeDetector(globalProbeDetector)
+
+	apiServer.Handle("/api/blockmap/report", handleBlockmapReport)
+	apiServer.Handle("/api/blockmap", handleBlockmapQuery)
 	return nil
 }
 
@@ -763,66 +746,16 @@ func generateSelfSignedCert(certPath, keyPath string) error {
 }
 
 func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context, reactor *threatReactor) {
-	ganIface := sc.Whispera.GANIface
-	if ganIface == "" {
-		ganIface = defaultRouteIface()
-	}
-	ganPort := sc.Whispera.GANPort
-	if ganPort == 0 {
-		if _, p, err := net.SplitHostPort(sc.Whispera.ListenAddr); err == nil {
-			ganPort, _ = strconv.Atoi(p)
-		}
-	}
-	if ganPort == 0 {
-		ganPort = 443
-	}
-	ganMaxPadding := sc.Whispera.GANMaxPadding
-	if ganMaxPadding == 0 {
-		ganMaxPadding = 4096
-	}
-	ganModelDir := os.Getenv("WHISPERA_ML_MODEL_DIR")
-	if ganModelDir == "" {
-		ganModelDir = "./ml_models"
-	}
-	ganSavePath := filepath.Join(ganModelDir, "gan_state.json")
-	if err := os.MkdirAll(ganModelDir, 0755); err != nil {
-		log.Error("GAN: failed to create model dir %s: %v", ganModelDir, err)
-	}
-	ganRunner := neural.NewGANRunner(ganIface, ganPort, ganSavePath)
-	if !apiserver.AnyNeuralEnabled() {
-		log.Info("GAN: no neural-enabled users — traffic-shaping runner stays off (no packet capture/training)")
-	} else if err := ganRunner.Start(); err != nil {
-		log.Error("GAN: failed to start traffic-shaping runner: %v", err)
-	} else {
-		m.OnStop(func() error {
-			ganRunner.Stop()
-			return nil
-		})
-	}
-
 	cCfg := &protocol2.ServerConfig{
 		IsNeuralDisabled: apiserver.IsNeuralDisabled,
-		GANDecide: func(iatMean, sizeMean, upRatio float64) protocol2.GANAction {
-			a := ganRunner.GAN().Decide(neural.FlowFeatures{
-				IATMean:  iatMean,
-				SizeMean: sizeMean,
-				UpRatio:  upRatio,
-			})
-			lambda := neural.GANLambda(reactor.EffectiveThreatLevel())
-			return protocol2.GANAction{
-				SleepMs:   a.SleepMs * lambda,
-				PaddingN:  int(a.PaddingFrac * float64(ganMaxPadding) * lambda),
-				SegShrink: a.SegShrink * lambda,
-			}
-		},
-		ListenAddr:     sc.Whispera.ListenAddr,
-		BackendH2CAddr: sc.Whispera.BackendH2CAddr,
-		TLSCert:        sc.Whispera.TLSCert,
-		TLSKey:         sc.Whispera.TLSKey,
-		Domain:         sc.Whispera.Domain,
-		DecoyCertDir:   whisperaDecoyCertDir,
-		ACMEDir:        sc.Whispera.ACMEDir,
-		DecoyOrigin:    sc.Whispera.DecoyOrigin,
+		ListenAddr:       sc.Whispera.ListenAddr,
+		BackendH2CAddr:   sc.Whispera.BackendH2CAddr,
+		TLSCert:          sc.Whispera.TLSCert,
+		TLSKey:           sc.Whispera.TLSKey,
+		Domain:           sc.Whispera.Domain,
+		DecoyCertDir:     whisperaDecoyCertDir,
+		ACMEDir:          sc.Whispera.ACMEDir,
+		DecoyOrigin:      sc.Whispera.DecoyOrigin,
 		GetUsers: func() []protocol2.UserEntry {
 			registered := apiserver.GetRegisteredUsers()
 			entries := make([]protocol2.UserEntry, 0, len(registered))
@@ -837,15 +770,9 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		},
 		OnConn: func(conn net.Conn, userID string, secret []byte) {
 			log.Info("whispera: tunnel connected userID=%s remote=%s", userID, conn.RemoteAddr())
-			flowLabel := neural.FlowTunnel
-			if apiserver.IsNeuralDisabled(userID) {
-				flowLabel = neural.FlowExcluded
-			}
-			neural.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), flowLabel)
 			tracked := stats.WrapConn(conn, userID)
 			go func() {
 				globalRelay.ServeTunnelResilient(tracked, false, secret)
-				neural.FlowRegistry.DeleteConn(conn.LocalAddr(), conn.RemoteAddr())
 				log.Info("whispera: tunnel closed userID=%s remote=%s", userID, conn.RemoteAddr())
 			}()
 		},
@@ -876,26 +803,6 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		protocol2.SetCertIdentity(id)
 	}
 	go func() { _ = protocol2.ListenAndServe(ctx, cCfg) }()
-}
-
-func initMLServer(m *lifecycle.Manager, sc *config.ServerConfig) (*mlserver.MLServer, error) {
-	mlListenAddr := ":8000"
-	if sc.ML.ListenAddr != "" {
-		mlListenAddr = sc.ML.ListenAddr
-	}
-	mlServer, err := mlserver.New(&mlserver.Config{
-		ListenAddr: mlListenAddr,
-		Token:      sc.API.AuthToken,
-		DataDir:    "./ml_data",
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := m.Register(mlServer); err != nil {
-		return nil, err
-	}
-	os.Setenv("WHISPERA_ML_SERVER", "http://"+mlListenAddr)
-	return mlServer, nil
 }
 
 func initUpdater(m *lifecycle.Manager, sc *config.ServerConfig) {

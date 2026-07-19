@@ -22,9 +22,6 @@ func kindFromName(name string) browserKind {
 	}
 }
 
-// PersistRawFingerprint validates a raw ClientHello record and writes it to the
-// store dir (deduped by extension-set hash, mtime bumped to now so "freshest"
-// reflects the latest capture). Server-side store for embedding into new keys.
 func PersistRawFingerprint(dir string, raw []byte) error {
 	fp := &utls.Fingerprinter{AllowBluntMimicry: true}
 	if _, err := fp.FingerprintClientHello(raw); err != nil {
@@ -54,8 +51,6 @@ func PersistRawFingerprint(dir string, raw []byte) error {
 	return nil
 }
 
-// FreshestRawFingerprint returns the most recently stored raw ClientHello whose
-// browser class matches kind ("chrome", "firefox", "safari"), by file mtime.
 func FreshestRawFingerprint(dir, kind string) ([]byte, bool) {
 	if dir == "" {
 		return nil, false
@@ -90,8 +85,6 @@ func FreshestRawFingerprint(dir, kind string) ([]byte, bool) {
 	return best, best != nil
 }
 
-// looksLikeRealBrowser is a cheap filter for auto-harvest: real Chrome/Firefox/
-// Safari send GREASE; most scanners/bots do not.
 func looksLikeRealBrowser(raw []byte) bool {
 	exts, ok := clientHelloExtTypes(raw)
 	if !ok {
@@ -112,8 +105,6 @@ var (
 	harvestDirOverride string
 )
 
-// SetHarvestDir points fingerprint persistence/loading at a writable directory
-// (the client's data dir). Falls back to WHISPERA_FP_DIR when unset.
 func SetHarvestDir(dir string) {
 	harvestDirMu.Lock()
 	harvestDirOverride = dir
@@ -140,9 +131,6 @@ func HarvestRawClientHello(record []byte) error {
 	return nil
 }
 
-// persistFingerprint writes a new unique ClientHello to disk so harvested
-// fingerprints are not lost on restart. Atomic (temp + rename); a no-op when no
-// harvest dir is configured or the file already exists.
 func persistFingerprint(key string, raw []byte) {
 	dir := harvestDirPath()
 	if dir == "" || len(raw) == 0 {

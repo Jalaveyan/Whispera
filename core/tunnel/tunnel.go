@@ -17,7 +17,6 @@ import (
 	"github.com/nekoskin/whispera/neural"
 	"io"
 	stdlog "log"
-	"math"
 	mrand "math/rand"
 	"net"
 	"runtime"
@@ -358,16 +357,6 @@ func (m *Manager) getMuxConfig() *mux.Config {
 	base := 8 + mrand.Intn(7)
 
 	frameSize := 65535
-	if m.ml.chunkAgent != nil {
-		rttMs := float64(atomic.LoadInt64(&m.qualityRTTEWMA)) / 1e6
-		upBytes := float64(atomic.LoadUint64(&m.bytesUp))
-		dnBytes := float64(atomic.LoadUint64(&m.bytesDown))
-		frameSize = m.ml.chunkAgent.Decide(neural.ChunkView{
-			RTTMs:      rttMs,
-			BytesUpSec: upBytes / 60.0,
-			BytesDnSec: dnBytes / 60.0,
-		})
-	}
 
 	recvBuf, streamBuf := muxBufferBudget()
 	return &mux.Config{
@@ -466,9 +455,7 @@ func New(cfg *Config) (*Manager, error) {
 		}
 	}
 
-	m.ml = newMLOrchestrator(m, cfg.SNIModelDir, !cfg.DisableNeural)
-
-	go m.runWeightSnapshotLoop()
+	m.ml = newMLOrchestrator(m)
 
 	if cfg.CustomSNI != "" {
 		if cfg.TransportConfig == nil {
@@ -587,10 +574,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	m.connMu.Unlock()
 
 	m.growRefused.Store(false)
-
-	for _, mc := range connectedPool {
-		neural.FlowRegistry.RegisterConn(mc.LocalAddr(), mc.RemoteAddr(), neural.FlowTunnel)
-	}
 
 	if !isRotation {
 		m.startKeepalive()
@@ -831,20 +814,41 @@ func (m *Manager) triggerReconnect() {
 	go m.Reconnect(m.Context())
 }
 
+func (m *Manager) waitForOngoingReconnect(ctx context.Context) error {
+	m.connMu.RLock()
+	done := m.reconnectDone
+	m.connMu.RUnlock()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return nil
+}
+
+func (m *Manager) applyTSPUCountermeasure(err error, dialLatency float64) {
+	if m.ml.tspuDetector == nil {
+		return
+	}
+	dialDur := time.Duration(dialLatency) * time.Millisecond
+	if strings.Contains(err.Error(), "reset") {
+		m.ml.tspuDetector.RecordRST(m.rotation.currentSNI, dialDur)
+	}
+	dpiType, conf := m.ml.tspuDetector.DetectTSPU()
+	if dpiType == neural.DPITypeNone || conf < 0.65 {
+		return
+	}
+	if cm := neural.TSPUCountermeasure(dpiType); cm != "" && cm != m.config.Transport {
+		m.config.Transport = cm
+	}
+}
+
 func (m *Manager) Reconnect(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if !atomic.CompareAndSwapInt32(&m.reconnecting, 0, 1) {
-		m.connMu.RLock()
-		done := m.reconnectDone
-		m.connMu.RUnlock()
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-		return nil
+		return m.waitForOngoingReconnect(ctx)
 	}
 
 	newDone := make(chan struct{})
@@ -852,7 +856,12 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	m.reconnectDone = newDone
 	m.connMu.Unlock()
 
+	originalTransport := m.config.Transport
+	transportFallbackActivated := false
 	defer func() {
+		if transportFallbackActivated {
+			m.config.Transport = originalTransport
+		}
 		close(newDone)
 		atomic.StoreInt32(&m.reconnecting, 0)
 	}()
@@ -866,8 +875,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	attempts := 0
 
 	const fallbackAfterAttempts = 3
-	originalTransport := m.config.Transport
-	transportFallbackActivated := false
 
 	m.lastGoodMu.RLock()
 	zeroRTTSNI := m.lastGoodSNI
@@ -880,9 +887,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 
 		select {
 		case <-ctx.Done():
-			if transportFallbackActivated {
-				m.config.Transport = originalTransport
-			}
 			return ctx.Err()
 		default:
 		}
@@ -891,9 +895,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			err := fmt.Errorf("max reconnect attempts exceeded")
 			m.circuitBreakerFail()
 			m.setError(err)
-			if transportFallbackActivated {
-				m.config.Transport = originalTransport
-			}
 			return err
 		}
 
@@ -926,58 +927,17 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		}
 		dialLatency := float64(time.Since(dialStart).Milliseconds())
 		if err == nil {
-			if m.ml.boAgent != nil {
-				m.ml.boAgent.RecordOutcome(true)
-			}
-			if m.ml.serverAgent != nil {
-				m.ml.serverAgent.RecordOutcome(true, dialLatency)
-			}
 			atomic.StoreInt32(&m.boFailCount, 0)
 			atomic.StoreInt64(&m.boLastSuccessAt, time.Now().Unix())
 			m.circuitBreakerSuccess()
-			if transportFallbackActivated {
-				m.config.Transport = originalTransport
-			}
 			return nil
 		}
 
-		if m.ml.tspuDetector != nil {
-			errStr := err.Error()
-			dialDur := time.Duration(dialLatency) * time.Millisecond
-			if strings.Contains(errStr, "reset") {
-				m.ml.tspuDetector.RecordRST(m.rotation.currentSNI, dialDur)
-			}
-			if dpiType, conf := m.ml.tspuDetector.DetectTSPU(); dpiType != neural.DPITypeNone && conf >= 0.65 {
-				if cm := neural.TSPUCountermeasure(dpiType); cm != "" && cm != m.config.Transport {
-					m.config.Transport = cm
-				}
-			}
-		}
-		failCount := atomic.AddInt32(&m.boFailCount, 1)
-		if m.ml.boAgent != nil {
-			m.ml.boAgent.RecordOutcome(false)
-		}
-		if m.ml.serverAgent != nil {
-			m.ml.serverAgent.RecordOutcome(false, dialLatency)
-		}
+		m.applyTSPUCountermeasure(err, dialLatency)
+		atomic.AddInt32(&m.boFailCount, 1)
 		m.circuitBreakerFail()
 
-		var backoffDelay time.Duration
-		if m.ml.boAgent != nil {
-			errStr := ""
-			lastSuc := atomic.LoadInt64(&m.boLastSuccessAt)
-			secSince := 0.0
-			if lastSuc > 0 {
-				secSince = float64(time.Now().Unix() - lastSuc)
-			}
-			backoffDelay = m.ml.boAgent.Decide(neural.BackoffView{
-				ConsecutiveFails:    int(failCount),
-				LastErrType:         neural.ClassifyBackoffErr(errStr),
-				TimeSinceSuccessSec: secSince,
-			})
-		} else {
-			backoffDelay = delay
-		}
+		backoffDelay := delay
 		delay = time.Duration(float64(delay) * 2)
 		if delay > m.config.ReconnectMaxDelay {
 			delay = m.config.ReconnectMaxDelay
@@ -988,9 +948,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 
 		select {
 		case <-ctx.Done():
-			if transportFallbackActivated {
-				m.config.Transport = originalTransport
-			}
 			return ctx.Err()
 		case <-time.After(backoffDelay):
 		}
@@ -1017,7 +974,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 	header := headerArr[:]
 	tlsDrainCount := 0
 	consecutiveGarbage := 0
-	const maxTLSDrain = 50
 
 	for {
 		select {
@@ -1027,115 +983,11 @@ func (m *Manager) readLoop(mc *managedConn) {
 		}
 
 		if !m.isTransportSecure || m.connCfg.ForceObfuscation() != 0 {
-			peek, err := reader.Peek(5)
-			if err != nil {
-				m.handleReadError(mc, err)
+			consumed, closed := m.drainObfuscatedPrefix(reader, mc, &tlsDrainCount, &consecutiveGarbage)
+			if closed {
 				return
 			}
-
-			if tlsDrainCount < maxTLSDrain && peek[0] >= 0x14 && peek[0] <= 0x17 && peek[1] <= 0x04 {
-				tlsLen := int(peek[3])<<8 | int(peek[4])
-
-				if _, err := reader.Discard(5); err != nil {
-					m.handleReadError(mc, err)
-					return
-				}
-
-				if tlsLen > 0 {
-					isWrappedFrame := false
-
-					if peek[0] == 0x17 {
-						tlsPayload := make([]byte, tlsLen)
-						if _, err := io.ReadFull(reader, tlsPayload); err != nil {
-							m.handleReadError(mc, err)
-							return
-						}
-
-						processBuf := tlsPayload
-						for layer := 0; layer < 5; layer++ {
-							if len(processBuf) >= FrameHeaderSize {
-								pLen := binary.BigEndian.Uint32(processBuf[4:8])
-								fType := processBuf[2]
-
-								if fType <= 0x0A && int(pLen) <= 65535 && FrameHeaderSize+int(pLen) <= len(processBuf) {
-									isWrappedFrame = true
-
-									offset := 0
-									for offset+FrameHeaderSize <= len(processBuf) {
-										if offset+FrameHeaderSize > len(processBuf) {
-											break
-										}
-
-										pLen := binary.BigEndian.Uint32(processBuf[offset+4 : offset+8])
-										fType := processBuf[offset+2]
-										frameTotal := FrameHeaderSize + int(pLen)
-
-										if fType > 0x0A || offset+frameTotal > len(processBuf) {
-											break
-										}
-
-										if fType == 0x00 {
-											offset += frameTotal
-											continue
-										}
-
-										frameData := processBuf[offset : offset+frameTotal]
-
-										m.UpdateActivity()
-
-										b := buf.NewSize(len(frameData))
-										b.Write(frameData)
-										select {
-										case m.readCh <- b:
-											atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
-										case <-mc.closing:
-											b.Release()
-											return
-										}
-
-										offset += frameTotal
-									}
-
-									tlsDrainCount = 0
-									break
-								}
-							}
-
-							if len(processBuf) > 5 && processBuf[0] == 0x17 && processBuf[1] == 0x03 {
-								innerLen := int(processBuf[3])<<8 | int(processBuf[4])
-								if innerLen+5 <= len(processBuf) {
-									processBuf = processBuf[5 : 5+innerLen]
-									continue
-								}
-							}
-						}
-
-						if isWrappedFrame {
-							consecutiveGarbage = 0
-							continue
-						}
-					}
-
-					if !isWrappedFrame && peek[0] != 0x17 {
-						if tlsLen > 65535 {
-							tlsLen = 65535
-						}
-						if _, err := io.CopyN(io.Discard, reader, int64(tlsLen)); err != nil {
-							m.handleReadError(mc, err)
-							return
-						}
-					}
-
-					if !isWrappedFrame {
-						consecutiveGarbage++
-						if consecutiveGarbage > 20 {
-							m.handleReadError(mc, fmt.Errorf("too much garbage data (%d packets)", consecutiveGarbage))
-							return
-						}
-					}
-				}
-
-				tlsDrainCount++
+			if consumed {
 				continue
 			}
 		}
@@ -1150,51 +1002,11 @@ func (m *Manager) readLoop(mc *managedConn) {
 		payloadLen := binary.BigEndian.Uint32(header[4:8])
 
 		if payloadLen > 131072 {
-			foundOffset := -1
-			for i := 1; i <= FrameHeaderSize-3; i++ {
-				if header[i] >= 0x14 && header[i] <= 0x17 && header[i+1] == 0x03 && header[i+2] <= 0x04 {
-					foundOffset = i
-					break
-				}
-			}
-
-			if foundOffset != -1 {
-				tlsHeader := make([]byte, 5)
-				available := FrameHeaderSize - foundOffset
-				copy(tlsHeader, header[foundOffset:])
-
-				if available < 5 {
-					if _, err := io.ReadFull(reader, tlsHeader[available:]); err != nil {
-						m.handleReadError(mc, err)
-						return
-					}
-				}
-				tlsLen := int(tlsHeader[3])<<8 | int(tlsHeader[4])
-
-				payloadBytesInHeader := FrameHeaderSize - (foundOffset + 5)
-				if payloadBytesInHeader < 0 {
-					payloadBytesInHeader = 0
-				}
-
-				remainingToDrain := tlsLen - payloadBytesInHeader
-
-				if remainingToDrain > 0 {
-					if remainingToDrain > 65535 {
-						remainingToDrain = 65535
-					}
-					if _, err := io.CopyN(io.Discard, reader, int64(remainingToDrain)); err != nil {
-						m.handleReadError(mc, err)
-						return
-					}
-				}
-
-				tlsDrainCount++
-				continue
-			} else {
-				log.Error("RESYNC failed: No embedded TLS header found. Closing connection.")
-				m.handleReadError(mc, fmt.Errorf("resync failed: no embedded TLS header found"))
+			if !m.resyncOversizedFrame(reader, mc, header) {
 				return
 			}
+			tlsDrainCount++
+			continue
 		}
 
 		needed := FrameHeaderSize + int(payloadLen)
@@ -1211,62 +1023,221 @@ func (m *Manager) readLoop(mc *managedConn) {
 			}
 		}
 
-		if len(frameData) >= 3 && frameData[2] == 0x07 {
-			now := time.Now()
-			atomic.StoreInt64(&m.lastPong, now.UnixNano())
-			var rttMs float64
-			if ka := atomic.LoadInt64(&m.lastKeepalive); ka != 0 {
-				rtt := now.Sub(time.Unix(0, ka))
-				m.updateQualityRTT(rtt)
-				rttMs = float64(rtt.Milliseconds())
-			}
-			atomic.StoreInt32(&m.missedKAs, 0)
-			if m.ml.kaAgent != nil || m.ml.jitterAgent != nil {
-				quality := math.Max(0, 1.0-rttMs/500.0)
-				if m.ml.kaAgent != nil {
-					m.ml.kaAgent.RecordOutcome(quality)
-				}
-				if m.ml.jitterAgent != nil {
-					m.ml.jitterAgent.RecordOutcome(quality)
-				}
-			}
-			b.Release()
-			continue
-		}
-
-		if len(frameData) >= 3 && frameData[2] == FrameTypeRekey {
-			atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
-			b.Release()
-			continue
-		}
-
-		atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
-
-		streamID := binary.BigEndian.Uint16(frameData[0:2])
-
-		ch, exists := m.streamLoad(streamID)
-
-		if exists {
-			select {
-			case ch <- b:
-				atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
-				m.feedScale(len(frameData))
-				m.UpdateActivity()
-			default:
-				b.Release()
-			}
-		} else {
-			select {
-			case m.readCh <- b:
-				atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
-				m.feedScale(len(frameData))
-				m.UpdateActivity()
-			case <-mc.closing:
-				b.Release()
-				return
-			}
+		if m.dispatchFrame(mc, b, frameData) {
+			return
 		}
 	}
+}
+
+const maxTLSDrain = 50
+
+func (m *Manager) drainObfuscatedPrefix(reader *bufio.Reader, mc *managedConn, tlsDrainCount, consecutiveGarbage *int) (consumed, closed bool) {
+	peek, err := reader.Peek(5)
+	if err != nil {
+		m.handleReadError(mc, err)
+		return false, true
+	}
+
+	if !(*tlsDrainCount < maxTLSDrain && peek[0] >= 0x14 && peek[0] <= 0x17 && peek[1] <= 0x04) {
+		return false, false
+	}
+
+	tlsLen := int(peek[3])<<8 | int(peek[4])
+	if _, err := reader.Discard(5); err != nil {
+		m.handleReadError(mc, err)
+		return false, true
+	}
+
+	if tlsLen > 0 {
+		wrapped, recClosed := m.drainTLSRecord(reader, mc, peek, tlsLen, consecutiveGarbage)
+		if recClosed {
+			return false, true
+		}
+		if wrapped {
+			*tlsDrainCount = 0
+			*consecutiveGarbage = 0
+			return true, false
+		}
+	}
+
+	*tlsDrainCount++
+	return true, false
+}
+
+func (m *Manager) drainTLSRecord(reader *bufio.Reader, mc *managedConn, peek []byte, tlsLen int, consecutiveGarbage *int) (wrapped, closed bool) {
+	if peek[0] == 0x17 {
+		tlsPayload := make([]byte, tlsLen)
+		if _, err := io.ReadFull(reader, tlsPayload); err != nil {
+			m.handleReadError(mc, err)
+			return false, true
+		}
+		w, recClosed := m.extractWrappedFrames(mc, tlsPayload)
+		if recClosed {
+			return false, true
+		}
+		if w {
+			return true, false
+		}
+	} else {
+		if tlsLen > 65535 {
+			tlsLen = 65535
+		}
+		if _, err := io.CopyN(io.Discard, reader, int64(tlsLen)); err != nil {
+			m.handleReadError(mc, err)
+			return false, true
+		}
+	}
+
+	*consecutiveGarbage++
+	if *consecutiveGarbage > 20 {
+		m.handleReadError(mc, fmt.Errorf("too much garbage data (%d packets)", *consecutiveGarbage))
+		return false, true
+	}
+	return false, false
+}
+
+func (m *Manager) extractWrappedFrames(mc *managedConn, processBuf []byte) (wrapped, closed bool) {
+	for layer := 0; layer < 5; layer++ {
+		if len(processBuf) >= FrameHeaderSize {
+			pLen := binary.BigEndian.Uint32(processBuf[4:8])
+			fType := processBuf[2]
+			if fType <= 0x0A && int(pLen) <= 65535 && FrameHeaderSize+int(pLen) <= len(processBuf) {
+				return true, m.pushWrappedFrames(mc, processBuf)
+			}
+		}
+
+		if len(processBuf) > 5 && processBuf[0] == 0x17 && processBuf[1] == 0x03 {
+			innerLen := int(processBuf[3])<<8 | int(processBuf[4])
+			if innerLen+5 <= len(processBuf) {
+				processBuf = processBuf[5 : 5+innerLen]
+				continue
+			}
+		}
+		break
+	}
+	return false, false
+}
+
+func (m *Manager) pushWrappedFrames(mc *managedConn, processBuf []byte) (closed bool) {
+	offset := 0
+	for offset+FrameHeaderSize <= len(processBuf) {
+		pLen := binary.BigEndian.Uint32(processBuf[offset+4 : offset+8])
+		fType := processBuf[offset+2]
+		frameTotal := FrameHeaderSize + int(pLen)
+
+		if fType > 0x0A || offset+frameTotal > len(processBuf) {
+			break
+		}
+		if fType == 0x00 {
+			offset += frameTotal
+			continue
+		}
+
+		frameData := processBuf[offset : offset+frameTotal]
+		m.UpdateActivity()
+
+		b := buf.NewSize(len(frameData))
+		b.Write(frameData)
+		select {
+		case m.readCh <- b:
+			atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
+		case <-mc.closing:
+			b.Release()
+			return true
+		}
+
+		offset += frameTotal
+	}
+	return false
+}
+
+func (m *Manager) resyncOversizedFrame(reader *bufio.Reader, mc *managedConn, header []byte) bool {
+	foundOffset := -1
+	for i := 1; i <= FrameHeaderSize-3; i++ {
+		if header[i] >= 0x14 && header[i] <= 0x17 && header[i+1] == 0x03 && header[i+2] <= 0x04 {
+			foundOffset = i
+			break
+		}
+	}
+	if foundOffset == -1 {
+		log.Error("RESYNC failed: No embedded TLS header found. Closing connection.")
+		m.handleReadError(mc, fmt.Errorf("resync failed: no embedded TLS header found"))
+		return false
+	}
+
+	tlsHeader := make([]byte, 5)
+	available := FrameHeaderSize - foundOffset
+	copy(tlsHeader, header[foundOffset:])
+	if available < 5 {
+		if _, err := io.ReadFull(reader, tlsHeader[available:]); err != nil {
+			m.handleReadError(mc, err)
+			return false
+		}
+	}
+	tlsLen := int(tlsHeader[3])<<8 | int(tlsHeader[4])
+
+	payloadBytesInHeader := FrameHeaderSize - (foundOffset + 5)
+	if payloadBytesInHeader < 0 {
+		payloadBytesInHeader = 0
+	}
+	remainingToDrain := tlsLen - payloadBytesInHeader
+	if remainingToDrain <= 0 {
+		return true
+	}
+	if remainingToDrain > 65535 {
+		remainingToDrain = 65535
+	}
+	if _, err := io.CopyN(io.Discard, reader, int64(remainingToDrain)); err != nil {
+		m.handleReadError(mc, err)
+		return false
+	}
+	return true
+}
+
+func (m *Manager) dispatchFrame(mc *managedConn, b *buf.Buffer, frameData []byte) bool {
+	if len(frameData) >= 3 && frameData[2] == 0x07 {
+		now := time.Now()
+		atomic.StoreInt64(&m.lastPong, now.UnixNano())
+		if ka := atomic.LoadInt64(&m.lastKeepalive); ka != 0 {
+			m.updateQualityRTT(now.Sub(time.Unix(0, ka)))
+		}
+		atomic.StoreInt32(&m.missedKAs, 0)
+		b.Release()
+		return false
+	}
+
+	if len(frameData) >= 3 && frameData[2] == FrameTypeRekey {
+		atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
+		b.Release()
+		return false
+	}
+
+	atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
+
+	streamID := binary.BigEndian.Uint16(frameData[0:2])
+	ch, exists := m.streamLoad(streamID)
+	if exists {
+		select {
+		case ch <- b:
+			atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
+			m.feedScale(len(frameData))
+			m.UpdateActivity()
+		default:
+			b.Release()
+		}
+		return false
+	}
+
+	select {
+	case m.readCh <- b:
+		atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
+		m.feedScale(len(frameData))
+		m.UpdateActivity()
+	case <-mc.closing:
+		b.Release()
+		return true
+	}
+	return false
 }
 
 func (m *Manager) handleReadError(mc *managedConn, err error) {
@@ -1314,7 +1285,7 @@ func (m *Manager) Receive(dst []byte) (int, error) {
 	return n, nil
 }
 
-func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
+func (m *Manager) waitForActivePool(ctx context.Context) ([]*managedConn, error) {
 	for {
 		m.connMu.RLock()
 		pool := m.activePool
@@ -1324,11 +1295,9 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		if len(pool) > 0 {
 			break
 		}
-
 		if atomic.LoadInt32(&m.reconnecting) == 0 {
 			return nil, fmt.Errorf("not connected")
 		}
-
 		select {
 		case <-done:
 		case <-ctx.Done():
@@ -1339,64 +1308,75 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 	m.connMu.RLock()
 	pool := m.activePool
 	m.connMu.RUnlock()
-
 	if len(pool) == 0 {
 		return nil, fmt.Errorf("not connected")
 	}
+	return pool, nil
+}
 
-	var sess *mux.Session
-	var onClose func()
-	var mcForFail *managedConn
+func (m *Manager) pickSession(ctx context.Context, proto byte, pool []*managedConn) (*mux.Session, func(), *managedConn) {
 	if proto == protoUDP && m.config.EnableWhispera {
 		if gs, gerr := m.rtSession(ctx); gerr == nil {
-			sess, onClose = gs, m.rtStreamClosed
+			return gs, m.rtStreamClosed, nil
 		}
 	}
-	if sess == nil {
-		healthy := m.healthyPool(pool)
-		if len(healthy) == 0 {
-			healthy = pool
-		}
-		mc := healthy[0]
-		if len(healthy) > 1 {
-			minStreams := mc.session.NumStreams()
-			for i := 1; i < len(healthy); i++ {
-				n := healthy[i].session.NumStreams()
-				if n < minStreams {
-					minStreams = n
-					mc = healthy[i]
-				}
-			}
-		}
-		sess = mc.session
-		mcForFail = mc
 
-		if m.config.EnableWhispera && len(pool) < whisperaPoolCap() {
-			active := 1
-			for _, c := range pool {
-				if c != nil && c.session != nil {
-					active += c.session.NumStreams()
-				}
+	healthy := m.healthyPool(pool)
+	if len(healthy) == 0 {
+		healthy = pool
+	}
+	mc := healthy[0]
+	if len(healthy) > 1 {
+		minStreams := mc.session.NumStreams()
+		for i := 1; i < len(healthy); i++ {
+			n := healthy[i].session.NumStreams()
+			if n < minStreams {
+				minStreams = n
+				mc = healthy[i]
 			}
-			m.maybeGrowPool(active)
-		}
-
-		const openStreamFreshnessWindow = 5 * time.Second
-		const openStreamProbeTimeout = 3 * time.Second
-		lastPong := atomic.LoadInt64(&m.lastPong)
-		if lastPong == 0 || time.Since(time.Unix(0, lastPong)) > openStreamFreshnessWindow {
-			probeMC := mc
-			safeGo("openStreamProbe", func() {
-				if m.keepalive.probeNow(openStreamProbeTimeout) {
-					return
-				}
-				if time.Since(m.LastActivity()) < recentActivityWindow {
-					return
-				}
-				m.forceReconnectFromStreamFailure(probeMC, "liveness probe timed out")
-			})
 		}
 	}
+
+	if m.config.EnableWhispera && len(pool) < whisperaPoolCap() {
+		active := 1
+		for _, c := range pool {
+			if c != nil && c.session != nil {
+				active += c.session.NumStreams()
+			}
+		}
+		m.maybeGrowPool(active)
+	}
+
+	m.maybeProbeLiveness(mc)
+	return mc.session, nil, mc
+}
+
+func (m *Manager) maybeProbeLiveness(mc *managedConn) {
+	const openStreamFreshnessWindow = 5 * time.Second
+	const openStreamProbeTimeout = 3 * time.Second
+	lastPong := atomic.LoadInt64(&m.lastPong)
+	if lastPong != 0 && time.Since(time.Unix(0, lastPong)) <= openStreamFreshnessWindow {
+		return
+	}
+	probeMC := mc
+	safeGo("openStreamProbe", func() {
+		if m.keepalive.probeNow(openStreamProbeTimeout) {
+			return
+		}
+		if time.Since(m.LastActivity()) < recentActivityWindow {
+			return
+		}
+		m.forceReconnectFromStreamFailure(probeMC, "liveness probe timed out")
+	})
+}
+
+func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
+	pool, err := m.waitForActivePool(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sess, onClose, mcForFail := m.pickSession(ctx, proto, pool)
 
 	stream, err := sess.OpenStream()
 	if err != nil {
@@ -1515,20 +1495,10 @@ func (c *ackStripConn) Close() error {
 }
 
 func (m *Manager) Send(data []byte) error {
-	if len(data) > 0 {
-		neural.GlobalFlowObserver.RecordPacket(len(data))
-	}
-	if limitKB := m.connCfg.rateLimitKB.Load(); limitKB > 0 && len(data) > 0 {
-		limitBPS := int64(limitKB) * 1024
-		sleepNs := int64(len(data)) * int64(time.Second) / limitBPS
-		if sleepNs > 0 {
-			time.Sleep(time.Duration(sleepNs))
-		}
-	}
+	m.applyRateLimit(len(data))
 
 	var streamID uint16
 	var frameType uint8
-
 	if len(data) >= 8 {
 		streamID = binary.BigEndian.Uint16(data[0:2])
 		frameType = data[2]
@@ -1549,44 +1519,8 @@ func (m *Manager) Send(data []byte) error {
 
 	const maxRetries = 10
 	var lastErr error
-
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		var targetConn *managedConn
-
-		var conn *managedConn
-		if frameType == FrameTypeConnect || frameType == FrameTypeClose {
-			m.connMu.Lock()
-			targetConn = m.activeConn
-			if frameType == FrameTypeConnect {
-				if len(m.activePool) > 0 {
-					idx := streamID % uint16(len(m.activePool))
-					selected := m.activePool[idx]
-					if selected != nil {
-						m.streamConns[streamID] = selected
-						targetConn = selected
-					} else {
-						m.streamConns[streamID] = m.activeConn
-					}
-				} else if m.activeConn != nil {
-					m.streamConns[streamID] = m.activeConn
-				}
-			} else {
-				if c, ok := m.streamConns[streamID]; ok {
-					targetConn = c
-				}
-				delete(m.streamConns, streamID)
-			}
-			conn = targetConn
-			m.connMu.Unlock()
-		} else {
-			m.connMu.RLock()
-			if c, ok := m.streamConns[streamID]; ok {
-				conn = c
-			} else {
-				conn = m.activeConn
-			}
-			m.connMu.RUnlock()
-		}
+		conn := m.selectSendConn(streamID, frameType)
 
 		if conn == nil {
 			state := m.GetState()
@@ -1594,8 +1528,7 @@ func (m *Manager) Send(data []byte) error {
 				if frameType == FrameTypeData {
 					return fmt.Errorf("not connected")
 				}
-				delay := m.getReconnectDelay()
-				time.Sleep(delay)
+				time.Sleep(m.getReconnectDelay())
 				continue
 			}
 			return fmt.Errorf("not connected")
@@ -1604,25 +1537,9 @@ func (m *Manager) Send(data []byte) error {
 		n, err := conn.Write(data)
 		if err != nil {
 			lastErr = err
-
-			isClosed := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || isConnResetOrBroken(err)
-
-			if isClosed {
-				if frameType == FrameTypeData {
-					return err
-				}
-
-				state := m.GetState()
-
-				if state == StateConnected {
-					m.handleReadError(conn, err)
-				}
-
-				state = m.GetState()
-				if state == StateReconnecting || state == StateRotating || state == StateConnecting {
-					time.Sleep(500 * time.Millisecond)
-					continue
-				}
+			if m.shouldRetrySend(conn, err, frameType) {
+				time.Sleep(500 * time.Millisecond)
+				continue
 			}
 			return err
 		}
@@ -1634,6 +1551,67 @@ func (m *Manager) Send(data []byte) error {
 	}
 
 	return fmt.Errorf("send failed after %d retries: %w", maxRetries, lastErr)
+}
+
+func (m *Manager) applyRateLimit(dataLen int) {
+	limitKB := m.connCfg.rateLimitKB.Load()
+	if limitKB <= 0 || dataLen <= 0 {
+		return
+	}
+	limitBPS := int64(limitKB) * 1024
+	sleepNs := int64(dataLen) * int64(time.Second) / limitBPS
+	if sleepNs > 0 {
+		time.Sleep(time.Duration(sleepNs))
+	}
+}
+
+func (m *Manager) selectSendConn(streamID uint16, frameType uint8) *managedConn {
+	if frameType != FrameTypeConnect && frameType != FrameTypeClose {
+		m.connMu.RLock()
+		defer m.connMu.RUnlock()
+		if c, ok := m.streamConns[streamID]; ok {
+			return c
+		}
+		return m.activeConn
+	}
+
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+
+	if frameType == FrameTypeClose {
+		targetConn := m.activeConn
+		if c, ok := m.streamConns[streamID]; ok {
+			targetConn = c
+		}
+		delete(m.streamConns, streamID)
+		return targetConn
+	}
+
+	if len(m.activePool) > 0 {
+		idx := streamID % uint16(len(m.activePool))
+		if selected := m.activePool[idx]; selected != nil {
+			m.streamConns[streamID] = selected
+			return selected
+		}
+		m.streamConns[streamID] = m.activeConn
+		return m.activeConn
+	}
+	if m.activeConn != nil {
+		m.streamConns[streamID] = m.activeConn
+	}
+	return m.activeConn
+}
+
+func (m *Manager) shouldRetrySend(conn *managedConn, err error, frameType uint8) bool {
+	isClosed := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || isConnResetOrBroken(err)
+	if !isClosed || frameType == FrameTypeData {
+		return false
+	}
+	if m.GetState() == StateConnected {
+		m.handleReadError(conn, err)
+	}
+	state := m.GetState()
+	return state == StateReconnecting || state == StateRotating || state == StateConnecting
 }
 
 func (m *Manager) monitorDrainingConn(mc *managedConn) {

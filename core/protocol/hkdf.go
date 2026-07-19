@@ -87,6 +87,11 @@ func (ws *WindowScheduler) currentIndexLocked(now time.Time) int {
 	}
 }
 
+const (
+	segMinSize  = 3 * 1024 * 1024
+	segSpanSize = 3 * 1024 * 1024
+)
+
 func DeriveSegmentSize(behaviorKey []byte, segIdx uint64) int {
 	r := hkdf.New(sha256.New, behaviorKey, nil,
 		[]byte(fmt.Sprintf("whispera-seg-size-v1-%d", segIdx)))
@@ -95,10 +100,10 @@ func DeriveSegmentSize(behaviorKey []byte, segIdx uint64) int {
 		panic("whispera seg size: " + err.Error())
 	}
 	v := binary.LittleEndian.Uint32(b[:])
-	const minSeg = 3 * 1024 * 1024
-	const spanSeg = 3 * 1024 * 1024
-	return minSeg + int(v)%spanSeg
+	return segMinSize + int(v)%segSpanSize
 }
+
+func MaxSegmentSize() int { return segMinSize + segSpanSize }
 
 func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte) BehaviorParams {
 	info := fmt.Sprintf("whispera-behavior-v1-%d", windowIndex)

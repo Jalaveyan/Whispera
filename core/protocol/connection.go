@@ -22,7 +22,7 @@ type FrameConn struct {
 	net.Conn
 	writeCh    chan *frameReq
 	closed     chan struct{}
-	writerDone chan struct{} // closed when writer() has fully exited
+	writerDone chan struct{}
 	closeOnce  sync.Once
 	buf        []byte
 	recvBuf    []byte
@@ -341,49 +341,11 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 			return n, nil
 		}
 
-		var hdr [4]byte
-		if n, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
-			if n == 0 && err == io.EOF {
-				traceLog.Infow("frameconn_closed",
-					"phase", "len_header",
-					"remote", connRemote(fc.Conn),
-				)
-			} else {
-				traceLog.Warnw("frameconn_read_err",
-					"phase", "len_header",
-					"got", n,
-					"want", 4,
-					"remote", connRemote(fc.Conn),
-					"err", err.Error(),
-					"err_type", fmt.Sprintf("%T", err),
-				)
-			}
+		frameLen, err := fc.readFrameLen()
+		if err != nil {
 			return 0, err
 		}
-		frameLen := binary.BigEndian.Uint32(hdr[:])
-		if frameLen == 0 || frameLen > uint32(maxFrameSize) {
-			traceLog.Warnw("frameconn_bad_len",
-				"frame_len", frameLen,
-				"header", fmt.Sprintf("%x", hdr),
-				"remote", connRemote(fc.Conn),
-			)
-			return 0, fmt.Errorf("whispera: bad frame len %d", frameLen)
-		}
-
-		if uint32(cap(fc.recvBuf)) < frameLen {
-			fc.recvBuf = make([]byte, frameLen)
-		} else {
-			fc.recvBuf = fc.recvBuf[:frameLen]
-		}
-		if n, err := io.ReadFull(fc.Conn, fc.recvBuf); err != nil {
-			traceLog.Warnw("frameconn_read_err",
-				"phase", "body",
-				"got", n,
-				"want", frameLen,
-				"remote", connRemote(fc.Conn),
-				"err", err.Error(),
-				"err_type", fmt.Sprintf("%T", err),
-			)
+		if err := fc.readFrameBody(frameLen); err != nil {
 			return 0, err
 		}
 
@@ -391,22 +353,77 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 		if pt[0] == framePadding {
 			continue
 		}
-
 		pt = pt[1:]
 		if len(pt) == 0 {
 			continue
 		}
+
 		n := copy(b, pt)
 		if n < len(pt) {
-			leftover := pt[n:]
-			if cap(fc.buf) < len(leftover) {
-				fc.buf = make([]byte, len(leftover))
-			} else {
-				fc.buf = fc.buf[:len(leftover)]
-			}
-			copy(fc.buf, leftover)
+			fc.stashLeftover(pt[n:])
 		}
 		atomic.AddUint64(&fc.bytesRecent, uint64(len(pt)))
 		return n, nil
 	}
+}
+
+func (fc *FrameConn) readFrameLen() (uint32, error) {
+	var hdr [4]byte
+	if n, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
+		if n == 0 && err == io.EOF {
+			traceLog.Infow("frameconn_closed",
+				"phase", "len_header",
+				"remote", connRemote(fc.Conn),
+			)
+		} else {
+			traceLog.Warnw("frameconn_read_err",
+				"phase", "len_header",
+				"got", n,
+				"want", 4,
+				"remote", connRemote(fc.Conn),
+				"err", err.Error(),
+				"err_type", fmt.Sprintf("%T", err),
+			)
+		}
+		return 0, err
+	}
+	frameLen := binary.BigEndian.Uint32(hdr[:])
+	if frameLen == 0 || frameLen > uint32(maxFrameSize) {
+		traceLog.Warnw("frameconn_bad_len",
+			"frame_len", frameLen,
+			"header", fmt.Sprintf("%x", hdr),
+			"remote", connRemote(fc.Conn),
+		)
+		return 0, fmt.Errorf("whispera: bad frame len %d", frameLen)
+	}
+	return frameLen, nil
+}
+
+func (fc *FrameConn) readFrameBody(frameLen uint32) error {
+	if uint32(cap(fc.recvBuf)) < frameLen {
+		fc.recvBuf = make([]byte, frameLen)
+	} else {
+		fc.recvBuf = fc.recvBuf[:frameLen]
+	}
+	if n, err := io.ReadFull(fc.Conn, fc.recvBuf); err != nil {
+		traceLog.Warnw("frameconn_read_err",
+			"phase", "body",
+			"got", n,
+			"want", frameLen,
+			"remote", connRemote(fc.Conn),
+			"err", err.Error(),
+			"err_type", fmt.Sprintf("%T", err),
+		)
+		return err
+	}
+	return nil
+}
+
+func (fc *FrameConn) stashLeftover(leftover []byte) {
+	if cap(fc.buf) < len(leftover) {
+		fc.buf = make([]byte, len(leftover))
+	} else {
+		fc.buf = fc.buf[:len(leftover)]
+	}
+	copy(fc.buf, leftover)
 }

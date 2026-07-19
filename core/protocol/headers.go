@@ -56,15 +56,12 @@ var acceptLanguages = []string{
 	"ar-SA,ar;q=0.9,en;q=0.8",
 }
 
-// browserKind is the HTTP header dialect a fingerprint must speak so the
-// HTTP layer never contradicts the TLS ClientHello (e.g. Firefox JA3 +
-// Chrome User-Agent + Chromium client hints is a dead giveaway).
 type browserKind int
 
 const (
-	kindChromium browserKind = iota // Chrome, Edge, Android Chrome
+	kindChromium browserKind = iota
 	kindFirefox
-	kindSafari // desktop Safari + iOS
+	kindSafari
 )
 
 func uaForFingerprint(id utls.ClientHelloID) string {
@@ -93,13 +90,10 @@ func kindForFingerprint(id utls.ClientHelloID) browserKind {
 	case strings.Contains(client, "ios"), strings.Contains(client, "safari"):
 		return kindSafari
 	default:
-		return kindChromium // Chrome/Edge/Android + harvested HelloCustom
+		return kindChromium
 	}
 }
 
-// browserProfile is a coherent UA + header set chosen ONCE per session and
-// reused for every request, the way a real browser keeps one identity for the
-// life of a connection (picking a fresh UA per request is itself a signature).
 type browserProfile struct {
 	ua         string
 	lang       string
@@ -127,14 +121,12 @@ func (p browserProfile) apply(req *http.Request, origin string) {
 	req.Header.Set("Accept-Language", p.lang)
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 
-	// Client hints are a Chromium-only signal; emit them only for Chromium UAs.
 	if p.kind == kindChromium {
 		req.Header.Set("sec-ch-ua", p.chBrands)
 		req.Header.Set("sec-ch-ua-mobile", p.chMobile)
 		req.Header.Set("sec-ch-ua-platform", p.chPlatform)
 	}
 
-	// Sec-Fetch metadata is sent by Chromium and Firefox, not by Safari.
 	if p.kind != kindSafari {
 		req.Header.Set("Sec-Fetch-Dest", "empty")
 		req.Header.Set("Sec-Fetch-Mode", "cors")
@@ -145,8 +137,6 @@ func (p browserProfile) apply(req *http.Request, origin string) {
 	req.Header.Set("Referer", origin+"/")
 }
 
-// chromiumClientHints builds sec-ch-ua headers whose version and platform match
-// the chosen UA, so the low-entropy hints don't contradict the UA string.
 func chromiumClientHints(ua string) (brands, mobile, platform string) {
 	major := chromeMajor(ua)
 	if strings.Contains(ua, "Edg/") {

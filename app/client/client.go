@@ -2,9 +2,7 @@ package client
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"github.com/nekoskin/whispera/app/auth"
 	"github.com/nekoskin/whispera/common/dns"
@@ -20,12 +18,10 @@ import (
 	"github.com/nekoskin/whispera/core/session"
 	"github.com/nekoskin/whispera/core/socks5"
 	"github.com/nekoskin/whispera/core/tunnel"
-	"github.com/nekoskin/whispera/neural"
 	"io"
 	stdlog "log"
 	mrand "math/rand"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -80,7 +76,6 @@ var (
 	regionFlag       = flag.String("region", "", "Preferred server region: auto|ru|eu|us|cn (overrides config)")
 	subURL           = flag.String("sub-url", "", "Subscription URL for automatic key refresh (checked every 24h)")
 	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
-	weightsURL       = flag.String("weights-url", "", "Server weights URL for warm-start (e.g. https://server:8080/api/ml/weights)")
 	bypassDNS        = flag.String("bypass-dns", "77.88.8.8:53", "DNS server used for bypass resolver (never goes through tunnel)")
 	hwidFlag         = flag.Bool("hwid", true, "Send a persistent per-device ID in the handshake (false = random ID per connection)")
 	forceFingerprint = flag.String("force-fingerprint", "", "Force a specific TLS fingerprint for the main tunnel handshake: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge. Empty = auto/random (default)")
@@ -401,6 +396,79 @@ func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
 	}
 }
 
+func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver) {
+	dnsUpstreamAddr := ""
+	if *dnsUpstream != "" && !strings.EqualFold(*dnsUpstream, "system") {
+		dnsUpstreamAddr = *dnsUpstream
+	}
+	bypassDNSResolver := newBypassDNSResolver()
+	stm := setupSplitTunnel(cfg, bypassDNSResolver)
+
+	socksMod, _ := socks5.New(&socks5.Config{
+		ListenAddr:    *socksAddr,
+		Debug:         true,
+		VPNServerAddr: cfg.Server,
+		MTU:           cfg.MTU,
+		BypassFunc:    stm.ShouldBypass,
+		BlockTorrents: true,
+	})
+	generateSocksAuth()
+	socksMod.SetAuthHandler(socksUser, socksPass)
+	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
+	protocol.SetHarvestDir(filepath.Join(mlDefaultDataDir(), "fingerprints"))
+	socks5.HarvestHook = func(b []byte) { _ = protocol.HarvestRawClientHello(b) }
+
+	dnsMod, _ := dns.New(&dns.Config{
+		Upstream:       dnsUpstreamAddr,
+		CacheEnabled:   true,
+		BypassFunc:     stm.ShouldBypassByHostname,
+		BypassResolver: bypassDNSResolver,
+	})
+	return socksMod, dnsMod
+}
+
+func setupCoreModules() (*handshake.Handler, *crypto.Provider) {
+	cryptoMod, _ := crypto.New(nil)
+	sessMod, _ := session.New(&session.Config{MaxSessions: 10})
+	hsMod, _ := handshake.New(&handshake.Config{
+		RateLimit: 100,
+		RateBurst: 50,
+		Timeout:   10 * time.Second,
+	})
+	hsMod.SetDependencies(cryptoMod, sessMod)
+
+	if !*hwidFlag {
+		stdlog.Printf("HWID disabled: using a random per-connection ID")
+		return hsMod, cryptoMod
+	}
+	if deviceID, err := auth.LoadOrCreateDeviceID(); err == nil {
+		hsMod.SetDeviceID(deviceID)
+		stdlog.Printf("Device ID: %x", deviceID[:8])
+	} else {
+		stdlog.Printf("WARNING: Could not load/create device ID: %v", err)
+	}
+	return hsMod, cryptoMod
+}
+
+func whisperaOptions(cfg *config.ClientConfig, whisperaSecret []byte) tunnel.WhisperaOptions {
+	return tunnel.WhisperaOptions{
+		EnableWhispera:   len(whisperaSecret) == 32,
+		WhisperaSecret:   whisperaSecret,
+		WhisperaAddr:     cfg.WhisperaAddr,
+		WhisperaSNI:      cfg.WhisperaSNI,
+		WhisperaQUICAddr: cfg.WhisperaQUICAddr,
+		WhisperaCertPin:  cfg.WhisperaCertPin,
+		WhisperaIDPub:    cfg.WhisperaIDPub,
+		EnableGRPC:       cfg.GRPCAddr != "",
+		GRPCAddr:         cfg.GRPCAddr,
+		GRPCServerName:   cfg.GRPCServerName,
+		GRPCUseTLS:       cfg.GRPCUseTLS,
+		EnableYaDisk:     cfg.YaDiskOAuthToken != "",
+		YaDiskOAuthToken: cfg.YaDiskOAuthToken,
+		YaDiskSessionID:  cfg.YaDiskSessionID,
+	}
+}
+
 func RunMain() {
 	if !mobileMode {
 		debug.SetGCPercent(100)
@@ -410,10 +478,6 @@ func RunMain() {
 
 	if *forceFingerprint != "" {
 		protocol.SetForcedFingerprint(*forceFingerprint)
-	}
-
-	if *mlServerURL != "" {
-		neural.SetMLServerURL(*mlServerURL, *mlTokenFlag)
 	}
 
 	setupLogging()
@@ -432,46 +496,9 @@ func RunMain() {
 
 	ctx := lc.Context()
 
-	cryptoMod, _ := crypto.New(nil)
+	hsMod, cryptoMod := setupCoreModules()
 
-	sessMod, _ := session.New(&session.Config{MaxSessions: 10})
-
-	hsMod, _ := handshake.New(&handshake.Config{
-		RateLimit: 100,
-		RateBurst: 50,
-		Timeout:   10 * time.Second,
-	})
-	hsMod.SetDependencies(cryptoMod, sessMod)
-	if *hwidFlag {
-		if deviceID, devErr := auth.LoadOrCreateDeviceID(); devErr == nil {
-			hsMod.SetDeviceID(deviceID)
-			stdlog.Printf("Device ID: %x", deviceID[:8])
-		} else {
-			stdlog.Printf("WARNING: Could not load/create device ID: %v", devErr)
-		}
-	} else {
-		stdlog.Printf("HWID disabled: using a random per-connection ID")
-	}
-
-	dnsUpstreamAddr := ""
-	if *dnsUpstream != "" && !strings.EqualFold(*dnsUpstream, "system") {
-		dnsUpstreamAddr = *dnsUpstream
-	}
-	bypassDNSResolver := newBypassDNSResolver()
-
-	stm := setupSplitTunnel(cfg, bypassDNSResolver)
-
-	socksMod, _ := socks5.New(&socks5.Config{
-		ListenAddr:    *socksAddr,
-		Debug:         true,
-		VPNServerAddr: cfg.Server,
-		MTU:           cfg.MTU,
-		BypassFunc:    stm.ShouldBypass,
-		BlockTorrents: true,
-	})
-	generateSocksAuth()
-	socksMod.SetAuthHandler(socksUser, socksPass)
-	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
+	socksMod, dnsMod := setupNetworking(cfg)
 	defer func() {
 		for _, e := range pool.List() {
 			e.mu.Lock()
@@ -483,16 +510,6 @@ func RunMain() {
 		}
 		socksMod.Stop()
 	}()
-	// Persist harvested TLS fingerprints under the data dir so they survive restarts.
-	protocol.SetHarvestDir(filepath.Join(mlDefaultDataDir(), "fingerprints"))
-	socks5.HarvestHook = func(b []byte) { _ = protocol.HarvestRawClientHello(b) }
-
-	dnsMod, _ := dns.New(&dns.Config{
-		Upstream:       dnsUpstreamAddr,
-		CacheEnabled:   true,
-		BypassFunc:     stm.ShouldBypassByHostname,
-		BypassResolver: bypassDNSResolver,
-	})
 
 	rp := resolveRuntimeParams(cfg)
 	serverAddress := rp.serverAddress
@@ -536,25 +553,10 @@ func RunMain() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			WhisperaOptions: tunnel.WhisperaOptions{
-				EnableWhispera:   len(whisperaSecret) == 32,
-				WhisperaSecret:   whisperaSecret,
-				WhisperaAddr:     cfg.WhisperaAddr,
-				WhisperaSNI:      cfg.WhisperaSNI,
-				WhisperaQUICAddr: cfg.WhisperaQUICAddr,
-				WhisperaCertPin:  cfg.WhisperaCertPin,
-				WhisperaIDPub:    cfg.WhisperaIDPub,
-				EnableGRPC:       cfg.GRPCAddr != "",
-				GRPCAddr:         cfg.GRPCAddr,
-				GRPCServerName:   cfg.GRPCServerName,
-				GRPCUseTLS:       cfg.GRPCUseTLS,
-				EnableYaDisk:     cfg.YaDiskOAuthToken != "",
-				YaDiskOAuthToken: cfg.YaDiskOAuthToken,
-				YaDiskSessionID:  cfg.YaDiskSessionID,
-			},
-			ServerList:      srvList,
-			RekeyInterval:   *rekeyInterval,
-			TransportConfig: cfg.TransportConfig,
+			WhisperaOptions:         whisperaOptions(cfg, whisperaSecret),
+			ServerList:              srvList,
+			RekeyInterval:           *rekeyInterval,
+			TransportConfig:         cfg.TransportConfig,
 			MLOptions: tunnel.MLOptions{
 				MLServerURL: cfg.MLServerURL,
 				MLToken:     resolveMLToken(cfg),
@@ -604,22 +606,7 @@ func RunMain() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			WhisperaOptions: tunnel.WhisperaOptions{
-				EnableWhispera:   len(whisperaSecret) == 32,
-				WhisperaSecret:   whisperaSecret,
-				WhisperaAddr:     cfg.WhisperaAddr,
-				WhisperaSNI:      cfg.WhisperaSNI,
-				WhisperaQUICAddr: cfg.WhisperaQUICAddr,
-				WhisperaCertPin:  cfg.WhisperaCertPin,
-				WhisperaIDPub:    cfg.WhisperaIDPub,
-				EnableGRPC:       cfg.GRPCAddr != "",
-				GRPCAddr:         cfg.GRPCAddr,
-				GRPCServerName:   cfg.GRPCServerName,
-				GRPCUseTLS:       cfg.GRPCUseTLS,
-				EnableYaDisk:     cfg.YaDiskOAuthToken != "",
-				YaDiskOAuthToken: cfg.YaDiskOAuthToken,
-				YaDiskSessionID:  cfg.YaDiskSessionID,
-			},
+			WhisperaOptions:         whisperaOptions(cfg, whisperaSecret),
 			MLOptions: tunnel.MLOptions{
 				MLServerURL: cfg.MLServerURL,
 				MLToken:     resolveMLToken(cfg),
@@ -643,91 +630,7 @@ func RunMain() {
 	}
 
 	restartEntry := func(e *TransportEntry, tunnelCfg *tunnel.Config) {
-		if !atomic.CompareAndSwapInt32(&e.restarting, 0, 1) {
-			return
-		}
-		defer atomic.StoreInt32(&e.restarting, 0)
-
-		e.mu.Lock()
-		if e.cancel != nil {
-			e.cancel()
-		}
-		oldMgr := e.mgr
-		e.Status = connStatusConnecting
-		e.Error = ""
-		e.mu.Unlock()
-
-		if oldMgr != nil {
-			oldMgr.Stop()
-		}
-
-		newMgr, err := tunnel.New(tunnelCfg)
-		if err != nil {
-			stdlog.Printf("restartEntry %s build failed: %v", e.ID, err)
-			e.mu.Lock()
-			e.Status = connStatusFailed
-			e.Error = err.Error()
-			e.mu.Unlock()
-			return
-		}
-		newMgr.SetDependencies(nil, hsMod, nil, cryptoMod)
-		if tunnelCfg.BehavioralProfile != "" {
-			if err := newMgr.SetBehavioralProfile(tunnelCfg.BehavioralProfile); err != nil {
-				stdlog.Printf("restartEntry %s: set profile %q: %v", e.ID, tunnelCfg.BehavioralProfile, err)
-			}
-		}
-
-		newCtx, newCancel := context.WithCancel(ctx)
-		if err := newMgr.Init(newCtx, nil); err != nil {
-			stdlog.Printf("restartEntry %s: init failed: %v", e.ID, err)
-			newCancel()
-			e.mu.Lock()
-			e.Status = connStatusFailed
-			e.Error = err.Error()
-			e.mu.Unlock()
-			return
-		}
-		e.mu.Lock()
-		e.mgr = newMgr
-		e.cancel = newCancel
-		e.mu.Unlock()
-
-		connStart := time.Now()
-		if err := newMgr.Connect(newCtx); err != nil {
-			stdlog.Printf("restartEntry %s connect failed: %v", e.ID, err)
-			newCancel()
-			newMgr.Stop()
-			e.mu.Lock()
-			e.Status = connStatusFailed
-			e.Error = err.Error()
-			tr := e.Transport
-			e.mu.Unlock()
-			if globalAgent != nil {
-				globalAgent.ReportResult(agent.ProbeResult{
-					Transport: tr,
-					Server:    tunnelCfg.ServerAddr,
-					Latency:   time.Since(connStart),
-					Success:   false,
-					Error:     err.Error(),
-					Timestamp: time.Now(),
-				})
-			}
-		} else {
-			e.mu.Lock()
-			e.Status = connStatusConnected
-			e.ConnectedAt = time.Now()
-			e.mu.Unlock()
-			stdlog.Printf("restartEntry %s connected (encap=%v)", e.ID, tunnelCfg.CustomDialFn != nil)
-			if globalAgent != nil {
-				globalAgent.ReportResult(agent.ProbeResult{
-					Transport: tunnelCfg.Transport,
-					Server:    tunnelCfg.ServerAddr,
-					Latency:   time.Since(connStart),
-					Success:   true,
-					Timestamp: time.Now(),
-				})
-			}
-		}
+		restartTransportEntry(ctx, e, tunnelCfg, hsMod, cryptoMod)
 	}
 
 	if asnBypassEnabled {
@@ -841,22 +744,7 @@ func RunMain() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			WhisperaOptions: tunnel.WhisperaOptions{
-				EnableWhispera:   len(whisperaSecret) == 32,
-				WhisperaSecret:   whisperaSecret,
-				WhisperaAddr:     cfg.WhisperaAddr,
-				WhisperaSNI:      cfg.WhisperaSNI,
-				WhisperaQUICAddr: cfg.WhisperaQUICAddr,
-				WhisperaCertPin:  cfg.WhisperaCertPin,
-				WhisperaIDPub:    cfg.WhisperaIDPub,
-				EnableGRPC:       cfg.GRPCAddr != "",
-				GRPCAddr:         cfg.GRPCAddr,
-				GRPCServerName:   cfg.GRPCServerName,
-				GRPCUseTLS:       cfg.GRPCUseTLS,
-				EnableYaDisk:     cfg.YaDiskOAuthToken != "",
-				YaDiskOAuthToken: cfg.YaDiskOAuthToken,
-				YaDiskSessionID:  cfg.YaDiskSessionID,
-			},
+			WhisperaOptions:         whisperaOptions(cfg, whisperaSecret),
 			MLOptions: tunnel.MLOptions{
 				MLServerURL: cfg.MLServerURL,
 				MLToken:     resolveMLToken(cfg),
@@ -992,10 +880,6 @@ func RunMain() {
 		primaryEntry.mu.Unlock()
 		stdlog.Printf("Connected to proxy server via %s", transports[0])
 
-		if *weightsURL != "" {
-			go fetchAndApplyMLWeights(ctx, tunnelMod, *weightsURL, *mlTokenFlag)
-		}
-
 		dnsMod.SetDialContext(tunnelMod.DialStream)
 		stdlog.Printf("DNS now routed through tunnel")
 
@@ -1027,179 +911,7 @@ func RunMain() {
 
 	stdlog.Printf("SOCKS5 proxy listening on %s", *socksAddr)
 
-	go func() {
-		ticker := time.NewTicker(1 * time.Second)
-		defer ticker.Stop()
-		var primaryReconnecting int32
-		var primaryReconnectFails int32
-		const primaryReconnectBackoff = 2 * time.Second
-		const primaryReconnectMaxBackoff = 10 * time.Second
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				primaryEntry.mu.Lock()
-				currentMgr := primaryEntry.mgr
-				wasConnected := primaryEntry.Status == connStatusConnected
-				primaryEntry.mu.Unlock()
-
-				if currentMgr != nil && currentMgr.IsConnected() {
-					continue
-				}
-
-				lostPrimary := wasConnected && (currentMgr == nil || !currentMgr.IsConnected())
-				if lostPrimary {
-					reason := "tunnel reported not connected"
-					if currentMgr != nil {
-						if lastErr := currentMgr.LastError(); lastErr != nil {
-							reason = lastErr.Error()
-						}
-					}
-					primaryEntry.mu.Lock()
-					primaryEntry.Status = connStatusRST
-					primaryEntry.Error = reason
-					primaryEntry.mu.Unlock()
-					stdlog.Printf("Transport watchdog: primary %s is no longer connected (%s)", transports[0], reason)
-				}
-
-				activated := false
-				entries := pool.List()
-				for _, e := range entries {
-					e.mu.Lock()
-					status := e.Status
-					mgr := e.mgr
-					e.mu.Unlock()
-					if status == connStatusConnected && mgr != nil && mgr.IsConnected() && mgr != currentMgr {
-						socksMod.SetTunnel(mgr)
-						stdlog.Printf("Transport watchdog: switched SOCKS to %s", e.Transport)
-						activated = true
-						break
-					}
-					if status == connStatusConnected && e != primaryEntry && (mgr == nil || !mgr.IsConnected()) {
-						e.mu.Lock()
-						e.Status = connStatusStandby
-						e.mu.Unlock()
-						stdlog.Printf("Transport watchdog: %s dropped, marking standby for retry", e.Transport)
-					}
-				}
-
-				if !activated {
-					for _, e := range entries {
-						e.mu.Lock()
-						status := e.Status
-						mgr := e.mgr
-						tr := e.Transport
-						e.mu.Unlock()
-
-						if status == connStatusStandby && mgr != nil {
-							stdlog.Printf("Transport watchdog: activating standby transport %s", tr)
-
-							go func(entry *TransportEntry) {
-								restartEntry(entry, buildBaseCfg(entry))
-
-								entry.mu.Lock()
-								connected := entry.Status == connStatusConnected && entry.mgr != nil
-								mgr := entry.mgr
-								tr := entry.Transport
-								entry.mu.Unlock()
-								if connected && mgr.IsConnected() {
-									socksMod.SetTunnel(mgr)
-									stdlog.Printf("Transport watchdog: standby %s now active", tr)
-								}
-							}(e)
-							break
-						}
-					}
-				}
-
-				primaryEntry.mu.Lock()
-				enabled := primaryEntry.Enabled
-				primaryEntry.mu.Unlock()
-
-				if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
-					go func() {
-						defer atomic.StoreInt32(&primaryReconnecting, 0)
-						if fails := atomic.LoadInt32(&primaryReconnectFails); fails > 0 {
-							backoff := time.Duration(fails) * primaryReconnectBackoff
-							if backoff > primaryReconnectMaxBackoff {
-								backoff = primaryReconnectMaxBackoff
-							}
-							time.Sleep(backoff)
-						}
-
-						if globalAgent != nil {
-							if recTr, _ := globalAgent.SelectTransport(); recTr != "" {
-								primaryEntry.mu.Lock()
-								if primaryEntry.Transport != recTr {
-									stdlog.Printf("ProxyAgent: %s → %s for reconnect", primaryEntry.Transport, recTr)
-									primaryEntry.Transport = recTr
-								}
-								primaryEntry.mu.Unlock()
-							}
-						}
-
-						stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
-
-						targetCfg := buildBaseCfg(primaryEntry)
-
-						restartEntry(primaryEntry, targetCfg)
-						primaryEntry.mu.Lock()
-						connected := primaryEntry.Status == connStatusConnected && primaryEntry.mgr != nil
-						primaryEntry.mu.Unlock()
-						if connected {
-							atomic.StoreInt32(&primaryReconnectFails, 0)
-							socksMod.SetTunnel(primaryEntry.mgr)
-							stdlog.Printf("Transport watchdog: primary reconnected, SOCKS restored")
-						} else {
-							atomic.AddInt32(&primaryReconnectFails, 1)
-						}
-					}()
-				}
-			}
-		}
-	}()
-
-	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				eng := neural.GetNativeEngine()
-				allMgrs := []*tunnel.Manager{tunnelMod}
-				for _, e := range pool.List() {
-					m := e.mgr
-
-					if m != nil && m != tunnelMod {
-						allMgrs = append(allMgrs, m)
-					}
-				}
-
-				dpiType, conf := eng.GetCurrentDPILevel()
-				if conf > 0.5 {
-					var profile string
-					switch {
-					case dpiType >= 6:
-						profile = "high_threat"
-					case dpiType >= 3:
-						profile = "telegram"
-					default:
-						profile = "default"
-					}
-					for _, m := range allMgrs {
-						if m.IsConnected() {
-							if err := m.SetBehavioralProfile(profile); err == nil && dpiType >= 3 {
-								stdlog.Printf("[ML] DPI type=%d conf=%.2f → obfuscation profile switched to %q", dpiType, conf, profile)
-							}
-						}
-					}
-				}
-			}
-		}
-	}()
+	go runTransportWatchdog(ctx, primaryEntry, transports, socksMod, restartEntry, buildBaseCfg)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -1213,47 +925,223 @@ func sniModelDir() string {
 	return filepath.Join(mlDefaultDataDir(), "sni_model")
 }
 
-func fetchAndApplyMLWeights(ctx context.Context, mgr *tunnel.Manager, weightsURL, token string) {
-	httpClient := &http.Client{
-		Timeout: 1 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
-		},
+func runTransportWatchdog(ctx context.Context, primaryEntry *TransportEntry, transports []string, socksMod *socks5.Module, restartEntry func(*TransportEntry, *tunnel.Config), buildBaseCfg func(*TransportEntry) *tunnel.Config) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	var primaryReconnecting int32
+	var primaryReconnectFails int32
+	const primaryReconnectBackoff = 2 * time.Second
+	const primaryReconnectMaxBackoff = 10 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			primaryEntry.mu.Lock()
+			currentMgr := primaryEntry.mgr
+			wasConnected := primaryEntry.Status == connStatusConnected
+			primaryEntry.mu.Unlock()
+
+			if currentMgr != nil && currentMgr.IsConnected() {
+				continue
+			}
+
+			lostPrimary := wasConnected && (currentMgr == nil || !currentMgr.IsConnected())
+			if lostPrimary {
+				reason := "tunnel reported not connected"
+				if currentMgr != nil {
+					if lastErr := currentMgr.LastError(); lastErr != nil {
+						reason = lastErr.Error()
+					}
+				}
+				primaryEntry.mu.Lock()
+				primaryEntry.Status = connStatusRST
+				primaryEntry.Error = reason
+				primaryEntry.mu.Unlock()
+				stdlog.Printf("Transport watchdog: primary %s is no longer connected (%s)", transports[0], reason)
+			}
+
+			activated := false
+			entries := pool.List()
+			for _, e := range entries {
+				e.mu.Lock()
+				status := e.Status
+				mgr := e.mgr
+				e.mu.Unlock()
+				if status == connStatusConnected && mgr != nil && mgr.IsConnected() && mgr != currentMgr {
+					socksMod.SetTunnel(mgr)
+					stdlog.Printf("Transport watchdog: switched SOCKS to %s", e.Transport)
+					activated = true
+					break
+				}
+				if status == connStatusConnected && e != primaryEntry && (mgr == nil || !mgr.IsConnected()) {
+					e.mu.Lock()
+					e.Status = connStatusStandby
+					e.mu.Unlock()
+					stdlog.Printf("Transport watchdog: %s dropped, marking standby for retry", e.Transport)
+				}
+			}
+
+			if !activated {
+				for _, e := range entries {
+					e.mu.Lock()
+					status := e.Status
+					mgr := e.mgr
+					tr := e.Transport
+					e.mu.Unlock()
+
+					if status == connStatusStandby && mgr != nil {
+						stdlog.Printf("Transport watchdog: activating standby transport %s", tr)
+
+						go func(entry *TransportEntry) {
+							restartEntry(entry, buildBaseCfg(entry))
+
+							entry.mu.Lock()
+							connected := entry.Status == connStatusConnected && entry.mgr != nil
+							mgr := entry.mgr
+							tr := entry.Transport
+							entry.mu.Unlock()
+							if connected && mgr.IsConnected() {
+								socksMod.SetTunnel(mgr)
+								stdlog.Printf("Transport watchdog: standby %s now active", tr)
+							}
+						}(e)
+						break
+					}
+				}
+			}
+
+			primaryEntry.mu.Lock()
+			enabled := primaryEntry.Enabled
+			primaryEntry.mu.Unlock()
+
+			if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
+				go func() {
+					defer atomic.StoreInt32(&primaryReconnecting, 0)
+					if fails := atomic.LoadInt32(&primaryReconnectFails); fails > 0 {
+						backoff := time.Duration(fails) * primaryReconnectBackoff
+						if backoff > primaryReconnectMaxBackoff {
+							backoff = primaryReconnectMaxBackoff
+						}
+						time.Sleep(backoff)
+					}
+
+					if globalAgent != nil {
+						if recTr, _ := globalAgent.SelectTransport(); recTr != "" {
+							primaryEntry.mu.Lock()
+							if primaryEntry.Transport != recTr {
+								stdlog.Printf("ProxyAgent: %s → %s for reconnect", primaryEntry.Transport, recTr)
+								primaryEntry.Transport = recTr
+							}
+							primaryEntry.mu.Unlock()
+						}
+					}
+
+					stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
+
+					targetCfg := buildBaseCfg(primaryEntry)
+
+					restartEntry(primaryEntry, targetCfg)
+					primaryEntry.mu.Lock()
+					connected := primaryEntry.Status == connStatusConnected && primaryEntry.mgr != nil
+					primaryEntry.mu.Unlock()
+					if connected {
+						atomic.StoreInt32(&primaryReconnectFails, 0)
+						socksMod.SetTunnel(primaryEntry.mgr)
+						stdlog.Printf("Transport watchdog: primary reconnected, SOCKS restored")
+					} else {
+						atomic.AddInt32(&primaryReconnectFails, 1)
+					}
+				}()
+			}
+		}
+	}
+}
+
+func restartTransportEntry(ctx context.Context, e *TransportEntry, tunnelCfg *tunnel.Config, hsMod *handshake.Handler, cryptoMod *crypto.Provider) {
+	if !atomic.CompareAndSwapInt32(&e.restarting, 0, 1) {
+		return
+	}
+	defer atomic.StoreInt32(&e.restarting, 0)
+
+	e.mu.Lock()
+	if e.cancel != nil {
+		e.cancel()
+	}
+	oldMgr := e.mgr
+	e.Status = connStatusConnecting
+	e.Error = ""
+	e.mu.Unlock()
+
+	if oldMgr != nil {
+		oldMgr.Stop()
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, weightsURL, nil)
+	newMgr, err := tunnel.New(tunnelCfg)
 	if err != nil {
-		stdlog.Printf("[ml-sync] bad weights URL: %v", err)
+		stdlog.Printf("restartEntry %s build failed: %v", e.ID, err)
+		e.mu.Lock()
+		e.Status = connStatusFailed
+		e.Error = err.Error()
+		e.mu.Unlock()
 		return
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	newMgr.SetDependencies(nil, hsMod, nil, cryptoMod)
+	if tunnelCfg.BehavioralProfile != "" {
+		if err := newMgr.SetBehavioralProfile(tunnelCfg.BehavioralProfile); err != nil {
+			stdlog.Printf("restartEntry %s: set profile %q: %v", e.ID, tunnelCfg.BehavioralProfile, err)
+		}
 	}
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		stdlog.Printf("[ml-sync] fetch failed: %v", err)
+	newCtx, newCancel := context.WithCancel(ctx)
+	if err := newMgr.Init(newCtx, nil); err != nil {
+		stdlog.Printf("restartEntry %s: init failed: %v", e.ID, err)
+		newCancel()
+		e.mu.Lock()
+		e.Status = connStatusFailed
+		e.Error = err.Error()
+		e.mu.Unlock()
 		return
 	}
-	defer resp.Body.Close()
+	e.mu.Lock()
+	e.mgr = newMgr
+	e.cancel = newCancel
+	e.mu.Unlock()
 
-	if resp.StatusCode != http.StatusOK {
-		stdlog.Printf("[ml-sync] server returned %d", resp.StatusCode)
-		return
+	connStart := time.Now()
+	if err := newMgr.Connect(newCtx); err != nil {
+		stdlog.Printf("restartEntry %s connect failed: %v", e.ID, err)
+		newCancel()
+		newMgr.Stop()
+		e.mu.Lock()
+		e.Status = connStatusFailed
+		e.Error = err.Error()
+		tr := e.Transport
+		e.mu.Unlock()
+		if globalAgent != nil {
+			globalAgent.ReportResult(agent.ProbeResult{
+				Transport: tr,
+				Server:    tunnelCfg.ServerAddr,
+				Latency:   time.Since(connStart),
+				Success:   false,
+				Error:     err.Error(),
+				Timestamp: time.Now(),
+			})
+		}
+	} else {
+		e.mu.Lock()
+		e.Status = connStatusConnected
+		e.ConnectedAt = time.Now()
+		e.mu.Unlock()
+		stdlog.Printf("restartEntry %s connected (encap=%v)", e.ID, tunnelCfg.CustomDialFn != nil)
+		if globalAgent != nil {
+			globalAgent.ReportResult(agent.ProbeResult{
+				Transport: tunnelCfg.Transport,
+				Server:    tunnelCfg.ServerAddr,
+				Latency:   time.Since(connStart),
+				Success:   true,
+				Timestamp: time.Now(),
+			})
+		}
 	}
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	if err != nil {
-		stdlog.Printf("[ml-sync] read body: %v", err)
-		return
-	}
-
-	var snap neural.WeightSnapshot
-	if err := json.Unmarshal(body, &snap); err != nil {
-		stdlog.Printf("[ml-sync] parse: %v", err)
-		return
-	}
-
-	mgr.ImportMLWeights(&snap)
-	stdlog.Printf("[ml-sync] weights applied (v%d)", snap.Version)
 }

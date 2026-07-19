@@ -149,6 +149,53 @@ func RunDeleteKeyCmd() {
 	os.Exit(0)
 }
 
+func resolveWhisperaQUICAddr(enableQUIC bool, sc *config.ServerConfig, cfgProvider *config.Provider, cfgPath string, quicPort int, serverHost string) string {
+	if !enableQUIC {
+		return ""
+	}
+	if sc.Whispera.QUICListenAddr == "" {
+		fmt.Fprintln(os.Stderr, "Warning: -quic=enable requested but whispera.quic_listen_addr is not configured on this server — key generated without QUIC")
+		return ""
+	}
+	quicHost, quicListenPortStr, err := net.SplitHostPort(sc.Whispera.QUICListenAddr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: invalid whispera.quic_listen_addr %q: %v — key generated without QUIC\n", sc.Whispera.QUICListenAddr, err)
+		return ""
+	}
+	if ip := net.ParseIP(quicHost); quicHost == "" || (ip != nil && ip.IsUnspecified()) {
+		quicHost = serverHost
+	}
+	effectiveQUICPortStr := quicListenPortStr
+	if quicPort == 0 || strconv.Itoa(quicPort) == quicListenPortStr {
+		return net.JoinHostPort(quicHost, effectiveQUICPortStr)
+	}
+	effectiveQUICPortStr = strconv.Itoa(quicPort)
+
+	quicPortTaken := false
+	for _, p := range sc.Whispera.QUICExtraPorts {
+		if p == quicPort {
+			quicPortTaken = true
+		}
+	}
+	if quicPortTaken {
+		fmt.Printf("QUIC port %d is already a listener — reusing it\n", quicPort)
+	} else {
+		if err := cfgProvider.Update(func(sc *config.ServerConfig) {
+			sc.Whispera.QUICExtraPorts = append(sc.Whispera.QUICExtraPorts, quicPort)
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to update %s: %v\n", cfgPath, err)
+			os.Exit(1)
+		}
+		fmt.Printf("QUIC will also listen on port %d (restart server to activate)\n", quicPort)
+	}
+	if err := apiserver.OpenFirewallPort(quicPort); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: firewall rule not applied: %v\n", err)
+	} else {
+		fmt.Printf("Opened port %d in ufw (tcp+udp)\n", quicPort)
+	}
+	return net.JoinHostPort(quicHost, effectiveQUICPortStr)
+}
+
 func RunCreateKeyCmd() {
 	createKeyCmd := flag.NewFlagSet("create-key", flag.ExitOnError)
 	user := createKeyCmd.String("user", "", "User identifier (used as the whispera auth username)")
@@ -372,48 +419,7 @@ func RunCreateKeyCmd() {
 
 	whisperaOpts := apiserver.WhisperaKeyOptions{}
 	if effectiveTransport == "whispera" {
-		whisperaQUICAddr := ""
-		if enableQUIC {
-			if sc.Whispera.QUICListenAddr == "" {
-				fmt.Fprintln(os.Stderr, "Warning: -quic=enable requested but whispera.quic_listen_addr is not configured on this server — key generated without QUIC")
-			} else {
-				quicHost, quicListenPortStr, err := net.SplitHostPort(sc.Whispera.QUICListenAddr)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: invalid whispera.quic_listen_addr %q: %v — key generated without QUIC\n", sc.Whispera.QUICListenAddr, err)
-				} else {
-					if ip := net.ParseIP(quicHost); quicHost == "" || (ip != nil && ip.IsUnspecified()) {
-						quicHost = serverHost
-					}
-					effectiveQUICPortStr := quicListenPortStr
-					if *quicPort != 0 && strconv.Itoa(*quicPort) != quicListenPortStr {
-						effectiveQUICPortStr = strconv.Itoa(*quicPort)
-						quicPortTaken := false
-						for _, p := range sc.Whispera.QUICExtraPorts {
-							if p == *quicPort {
-								quicPortTaken = true
-							}
-						}
-						if !quicPortTaken {
-							if err := cfgProvider.Update(func(sc *config.ServerConfig) {
-								sc.Whispera.QUICExtraPorts = append(sc.Whispera.QUICExtraPorts, *quicPort)
-							}); err != nil {
-								fmt.Fprintf(os.Stderr, "Failed to update %s: %v\n", *cfgPath, err)
-								os.Exit(1)
-							}
-							fmt.Printf("QUIC will also listen on port %d (restart server to activate)\n", *quicPort)
-						} else {
-							fmt.Printf("QUIC port %d is already a listener — reusing it\n", *quicPort)
-						}
-						if err := apiserver.OpenFirewallPort(*quicPort); err != nil {
-							fmt.Fprintf(os.Stderr, "Warning: firewall rule not applied: %v\n", err)
-						} else {
-							fmt.Printf("Opened port %d in ufw (tcp+udp)\n", *quicPort)
-						}
-					}
-					whisperaQUICAddr = net.JoinHostPort(quicHost, effectiveQUICPortStr)
-				}
-			}
-		}
+		whisperaQUICAddr := resolveWhisperaQUICAddr(enableQUIC, sc, cfgProvider, *cfgPath, *quicPort, serverHost)
 
 		domainMode := sc.Whispera.BackendH2CAddr != ""
 		switch strings.ToLower(*ownDomainFlag) {
