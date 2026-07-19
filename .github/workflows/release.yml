@@ -203,67 +203,10 @@ jobs:
           path: whispera-go-client-aarch64-linux-android
           retention-days: 5
 
-  build-ml-server:
-    name: Build ML Server (${{ matrix.triple }})
-    runs-on: ubuntu-latest
-    needs: prepare
-    strategy:
-      matrix:
-        include:
-          - goos: windows
-            goarch: amd64
-            triple: x86_64-pc-windows-msvc
-            ext: .exe
-          - goos: linux
-            goarch: amd64
-            triple: x86_64-unknown-linux-gnu
-            ext: ""
-          - goos: linux
-            goarch: arm64
-            triple: aarch64-unknown-linux-gnu
-            ext: ""
-          - goos: darwin
-            goarch: amd64
-            triple: x86_64-apple-darwin
-            ext: ""
-          - goos: darwin
-            goarch: arm64
-            triple: aarch64-apple-darwin
-            ext: ""
-          - goos: android
-            goarch: arm64
-            triple: aarch64-linux-android
-            ext: ""
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-go@v4
-        with:
-          go-version: '1.26.x'
-
-      - name: Build
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 0
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          go build -ldflags "-s -w -X main.Version=$VERSION" \
-            -o whispera-ml-server-${{ matrix.triple }}${{ matrix.ext }} ./app/mlserver
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: whispera-ml-server-${{ matrix.triple }}
-          path: whispera-ml-server-${{ matrix.triple }}${{ matrix.ext }}
-          retention-days: 5
-
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    needs: [prepare, build-server, build-go-client, build-go-client-android, build-ml-server]
+    needs: [prepare, build-server, build-go-client, build-go-client-android]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test' || startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
@@ -280,7 +223,6 @@ jobs:
           mkdir -p release-files
           find artifacts -type f -name '*.tar.gz' -exec cp {} release-files/ \;
           find artifacts -type f -name 'whispera-go-client-*' -exec cp {} release-files/ \;
-          find artifacts -type f -name 'whispera-ml-server-*' -exec cp {} release-files/ \;
           echo "Release files:"
           ls -la release-files/
 
