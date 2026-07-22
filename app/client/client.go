@@ -63,7 +63,6 @@ var (
 	noInternalTun    = flag.Bool("no-tun", true, "Disable internal TUN (use external like Mihomo)")
 	russianService   = flag.String("russian-service", "", "Enable Russian Service masquerading (e.g. vk_video)")
 	serverList       = flag.String("servers", "", "Comma-separated server addresses for latency-based routing")
-	rekeyInterval    = flag.Duration("rekey", 10*time.Minute, "Session rekeying interval (0 = disabled)")
 	mlServerURL      = flag.String("ml-server", "", "ML server URL (e.g. https://127.0.0.1:8000)")
 	mlTokenFlag      = flag.String("ml-token", "", "ML API auth token")
 	controlPort      = flag.String("control-port", "10801", "Control server port (default 10801)")
@@ -555,7 +554,6 @@ func RunMain() {
 			EnableJA3Randomize:      true,
 			WhisperaOptions:         whisperaOptions(cfg, whisperaSecret),
 			ServerList:              srvList,
-			RekeyInterval:           *rekeyInterval,
 			TransportConfig:         cfg.TransportConfig,
 			MLOptions: tunnel.MLOptions{
 				MLServerURL: cfg.MLServerURL,
@@ -613,7 +611,6 @@ func RunMain() {
 				SNIModelDir: sniModelDir(),
 			},
 			ServerList:        srvList,
-			RekeyInterval:     *rekeyInterval,
 			TransportConfig:   tc,
 			ForceObfuscation:  force,
 			BehavioralProfile: profile,
@@ -749,7 +746,6 @@ func RunMain() {
 				MLServerURL: cfg.MLServerURL,
 				MLToken:     resolveMLToken(cfg),
 			},
-			RekeyInterval:   *rekeyInterval,
 			TransportConfig: cfg.TransportConfig,
 			ForceSNI:        getGlobalSNI(),
 			Regions:         cfgRegions,

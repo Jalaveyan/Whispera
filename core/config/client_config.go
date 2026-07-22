@@ -51,7 +51,6 @@ type ClientConfig struct {
 	EnableTesting    bool   `yaml:"enable_testing" json:"enable_testing"`
 	AppProfile       string `yaml:"app_profile" json:"app_profile"`
 
-	RekeyMin      int     `yaml:"rekey" json:"rekey"`
 	MTU           int     `yaml:"mtu" json:"mtu"`
 	PadMin        int     `yaml:"pad_min" json:"pad_min"`
 	PadMax        int     `yaml:"pad_max" json:"pad_max"`
@@ -62,8 +61,6 @@ type ClientConfig struct {
 	UDPRetries    int     `yaml:"udp_retries" json:"udp_retries"`
 	UDPOnly       bool    `yaml:"udp_only" json:"udp_only"`
 	Watchdog      int     `yaml:"watchdog" json:"watchdog"`
-	RekeyBytes    int64   `yaml:"rekey_bytes" json:"rekey_bytes"`
-	RekeyPkts     int64   `yaml:"rekey_pkts" json:"rekey_pkts"`
 	AutoSwitch    *bool   `yaml:"auto_switch" json:"auto_switch"`
 	UDPUpgradeSec int     `yaml:"udp_upgrade_sec" json:"udp_upgrade_sec"`
 	ChaffDist     string  `yaml:"chaff_dist" json:"chaff_dist"`

@@ -45,7 +45,7 @@ func buildFakeResponse(id [2]byte, rtype uint16, rdata []byte) []byte {
 	// answer: name = pointer to offset 12, type, class IN, ttl, rdlength, rdata
 	resp = append(resp, 0xC0, 0x0C)
 	resp = append(resp, byte(rtype>>8), byte(rtype))
-	resp = append(resp, 0x00, 0x01) // class IN
+	resp = append(resp, 0x00, 0x01)             // class IN
 	resp = append(resp, 0x00, 0x00, 0x00, 0x3C) // ttl=60
 	resp = append(resp, byte(len(rdata)>>8), byte(len(rdata)))
 	resp = append(resp, rdata...)

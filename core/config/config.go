@@ -230,7 +230,6 @@ type SessionConfig struct {
 	SessionTimeout    Duration `yaml:"session_timeout"`
 	CleanupInterval   Duration `yaml:"cleanup_interval"`
 	KeepaliveInterval Duration `yaml:"keepalive_interval"`
-	RekeyInterval     Duration `yaml:"rekey_interval"`
 }
 
 type RoutingConfig struct {
@@ -502,7 +501,6 @@ func DefaultServerConfig() *ServerConfig {
 			SessionTimeout:    Duration(24 * time.Hour),
 			CleanupInterval:   Duration(1 * time.Minute),
 			KeepaliveInterval: Duration(30 * time.Second),
-			RekeyInterval:     Duration(12 * time.Hour),
 		},
 		Routing: RoutingConfig{
 			DefaultRoute: "direct",

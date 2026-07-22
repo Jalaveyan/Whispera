@@ -8,11 +8,9 @@ import (
 	"github.com/nekoskin/whispera/common/buf"
 	"github.com/nekoskin/whispera/common/dns"
 	"github.com/nekoskin/whispera/common/log"
-	mux2 "github.com/nekoskin/whispera/common/mux"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	"github.com/nekoskin/whispera/common/runtime/registry"
-	"github.com/nekoskin/whispera/core/transport"
 	"io"
 	"net"
 	"net/url"
@@ -24,6 +22,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	xmux "github.com/sagernet/sing-mux"
+	singlog "github.com/sagernet/sing/common/logger"
+	singM "github.com/sagernet/sing/common/metadata"
+	singN "github.com/sagernet/sing/common/network"
 	"golang.org/x/net/proxy"
 )
 
@@ -144,51 +146,9 @@ type Server struct {
 
 	streamSem chan struct{}
 
-	resilientMu       sync.Mutex
-	resilientSessions map[[32]byte]resilientToken
-
 	log *logger.Logger
 	mu  sync.RWMutex
 }
-
-type resilientSession struct {
-	resumeCh   chan net.Conn
-	key        []byte
-	nonce      []byte
-	windowBase uint64
-	closeOnce  sync.Once
-}
-
-type resilientToken struct {
-	sess *resilientSession
-	n    uint64
-}
-
-func (rs *resilientSession) shutdown() { rs.closeOnce.Do(func() { close(rs.resumeCh) }) }
-
-const resilientTokenWindow = 32
-
-func (s *Server) registerResilientWindow(sess *resilientSession, base uint64) {
-	for i := uint64(0); i < resilientTokenWindow; i++ {
-		var k [32]byte
-		copy(k[:], mux2.ResumeToken(sess.key, sess.nonce, base+i))
-		s.resilientSessions[k] = resilientToken{sess: sess, n: base + i}
-	}
-	sess.windowBase = base
-}
-
-func (s *Server) unregisterResilientWindow(sess *resilientSession) {
-	for i := uint64(0); i < resilientTokenWindow; i++ {
-		var k [32]byte
-		copy(k[:], mux2.ResumeToken(sess.key, sess.nonce, sess.windowBase+i))
-		delete(s.resilientSessions, k)
-	}
-}
-
-type strAddr string
-
-func (a strAddr) Network() string { return "tcp" }
-func (a strAddr) String() string  { return string(a) }
 
 type copyResult struct {
 	n   int64
@@ -209,11 +169,10 @@ func New(cfg *Config) (*Server, error) {
 		limit = 1024
 	}
 	s := &Server{
-		Module:            base.NewModule(ModuleName, ModuleVersion, nil),
-		config:            cfg,
-		streamSem:         make(chan struct{}, limit),
-		resilientSessions: make(map[[32]byte]resilientToken),
-		log:               logger.Module("relay"),
+		Module:    base.NewModule(ModuleName, ModuleVersion, nil),
+		config:    cfg,
+		streamSem: make(chan struct{}, limit),
+		log:       logger.Module("relay"),
 	}
 
 	s.proxyDialer = proxy.Direct
@@ -277,26 +236,6 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 
 var tunnelTraceSeq uint64
 
-type byteCountConn struct {
-	net.Conn
-	n     int64
-	first []byte
-}
-
-func (c *byteCountConn) Read(b []byte) (int, error) {
-	n, err := c.Conn.Read(b)
-	if n > 0 {
-		total := atomic.AddInt64(&c.n, int64(n))
-		if total <= 64 {
-			c.first = append(c.first, b[:n]...)
-			if len(c.first) > 64 {
-				c.first = c.first[:64]
-			}
-		}
-	}
-	return n, err
-}
-
 func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 	s.serveTunnel(conn, streamObf, true, nil)
 }
@@ -311,125 +250,12 @@ func (s *Server) ServeTunnelResilient(conn net.Conn, streamObf bool, secret []by
 
 func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool, secret []byte) {
 	clientID := conn.RemoteAddr().String()
-
-	if len(secret) == 32 && os.Getenv("WHISPERA_RESILIENT") != "0" {
-		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		hdr := make([]byte, mux2.ResumeHeaderPrefixLen)
-		_, err := io.ReadFull(conn, hdr)
-		_ = conn.SetReadDeadline(time.Time{})
-		if err != nil {
-			conn.Close()
-			return
-		}
-		if mux2.IsResumeHeader(hdr) {
-			under, cleanup, ok := s.resilientAccept(conn, hdr, secret, clientID)
-			if !ok {
-				return
-			}
-			defer cleanup()
-			s.runSession(under, streamObf, usePadding, clientID)
-			return
-		}
-		pc := &prefixConn{Conn: conn, prefix: hdr}
-		defer pc.Close()
-		s.runSession(pc, streamObf, usePadding, clientID)
-		return
-	}
-
 	defer conn.Close()
 	s.runSession(conn, streamObf, usePadding, clientID)
 }
 
-type prefixConn struct {
-	net.Conn
-	prefix []byte
-}
-
-func (c *prefixConn) Read(p []byte) (int, error) {
-	if len(c.prefix) > 0 {
-		n := copy(p, c.prefix)
-		c.prefix = c.prefix[n:]
-		return n, nil
-	}
-	return c.Conn.Read(p)
-}
-
-const resilientSessionTTL = 2 * time.Minute
-
-func (s *Server) resilientAccept(conn net.Conn, hdr []byte, secret []byte, clientID string) (net.Conn, func(), bool) {
-	typ := hdr[0]
-	n := binary.BigEndian.Uint16(hdr[1:3])
-	payload := make([]byte, n)
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	_, err := io.ReadFull(conn, payload)
-	_ = conn.SetReadDeadline(time.Time{})
-	if err != nil {
-		conn.Close()
-		return nil, nil, false
-	}
-	key := mux2.DeriveResumeKey(secret)
-
-	switch typ {
-	case mux2.ResumeResume:
-		var k [32]byte
-		copy(k[:], payload)
-		s.resilientMu.Lock()
-		ent, ok := s.resilientSessions[k]
-		if ok {
-			s.unregisterResilientWindow(ent.sess)
-			s.registerResilientWindow(ent.sess, ent.n+1)
-		}
-		s.resilientMu.Unlock()
-		if !ok {
-			conn.Close()
-			return nil, nil, false
-		}
-		select {
-		case ent.sess.resumeCh <- conn:
-		default:
-			conn.Close()
-		}
-		return nil, nil, false
-
-	case mux2.ResumeEstablish:
-		nonce := append([]byte(nil), payload...)
-		resumeCh := make(chan net.Conn, 1)
-		resumeCh <- conn
-		sess := &resilientSession{resumeCh: resumeCh, key: key, nonce: nonce}
-		s.resilientMu.Lock()
-		s.registerResilientWindow(sess, 2)
-		s.resilientMu.Unlock()
-
-		nextUnder := func() (net.Conn, error) {
-			select {
-			case c, ok := <-resumeCh:
-				if !ok {
-					return nil, io.EOF
-				}
-				return c, nil
-			case <-time.After(resilientSessionTTL):
-				return nil, io.EOF
-			}
-		}
-		rc := mux2.NewResilientConn(strAddr(clientID), strAddr(clientID), nextUnder)
-		cleanup := func() {
-			s.resilientMu.Lock()
-			s.unregisterResilientWindow(sess)
-			s.resilientMu.Unlock()
-			sess.shutdown()
-			rc.Close()
-		}
-		return rc, cleanup, true
-
-	default:
-		conn.Close()
-		return nil, nil, false
-	}
-}
-
 func (s *Server) runSession(under net.Conn, streamObf bool, usePadding bool, clientID string) {
 	traceID := atomic.AddUint64(&tunnelTraceSeq, 1)
-	startedAt := time.Now()
 	logger.Trace().Infow("serve_tunnel_enter",
 		"trace_id", traceID,
 		"client", clientID,
@@ -444,188 +270,96 @@ func (s *Server) runSession(under net.Conn, streamObf bool, usePadding bool, cli
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	const firstStreamTimeout = 3 * time.Second
-	_ = under.SetReadDeadline(time.Now().Add(firstStreamTimeout))
+	if streamMuxEnabled() {
+		s.serveStreamMux(under, clientID, traceID)
+		return
+	}
+	s.handleProxyStream(traceID, clientID, under)
+}
 
-	session, bc, err := s.buildMuxSession(under, usePadding)
+func streamMuxEnabled() bool { return os.Getenv("WHISPERA_STREAM_MUX") == "1" }
+
+func (s *Server) serveStreamMux(under net.Conn, clientID string, traceID uint64) {
+	svc, err := xmux.NewService(xmux.ServiceOptions{
+		NewStreamContext: func(ctx context.Context, _ net.Conn) context.Context { return ctx },
+		Logger:           singlog.NOP(),
+		HandlerEx:        &muxHandler{s: s, clientID: clientID, traceID: traceID},
+	})
 	if err != nil {
-		s.log.Error("[T%d] Failed to create SMUX session for %s: %v", traceID, clientID, err)
+		s.log.Error("[T%d] stream-mux init for %s: %v", traceID, clientID, err)
 		return
 	}
-	defer session.Close()
+	svc.NewConnectionEx(context.Background(), under, singM.Socksaddr{}, singM.Socksaddr{}, nil)
+}
 
-	firstStream := true
-	for {
-		stream, err := session.AcceptStream()
-		if err != nil {
-			if firstStream {
-				logger.Trace().Warnw("ended_before_first_stream",
-					"trace_id", traceID,
-					"client", clientID,
-					"dur_ms", time.Since(startedAt).Milliseconds(),
-					"conn_type", fmt.Sprintf("%T", under),
-					"bytes_read", atomic.LoadInt64(&bc.n),
-					"first_bytes", fmt.Sprintf("%x", bc.first),
-					"err", err.Error(),
-					"err_type", fmt.Sprintf("%T", err),
-				)
-			}
-			return
-		}
-		if firstStream {
-			firstStream = false
-			_ = under.SetReadDeadline(time.Time{})
-			logger.Trace().Infow("control_stream_accepted",
-				"trace_id", traceID,
-				"client", clientID,
-				"dur_ms", time.Since(startedAt).Milliseconds(),
-				"bytes_read", atomic.LoadInt64(&bc.n),
-			)
-			s.dispatchControlStream(stream, session, streamObf, clientID)
-			continue
-		}
-		s.dispatchProxyStream(traceID, clientID, stream, streamObf)
+type muxHandler struct {
+	s        *Server
+	clientID string
+	traceID  uint64
+}
+
+func (h *muxHandler) NewConnectionEx(ctx context.Context, conn net.Conn, source, dest singM.Socksaddr, onClose singN.CloseHandlerFunc) {
+	h.serveStream(conn, dest)
+	if onClose != nil {
+		onClose(nil)
 	}
 }
 
-func (s *Server) buildMuxSession(under net.Conn, usePadding bool) (*mux2.Session, *byteCountConn, error) {
-	muxCfg := &mux2.Config{
-		MaxFrameSize:         65535,
-		MaxReceiveBuffer:     1 << 25,
-		MaxStreamBuffer:      1 << 23,
-		DisableKeepAlive:     true,
-		MaxConcurrentStreams: s.config.MaxConcurrentStreams,
-	}
-
-	var muxConn net.Conn = under
-	if usePadding {
-		padMax := s.config.PaddingMaxSize
-		if padMax <= 0 {
-			padMax = 128
-		}
-		muxConn = mux2.NewPaddedConn(under, padMax)
-	}
-
-	bc := &byteCountConn{Conn: muxConn}
-	session, err := mux2.Server(bc, muxCfg)
-	return session, bc, err
-}
-
-func (s *Server) dispatchControlStream(stream net.Conn, session *mux2.Session, streamObf bool, clientID string) {
-	if !streamObf {
-		go s.serveControlStream(stream, session, clientID)
-		return
-	}
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				s.log.Error("PANIC in control stream io.Copy: %v\n%s", r, debug.Stack())
-			}
-		}()
-		io.Copy(io.Discard, transport.WrapStreamTLS(stream))
-	}()
-}
-
-func (s *Server) dispatchProxyStream(traceID uint64, clientID string, stream net.Conn, streamObf bool) {
-	var proxyConn net.Conn = stream
-	if streamObf {
-		proxyConn = transport.WrapStreamTLS(stream)
-	}
-	logger.Trace().Infow("proxy_stream_accepted",
-		"trace_id", traceID,
-		"client", clientID,
-	)
-	select {
-	case s.streamSem <- struct{}{}:
-		go func() {
-			defer func() { <-s.streamSem }()
-			s.handleProxyStream(traceID, clientID, proxyConn)
-		}()
-	default:
-		proxyConn.Close()
+func (h *muxHandler) NewPacketConnectionEx(ctx context.Context, conn singN.PacketConn, source, dest singM.Socksaddr, onClose singN.CloseHandlerFunc) {
+	conn.Close()
+	if onClose != nil {
+		onClose(nil)
 	}
 }
 
-func (s *Server) serveControlStream(stream net.Conn, session *mux2.Session, clientID string) {
+func (h *muxHandler) serveStream(stream net.Conn, dest singM.Socksaddr) {
 	defer stream.Close()
-	started := time.Now()
-	pings := 0
-	exitReason := "read-err"
-	defer func() {
-		fields := []any{
-			"client", clientID,
-			"pings", pings,
-			"dur_ms", time.Since(started).Milliseconds(),
-			"reason", exitReason,
-		}
-		if exitReason == "idle-reap" || strings.HasPrefix(exitReason, "read-err n=0:") {
-			logger.Trace().Infow("control_stream_exit", fields...)
-		} else {
-			logger.Trace().Warnw("control_stream_exit", fields...)
-		}
-	}()
 	defer func() {
 		if r := recover(); r != nil {
-			s.log.Error("PANIC in serveControlStream: %v\n%s", r, debug.Stack())
+			h.s.log.Error("PANIC in stream-mux stream: %v\n%s", r, debug.Stack())
 		}
 	}()
-	sessionBytes := func() uint64 {
-		_, _, rx, tx := session.Stats()
-		return rx + tx
+
+	var pb [1]byte
+	if _, err := io.ReadFull(stream, pb[:]); err != nil {
+		return
 	}
-	const controlPoll = 30 * time.Second
-	const maxIdlePolls = 10
-	lastActive := sessionBytes()
-	idlePolls := 0
-	hdr := make([]byte, 8)
-	for {
-		stream.SetReadDeadline(time.Now().Add(controlPoll))
-		n, err := io.ReadFull(stream, hdr)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() && n == 0 {
-				if cur := sessionBytes(); cur != lastActive {
-					lastActive = cur
-					idlePolls = 0
-					continue
-				}
-				if idlePolls++; idlePolls < maxIdlePolls {
-					continue
-				}
-				exitReason = "idle-reap"
-			} else {
-				exitReason = fmt.Sprintf("read-err n=%d: %v", n, err)
-			}
-			return
-		}
-		lastActive = sessionBytes()
-		idlePolls = 0
-		payloadLen := binary.BigEndian.Uint32(hdr[4:8])
-		if payloadLen > 131072 {
-			exitReason = "bad-payload-len"
-			return
-		}
-		if payloadLen > 0 {
-			if _, err := io.CopyN(io.Discard, stream, int64(payloadLen)); err != nil {
-				exitReason = "payload-read-err"
-				return
-			}
-		}
-		if hdr[2] != 0x06 {
-			continue
-		}
-		pings++
-		logger.Trace().Infow("control_ping",
-			"client", clientID,
-			"n", pings,
-			"since_ms", time.Since(started).Milliseconds(),
-		)
-		pong := [8]byte{}
-		pong[2] = 0x07
-		if _, err := stream.Write(pong[:]); err != nil {
-			exitReason = fmt.Sprintf("pong-write-err: %v", err)
-			return
-		}
+	network := "tcp"
+	if pb[0] == 0x11 {
+		network = "udp"
 	}
+
+	addr := dest.Fqdn
+	if addr == "" {
+		addr = dest.Addr.String()
+	}
+	port := dest.Port
+
+	dialer, outboundTag, blocked := h.s.resolveProxyDialer(network, addr, port)
+	if blocked {
+		return
+	}
+	targetAddr := net.JoinHostPort(addr, strconv.Itoa(int(port)))
+	target, err := h.s.dialProxyTarget(outboundTag, network, targetAddr, addr, port, dialer)
+	if err != nil {
+		logger.Trace().Warnw("stream_mux_dial_fail", "trace_id", h.traceID, "target", targetAddr, "err", err.Error())
+		return
+	}
+	defer target.Close()
+
+	if tc, ok := target.(*net.TCPConn); ok {
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(45 * time.Second)
+	}
+
+	resCh := make(chan copyResult, 2)
+	if network == "udp" {
+		h.s.relayUDP(stream, target, resCh)
+	} else {
+		h.s.relayTCP(stream, target, resCh)
+	}
+	<-resCh
+	<-resCh
 }
 
 func (s *Server) dialProxyTarget(outboundTag, network, targetAddr, addr string, port uint16, dialer proxy.Dialer) (net.Conn, error) {

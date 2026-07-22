@@ -1,14 +1,10 @@
 package tunnel
 
 import (
-	"bufio"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"github.com/nekoskin/whispera/common/buf"
 	"github.com/nekoskin/whispera/common/log"
-	"github.com/nekoskin/whispera/common/mux"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/events"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
@@ -16,16 +12,17 @@ import (
 	"github.com/nekoskin/whispera/core/killswitch"
 	"github.com/nekoskin/whispera/neural"
 	"io"
-	stdlog "log"
-	mrand "math/rand"
 	"net"
-	"runtime"
+	"os"
 	"runtime/debug"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	xmux "github.com/sagernet/sing-mux"
+	singlog "github.com/sagernet/sing/common/logger"
+	singM "github.com/sagernet/sing/common/metadata"
 )
 
 var log = logger.Module("tunnel")
@@ -61,17 +58,7 @@ const (
 	FrameTypeConnect = 0x01
 	FrameTypeData    = 0x04
 	FrameTypeClose   = 0x05
-	FrameTypeRekey   = 0x08
 )
-
-func isConnResetOrBroken(err error) bool {
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		msg := opErr.Err.Error()
-		return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset")
-	}
-	return false
-}
 
 type TunnelState int
 
@@ -175,8 +162,6 @@ type Config struct {
 	Regions         map[string][]string
 	PreferredRegion string
 
-	RekeyInterval time.Duration
-
 	TransportConfig map[string]interface{}
 
 	ForceObfuscation bool
@@ -235,70 +220,15 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-type managedConn struct {
-	net.Conn
-	session     *mux.Session
-	id          string
-	createdAt   time.Time
-	maxAge      time.Duration
-	maxUploadB  int64
-	uploadBytes int64
-	closing     chan struct{}
-	closeOnce   sync.Once
-
-	lastSampledBytes atomic.Uint64
-	lastSampleNs     atomic.Int64
-	rateMbpsX100     atomic.Int64
-	idleSamples      atomic.Int64
-}
-
-const whisperaPoolMin = 1
-
-func whisperaPoolCap() int {
-	n := runtime.GOMAXPROCS(0)
-	if n < whisperaPoolMin {
-		return whisperaPoolMin
-	}
-	return n
-}
-
-const (
-	streamShardCount = 16
-	streamShardMask  = streamShardCount - 1
-)
-
-type streamShard struct {
-	mu sync.RWMutex
-	m  map[uint16]chan *buf.Buffer
-}
-
-func (m *Manager) streamLoad(streamID uint16) (chan *buf.Buffer, bool) {
-	s := &m.streamShards[streamID&streamShardMask]
-	s.mu.RLock()
-	ch, ok := s.m[streamID]
-	s.mu.RUnlock()
-	return ch, ok
-}
-
-func (m *Manager) initStreamShards() {
-	for i := range m.streamShards {
-		m.streamShards[i].m = make(map[uint16]chan *buf.Buffer)
-	}
-}
-
 type Manager struct {
 	*base.Module
 	config *Config
 
-	sm            *tunnelStateMachine
-	cb            *circuitBreaker
-	activeConn    *managedConn
-	activePool    []*managedConn
-	drainingConns []*managedConn
-	streamConns   map[uint16]*managedConn
-	readCh        chan *buf.Buffer
+	sm *tunnelStateMachine
+	cb *circuitBreaker
 
-	streamShards [streamShardCount]streamShard
+	smClient *xmux.Client
+	smMu     sync.Mutex
 
 	connMu    sync.RWMutex
 	sessionID uint32
@@ -308,13 +238,10 @@ type Manager struct {
 	dataPlane interfaces.DataPlane
 	crypto    interfaces.CryptoProvider
 
-	keepalive *keepaliveController
-	rotation  *rotationManager
+	currentSNI string
 
 	reconnectAttempts uint32
 	reconnecting      int32
-	poolGrowInflight  atomic.Int32
-	growRefused       atomic.Bool
 	bytesUp           uint64
 	bytesDown         uint64
 	lastKeepalive     int64
@@ -331,9 +258,8 @@ type Manager struct {
 	asnBypassDialer   tcpBypassDialer
 	isTransportSecure bool
 
-	poolHealth *poolHealthSampler
-	rtLane     *rtLaneManager
-	ml         *mlOrchestrator
+	rtLane *rtLaneManager
+	ml     *mlOrchestrator
 
 	boFailCount     int32
 	boLastSuccessAt int64
@@ -353,27 +279,6 @@ type Manager struct {
 	missedKAs      int32
 }
 
-func (m *Manager) getMuxConfig() *mux.Config {
-	base := 8 + mrand.Intn(7)
-
-	frameSize := 65535
-
-	recvBuf, streamBuf := muxBufferBudget()
-	return &mux.Config{
-		MaxFrameSize:         frameSize,
-		MaxReceiveBuffer:     recvBuf,
-		MaxStreamBuffer:      streamBuf,
-		KeepAliveInterval:    time.Duration(base) * time.Second,
-		KeepAliveTimeout:     24 * time.Hour,
-		MaxConcurrentStreams: 256,
-	}
-}
-
-func muxBufferBudget() (recv, stream int) {
-	b := buf.PerConnBudget()
-	return b, b
-}
-
 func New(cfg *Config) (*Manager, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
@@ -390,19 +295,13 @@ func New(cfg *Config) (*Manager, error) {
 	m := &Manager{
 		Module:           base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
 		config:           cfg,
-		streamConns:      make(map[uint16]*managedConn),
-		readCh:           make(chan *buf.Buffer, 4096),
 		goroutineLimiter: base.NewGoroutineLimiter(1024),
 		reconnectDone:    make(chan struct{}),
 	}
 	m.connCfg.forceObfuscation.Store(forceObfs)
-	m.keepalive = newKeepaliveController(m)
-	m.rotation = newRotationManager(m)
-	m.poolHealth = newPoolHealthSampler(m)
 	m.rtLane = newRTLaneManager(m)
 	m.cb = newCircuitBreaker()
 	m.sm = newTunnelStateMachine(m.onStateTransition)
-	m.initStreamShards()
 	close(m.reconnectDone)
 
 	if cfg.EnableASNBypass || cfg.ForceSNI != "" {
@@ -490,7 +389,6 @@ func (m *Manager) Start() error {
 }
 
 func (m *Manager) Stop() error {
-	m.stopRekey()
 	m.Disconnect()
 	m.PublishEvent(events.EventTypeModuleStopped, nil)
 	return m.Module.Stop()
@@ -541,261 +439,19 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.setState(StateRotating)
 	}
 
-	firstConn, err := m.dialFirstConn(ctx)
-	if err != nil {
-		if !isRotation {
-			m.setError(err)
-		} else {
-			m.setState(StateConnected)
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		return err
+	if streamMuxEnabled() {
+		return m.connectStreamMux(ctx)
 	}
-
-	safeGo("readLoop", func() { m.readLoop(firstConn) })
-	connectedPool := []*managedConn{firstConn}
-
-	if m.killSwitch != nil && m.config.KillSwitchEnabled {
-		m.enableKillSwitch(firstConn.RemoteAddr())
-	}
-
-	m.connMu.Lock()
-	if isRotation && m.activePool != nil {
-		m.drainingConns = append(m.drainingConns, m.activePool...)
-		for _, c := range m.activePool {
-			go m.monitorDrainingConn(c)
-		}
-	}
-
-	m.activePool = connectedPool
-	m.activeConn = firstConn
-	m.connMu.Unlock()
-
-	m.growRefused.Store(false)
-
-	if !isRotation {
-		m.startKeepalive()
-		m.startRekey()
-		m.startConnRateSampler()
-		m.connectedAt = time.Now()
-		atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
-		m.setState(StateConnected)
-
-		m.connMu.RLock()
-		sniSnapshot := m.rotation.currentSNI
-		m.connMu.RUnlock()
-		m.lastGoodMu.Lock()
-		m.lastGoodSNI = sniSnapshot
-		m.lastGoodTransport = m.config.Transport
-		m.lastGoodServerAddr = m.config.ServerAddr
-		m.lastGoodMu.Unlock()
-
-		m.PublishEvent("tunnel.connected", map[string]interface{}{
-			"server":     m.config.ServerAddr,
-			"session_id": m.sessionID,
-			"pool_size":  len(connectedPool),
-		})
-	} else {
-		m.setState(StateConnected)
-		m.PublishEvent("tunnel.rotated", map[string]interface{}{
-			"id": connectedPool[0].id,
-		})
-	}
-
-	return nil
-}
-
-func (m *Manager) dialFirstConn(ctx context.Context) (*managedConn, error) {
-	budget := m.config.ConnectionTimeout
-	if budget <= 0 {
-		budget = 30 * time.Second
-	}
-	perAttempt := budget
-	if perAttempt > 20*time.Second {
-		perAttempt = 20 * time.Second
-	}
-	deadline := time.Now().Add(budget)
-	backoff := 300 * time.Millisecond
-	var lastErr error
-	for {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		dialCtx, dialCancel := context.WithTimeout(ctx, perAttempt)
-		mc, err := m.dialManagedConn(dialCtx, fmt.Sprintf("pool-%d-0", time.Now().UnixNano()))
-		dialCancel()
-		if err == nil {
-			return mc, nil
-		}
-		lastErr = err
-		if !time.Now().Before(deadline) {
-			return nil, lastErr
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(backoff):
-		}
-		if backoff < 3*time.Second {
-			backoff *= 2
-		}
-	}
-}
-
-func (m *Manager) enableKillSwitch(remoteAddr net.Addr) {
-	var serverIP net.IP
-	var serverPort int
-
-	switch addr := remoteAddr.(type) {
-	case *net.UDPAddr:
-		serverIP = addr.IP
-		serverPort = addr.Port
-	case *net.TCPAddr:
-		serverIP = addr.IP
-		serverPort = addr.Port
-	default:
-		host, portStr, _ := net.SplitHostPort(remoteAddr.String())
-		serverIP = net.ParseIP(host)
-		fmt.Sscanf(portStr, "%d", &serverPort)
-	}
-
-	if serverIP != nil {
-		m.killSwitch.SetVPNServer(serverIP, serverPort)
-		if err := m.killSwitch.Enable(); err != nil {
-			log.Error("Kill Switch enable failed: %v", err)
-		}
-	}
-}
-
-func (mc *managedConn) Close() error {
-	mc.closeOnce.Do(func() {
-		close(mc.closing)
-		if mc.session != nil {
-			mc.session.Close()
-		}
-		if mc.Conn != nil {
-			mc.Conn.Close()
-		}
-	})
-	return nil
-}
-
-func (m *Manager) removeDeadConn(mc *managedConn) {
-	m.connMu.Lock()
-	for i, c := range m.activePool {
-		if c == mc {
-			m.activePool = append(m.activePool[:i], m.activePool[i+1:]...)
-			break
-		}
-	}
-	for sid, c := range m.streamConns {
-		if c == mc {
-			delete(m.streamConns, sid)
-		}
-	}
-	if m.activeConn == mc {
-		if len(m.activePool) > 0 {
-			m.activeConn = m.activePool[0]
-		} else {
-			m.activeConn = nil
-		}
-	}
-	m.connMu.Unlock()
-}
-
-func (m *Manager) maybeGrowPool(target int) {
-	if !m.config.EnableWhispera {
-		return
-	}
-	if atomic.LoadInt32(&m.reconnecting) == 1 {
-		return
-	}
-	// A failed dial means the path is refusing new connections right now. The
-	// pool keeps whatever it reached; growth re-arms on the next fresh connect.
-	if m.growRefused.Load() {
-		return
-	}
-	if maxConns := whisperaPoolCap(); target > maxConns {
-		target = maxConns
-	}
-	m.connMu.RLock()
-	cur := len(m.activePool)
-	m.connMu.RUnlock()
-	if cur == 0 || cur >= target {
-		return
-	}
-	if !m.poolGrowInflight.CompareAndSwap(0, 1) {
-		return
-	}
-	m.spawnPoolConn()
-}
-
-func (m *Manager) growPoolUnderLoad() {
-	if !m.config.EnableWhispera || m.GetState() != StateConnected {
-		return
-	}
-	m.connMu.RLock()
-	cur := len(m.activePool)
-	streams := 0
-	for _, mc := range m.activePool {
-		if mc != nil && mc.session != nil {
-			streams += mc.session.NumStreams()
-		}
-	}
-	m.connMu.RUnlock()
-	if cur == 0 || streams <= cur {
-		return
-	}
-	m.maybeGrowPool(1 + streams)
-}
-
-func (m *Manager) spawnPoolConn() {
-	safeGo("growPool", func() {
-		defer m.poolGrowInflight.Add(-1)
-		parent := m.Context()
-		if parent == nil {
-			parent = context.Background()
-		}
-		ctx, cancel := context.WithTimeout(parent, m.config.ConnectionTimeout)
-		defer cancel()
-		mc, err := m.dialManagedConn(ctx, fmt.Sprintf("grow-%d", time.Now().UnixNano()))
-		if err != nil {
-			log.Warn("pool grow refused (%v) — keeping pool at current size", err)
-			m.growRefused.Store(true)
-			return
-		}
-		m.connMu.Lock()
-		if len(m.activePool) == 0 || len(m.activePool) >= whisperaPoolCap() {
-			m.connMu.Unlock()
-			mc.Close()
-			return
-		}
-		m.activePool = append(m.activePool, mc)
-		m.connMu.Unlock()
-		safeGo("readLoop", func() { m.readLoop(mc) })
-	})
+	return m.connectPerFlow(ctx)
 }
 
 func (m *Manager) Disconnect() {
-	m.stopKeepalive()
-	m.stopConnRateSampler()
-
-	m.connMu.Lock()
-
-	for _, c := range m.activePool {
-		c.Close()
+	m.smMu.Lock()
+	if m.smClient != nil {
+		m.smClient.Close()
+		m.smClient = nil
 	}
-	m.activePool = nil
-	m.activeConn = nil
-
-	for _, c := range m.drainingConns {
-		c.Close()
-	}
-	m.drainingConns = nil
-	m.streamConns = make(map[uint16]*managedConn)
-	m.connMu.Unlock()
+	m.smMu.Unlock()
 
 	if m.killSwitch != nil {
 		m.killSwitch.Disable()
@@ -803,15 +459,6 @@ func (m *Manager) Disconnect() {
 
 	m.setState(StateDisconnected)
 	m.PublishEvent("tunnel.disconnected", nil)
-}
-
-func (m *Manager) triggerReconnect() {
-	stdlog.Printf("[tunnel] reconnect triggered: state=%v lastErr=%v", m.GetState(), m.sm.LastError())
-	if m.config.DisableAutoReconnect {
-		m.Disconnect()
-		return
-	}
-	go m.Reconnect(m.Context())
 }
 
 func (m *Manager) waitForOngoingReconnect(ctx context.Context) error {
@@ -832,7 +479,7 @@ func (m *Manager) applyTSPUCountermeasure(err error, dialLatency float64) {
 	}
 	dialDur := time.Duration(dialLatency) * time.Millisecond
 	if strings.Contains(err.Error(), "reset") {
-		m.ml.tspuDetector.RecordRST(m.rotation.currentSNI, dialDur)
+		m.ml.tspuDetector.RecordRST(m.currentSNI, dialDur)
 	}
 	dpiType, conf := m.ml.tspuDetector.DetectTSPU()
 	if dpiType == neural.DPITypeNone || conf < 0.65 {
@@ -909,12 +556,12 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 
 		m.connMu.Lock()
 		if attempts == 1 && zeroRTTSNI != "" {
-			m.rotation.currentSNI = zeroRTTSNI
+			m.currentSNI = zeroRTTSNI
 			if zeroRTTTransport != "" {
 				m.config.Transport = zeroRTTTransport
 			}
 		} else {
-			m.rotation.currentSNI = ""
+			m.currentSNI = ""
 		}
 		m.connMu.Unlock()
 
@@ -958,438 +605,76 @@ func (m *Manager) circuitBreakerAllow() bool { return m.cb.Allow() }
 func (m *Manager) circuitBreakerFail()       { m.cb.Fail() }
 func (m *Manager) circuitBreakerSuccess()    { m.cb.Success() }
 
-func (m *Manager) readLoop(mc *managedConn) {
-	defer func() {
-		m.removeDeadConn(mc)
-		mc.Close()
-	}()
+func streamMuxEnabled() bool { return os.Getenv("WHISPERA_STREAM_MUX") == "1" }
 
-	var inputReader io.Reader = mc
-	if m.obfuscator != nil && !m.isTransportSecure && m.connCfg.TransportSecureOverride() == 0 {
-		inputReader = &deobfuscatingReader{r: mc, obf: m.obfuscator}
+type camoDialer struct{ m *Manager }
+
+func (d camoDialer) DialContext(ctx context.Context, network string, dest singM.Socksaddr) (net.Conn, error) {
+	dial := d.m.rtDial()
+	if dial == nil {
+		return nil, fmt.Errorf("stream-mux: no whispera dialer")
 	}
-	reader := bufio.NewReaderSize(inputReader, 262144)
-
-	var headerArr [FrameHeaderSize]byte
-	header := headerArr[:]
-	tlsDrainCount := 0
-	consecutiveGarbage := 0
-
-	for {
-		select {
-		case <-mc.closing:
-			return
-		default:
-		}
-
-		if !m.isTransportSecure || m.connCfg.ForceObfuscation() != 0 {
-			consumed, closed := m.drainObfuscatedPrefix(reader, mc, &tlsDrainCount, &consecutiveGarbage)
-			if closed {
-				return
-			}
-			if consumed {
-				continue
-			}
-		}
-		consecutiveGarbage = 0
-		tlsDrainCount = 0
-
-		if _, err := io.ReadFull(reader, header); err != nil {
-			m.handleReadError(mc, err)
-			return
-		}
-
-		payloadLen := binary.BigEndian.Uint32(header[4:8])
-
-		if payloadLen > 131072 {
-			if !m.resyncOversizedFrame(reader, mc, header) {
-				return
-			}
-			tlsDrainCount++
-			continue
-		}
-
-		needed := FrameHeaderSize + int(payloadLen)
-		b := buf.NewSize(needed)
-		frameData := b.Extend(needed)
-
-		copy(frameData, header)
-
-		if payloadLen > 0 {
-			if _, err := io.ReadFull(reader, frameData[FrameHeaderSize:]); err != nil {
-				b.Release()
-				m.handleReadError(mc, err)
-				return
-			}
-		}
-
-		if m.dispatchFrame(mc, b, frameData) {
-			return
-		}
-	}
+	return dial(ctx)
 }
 
-const maxTLSDrain = 50
-
-func (m *Manager) drainObfuscatedPrefix(reader *bufio.Reader, mc *managedConn, tlsDrainCount, consecutiveGarbage *int) (consumed, closed bool) {
-	peek, err := reader.Peek(5)
-	if err != nil {
-		m.handleReadError(mc, err)
-		return false, true
-	}
-
-	if !(*tlsDrainCount < maxTLSDrain && peek[0] >= 0x14 && peek[0] <= 0x17 && peek[1] <= 0x04) {
-		return false, false
-	}
-
-	tlsLen := int(peek[3])<<8 | int(peek[4])
-	if _, err := reader.Discard(5); err != nil {
-		m.handleReadError(mc, err)
-		return false, true
-	}
-
-	if tlsLen > 0 {
-		wrapped, recClosed := m.drainTLSRecord(reader, mc, peek, tlsLen, consecutiveGarbage)
-		if recClosed {
-			return false, true
-		}
-		if wrapped {
-			*tlsDrainCount = 0
-			*consecutiveGarbage = 0
-			return true, false
-		}
-	}
-
-	*tlsDrainCount++
-	return true, false
+func (d camoDialer) ListenPacket(ctx context.Context, dest singM.Socksaddr) (net.PacketConn, error) {
+	return nil, fmt.Errorf("stream-mux: udp not supported")
 }
 
-func (m *Manager) drainTLSRecord(reader *bufio.Reader, mc *managedConn, peek []byte, tlsLen int, consecutiveGarbage *int) (wrapped, closed bool) {
-	if peek[0] == 0x17 {
-		tlsPayload := make([]byte, tlsLen)
-		if _, err := io.ReadFull(reader, tlsPayload); err != nil {
-			m.handleReadError(mc, err)
-			return false, true
-		}
-		w, recClosed := m.extractWrappedFrames(mc, tlsPayload)
-		if recClosed {
-			return false, true
-		}
-		if w {
-			return true, false
-		}
-	} else {
-		if tlsLen > 65535 {
-			tlsLen = 65535
-		}
-		if _, err := io.CopyN(io.Discard, reader, int64(tlsLen)); err != nil {
-			m.handleReadError(mc, err)
-			return false, true
-		}
+func (m *Manager) getStreamMuxClient() (*xmux.Client, error) {
+	m.smMu.Lock()
+	defer m.smMu.Unlock()
+	if m.smClient != nil {
+		return m.smClient, nil
 	}
-
-	*consecutiveGarbage++
-	if *consecutiveGarbage > 20 {
-		m.handleReadError(mc, fmt.Errorf("too much garbage data (%d packets)", *consecutiveGarbage))
-		return false, true
-	}
-	return false, false
-}
-
-func (m *Manager) extractWrappedFrames(mc *managedConn, processBuf []byte) (wrapped, closed bool) {
-	for layer := 0; layer < 5; layer++ {
-		if len(processBuf) >= FrameHeaderSize {
-			pLen := binary.BigEndian.Uint32(processBuf[4:8])
-			fType := processBuf[2]
-			if fType <= 0x0A && int(pLen) <= 65535 && FrameHeaderSize+int(pLen) <= len(processBuf) {
-				return true, m.pushWrappedFrames(mc, processBuf)
-			}
-		}
-
-		if len(processBuf) > 5 && processBuf[0] == 0x17 && processBuf[1] == 0x03 {
-			innerLen := int(processBuf[3])<<8 | int(processBuf[4])
-			if innerLen+5 <= len(processBuf) {
-				processBuf = processBuf[5 : 5+innerLen]
-				continue
-			}
-		}
-		break
-	}
-	return false, false
-}
-
-func (m *Manager) pushWrappedFrames(mc *managedConn, processBuf []byte) (closed bool) {
-	offset := 0
-	for offset+FrameHeaderSize <= len(processBuf) {
-		pLen := binary.BigEndian.Uint32(processBuf[offset+4 : offset+8])
-		fType := processBuf[offset+2]
-		frameTotal := FrameHeaderSize + int(pLen)
-
-		if fType > 0x0A || offset+frameTotal > len(processBuf) {
-			break
-		}
-		if fType == 0x00 {
-			offset += frameTotal
-			continue
-		}
-
-		frameData := processBuf[offset : offset+frameTotal]
-		m.UpdateActivity()
-
-		b := buf.NewSize(len(frameData))
-		b.Write(frameData)
-		select {
-		case m.readCh <- b:
-			atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
-		case <-mc.closing:
-			b.Release()
-			return true
-		}
-
-		offset += frameTotal
-	}
-	return false
-}
-
-func (m *Manager) resyncOversizedFrame(reader *bufio.Reader, mc *managedConn, header []byte) bool {
-	foundOffset := -1
-	for i := 1; i <= FrameHeaderSize-3; i++ {
-		if header[i] >= 0x14 && header[i] <= 0x17 && header[i+1] == 0x03 && header[i+2] <= 0x04 {
-			foundOffset = i
-			break
-		}
-	}
-	if foundOffset == -1 {
-		log.Error("RESYNC failed: No embedded TLS header found. Closing connection.")
-		m.handleReadError(mc, fmt.Errorf("resync failed: no embedded TLS header found"))
-		return false
-	}
-
-	tlsHeader := make([]byte, 5)
-	available := FrameHeaderSize - foundOffset
-	copy(tlsHeader, header[foundOffset:])
-	if available < 5 {
-		if _, err := io.ReadFull(reader, tlsHeader[available:]); err != nil {
-			m.handleReadError(mc, err)
-			return false
-		}
-	}
-	tlsLen := int(tlsHeader[3])<<8 | int(tlsHeader[4])
-
-	payloadBytesInHeader := FrameHeaderSize - (foundOffset + 5)
-	if payloadBytesInHeader < 0 {
-		payloadBytesInHeader = 0
-	}
-	remainingToDrain := tlsLen - payloadBytesInHeader
-	if remainingToDrain <= 0 {
-		return true
-	}
-	if remainingToDrain > 65535 {
-		remainingToDrain = 65535
-	}
-	if _, err := io.CopyN(io.Discard, reader, int64(remainingToDrain)); err != nil {
-		m.handleReadError(mc, err)
-		return false
-	}
-	return true
-}
-
-func (m *Manager) dispatchFrame(mc *managedConn, b *buf.Buffer, frameData []byte) bool {
-	if len(frameData) >= 3 && frameData[2] == 0x07 {
-		now := time.Now()
-		atomic.StoreInt64(&m.lastPong, now.UnixNano())
-		if ka := atomic.LoadInt64(&m.lastKeepalive); ka != 0 {
-			m.updateQualityRTT(now.Sub(time.Unix(0, ka)))
-		}
-		atomic.StoreInt32(&m.missedKAs, 0)
-		b.Release()
-		return false
-	}
-
-	if len(frameData) >= 3 && frameData[2] == FrameTypeRekey {
-		atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
-		b.Release()
-		return false
-	}
-
-	atomic.StoreInt64(&m.lastPong, time.Now().UnixNano())
-
-	streamID := binary.BigEndian.Uint16(frameData[0:2])
-	ch, exists := m.streamLoad(streamID)
-	if exists {
-		select {
-		case ch <- b:
-			atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
-			m.feedScale(len(frameData))
-			m.UpdateActivity()
-		default:
-			b.Release()
-		}
-		return false
-	}
-
-	select {
-	case m.readCh <- b:
-		atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
-		m.feedScale(len(frameData))
-		m.UpdateActivity()
-	case <-mc.closing:
-		b.Release()
-		return true
-	}
-	return false
-}
-
-func (m *Manager) handleReadError(mc *managedConn, err error) {
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		return
-	}
-	if m.GetState() != StateConnected {
-		return
-	}
-
-	m.connMu.RLock()
-	inPool := slices.Contains(m.activePool, mc)
-	poolLen := len(m.activePool)
-	m.connMu.RUnlock()
-
-	if !inPool {
-		return
-	}
-
-	if poolLen > 1 {
-		log.Warn("connection read error (%v) — dropping conn, %d left in pool", err, poolLen-1)
-		m.removeDeadConn(mc)
-		mc.Close()
-		return
-	}
-
-	log.Error("last connection read error (%v) — forcing reconnect", err)
-	m.sm.SetError(err)
-	m.triggerReconnect()
-}
-
-func (m *Manager) Receive(dst []byte) (int, error) {
-	packet, ok := <-m.readCh
-	if !ok {
-		return 0, fmt.Errorf("tunnel closed")
-	}
-	data := packet.Bytes()
-	if len(data) > len(dst) {
-		log.Error("Receive buffer too small for packet (%d > %d)", len(data), len(dst))
-		packet.Release()
-		return 0, fmt.Errorf("buffer too small")
-	}
-	n := copy(dst, data)
-	packet.Release()
-	return n, nil
-}
-
-func (m *Manager) waitForActivePool(ctx context.Context) ([]*managedConn, error) {
-	for {
-		m.connMu.RLock()
-		pool := m.activePool
-		done := m.reconnectDone
-		m.connMu.RUnlock()
-
-		if len(pool) > 0 {
-			break
-		}
-		if atomic.LoadInt32(&m.reconnecting) == 0 {
-			return nil, fmt.Errorf("not connected")
-		}
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-
-	m.connMu.RLock()
-	pool := m.activePool
-	m.connMu.RUnlock()
-	if len(pool) == 0 {
-		return nil, fmt.Errorf("not connected")
-	}
-	return pool, nil
-}
-
-func (m *Manager) pickSession(ctx context.Context, proto byte, pool []*managedConn) (*mux.Session, func(), *managedConn) {
-	if proto == protoUDP && m.config.EnableWhispera {
-		if gs, gerr := m.rtSession(ctx); gerr == nil {
-			return gs, m.rtStreamClosed, nil
-		}
-	}
-
-	healthy := m.healthyPool(pool)
-	if len(healthy) == 0 {
-		healthy = pool
-	}
-	mc := healthy[0]
-	if len(healthy) > 1 {
-		minStreams := mc.session.NumStreams()
-		for i := 1; i < len(healthy); i++ {
-			n := healthy[i].session.NumStreams()
-			if n < minStreams {
-				minStreams = n
-				mc = healthy[i]
-			}
-		}
-	}
-
-	if m.config.EnableWhispera && len(pool) < whisperaPoolCap() {
-		active := 1
-		for _, c := range pool {
-			if c != nil && c.session != nil {
-				active += c.session.NumStreams()
-			}
-		}
-		m.maybeGrowPool(active)
-	}
-
-	m.maybeProbeLiveness(mc)
-	return mc.session, nil, mc
-}
-
-func (m *Manager) maybeProbeLiveness(mc *managedConn) {
-	const openStreamFreshnessWindow = 5 * time.Second
-	const openStreamProbeTimeout = 3 * time.Second
-	lastPong := atomic.LoadInt64(&m.lastPong)
-	if lastPong != 0 && time.Since(time.Unix(0, lastPong)) <= openStreamFreshnessWindow {
-		return
-	}
-	probeMC := mc
-	safeGo("openStreamProbe", func() {
-		if m.keepalive.probeNow(openStreamProbeTimeout) {
-			return
-		}
-		if time.Since(m.LastActivity()) < recentActivityWindow {
-			return
-		}
-		m.forceReconnectFromStreamFailure(probeMC, "liveness probe timed out")
+	c, err := xmux.NewClient(xmux.Options{
+		Dialer:   camoDialer{m},
+		Logger:   singlog.NOP(),
+		Protocol: "smux",
 	})
-}
-
-func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
-	pool, err := m.waitForActivePool(ctx)
 	if err != nil {
 		return nil, err
 	}
+	m.smClient = c
+	return c, nil
+}
 
-	sess, onClose, mcForFail := m.pickSession(ctx, proto, pool)
+type decoyLeaveConn struct {
+	net.Conn
+	m    *Manager
+	once sync.Once
+}
 
-	stream, err := sess.OpenStream()
-	if err != nil {
-		if onClose != nil {
-			onClose()
-		}
-		if mcForFail != nil {
-			m.forceReconnectFromStreamFailure(mcForFail, "open stream: "+err.Error())
-		}
-		return nil, fmt.Errorf("open stream: %w", err)
+func (m *Manager) connectPerFlow(ctx context.Context) error {
+	dial := m.rtDial()
+	if dial == nil {
+		err := fmt.Errorf("direct: no camo dialer")
+		m.setError(err)
+		return err
 	}
+	probe, err := dial(ctx)
+	if err != nil {
+		m.setError(err)
+		return err
+	}
+	probe.Close()
 
-	var proxyStream net.Conn = stream
+	m.setState(StateConnected)
+	m.connMu.Lock()
+	m.connectedAt = time.Now()
+	m.connMu.Unlock()
+	return nil
+}
+
+func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
+	dial := m.rtDial()
+	if dial == nil {
+		return nil, fmt.Errorf("direct: no camo dialer")
+	}
+	conn, err := dial(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("direct dial: %w", err)
+	}
 
 	addrBytes := []byte(addr)
 	header := make([]byte, 1+2+len(addrBytes)+2)
@@ -1397,50 +682,76 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 	binary.BigEndian.PutUint16(header[1:3], uint16(len(addrBytes)))
 	copy(header[3:], addrBytes)
 	binary.BigEndian.PutUint16(header[3+len(addrBytes):], port)
-
-	if _, err := proxyStream.Write(header); err != nil {
-		stream.Close()
-		if onClose != nil {
-			onClose()
-		}
-		if mcForFail != nil {
-			m.forceReconnectFromStreamFailure(mcForFail, "write connect header: "+err.Error())
-		}
-		return nil, fmt.Errorf("write connect header: %w", err)
+	if _, err := conn.Write(header); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("direct connect header: %w", err)
 	}
 
 	if m.config.DecoyGate != nil {
 		m.config.DecoyGate.Enter()
 	}
-	streamClose := onClose
 	return &ackStripConn{
-		Conn:   proxyStream,
-		stream: stream,
+		Conn:   conn,
+		stream: conn,
 		onClose: func() {
 			if m.config.DecoyGate != nil {
 				m.config.DecoyGate.Leave()
 			}
-			if streamClose != nil {
-				streamClose()
-			}
 		},
-		onAckFail: func() {
-			if mcForFail != nil {
-				m.forceReconnectFromStreamFailure(mcForFail, "connect ack timeout")
-			}
-		},
+		onAckFail: func() {},
 	}, nil
 }
 
-func (m *Manager) forceReconnectFromStreamFailure(mc *managedConn, reason string) {
-	if m.GetState() != StateConnected {
-		return
+func (m *Manager) connectStreamMux(ctx context.Context) error {
+	if _, err := m.getStreamMuxClient(); err != nil {
+		m.setError(err)
+		return err
 	}
-	if lp := atomic.LoadInt64(&m.lastPong); lp != 0 && time.Since(time.Unix(0, lp)) < recentActivityWindow {
-		log.Warn("stream failure (%s) — tunnel active, dropping stream only", reason)
-		return
+	dial := m.rtDial()
+	if dial == nil {
+		err := fmt.Errorf("stream-mux: no whispera dialer")
+		m.setError(err)
+		return err
 	}
-	m.handleReadError(mc, fmt.Errorf("stream failure: %s", reason))
+	probe, err := dial(ctx)
+	if err != nil {
+		m.setError(err)
+		return err
+	}
+	probe.Close()
+
+	m.setState(StateConnected)
+	m.connMu.Lock()
+	m.connectedAt = time.Now()
+	m.connMu.Unlock()
+	log.Warn("stream-mux mode active (h2mux) — yamux pool bypassed")
+	return nil
+}
+
+func (m *Manager) openStreamMux(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
+	c, err := m.getStreamMuxClient()
+	if err != nil {
+		return nil, err
+	}
+	conn, err := c.DialContext(ctx, "tcp", singM.ParseSocksaddrHostPort(addr, port))
+	if err != nil {
+		return nil, fmt.Errorf("stream-mux dial: %w", err)
+	}
+	if _, err := conn.Write([]byte{proto}); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("stream-mux proto write: %w", err)
+	}
+	if m.config.DecoyGate != nil {
+		m.config.DecoyGate.Enter()
+	}
+	return &decoyLeaveConn{Conn: conn, m: m}, nil
+}
+
+func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
+	if streamMuxEnabled() {
+		return m.openStreamMux(ctx, proto, addr, port)
+	}
+	return m.openStreamPerFlow(ctx, proto, addr, port)
 }
 
 const (
@@ -1482,218 +793,12 @@ func (c *ackStripConn) Read(b []byte) (int, error) {
 	return c.Conn.Read(b)
 }
 
-func (c *ackStripConn) Close() error {
-	c.closeOnce.Do(func() {
-		if c.onClose != nil {
-			c.onClose()
-		}
-		if c.stream != nil && c.stream != c.Conn {
-			c.stream.Close()
-		}
-	})
-	return c.Conn.Close()
-}
-
-func (m *Manager) Send(data []byte) error {
-	m.applyRateLimit(len(data))
-
-	var streamID uint16
-	var frameType uint8
-	if len(data) >= 8 {
-		streamID = binary.BigEndian.Uint16(data[0:2])
-		frameType = data[2]
-	}
-
-	if m.obfuscator != nil && !m.isTransportSecure && m.connCfg.TransportSecureOverride() == 0 && frameType != FrameTypeData {
-		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
-		if err != nil {
-			return fmt.Errorf("outbound obfuscation failed: %w", err)
-		}
-		if obfuscated != nil {
-			data = obfuscated
-		}
-		if delay > 0 {
-			time.Sleep(delay)
-		}
-	}
-
-	const maxRetries = 10
-	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		conn := m.selectSendConn(streamID, frameType)
-
-		if conn == nil {
-			state := m.GetState()
-			if state == StateReconnecting || state == StateRotating || state == StateConnecting {
-				if frameType == FrameTypeData {
-					return fmt.Errorf("not connected")
-				}
-				time.Sleep(m.getReconnectDelay())
-				continue
-			}
-			return fmt.Errorf("not connected")
-		}
-
-		n, err := conn.Write(data)
-		if err != nil {
-			lastErr = err
-			if m.shouldRetrySend(conn, err, frameType) {
-				time.Sleep(500 * time.Millisecond)
-				continue
-			}
-			return err
-		}
-
-		atomic.AddUint64(&m.bytesUp, uint64(n))
-		m.feedScale(n)
-		m.UpdateActivity()
-		return nil
-	}
-
-	return fmt.Errorf("send failed after %d retries: %w", maxRetries, lastErr)
-}
-
-func (m *Manager) applyRateLimit(dataLen int) {
-	limitKB := m.connCfg.rateLimitKB.Load()
-	if limitKB <= 0 || dataLen <= 0 {
-		return
-	}
-	limitBPS := int64(limitKB) * 1024
-	sleepNs := int64(dataLen) * int64(time.Second) / limitBPS
-	if sleepNs > 0 {
-		time.Sleep(time.Duration(sleepNs))
-	}
-}
-
-func (m *Manager) selectSendConn(streamID uint16, frameType uint8) *managedConn {
-	if frameType != FrameTypeConnect && frameType != FrameTypeClose {
-		m.connMu.RLock()
-		defer m.connMu.RUnlock()
-		if c, ok := m.streamConns[streamID]; ok {
-			return c
-		}
-		return m.activeConn
-	}
-
-	m.connMu.Lock()
-	defer m.connMu.Unlock()
-
-	if frameType == FrameTypeClose {
-		targetConn := m.activeConn
-		if c, ok := m.streamConns[streamID]; ok {
-			targetConn = c
-		}
-		delete(m.streamConns, streamID)
-		return targetConn
-	}
-
-	if len(m.activePool) > 0 {
-		idx := streamID % uint16(len(m.activePool))
-		if selected := m.activePool[idx]; selected != nil {
-			m.streamConns[streamID] = selected
-			return selected
-		}
-		m.streamConns[streamID] = m.activeConn
-		return m.activeConn
-	}
-	if m.activeConn != nil {
-		m.streamConns[streamID] = m.activeConn
-	}
-	return m.activeConn
-}
-
-func (m *Manager) shouldRetrySend(conn *managedConn, err error, frameType uint8) bool {
-	isClosed := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) || isConnResetOrBroken(err)
-	if !isClosed || frameType == FrameTypeData {
-		return false
-	}
-	if m.GetState() == StateConnected {
-		m.handleReadError(conn, err)
-	}
-	state := m.GetState()
-	return state == StateReconnecting || state == StateRotating || state == StateConnecting
-}
-
-func (m *Manager) monitorDrainingConn(mc *managedConn) {
-	const pollInterval = 5 * time.Second
-	const minGrace = 30 * time.Second
-
-	hardDeadline := time.Now().Add(m.config.DrainingTimeout)
-	graceUntil := time.Now().Add(minGrace)
-
-	for {
-		now := time.Now()
-		if now.After(hardDeadline) {
-			break
-		}
-
-		if now.After(graceUntil) {
-			active := 0
-			m.connMu.RLock()
-			for _, c := range m.streamConns {
-				if c == mc {
-					active++
-				}
-			}
-			m.connMu.RUnlock()
-			if active == 0 {
-				break
-			}
-		}
-
-		select {
-		case <-mc.closing:
-			goto closeNow
-		case <-time.After(pollInterval):
-			return
-		}
-	}
-
-closeNow:
-	m.connMu.Lock()
-	for i, c := range m.drainingConns {
-		if c == mc {
-			m.drainingConns = append(m.drainingConns[:i], m.drainingConns[i+1:]...)
-			break
-		}
-	}
-	for sid, c := range m.streamConns {
-		if c == mc {
-			delete(m.streamConns, sid)
-		}
-	}
-	m.connMu.Unlock()
-
-	mc.Close()
-}
-
-func (m *Manager) startConnRateSampler() { m.poolHealth.start() }
-
-func (m *Manager) stopConnRateSampler() { m.poolHealth.stop() }
-
-func (m *Manager) healthyPool(pool []*managedConn) []*managedConn { return m.poolHealth.healthy(pool) }
-
 const (
-	chScaleShrinkPerConn = 256 * 1024
-	scaleEvalBytes       = 2 * 1024 * 1024
-	browserConnBudget    = 2
-	chRTLaneReserve      = 1
-	rtIdleTimeout        = 15 * time.Second
 	protoTCP             = 0x06
 	protoUDP             = 0x11
 )
 
 func (m *Manager) rtDial() func(context.Context) (net.Conn, error) { return m.rtLane.dial() }
-
-func (m *Manager) rtSession(ctx context.Context) (*mux.Session, error) {
-	return m.rtLane.session(ctx)
-}
-
-func (m *Manager) rtLaneActive() bool { return m.rtLane.active() }
-
-func (m *Manager) rtStreamClosed() { m.rtLane.streamClosed() }
-
-func (m *Manager) feedScale(n int) { m.rtLane.feedScale(n) }
 
 func (m *Manager) GetState() TunnelState { return m.sm.Get() }
 
@@ -1745,7 +850,3 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 
 	return m.OpenStream(ctx, proto, host, port)
 }
-
-func (m *Manager) startKeepalive() { m.keepalive.start() }
-
-func (m *Manager) stopKeepalive() { m.keepalive.stop() }

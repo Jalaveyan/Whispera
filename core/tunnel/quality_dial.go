@@ -2,7 +2,6 @@ package tunnel
 
 import (
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
-	mrand "math/rand"
 	"sync/atomic"
 	"time"
 )
@@ -31,31 +30,11 @@ func (m *Manager) HealthCheck() interfaces.HealthStatus {
 		status.Details["last_error"] = lastErr.Error()
 	}
 	status.Details["server"] = m.config.ServerAddr
-	status.Details["active_streams"] = len(m.streamConns)
-	m.connMu.RLock()
-	status.Details["draining_conns"] = len(m.drainingConns)
-	m.connMu.RUnlock()
 	if rtt := time.Duration(atomic.LoadInt64(&m.qualityRTTEWMA)); rtt > 0 {
 		status.Details["quality_rtt_ms"] = rtt.Milliseconds()
 		status.Details["quality_missed_kas"] = atomic.LoadInt32(&m.missedKAs)
 	}
 	return status
-}
-
-func (m *Manager) getReconnectDelay() time.Duration {
-	attempts := atomic.LoadUint32(&m.reconnectAttempts)
-	if attempts == 0 {
-		return m.config.ReconnectInterval
-	}
-	delay := m.config.ReconnectInterval
-	for i := uint32(0); i < attempts && i < 10; i++ {
-		delay = time.Duration(float64(delay) * 2)
-	}
-	if delay > m.config.ReconnectMaxDelay {
-		delay = m.config.ReconnectMaxDelay
-	}
-	jitter := time.Duration(mrand.Int63n(int64(delay) / 4))
-	return delay + jitter
 }
 
 func (m *Manager) Stats() (bytesUp, bytesDown uint64) {

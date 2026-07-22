@@ -82,20 +82,6 @@ func (c *prependConn) Read(b []byte) (int, error) {
 
 var globalProbeDetector *probedetector.Detector
 
-func defaultRouteIface() string {
-	data, err := os.ReadFile("/proc/net/route")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n")[1:] {
-		f := strings.Fields(line)
-		if len(f) >= 2 && f[1] == "00000000" {
-			return f[0]
-		}
-	}
-	return ""
-}
-
 var (
 	configFile     = flag.String("config", "", "Path to configuration file")
 	listenAddr     = flag.String("listen", "", "UDP/TCP listen address (default from config)")

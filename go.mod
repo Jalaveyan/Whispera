@@ -12,6 +12,8 @@ require (
 	github.com/nats-io/nats.go v1.49.0
 	github.com/quic-go/quic-go v0.59.0
 	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af
+	github.com/sagernet/sing v0.8.11
+	github.com/sagernet/sing-mux v0.3.5
 	github.com/sourcegraph/conc v0.3.0
 	go.uber.org/automaxprocs v1.6.0
 	go.uber.org/zap v1.27.1
@@ -28,6 +30,7 @@ require (
 	github.com/nats-io/nkeys v0.4.12 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/sagernet/smux v1.5.50-sing-box-mod.1 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect

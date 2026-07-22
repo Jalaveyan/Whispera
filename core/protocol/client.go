@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	mrand "math/rand"
 	"net"
 	"net/http"
@@ -95,19 +96,15 @@ func (r HandshakeResult) Reward() float64 {
 var splitOffsets = []int{0, 8, 24, 64}
 
 type HandshakeStrategy struct {
-	mu      sync.Mutex
-	epsilon float64
-	rng     *mrand.Rand
-	sum     map[string][]float64
-	cnt     map[string][]int64
+	mu  sync.Mutex
+	sum map[string][]float64
+	cnt map[string][]int64
 }
 
-func NewHandshakeStrategy(epsilon float64) *HandshakeStrategy {
+func NewHandshakeStrategy() *HandshakeStrategy {
 	return &HandshakeStrategy{
-		epsilon: epsilon,
-		rng:     mrand.New(mrand.NewSource(time.Now().UnixNano())),
-		sum:     make(map[string][]float64),
-		cnt:     make(map[string][]int64),
+		sum: make(map[string][]float64),
+		cnt: make(map[string][]int64),
 	}
 }
 
@@ -129,15 +126,23 @@ func (h *HandshakeStrategy) SelectSplit(ctx string) (offset, arm int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.ensure(ctx)
-	if h.rng.Float64() < h.epsilon {
-		arm = h.rng.Intn(len(splitOffsets))
-		return splitOffsets[arm], arm
-	}
 	sum, cnt := h.sum[ctx], h.cnt[ctx]
-	bestMean := armMean(sum[0], cnt[0])
-	for i := 1; i < len(splitOffsets); i++ {
-		if m := armMean(sum[i], cnt[i]); m > bestMean {
-			bestMean, arm = m, i
+
+	var total int64
+	for i, c := range cnt {
+		if c == 0 {
+			return splitOffsets[i], i
+		}
+		total += c
+	}
+
+	lnTotal := math.Log(float64(total))
+	best := math.Inf(-1)
+	for i := range splitOffsets {
+		norm := (armMean(sum[i], cnt[i]) + 1) / 2
+		score := norm + math.Sqrt(2*lnTotal/float64(cnt[i]))
+		if score > best {
+			best, arm = score, i
 		}
 	}
 	return splitOffsets[arm], arm

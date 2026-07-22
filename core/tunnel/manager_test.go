@@ -28,18 +28,6 @@ func TestNewInitialState(t *testing.T) {
 	}
 }
 
-func TestGetMuxConfigWithoutChunkAgent(t *testing.T) {
-	m := &Manager{ml: &mlOrchestrator{}}
-
-	cfg := m.getMuxConfig()
-	if cfg.MaxFrameSize != 65535 {
-		t.Errorf("MaxFrameSize = %d, want 65535 when chunkAgent is nil", cfg.MaxFrameSize)
-	}
-	if cfg.MaxConcurrentStreams != 256 {
-		t.Errorf("MaxConcurrentStreams = %d, want 256", cfg.MaxConcurrentStreams)
-	}
-}
-
 func TestDisconnectOnFreshManagerIsSafe(t *testing.T) {
 	m := newTestManager(t)
 
@@ -132,49 +120,11 @@ func TestSetBehavioralProfileWithoutObfuscator(t *testing.T) {
 	}
 }
 
-func TestHealthyPoolFiltersSlowConns(t *testing.T) {
-	m := newTestManager(t)
-
-	slow := &managedConn{}
-	slow.rateMbpsX100.Store(100)
-	fast := &managedConn{}
-	fast.rateMbpsX100.Store(1000)
-
-	got := m.healthyPool([]*managedConn{slow, fast})
-	if len(got) != 1 || got[0] != fast {
-		t.Errorf("healthyPool() = %v, want only the fast conn", got)
-	}
-}
-
-func TestHealthyPoolPassesThroughSmallPools(t *testing.T) {
-	m := newTestManager(t)
-
-	only := &managedConn{}
-	got := m.healthyPool([]*managedConn{only})
-	if len(got) != 1 || got[0] != only {
-		t.Errorf("healthyPool() = %v, want pool unchanged when len <= 1", got)
-	}
-}
-
-func TestRTDialNilWithoutWhispera(t *testing.T) {
-	m := newTestManager(t)
-
-	if dial := m.rtDial(); dial != nil {
-		t.Error("rtDial() != nil, want nil when EnableWhispera is false")
-	}
-	if m.rtLaneActive() {
-		t.Error("rtLaneActive() = true on fresh Manager")
-	}
-}
-
 func TestHealthCheck(t *testing.T) {
 	m := newTestManager(t)
 
 	status := m.HealthCheck()
 	if status.Details["state"] != StateDisconnected.String() {
 		t.Errorf("HealthCheck() state = %v, want %v", status.Details["state"], StateDisconnected.String())
-	}
-	if status.Details["active_streams"] != 0 {
-		t.Errorf("HealthCheck() active_streams = %v, want 0", status.Details["active_streams"])
 	}
 }
