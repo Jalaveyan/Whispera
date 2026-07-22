@@ -148,7 +148,7 @@ func TestHelloSplitPreservesClientHello(t *testing.T) {
 func TestHelloSplitRealHandshake(t *testing.T) {
 	for _, host := range []string{"cloudflare.com", "www.google.com"} {
 		for _, off := range []int{0, 25, 64} {
-			raw, err := net.DialTimeout("tcp", host+":443", 8*time.Second)
+			raw, err := (&net.Dialer{Timeout: 8 * time.Second}).DialContext(context.Background(), "tcp", host+":443")
 			if err != nil {
 				t.Skipf("dial %s: %v", host, err)
 			}
@@ -211,50 +211,39 @@ func TestHandshakeResultReward(t *testing.T) {
 	}
 }
 
-func greedyHitRate(strat *HandshakeStrategy, ctx string, wantArm, trials int) float64 {
-	strat.epsilon = 0
-	hits := 0
-	for i := 0; i < trials; i++ {
-		if _, arm := strat.SelectSplit(ctx); arm == wantArm {
-			hits++
-		}
-	}
-	return float64(hits) / float64(trials)
-}
-
 func TestHandshakeStrategyConverges(t *testing.T) {
-	strat := NewHandshakeStrategy(0.15)
+	strategy := NewHandshakeStrategy()
 	ctx := "AS12345"
 	bestArm := 2
 	for i := 0; i < 2000; i++ {
-		_, arm := strat.SelectSplit(ctx)
+		_, arm := strategy.SelectSplit(ctx)
 		r := HandshakeResetFast
 		if arm == bestArm {
 			r = HandshakeOK
 		}
-		strat.Observe(ctx, arm, r)
+		strategy.Observe(ctx, arm, r)
 	}
-	if rate := greedyHitRate(strat, ctx, bestArm, 500); rate < 0.99 {
-		t.Fatalf("did not converge to best arm: greedy hit-rate=%.2f", rate)
+	if _, arm := strategy.SelectSplit(ctx); arm != bestArm {
+		t.Fatalf("did not converge to best arm: picked %d, want %d", arm, bestArm)
 	}
 }
 
 func TestHandshakeStrategyIsContextual(t *testing.T) {
-	strat := NewHandshakeStrategy(0.15)
+	strategy := NewHandshakeStrategy()
 	best := map[string]int{"AS1": 1, "AS2": 3}
 	for i := 0; i < 2000; i++ {
 		for ctx, b := range best {
-			_, arm := strat.SelectSplit(ctx)
+			_, arm := strategy.SelectSplit(ctx)
 			r := HandshakeResetFast
 			if arm == b {
 				r = HandshakeOK
 			}
-			strat.Observe(ctx, arm, r)
+			strategy.Observe(ctx, arm, r)
 		}
 	}
 	for ctx, b := range best {
-		if rate := greedyHitRate(strat, ctx, b, 300); rate < 0.99 {
-			t.Fatalf("context %s did not learn its own best arm %d: rate=%.2f", ctx, b, rate)
+		if _, arm := strategy.SelectSplit(ctx); arm != b {
+			t.Fatalf("context %s did not learn its own best arm %d: picked %d", ctx, b, arm)
 		}
 	}
 }
@@ -268,25 +257,25 @@ func TestHandshakeStrategyDemoUnderBlock(t *testing.T) {
 		return HandshakeResetFast
 	}
 
-	strat := NewHandshakeStrategy(0.15)
+	strategy := NewHandshakeStrategy()
 	ctx := "AS29182/RU"
 	cumOK := 0
 
 	dump := func(round int) {
-		strat.mu.Lock()
-		sum, cnt := strat.sum[ctx], strat.cnt[ctx]
+		strategy.mu.Lock()
+		sum, cnt := strategy.sum[ctx], strategy.cnt[ctx]
 		line := ""
 		for i, off := range splitOffsets {
 			line += fmt.Sprintf("off=%-2d mean=%+.2f n=%-4d | ", off, armMean(sum[i], cnt[i]), cnt[i])
 		}
-		strat.mu.Unlock()
+		strategy.mu.Unlock()
 		t.Logf("round=%-4d cum-success=%.2f  %s", round, float64(cumOK)/float64(round), line)
 	}
 
 	for round := 1; round <= 3000; round++ {
-		offset, arm := strat.SelectSplit(ctx)
+		offset, arm := strategy.SelectSplit(ctx)
 		res := censor(offset)
-		strat.Observe(ctx, arm, res)
+		strategy.Observe(ctx, arm, res)
 		if res == HandshakeOK {
 			cumOK++
 		}
@@ -295,10 +284,9 @@ func TestHandshakeStrategyDemoUnderBlock(t *testing.T) {
 		}
 	}
 
-	strat.epsilon = 0
 	adaptiveOK := 0
 	for i := 0; i < 300; i++ {
-		offset, _ := strat.SelectSplit(ctx)
+		offset, _ := strategy.SelectSplit(ctx)
 		if censor(offset) == HandshakeOK {
 			adaptiveOK++
 		}
@@ -309,7 +297,7 @@ func TestHandshakeStrategyDemoUnderBlock(t *testing.T) {
 			fixedOK++
 		}
 	}
-	_, bestArm := strat.SelectSplit(ctx)
+	_, bestArm := strategy.SelectSplit(ctx)
 	t.Logf("LEARNED best offset = %d (survivor = %d)", splitOffsets[bestArm], survivingOffset)
 	t.Logf("PROOF: fixed no-split success = %d/300 (%.0f%%) | adaptive success = %d/300 (%.0f%%)",
 		fixedOK, 100*float64(fixedOK)/300, adaptiveOK, 100*float64(adaptiveOK)/300)
@@ -323,10 +311,10 @@ func TestHandshakeStrategyDemoUnderBlock(t *testing.T) {
 }
 
 func TestHandshakeStrategyObserveOutOfRange(t *testing.T) {
-	strat := NewHandshakeStrategy(0.1)
-	strat.Observe("ctx", -1, HandshakeOK)
-	strat.Observe("ctx", 999, HandshakeOK)
-	if _, arm := strat.SelectSplit("ctx"); arm < 0 || arm >= len(splitOffsets) {
+	strategy := NewHandshakeStrategy()
+	strategy.Observe("ctx", -1, HandshakeOK)
+	strategy.Observe("ctx", 999, HandshakeOK)
+	if _, arm := strategy.SelectSplit("ctx"); arm < 0 || arm >= len(splitOffsets) {
 		t.Fatalf("SelectSplit returned invalid arm %d", arm)
 	}
 }

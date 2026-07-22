@@ -299,31 +299,7 @@ func (om *OutboundManager) Dial(ctx context.Context, tag string, network, addr s
 }
 
 func (om *OutboundManager) ForwardPacket(packet []byte, tag string) error {
-	om.mu.RLock()
-	t, exists := om.outbounds[tag]
-	om.mu.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("outbound not found: %s", tag)
-	}
-
-	const FrameTypeRawPacket = 0x09
-
-	frame := make([]byte, 8+len(packet))
-	frame[2] = FrameTypeRawPacket
-	frame[3] = 0x00
-
-	frame[0] = 0x00
-	frame[1] = 0x00
-
-	frame[4] = byte(len(packet) >> 24)
-	frame[5] = byte(len(packet) >> 16)
-	frame[6] = byte(len(packet) >> 8)
-	frame[7] = byte(len(packet))
-
-	copy(frame[8:], packet)
-
-	return t.Send(frame)
+	return fmt.Errorf("outbound packet forwarding not supported (stream-only transport)")
 }
 
 func (om *OutboundManager) UpdateOutbounds(configs []config.OutboundConfig) {
