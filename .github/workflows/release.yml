@@ -39,8 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
-      build_time: ${{ steps.v.outputs.build_time }}
-      git_commit: ${{ steps.v.outputs.git_commit }}
+      release: ${{ steps.v.outputs.release }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,23 +48,19 @@ jobs:
         run: |
           git fetch --tags --force 2>/dev/null || true
           if [ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]; then
-            VERSION="${GITHUB_REF#refs/tags/}"
+            TAG="${GITHUB_REF#refs/tags/}"
           else
-            BASE="v1.0.0"
-            LAST_TAG=$(git tag -l "${BASE}.*" | sort -V | tail -n1)
-            if [ -z "$LAST_TAG" ]; then
-              VERSION="${BASE}.1"
-            else
-              LAST_PATCH=$(echo "$LAST_TAG" | awk -F. '{print $NF}')
-              VERSION="${BASE}.$((LAST_PATCH + 1))"
-            fi
+            VERSION=$(grep -oE 'Version[[:space:]]*=[[:space:]]*"[^"]+"' app/server/server.go | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+            TAG="v${VERSION}"
           fi
-          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          GIT_COMMIT=$(git rev-parse --short HEAD)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "build_time=$BUILD_TIME" >> "$GITHUB_OUTPUT"
-          echo "git_commit=$GIT_COMMIT" >> "$GITHUB_OUTPUT"
-          echo "Computed: version=$VERSION build_time=$BUILD_TIME commit=$GIT_COMMIT"
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            RELEASE=false
+          else
+            RELEASE=true
+          fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          echo "release=$RELEASE" >> "$GITHUB_OUTPUT"
+          echo "Computed: version=$TAG release=$RELEASE"
 
   build-server:
     name: Build Server (${{ matrix.goarch }})
@@ -104,11 +99,8 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: ${{ matrix.cgo }}
           CC: ${{ matrix.cc }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-          BUILD_TIME: ${{ needs.prepare.outputs.build_time }}
-          GIT_COMMIT: ${{ needs.prepare.outputs.git_commit }}
         run: |
-          go build -ldflags "-s -w -X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME -X main.GitCommit=$GIT_COMMIT" -o whispera-server ./app/server
+          go build -ldflags "-s -w" -o whispera-server ./app/server
 
       - name: Archive Server
         run: tar -czvf ${{ matrix.asset_name }}.tar.gz whispera-server
@@ -161,9 +153,8 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          go build -ldflags "-s -w -X main.Version=$VERSION" \
+          go build -ldflags "-s -w" \
             -o whispera-go-client-${{ matrix.triple }}${{ matrix.ext }} ./app/goclient
 
       - name: Upload
@@ -191,9 +182,8 @@ jobs:
           GOOS: android
           GOARCH: arm64
           CGO_ENABLED: 0
-          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          go build -ldflags "-s -w -X main.Version=$VERSION" \
+          go build -ldflags "-s -w" \
             -o whispera-go-client-aarch64-linux-android ./app/goclient
 
       - name: Upload
@@ -274,7 +264,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Test Branch Release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && needs.prepare.outputs.release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.version }}
@@ -287,7 +277,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Wait for release assets to propagate
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && needs.prepare.outputs.release == 'true'
         shell: bash
         run: |
           # GitHub release asset uploads can take a few seconds to become
@@ -303,7 +293,7 @@ jobs:
           done
 
       - name: Trigger Whisp Client rebuild
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && needs.prepare.outputs.release == 'true'
         uses: peter-evans/repository-dispatch@v3
         with:
           token: ${{ secrets.WHISP_DISPATCH_TOKEN }}

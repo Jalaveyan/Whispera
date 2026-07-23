@@ -51,7 +51,7 @@ const perflowMagic byte = 0xE7
 
 const perflowPreambleTimeout = 15 * time.Second
 
-func perflowEnabled() bool { return os.Getenv("WHISPERA_PERFLOW") == "1" }
+func perflowEnabled() bool { return os.Getenv("WHISPERA_PERFLOW") != "0" }
 
 const SpliceProtoBit byte = 0x80
 

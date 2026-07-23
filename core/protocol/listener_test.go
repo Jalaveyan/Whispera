@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"os"
 	"testing"
 	"time"
 )
@@ -132,5 +133,35 @@ func TestPerflowMuxForwardsNonMagicToAccept(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("non-magic conn not forwarded to Accept")
+	}
+}
+
+func TestHandshakeStrategyPolicyAvoidsCensoredArm(t *testing.T) {
+	os.Setenv("WHISPERA_HS_POLICY", "1")
+	defer os.Unsetenv("WHISPERA_HS_POLICY")
+
+	h := NewHandshakeStrategy()
+	if h.policy == nil {
+		t.Fatal("policy not enabled with WHISPERA_HS_POLICY=1")
+	}
+
+	const censoredArm = 2
+	const ctx = "vk.com"
+	const total, tail = 4000, 500
+	okTail := 0
+	for i := 0; i < total; i++ {
+		_, arm := h.SelectSplit(ctx)
+		res := HandshakeOK
+		if arm == censoredArm {
+			res = HandshakeResetFast
+		}
+		h.Observe(ctx, arm, res)
+		if i >= total-tail && res == HandshakeOK {
+			okTail++
+		}
+	}
+
+	if survival := float64(okTail) / float64(tail); survival < 0.85 {
+		t.Errorf("survival in last %d handshakes = %.2f, want >0.85 — policy did not learn to avoid the censored arm", tail, survival)
 	}
 }

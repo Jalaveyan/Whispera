@@ -7,14 +7,18 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"math"
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nekoskin/whispera/neural"
 
 	quicgo "github.com/quic-go/quic-go"
 	http3 "github.com/quic-go/quic-go/http3"
@@ -96,17 +100,35 @@ func (r HandshakeResult) Reward() float64 {
 
 var splitOffsets = []int{0, 8, 24, 64}
 
+const hsFeatureBuckets = 16
+
 type HandshakeStrategy struct {
-	mu  sync.Mutex
-	sum map[string][]float64
-	cnt map[string][]int64
+	mu       sync.Mutex
+	sum      map[string][]float64
+	cnt      map[string][]int64
+	policy   *neural.Policy
+	survEWMA float64
 }
 
 func NewHandshakeStrategy() *HandshakeStrategy {
-	return &HandshakeStrategy{
+	h := &HandshakeStrategy{
 		sum: make(map[string][]float64),
 		cnt: make(map[string][]int64),
 	}
+	if handshakePolicyEnabled() {
+		h.policy = neural.NewPolicy(hsFeatureBuckets, 16, len(splitOffsets), 0.05, time.Now().UnixNano())
+	}
+	return h
+}
+
+func handshakePolicyEnabled() bool { return os.Getenv("WHISPERA_HS_POLICY") == "1" }
+
+func hsFeatures(ctx string) []float64 {
+	x := make([]float64, hsFeatureBuckets)
+	f := fnv.New32a()
+	_, _ = f.Write([]byte(ctx))
+	x[f.Sum32()%hsFeatureBuckets] = 1
+	return x
 }
 
 func (h *HandshakeStrategy) ensure(ctx string) {
@@ -127,6 +149,10 @@ func (h *HandshakeStrategy) SelectSplit(ctx string) (offset, arm int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.ensure(ctx)
+	if h.policy != nil {
+		arm, _ = h.policy.Sample(hsFeatures(ctx))
+		return splitOffsets[arm], arm
+	}
 	sum, cnt := h.sum[ctx], h.cnt[ctx]
 
 	var total int64
@@ -156,8 +182,20 @@ func (h *HandshakeStrategy) Observe(ctx string, arm int, r HandshakeResult) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.ensure(ctx)
-	h.sum[ctx][arm] += r.Reward()
+	reward := r.Reward()
+	h.sum[ctx][arm] += reward
 	h.cnt[ctx][arm]++
+	if h.policy != nil {
+		h.policy.Update(hsFeatures(ctx), arm, reward)
+		surv := 0.0
+		if r == HandshakeOK {
+			surv = 1.0
+		}
+		h.survEWMA += 0.05 * (surv - h.survEWMA)
+		traceLog.Infow("handshake_policy_observe",
+			"ctx", ctx, "arm", arm, "offset", splitOffsets[arm],
+			"result", int(r), "reward", reward, "survival_ewma", h.survEWMA)
+	}
 }
 
 func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net.Conn, error)) *http2.Transport {

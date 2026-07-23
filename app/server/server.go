@@ -60,11 +60,33 @@ const (
 	whisperaIdentityFile = "/etc/whispera/identity_ed25519.key"
 )
 
-var (
-	Version   = "2.1.6"
-	BuildTime = "unknown"
-	GitCommit = "unknown"
-)
+var Version = "0.0.1"
+
+func buildCommit() string {
+	info, ok := rtdebug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+	rev, dirty := "", false
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		return "unknown"
+	}
+	if len(rev) > 7 {
+		rev = rev[:7]
+	}
+	if dirty {
+		rev += "-dirty"
+	}
+	return rev
+}
 
 type prependConn struct {
 	net.Conn
@@ -310,6 +332,7 @@ func main() {
 	}
 
 	if *printVersion {
+		fmt.Printf("Whispera %s (%s)\n", Version, buildCommit())
 		os.Exit(0)
 	}
 
