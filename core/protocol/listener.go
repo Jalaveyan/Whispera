@@ -3,7 +3,9 @@ package protocol
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
+	"io"
 	stdlog "log"
 	mrand "math/rand"
 	"net"
@@ -260,7 +262,10 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 			continue
 		}
 		extraBase := &noDelayListener{TCPListener: extraLn.(*net.TCPListener)}
-		extraTLSLn := tls.NewListener(newCamouflageListener(extraBase, camoKeys, camoAddr), tlsCfg)
+		var extraTLSLn net.Listener = tls.NewListener(newCamouflageListener(extraBase, camoKeys, camoAddr), tlsCfg)
+		if perflowEnabled() {
+			extraTLSLn = newPerflowMux(extraTLSLn, cfg)
+		}
 		go srv.Serve(extraTLSLn)
 	}
 
@@ -269,7 +274,10 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		return fmt.Errorf("whispera: listen: %w", err)
 	}
 	baseLn := &noDelayListener{TCPListener: rawLn.(*net.TCPListener)}
-	tlsLn := tls.NewListener(newCamouflageListener(baseLn, camoKeys, camoAddr), tlsCfg)
+	var tlsLn net.Listener = tls.NewListener(newCamouflageListener(baseLn, camoKeys, camoAddr), tlsCfg)
+	if perflowEnabled() {
+		tlsLn = newPerflowMux(tlsLn, cfg)
+	}
 	return srv.Serve(tlsLn)
 }
 
@@ -282,6 +290,121 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 	tc.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 	tc.SetNoDelay(true)
 	return tc, nil
+}
+
+type perflowMux struct {
+	net.Listener
+	cfg    *ServerConfig
+	httpCh chan net.Conn
+	closed chan struct{}
+	err    error
+}
+
+func newPerflowMux(ln net.Listener, cfg *ServerConfig) *perflowMux {
+	m := &perflowMux{
+		Listener: ln,
+		cfg:      cfg,
+		httpCh:   make(chan net.Conn),
+		closed:   make(chan struct{}),
+	}
+	go m.run()
+	return m
+}
+
+func (m *perflowMux) run() {
+	for {
+		c, err := m.Listener.Accept()
+		if err != nil {
+			m.err = err
+			close(m.httpCh)
+			return
+		}
+		go m.classify(c)
+	}
+}
+
+func (m *perflowMux) classify(c net.Conn) {
+	c.SetReadDeadline(time.Now().Add(perflowPreambleTimeout))
+	var first [1]byte
+	if _, err := io.ReadFull(c, first[:]); err != nil {
+		c.Close()
+		return
+	}
+	if first[0] == perflowMagic {
+		handlePerflowConn(c, m.cfg)
+		return
+	}
+	c.SetReadDeadline(time.Time{})
+	pc := &prefixConn{Conn: c, prefix: []byte{first[0]}}
+	select {
+	case m.httpCh <- pc:
+	case <-m.closed:
+		c.Close()
+	}
+}
+
+func (m *perflowMux) Accept() (net.Conn, error) {
+	select {
+	case c, ok := <-m.httpCh:
+		if !ok {
+			if m.err != nil {
+				return nil, m.err
+			}
+			return nil, net.ErrClosed
+		}
+		return c, nil
+	case <-m.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (m *perflowMux) Close() error {
+	select {
+	case <-m.closed:
+	default:
+		close(m.closed)
+	}
+	return m.Listener.Close()
+}
+
+func handlePerflowConn(c net.Conn, cfg *ServerConfig) {
+	c.SetReadDeadline(time.Now().Add(perflowPreambleTimeout))
+	sessionID := make([]byte, 16)
+	if _, err := io.ReadFull(c, sessionID); err != nil {
+		c.Close()
+		return
+	}
+	var tl [2]byte
+	if _, err := io.ReadFull(c, tl[:]); err != nil {
+		c.Close()
+		return
+	}
+	tokLen := binary.BigEndian.Uint16(tl[:])
+	if tokLen == 0 || tokLen > 512 {
+		c.Close()
+		return
+	}
+	tok := make([]byte, tokLen)
+	if _, err := io.ReadFull(c, tok); err != nil {
+		c.Close()
+		return
+	}
+	c.SetReadDeadline(time.Time{})
+
+	secret, userID := resolveSecret(cfg, string(tok), sessionID)
+	if secret == nil {
+		c.Close()
+		return
+	}
+	if !cfg.consumeToken(string(tok)) {
+		c.Close()
+		return
+	}
+	if cfg.OnConn == nil {
+		c.Close()
+		return
+	}
+	cfg.OnConn(c, userID, secret)
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {

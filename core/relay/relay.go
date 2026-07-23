@@ -51,12 +51,6 @@ const (
 	ModuleVersion = "1.0.0"
 )
 
-const (
-	streamAliveMarker byte = 0x02
-	connectOK         byte = 0x00
-	connectFail       byte = 0x01
-)
-
 type ResponseWriter interface {
 	Write(data []byte) error
 	RemoteAddr() net.Addr
@@ -510,10 +504,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 
 	stream.SetReadDeadline(time.Time{})
 
-	if _, err := stream.Write([]byte{streamAliveMarker}); err != nil {
-		return
-	}
-
 	streamStart := time.Now()
 	logger.Trace().Infow("proxy_stream_start",
 		"trace_id", tunnelID,
@@ -529,7 +519,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 
 	dialer, outboundTag, blocked := s.resolveProxyDialer(network, addr, port)
 	if blocked {
-		stream.Write([]byte{connectFail})
 		return
 	}
 
@@ -538,7 +527,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	target, err := s.dialProxyTarget(outboundTag, network, targetAddr, addr, port, dialer)
 	dialDur := time.Since(dialStart)
 	if err != nil {
-		stream.Write([]byte{connectFail})
 		logger.Trace().Warnw("proxy_stream_dial_fail",
 			"trace_id", tunnelID,
 			"target", targetAddr,
@@ -554,10 +542,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		"target", targetAddr,
 		"dial_ms", dialDur.Milliseconds(),
 	)
-
-	if _, err := stream.Write([]byte{connectOK}); err != nil {
-		return
-	}
 
 	if tcpTarget, ok := target.(*net.TCPConn); ok {
 		tcpTarget.SetKeepAlive(true)

@@ -11,7 +11,6 @@ import (
 	asnbypass "github.com/nekoskin/whispera/core/asn_bypass"
 	"github.com/nekoskin/whispera/core/killswitch"
 	"github.com/nekoskin/whispera/neural"
-	"io"
 	"net"
 	"os"
 	"runtime/debug"
@@ -28,16 +27,6 @@ import (
 var log = logger.Module("tunnel")
 
 var _ interfaces.Module = (*Manager)(nil)
-
-type ackStripConn struct {
-	net.Conn
-	stream    net.Conn
-	once      sync.Once
-	ackErr    error
-	onClose   func()
-	onAckFail func()
-	closeOnce sync.Once
-}
 
 func safeGo(name string, fn func()) {
 	go func() {
@@ -645,6 +634,15 @@ type decoyLeaveConn struct {
 	once sync.Once
 }
 
+func (d *decoyLeaveConn) Close() error {
+	d.once.Do(func() {
+		if d.m.config.DecoyGate != nil {
+			d.m.config.DecoyGate.Leave()
+		}
+	})
+	return d.Conn.Close()
+}
+
 func (m *Manager) connectPerFlow(ctx context.Context) error {
 	dial := m.rtDial()
 	if dial == nil {
@@ -690,16 +688,7 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if m.config.DecoyGate != nil {
 		m.config.DecoyGate.Enter()
 	}
-	return &ackStripConn{
-		Conn:   conn,
-		stream: conn,
-		onClose: func() {
-			if m.config.DecoyGate != nil {
-				m.config.DecoyGate.Leave()
-			}
-		},
-		onAckFail: func() {},
-	}, nil
+	return &decoyLeaveConn{Conn: conn, m: m}, nil
 }
 
 func (m *Manager) connectStreamMux(ctx context.Context) error {
@@ -755,47 +744,8 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 }
 
 const (
-	rtStreamAliveMarker byte = 0x02
-	rtConnectOK         byte = 0x00
-)
-
-const (
-	streamAliveWait = 5 * time.Second
-	connectAckWait  = 17 * time.Second
-)
-
-func (c *ackStripConn) Read(b []byte) (int, error) {
-	c.once.Do(func() {
-		c.Conn.SetReadDeadline(time.Now().Add(streamAliveWait))
-		var marker [1]byte
-		if _, err := io.ReadFull(c.Conn, marker[:]); err != nil {
-			c.ackErr = fmt.Errorf("read stream-alive marker: %w", err)
-			if c.onAckFail != nil {
-				c.onAckFail()
-			}
-			return
-		}
-
-		c.Conn.SetReadDeadline(time.Now().Add(connectAckWait))
-		var ack [1]byte
-		if _, err := io.ReadFull(c.Conn, ack[:]); err != nil {
-			c.ackErr = fmt.Errorf("read connect response: %w", err)
-			return
-		}
-		c.Conn.SetReadDeadline(time.Time{})
-		if ack[0] != rtConnectOK {
-			c.ackErr = fmt.Errorf("relay refused connection")
-		}
-	})
-	if c.ackErr != nil {
-		return 0, c.ackErr
-	}
-	return c.Conn.Read(b)
-}
-
-const (
-	protoTCP             = 0x06
-	protoUDP             = 0x11
+	protoTCP = 0x06
+	protoUDP = 0x11
 )
 
 func (m *Manager) rtDial() func(context.Context) (net.Conn, error) { return m.rtLane.dial() }

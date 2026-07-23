@@ -8,6 +8,7 @@ import (
 	"fmt"
 	mrand "math/rand"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -45,6 +46,12 @@ const (
 	contentType         = "application/octet-stream"
 	contentTypeDownload = "video/mp4"
 )
+
+const perflowMagic byte = 0xE7
+
+const perflowPreambleTimeout = 15 * time.Second
+
+func perflowEnabled() bool { return os.Getenv("WHISPERA_PERFLOW") == "1" }
 
 func chromeLikeQUICConfig() *quicgo.Config {
 	return &quicgo.Config{

@@ -4,6 +4,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -211,6 +212,10 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		helloRaw: helloRaw,
 	}
 
+	if perflowEnabled() && !cfg.EnableQUIC {
+		return dialPerflow(ctx, d, sessionID, token)
+	}
+
 	h2Transport := newH2Transport(d.dialTLS)
 
 	if splitEnabled() && !cfg.EnableQUIC {
@@ -361,6 +366,24 @@ func (d *clientDialer) closeDialed() {
 	for _, c := range conns {
 		_ = c.Close()
 	}
+}
+
+func dialPerflow(ctx context.Context, d *clientDialer, sessionID []byte, token string) (net.Conn, error) {
+	uConn, err := d.dialTLS(ctx, "tcp", d.cfg.ServerAddr, nil)
+	if err != nil {
+		return nil, err
+	}
+	pre := make([]byte, 0, 1+len(sessionID)+2+len(token))
+	pre = append(pre, perflowMagic)
+	pre = append(pre, sessionID...)
+	pre = binary.BigEndian.AppendUint16(pre, uint16(len(token)))
+	pre = append(pre, token...)
+	if _, err := uConn.Write(pre); err != nil {
+		uConn.Close()
+		return nil, err
+	}
+	logTransportMode("perflow")
+	return uConn, nil
 }
 
 func establishPostTunnel(ctx context.Context, d *clientDialer, h2Transport *http2.Transport, path, token, origin string, prof browserProfile, sessionID []byte, anchor time.Time) (net.Conn, error) {

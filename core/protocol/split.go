@@ -18,8 +18,12 @@ import (
 	http2 "golang.org/x/net/http2"
 )
 
+var loggedTransportModes sync.Map
+
 func logTransportMode(mode string) {
-	stdlog.Printf("whispera: transport=%s", mode)
+	if _, seen := loggedTransportModes.LoadOrStore(mode, struct{}{}); !seen {
+		stdlog.Printf("whispera: transport=%s", mode)
+	}
 }
 
 const (
