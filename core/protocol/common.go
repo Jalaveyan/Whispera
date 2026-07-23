@@ -53,6 +53,10 @@ const perflowPreambleTimeout = 15 * time.Second
 
 func perflowEnabled() bool { return os.Getenv("WHISPERA_PERFLOW") == "1" }
 
+const SpliceProtoBit byte = 0x80
+
+func SpliceEnabled() bool { return perflowEnabled() && os.Getenv("WHISPERA_SPLICE") != "0" }
+
 func chromeLikeQUICConfig() *quicgo.Config {
 	return &quicgo.Config{
 		Versions:                       []quicgo.Version{quicgo.Version1},

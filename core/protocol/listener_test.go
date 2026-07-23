@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"context"
 	crand "crypto/rand"
 	"encoding/binary"
 	"io"
@@ -21,7 +22,7 @@ func perflowPreamble(secret, sessionID []byte) []byte {
 }
 
 func TestPerflowMuxAuthenticatesAndPositionsStream(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +38,7 @@ func TestPerflowMuxAuthenticatesAndPositionsStream(t *testing.T) {
 		SharedSecret: secret,
 		OnConn: func(c net.Conn, userID string, _ []byte) {
 			tail := make([]byte, 4)
-			io.ReadFull(c, tail)
+			_, _ = io.ReadFull(c, tail)
 			got <- call{userID, tail}
 			c.Close()
 		},
@@ -47,7 +48,7 @@ func TestPerflowMuxAuthenticatesAndPositionsStream(t *testing.T) {
 
 	sessionID := make([]byte, 16)
 	crand.Read(sessionID)
-	c, err := net.Dial("tcp", ln.Addr().String())
+	c, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func TestPerflowMuxAuthenticatesAndPositionsStream(t *testing.T) {
 }
 
 func TestPerflowMuxRejectsBadToken(t *testing.T) {
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	ln, _ := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	secret := make([]byte, 32)
 	crand.Read(secret)
 	called := make(chan struct{}, 1)
@@ -84,7 +85,7 @@ func TestPerflowMuxRejectsBadToken(t *testing.T) {
 	bad = append(bad, sessionID...)
 	bad = binary.BigEndian.AppendUint16(bad, uint16(len(tok)))
 	bad = append(bad, tok...)
-	c, _ := net.Dial("tcp", ln.Addr().String())
+	c, _ := (&net.Dialer{}).DialContext(context.Background(), "tcp", ln.Addr().String())
 	defer c.Close()
 	c.Write(bad)
 
@@ -100,11 +101,11 @@ func TestPerflowMuxRejectsBadToken(t *testing.T) {
 }
 
 func TestPerflowMuxForwardsNonMagicToAccept(t *testing.T) {
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	ln, _ := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	mux := newPerflowMux(ln, &ServerConfig{})
 	defer mux.Close()
 
-	c, _ := net.Dial("tcp", ln.Addr().String())
+	c, _ := (&net.Dialer{}).DialContext(context.Background(), "tcp", ln.Addr().String())
 	defer c.Close()
 	c.Write([]byte("GET / HTTP/1.1\r\n"))
 
@@ -125,7 +126,7 @@ func TestPerflowMuxForwardsNonMagicToAccept(t *testing.T) {
 		}
 		defer a.conn.Close()
 		head := make([]byte, 3)
-		io.ReadFull(a.conn, head)
+		_, _ = io.ReadFull(a.conn, head)
 		if string(head) != "GET" {
 			t.Errorf("first bytes = %q, want GET — prefix byte lost", head)
 		}

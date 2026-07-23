@@ -10,7 +10,9 @@ import (
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	asnbypass "github.com/nekoskin/whispera/core/asn_bypass"
 	"github.com/nekoskin/whispera/core/killswitch"
+	"github.com/nekoskin/whispera/core/protocol"
 	"github.com/nekoskin/whispera/neural"
+	"io"
 	"net"
 	"os"
 	"runtime/debug"
@@ -674,9 +676,23 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		return nil, fmt.Errorf("direct dial: %w", err)
 	}
 
+	wantSplice := proto&protocol.SpliceProtoBit != 0
+	proto &^= protocol.SpliceProtoBit
+	splice := wantSplice && protocol.SpliceEnabled()
+	var raw net.Conn
+	if splice {
+		if raw = netConnOf(conn); raw == nil {
+			splice = false
+		}
+	}
+	hdrProto := proto
+	if splice {
+		hdrProto |= protocol.SpliceProtoBit
+	}
+
 	addrBytes := []byte(addr)
 	header := make([]byte, 1+2+len(addrBytes)+2)
-	header[0] = proto
+	header[0] = hdrProto
 	binary.BigEndian.PutUint16(header[1:3], uint16(len(addrBytes)))
 	copy(header[3:], addrBytes)
 	binary.BigEndian.PutUint16(header[3+len(addrBytes):], port)
@@ -688,7 +704,68 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if m.config.DecoyGate != nil {
 		m.config.DecoyGate.Enter()
 	}
-	return &decoyLeaveConn{Conn: conn, m: m}, nil
+	dl := &decoyLeaveConn{Conn: conn, m: m}
+	if splice {
+		return &clientSpliceConn{decoyLeaveConn: dl, raw: raw, padLeft: spliceRecordsToPad}, nil
+	}
+	return dl, nil
+}
+
+func netConnOf(c net.Conn) net.Conn {
+	if nc, ok := c.(interface{ NetConn() net.Conn }); ok {
+		if raw := nc.NetConn(); raw != nil {
+			return raw
+		}
+	}
+	return nil
+}
+
+const spliceRecordsToPad = 8
+
+type clientSpliceConn struct {
+	*decoyLeaveConn
+	raw     net.Conn
+	padLeft int
+	rbuf    []byte
+}
+
+func (c *clientSpliceConn) Write(b []byte) (int, error) { return c.Conn.Write(b) }
+
+func (c *clientSpliceConn) Read(b []byte) (int, error) {
+	if len(c.rbuf) > 0 {
+		n := copy(b, c.rbuf)
+		c.rbuf = c.rbuf[n:]
+		return n, nil
+	}
+	if c.padLeft == 0 {
+		return c.raw.Read(b)
+	}
+	var hdr [5]byte
+	if _, err := io.ReadFull(c.raw, hdr[:]); err != nil {
+		return 0, err
+	}
+	if hdr[0] != 0x17 {
+		return 0, fmt.Errorf("splice: bad record type 0x%02x", hdr[0])
+	}
+	body := int(binary.BigEndian.Uint16(hdr[3:5]))
+	rec := make([]byte, body)
+	if _, err := io.ReadFull(c.raw, rec); err != nil {
+		return 0, err
+	}
+	c.padLeft--
+	if body < 2 {
+		return 0, fmt.Errorf("splice: short record")
+	}
+	dataLen := int(binary.BigEndian.Uint16(rec[0:2]))
+	if 2+dataLen > body {
+		return 0, fmt.Errorf("splice: bad data len")
+	}
+	data := rec[2 : 2+dataLen]
+	n := copy(b, data)
+	if n < len(data) {
+		c.rbuf = append(c.rbuf[:0], data[n:]...)
+	}
+	return n, nil
 }
 
 func (m *Manager) connectStreamMux(ctx context.Context) error {

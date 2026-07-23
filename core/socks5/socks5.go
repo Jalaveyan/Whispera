@@ -1,6 +1,7 @@
 package socks5
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -156,6 +157,18 @@ func isTorrentPort(port uint16) bool {
 	return port >= 6881 && port <= 6889
 }
 
+func sniffTLSHello(c net.Conn) (prefix []byte, isTLS bool) {
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	defer c.SetReadDeadline(time.Time{})
+	hdr := make([]byte, 3)
+	n, _ := io.ReadFull(c, hdr)
+	prefix = hdr[:n]
+	if n == 3 && hdr[0] == 0x16 && hdr[1] == 0x03 {
+		isTLS = true
+	}
+	return
+}
+
 func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, targetPort uint16) error {
 	defer func() {
 		if r := recover(); r != nil {
@@ -204,15 +217,28 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	stream, err := tunnel.OpenStream(ctx, 0x06, targetAddr, targetPort)
+	proto := byte(0x06)
+	var replay []byte
+	if targetPort == 443 && protocol.SpliceEnabled() {
+		hello, isTLS := sniffTLSHello(clientConn)
+		replay = hello
+		if isTLS {
+			proto |= protocol.SpliceProtoBit
+		}
+	}
+
+	stream, err := tunnel.OpenStream(ctx, proto, targetAddr, targetPort)
 	if err != nil {
 		return fmt.Errorf("relay connect: %w", err)
 	}
 	defer stream.Close()
 
 	var src io.Reader = clientConn
+	if len(replay) > 0 {
+		src = io.MultiReader(bytes.NewReader(replay), clientConn)
+	}
 	if targetPort == 443 && HarvestHook != nil {
-		src = &harvestPeekReader{Reader: clientConn}
+		src = &harvestPeekReader{Reader: src}
 	}
 	buf.Relay(clientConn, stream, src, nil)
 	return nil

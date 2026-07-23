@@ -1,9 +1,80 @@
 package tunnel
 
 import (
+	"bytes"
+	"net"
 	"testing"
 	"time"
 )
+
+type spliceReadConn struct {
+	net.Conn
+	r *bytes.Reader
+}
+
+func (c *spliceReadConn) Read(b []byte) (int, error) { return c.r.Read(b) }
+
+func buildSplicePaddedWire(payloads [][]byte) []byte {
+	var w bytes.Buffer
+	for _, p := range payloads {
+		const pad = 20
+		body := 2 + len(p) + pad
+		w.Write([]byte{0x17, 0x03, 0x03, byte(body >> 8), byte(body)})
+		w.Write([]byte{byte(len(p) >> 8), byte(len(p))})
+		w.Write(p)
+		w.Write(make([]byte, pad))
+	}
+	return w.Bytes()
+}
+
+func readAllSmall(t *testing.T, c net.Conn, chunk int) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	buf := make([]byte, chunk)
+	for {
+		n, err := c.Read(buf)
+		out.Write(buf[:n])
+		if err != nil {
+			break
+		}
+	}
+	return out.Bytes()
+}
+
+func newClientSplice(wire []byte) *clientSpliceConn {
+	return &clientSpliceConn{
+		decoyLeaveConn: &decoyLeaveConn{},
+		raw:            &spliceReadConn{r: bytes.NewReader(wire)},
+		padLeft:        spliceRecordsToPad,
+	}
+}
+
+func TestClientSpliceShortResponseSmallBuffers(t *testing.T) {
+	payloads := [][]byte{[]byte("hello"), []byte("world!!"), bytes.Repeat([]byte("x"), 200)}
+	csc := newClientSplice(buildSplicePaddedWire(payloads))
+	got := readAllSmall(t, csc, 3)
+	want := bytes.Join(payloads, nil)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch: got %q, want %q", got, want)
+	}
+}
+
+func TestClientSplicePaddedThenRaw(t *testing.T) {
+	var payloads [][]byte
+	for i := 0; i < spliceRecordsToPad; i++ {
+		payloads = append(payloads, bytes.Repeat([]byte{byte('a' + i)}, 13))
+	}
+	wire := buildSplicePaddedWire(payloads)
+	tail := bytes.Repeat([]byte("RAW"), 100)
+	wire = append(wire, tail...)
+
+	csc := newClientSplice(wire)
+	got := readAllSmall(t, csc, 7)
+	want := append(bytes.Join(payloads, nil), tail...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("mismatch: got %d bytes, want %d", len(got), len(want))
+	}
+}
 
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()

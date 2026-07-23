@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -219,5 +220,69 @@ func TestStreamMuxThroughput(t *testing.T) {
 	t.Logf("stream-mux throughput (loopback): %.0f Mbps (%.0f MB)", mbps, float64(total)/1024/1024)
 	if total == 0 {
 		t.Fatal("no data transferred through stream-mux path")
+	}
+}
+
+type spliceFakeConn struct {
+	net.Conn
+	out *bytes.Buffer
+	tx  int
+}
+
+func (c *spliceFakeConn) Write(p []byte) (int, error) { return c.out.Write(p) }
+func (c *spliceFakeConn) CountTx(n int)               { c.tx += n }
+
+func decodeSpliceWire(t *testing.T, raw []byte, padRecords int) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	off := 0
+	for i := 0; i < padRecords; i++ {
+		if off+5 > len(raw) {
+			break
+		}
+		if raw[off] != 0x17 {
+			t.Fatalf("record %d: type 0x%02x, want 0x17", i, raw[off])
+		}
+		body := int(binary.BigEndian.Uint16(raw[off+3 : off+5]))
+		off += 5
+		if off+body > len(raw) {
+			t.Fatalf("record %d: truncated", i)
+		}
+		dataLen := int(binary.BigEndian.Uint16(raw[off : off+2]))
+		if 2+dataLen > body {
+			t.Fatalf("record %d: data len %d exceeds body %d", i, dataLen, body)
+		}
+		out.Write(raw[off+2 : off+2+dataLen])
+		off += body
+	}
+	out.Write(raw[off:])
+	return out.Bytes()
+}
+
+func TestServerSplicePaddingRoundTrip(t *testing.T) {
+	fc := &spliceFakeConn{out: &bytes.Buffer{}}
+	sc := &serverSpliceConn{Conn: fc, raw: fc, padLeft: spliceRecordsToPad}
+
+	writes := [][]byte{
+		bytes.Repeat([]byte("A"), 10),
+		bytes.Repeat([]byte("B"), 100),
+		bytes.Repeat([]byte("C"), spliceMaxData+1000),
+		bytes.Repeat([]byte("D"), 50000),
+	}
+	var sent bytes.Buffer
+	for _, w := range writes {
+		n, err := sc.Write(w)
+		if err != nil || n != len(w) {
+			t.Fatalf("Write() = (%d, %v), want (%d, nil)", n, err, len(w))
+		}
+		sent.Write(w)
+	}
+
+	got := decodeSpliceWire(t, fc.out.Bytes(), spliceRecordsToPad)
+	if !bytes.Equal(got, sent.Bytes()) {
+		t.Fatalf("round-trip mismatch: got %d bytes, want %d", len(got), sent.Len())
+	}
+	if fc.tx != sent.Len() {
+		t.Errorf("CountTx total = %d, want %d", fc.tx, sent.Len())
 	}
 }

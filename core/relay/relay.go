@@ -12,6 +12,7 @@ import (
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	"github.com/nekoskin/whispera/common/runtime/registry"
 	"io"
+	mrand "math/rand"
 	"net"
 	"net/url"
 	"os"
@@ -273,6 +274,80 @@ func (s *Server) runSession(under net.Conn, streamObf bool, usePadding bool, cli
 
 func streamMuxEnabled() bool { return os.Getenv("WHISPERA_STREAM_MUX") == "1" }
 
+const spliceProtoBit byte = 0x80
+
+func spliceOn() bool {
+	return os.Getenv("WHISPERA_PERFLOW") == "1" && os.Getenv("WHISPERA_SPLICE") != "0"
+}
+
+func netConnOf(c net.Conn) net.Conn {
+	if nc, ok := c.(interface{ NetConn() net.Conn }); ok {
+		if raw := nc.NetConn(); raw != nil {
+			return raw
+		}
+	}
+	return nil
+}
+
+const (
+	spliceRecordsToPad = 8
+	spliceMaxData      = 4096
+	spliceMinPad       = 16
+	spliceMaxPad       = 256
+)
+
+type serverSpliceConn struct {
+	net.Conn
+	raw     net.Conn
+	padLeft int
+}
+
+func (c *serverSpliceConn) Read(b []byte) (int, error) { return c.Conn.Read(b) }
+
+func (c *serverSpliceConn) Write(b []byte) (int, error) {
+	total := len(b)
+	for len(b) > 0 && c.padLeft > 0 {
+		chunk := b
+		if len(chunk) > spliceMaxData {
+			chunk = chunk[:spliceMaxData]
+		}
+		if _, err := c.raw.Write(paddedRecord(chunk)); err != nil {
+			return total - len(b), err
+		}
+		c.countTx(len(chunk))
+		b = b[len(chunk):]
+		c.padLeft--
+	}
+	if len(b) > 0 {
+		n, err := c.raw.Write(b)
+		c.countTx(n)
+		if err != nil {
+			return total - len(b) + n, err
+		}
+	}
+	return total, nil
+}
+
+func (c *serverSpliceConn) countTx(n int) {
+	if n > 0 {
+		if tc, ok := c.Conn.(interface{ CountTx(int) }); ok {
+			tc.CountTx(n)
+		}
+	}
+}
+
+func paddedRecord(data []byte) []byte {
+	padLen := spliceMinPad + mrand.Intn(spliceMaxPad-spliceMinPad+1)
+	body := 2 + len(data) + padLen
+	rec := make([]byte, 5+body)
+	rec[0], rec[1], rec[2] = 0x17, 0x03, 0x03
+	binary.BigEndian.PutUint16(rec[3:5], uint16(body))
+	binary.BigEndian.PutUint16(rec[5:7], uint16(len(data)))
+	copy(rec[7:], data)
+	mrand.Read(rec[7+len(data):])
+	return rec
+}
+
 func (s *Server) serveStreamMux(under net.Conn, clientID string, traceID uint64) {
 	svc, err := xmux.NewService(xmux.ServiceOptions{
 		NewStreamContext: func(ctx context.Context, _ net.Conn) context.Context { return ctx },
@@ -490,6 +565,8 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		return
 	}
 	proto := hdr[0]
+	splice := proto&spliceProtoBit != 0 && spliceOn()
+	proto &^= spliceProtoBit
 	addrLen := binary.BigEndian.Uint16(hdr[1:3])
 	if addrLen == 0 || addrLen > 255 {
 		return
@@ -550,10 +627,18 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 
 	resCh := make(chan copyResult, 2)
 
+	relayStream := stream
+	if splice {
+		if raw := netConnOf(stream); raw != nil {
+			relayStream = &serverSpliceConn{Conn: stream, raw: raw, padLeft: spliceRecordsToPad}
+			logger.Trace().Infow("proxy_stream_splice", "trace_id", tunnelID, "target", targetAddr)
+		}
+	}
+
 	if network == "udp" {
 		s.relayUDP(stream, target, resCh)
 	} else {
-		s.relayTCP(stream, target, resCh)
+		s.relayTCP(relayStream, target, resCh)
 	}
 	r1 := <-resCh
 	r2 := <-resCh

@@ -83,6 +83,20 @@ func (c *TrafficConn) Close() error {
 	return err
 }
 
+func (c *TrafficConn) NetConn() net.Conn {
+	if nc, ok := c.Conn.(interface{ NetConn() net.Conn }); ok {
+		return nc.NetConn()
+	}
+	return c.Conn
+}
+
+func (c *TrafficConn) CountTx(n int) {
+	if n > 0 {
+		AddTx(c.UserID, int64(n))
+		c.txBytes.Add(int64(n))
+	}
+}
+
 func WrapConn(conn net.Conn, userID string) net.Conn {
 	tc := &TrafficConn{
 		Conn:   conn,
