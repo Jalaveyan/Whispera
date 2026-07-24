@@ -9,6 +9,7 @@ import (
 	"github.com/nekoskin/whispera/core/transport/grpc"
 	"github.com/nekoskin/whispera/core/transport/yadisk"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 )
 
 const defaultWhisperaSNI = "vk.com"
+
+func helloSplitEnabled() bool { return os.Getenv("WHISPERA_HELLO_SPLIT") == "1" }
 
 const altTransportSessionIDLen = 8
 
@@ -113,11 +116,13 @@ func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error)
 	}
 	strategy := rl.strategy
 	return func(ctx context.Context) (net.Conn, error) {
-		offset, arm := strategy.SelectSplit(sni)
 		c := *cCfg
-		c.HelloSplitOffset = offset
-		c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
-			strategy.Observe(sni, arm, result)
+		if helloSplitEnabled() {
+			offset, arm := strategy.SelectSplit(sni)
+			c.HelloSplitOffset = offset
+			c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
+				strategy.Observe(sni, arm, result)
+			}
 		}
 		return protocol.Client(ctx, &c)
 	}, true
