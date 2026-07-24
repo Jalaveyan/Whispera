@@ -199,3 +199,14 @@ func TestHealthCheck(t *testing.T) {
 		t.Errorf("HealthCheck() state = %v, want %v", status.Details["state"], StateDisconnected.String())
 	}
 }
+
+func TestHelloSplitDisabledByDefault(t *testing.T) {
+	t.Setenv("WHISPERA_HELLO_SPLIT", "")
+	if helloSplitEnabled() {
+		t.Fatal("outer ClientHello split must be off by default (one-segment invariant under tail-drop DPI)")
+	}
+	t.Setenv("WHISPERA_HELLO_SPLIT", "1")
+	if !helloSplitEnabled() {
+		t.Fatal("WHISPERA_HELLO_SPLIT=1 must enable outer ClientHello split")
+	}
+}
