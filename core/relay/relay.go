@@ -277,7 +277,7 @@ func streamMuxEnabled() bool { return os.Getenv("WHISPERA_STREAM_MUX") == "1" }
 const spliceProtoBit byte = 0x80
 
 func spliceOn() bool {
-	return os.Getenv("WHISPERA_PERFLOW") == "1" && os.Getenv("WHISPERA_SPLICE") != "0"
+	return os.Getenv("WHISPERA_PERFLOW") != "0" && os.Getenv("WHISPERA_SPLICE") != "0"
 }
 
 func netConnOf(c net.Conn) net.Conn {
