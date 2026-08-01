@@ -3,7 +3,7 @@ package apiserver
 import (
 	"encoding/base64"
 	"encoding/json"
-	"github.com/nekoskin/whispera/core/protocol"
+	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"net/http"
 )
 
@@ -14,8 +14,8 @@ func (s *Server) handleGetFingerprints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.jsonOK(w, map[string]interface{}{
-		"harvested_count":    protocol.HarvestedFingerprintCount(),
-		"harvested_capacity": protocol.HarvestedFingerprintCapacity(),
+		"collected_count":    fingerprint.CollectedCount(),
+		"collected_capacity": fingerprint.CollectedCapacity(),
 	})
 }
 
@@ -38,14 +38,14 @@ func (s *Server) handleSetFingerprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := protocol.PersistRawFingerprint(FingerprintStoreDir, record); err != nil {
+	if err := fingerprint.PersistRawFingerprint(FingerprintStoreDir, record); err != nil {
 		s.jsonError(w, http.StatusBadRequest, "fingerprint: "+err.Error())
 		return
 	}
-	_ = protocol.HarvestRawClientHello(record)
+	_ = fingerprint.CollectRawClientHello(record)
 
 	s.jsonOK(w, map[string]interface{}{
 		"message":         "fingerprint stored",
-		"harvested_count": protocol.HarvestedFingerprintCount(),
+		"collected_count": fingerprint.CollectedCount(),
 	})
 }

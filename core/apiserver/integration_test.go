@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/nekoskin/whispera/app/auth"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"io"
 	"net/http"
@@ -36,7 +35,6 @@ func newTestServer(t *testing.T) *Server {
 		},
 		mux:            http.NewServeMux(),
 		handlers:       make(map[string]http.HandlerFunc),
-		jwtManager:     auth.NewJWTManager(secret),
 		loginAttempts:  make(map[string][]time.Time),
 		sessionToken:   "static-test-session-token",
 		signingSecret:  secret,
@@ -162,78 +160,6 @@ func TestLoginV1_RateLimit(t *testing.T) {
 	}
 }
 
-func TestLoginV2_Success(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	body := map[string]string{"username": "admin", "password": testAdminPassword}
-	rec := doRequest(handler, "POST", "/api/v2/auth/login", body, "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	result := parseJSON(t, rec)
-	if result["success"] != true {
-		t.Errorf("expected success=true")
-	}
-	if result["access_token"] == nil || result["access_token"] == "" {
-		t.Error("expected non-empty access_token")
-	}
-	if result["refresh_token"] == nil || result["refresh_token"] == "" {
-		t.Error("expected non-empty refresh_token")
-	}
-	if result["token_type"] != "Bearer" {
-		t.Errorf("expected token_type=Bearer, got %v", result["token_type"])
-	}
-}
-
-func TestLoginV2_InvalidCredentials(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	body := map[string]string{"username": "admin", "password": "wrong"}
-	rec := doRequest(handler, "POST", "/api/v2/auth/login", body, "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", rec.Code)
-	}
-}
-
-func TestTokenRefresh(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
-	loginRec := doRequest(handler, "POST", "/api/v2/auth/login", loginBody, "")
-	if loginRec.Code != http.StatusOK {
-		t.Fatalf("login failed: %d", loginRec.Code)
-	}
-
-	loginResult := parseJSON(t, loginRec)
-	refreshToken := loginResult["refresh_token"].(string)
-
-	refreshBody := map[string]string{"refresh_token": refreshToken}
-	rec := doRequest(handler, "POST", "/api/v2/auth/refresh", refreshBody, "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	result := parseJSON(t, rec)
-	if result["access_token"] == nil || result["access_token"] == "" {
-		t.Error("expected new access_token after refresh")
-	}
-}
-
-func TestTokenRefresh_InvalidToken(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	body := map[string]string{"refresh_token": "invalid-token"}
-	rec := doRequest(handler, "POST", "/api/v2/auth/refresh", body, "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", rec.Code)
-	}
-}
-
 func TestAuthMiddleware_NoToken(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
@@ -276,48 +202,6 @@ func TestAuthMiddleware_TimedToken(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_JWTToken(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	accessToken, _, err := s.jwtManager.IssueTokenPair("admin", auth.RoleAdmin, "test-device")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rec := doRequest(handler, "GET", "/api/v1/status", nil, accessToken)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 with JWT, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestAuthMiddleware_PublicEndpoints(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	rec := doRequest(handler, "GET", "/api/v1/health", nil, "")
-	if rec.Code == http.StatusUnauthorized {
-		t.Error("GET /api/v1/health should not require auth")
-	}
-
-	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
-	rec = doRequest(handler, "POST", "/api/login", loginBody, "")
-	if rec.Code == http.StatusUnauthorized {
-		result := parseJSON(t, rec)
-		if result["error"] == "unauthorized" || result["error"] == "session expired" {
-			t.Error("POST /api/login should not require auth middleware")
-		}
-	}
-
-	rec = doRequest(handler, "POST", "/api/v2/auth/login", loginBody, "")
-	if rec.Code == http.StatusUnauthorized {
-		result := parseJSON(t, rec)
-		if result["error"] == "unauthorized" || result["error"] == "session expired" {
-			t.Error("POST /api/v2/auth/login should not require auth middleware")
-		}
-	}
-}
-
 func TestLogout_RevokesToken(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
@@ -340,33 +224,6 @@ func TestLogout_RevokesToken(t *testing.T) {
 	rec = doRequest(handler, "GET", "/api/v1/status", nil, token)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("token should be revoked after logout, got %d", rec.Code)
-	}
-}
-
-func TestLogoutV2_RevokesJWT(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
-	loginRec := doRequest(handler, "POST", "/api/v2/auth/login", loginBody, "")
-	loginResult := parseJSON(t, loginRec)
-	accessToken := loginResult["access_token"].(string)
-	refreshToken := loginResult["refresh_token"].(string)
-
-	rec := doRequest(handler, "GET", "/api/v1/status", nil, accessToken)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("JWT should work before logout, got %d", rec.Code)
-	}
-
-	logoutBody := map[string]string{"refresh_token": refreshToken}
-	logoutRec := doRequest(handler, "POST", "/api/v2/auth/logout", logoutBody, accessToken)
-	if logoutRec.Code != http.StatusOK {
-		t.Fatalf("v2 logout failed: %d", logoutRec.Code)
-	}
-
-	rec = doRequest(handler, "GET", "/api/v1/status", nil, accessToken)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("JWT should be revoked after v2 logout, got %d", rec.Code)
 	}
 }
 
@@ -434,44 +291,6 @@ func TestFullAuthFlow_V1(t *testing.T) {
 	afterLogoutRec := doRequest(handler, "GET", "/api/v1/status", nil, token)
 	if afterLogoutRec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 after logout, got %d", afterLogoutRec.Code)
-	}
-}
-
-func TestFullAuthFlow_V2(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
-	loginRec := doRequest(handler, "POST", "/api/v2/auth/login", loginBody, "")
-	if loginRec.Code != http.StatusOK {
-		t.Fatalf("v2 login failed: %d", loginRec.Code)
-	}
-	loginResult := parseJSON(t, loginRec)
-	accessToken := loginResult["access_token"].(string)
-	refreshToken := loginResult["refresh_token"].(string)
-
-	statusRec := doRequest(handler, "GET", "/api/v1/status", nil, accessToken)
-	if statusRec.Code != http.StatusOK {
-		t.Fatalf("status failed: %d", statusRec.Code)
-	}
-
-	refreshBody := map[string]string{"refresh_token": refreshToken}
-	refreshRec := doRequest(handler, "POST", "/api/v2/auth/refresh", refreshBody, "")
-	if refreshRec.Code != http.StatusOK {
-		t.Fatalf("refresh failed: %d", refreshRec.Code)
-	}
-	refreshResult := parseJSON(t, refreshRec)
-	newAccessToken := refreshResult["access_token"].(string)
-
-	statusRec2 := doRequest(handler, "GET", "/api/v1/status", nil, newAccessToken)
-	if statusRec2.Code != http.StatusOK {
-		t.Fatalf("status with refreshed token failed: %d", statusRec2.Code)
-	}
-
-	logoutBody := map[string]string{"refresh_token": refreshToken}
-	logoutRec := doRequest(handler, "POST", "/api/v2/auth/logout", logoutBody, newAccessToken)
-	if logoutRec.Code != http.StatusOK {
-		t.Fatalf("v2 logout failed: %d", logoutRec.Code)
 	}
 }
 
@@ -685,23 +504,5 @@ func TestProtectedEndpoints_RequireAuth(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s should require auth, got %d", ep.method, ep.path, rec.Code)
 		}
-	}
-}
-
-func TestTrafficStats(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	rec := doRequest(handler, "GET", "/api/v1/stats/traffic", nil, s.sessionToken)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	result := parseJSON(t, rec)
-	if _, ok := result["total_download"]; !ok {
-		t.Error("expected total_download field")
-	}
-	if _, ok := result["total_upload"]; !ok {
-		t.Error("expected total_upload field")
 	}
 }

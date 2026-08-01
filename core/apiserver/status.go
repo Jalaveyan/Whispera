@@ -1,9 +1,6 @@
 package apiserver
 
 import (
-	"context"
-	"github.com/nekoskin/whispera/app/db"
-	"github.com/nekoskin/whispera/common/stats"
 	config2 "github.com/nekoskin/whispera/core/config"
 	"net/http"
 	"time"
@@ -21,19 +18,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	deps := make(map[string]interface{})
-
-	if database := db.Global(); database != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := database.Ping(ctx); err != nil {
-			deps["database"] = map[string]interface{}{"status": "unhealthy", "error": err.Error()}
-			allHealthy = false
-		} else {
-			deps["database"] = map[string]interface{}{"status": "healthy"}
-		}
-	} else {
-		deps["database"] = map[string]interface{}{"status": "disabled"}
-	}
 
 	if s.registry != nil {
 		moduleHealth := s.registry.HealthCheck()
@@ -92,22 +76,4 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.jsonOK(w, resp)
-}
-
-func (s *Server) handleTrafficStats(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAdmin(w, r) {
-		return
-	}
-	globalStats := stats.GetGlobalStats()
-
-	s.jsonOK(w, map[string]interface{}{
-		"total_download":   globalStats.TotalBytesRx,
-		"total_upload":     globalStats.TotalBytesTx,
-		"total_packets_rx": globalStats.TotalPacketsRx,
-		"total_packets_tx": globalStats.TotalPacketsTx,
-		"active_users":     globalStats.ActiveUsers,
-		"uptime":           globalStats.Uptime,
-		"uptime_seconds":   globalStats.UptimeSeconds,
-		"history":          globalStats.History,
-	})
 }

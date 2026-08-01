@@ -31,8 +31,6 @@ type User struct {
 	RussianService    string `json:"russianService,omitempty"`
 
 	InboundTags []string `json:"inboundTags,omitempty"`
-
-	DisableNeural bool `json:"disableNeural,omitempty"`
 }
 
 var userDataFile = "/etc/whispera/users.json"
@@ -71,31 +69,6 @@ func GetRegisteredUsers() []RegisteredUser {
 		}
 	}
 	return result
-}
-
-func IsNeuralDisabled(userID string) bool {
-	userStoreMu.RLock()
-	defer userStoreMu.RUnlock()
-	for _, u := range userStore {
-		if u.Username == userID {
-			return u.DisableNeural
-		}
-	}
-	return false
-}
-
-// AnyNeuralEnabled reports whether at least one registered user opted into
-// neural. The server uses it to keep the GAN runner (packet capture + training)
-// off unless some key was created with -neural enable.
-func AnyNeuralEnabled() bool {
-	userStoreMu.RLock()
-	defer userStoreMu.RUnlock()
-	for _, u := range userStore {
-		if !u.DisableNeural {
-			return true
-		}
-	}
-	return false
 }
 
 func saveUsers() {
@@ -152,8 +125,6 @@ func applyUsersFromFile() {
 	userStoreMu.Unlock()
 }
 
-// startUserStoreWatcher reloads users.json when it changes on disk so keys
-// created or deleted by the CLI take effect without restarting the service.
 func startUserStoreWatcher() {
 	go func() {
 		t := time.NewTicker(userStoreReloadInterval)

@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"github.com/nekoskin/whispera/app/auth"
 	logger "github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/events"
@@ -61,7 +60,6 @@ type Server struct {
 	mu       sync.RWMutex
 	handlers map[string]http.HandlerFunc
 
-	jwtManager    *auth.JWTManager
 	keyLimits     *keylimits.Manager
 	probeDetector interface {
 		Stats() map[string]interface{}
@@ -95,17 +93,6 @@ type Server struct {
 
 	inflight  sync.WaitGroup
 	startTime time.Time
-}
-
-type ctxKey int
-
-const ctxKeyClaims ctxKey = 1
-
-func GetClaims(r *http.Request) *auth.Claims {
-	if c, ok := r.Context().Value(ctxKeyClaims).(*auth.Claims); ok {
-		return c
-	}
-	return nil
 }
 
 func DefaultConfig() *Config {
@@ -162,7 +149,6 @@ func New(cfg *Config) (*Server, error) {
 		config:         cfg,
 		mux:            http.NewServeMux(),
 		handlers:       make(map[string]http.HandlerFunc),
-		jwtManager:     auth.NewJWTManager(signingSecret),
 		loginAttempts:  make(map[string][]time.Time),
 		sessionToken:   sessionToken,
 		signingSecret:  signingSecret,
@@ -177,8 +163,6 @@ func New(cfg *Config) (*Server, error) {
 	s.loadRevokedKeys()
 	s.registerDefaultRoutes()
 	go s.cpuSampler()
-
-	s.registerUserV2Routes()
 
 	return s, nil
 }
@@ -195,9 +179,6 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/login", s.handleLogin)
 	s.Handle("POST /api/auth/login", s.handleDisabledEndpoint)
 	s.Handle("POST /api/logout", s.handleLogout)
-	s.Handle("POST /api/v2/auth/login", s.handleLoginV2)
-	s.Handle("POST /api/v2/auth/refresh", s.handleRefreshToken)
-	s.Handle("POST /api/v2/auth/logout", s.handleLogoutV2)
 
 	s.Handle("GET /api/v1/health", s.handleHealth)
 	s.Handle("GET /api/v1/status", s.handleStatus)
@@ -210,7 +191,6 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("DELETE /api/v1/sessions/{id}", s.handleDisabledEndpoint)
 	s.Handle("GET /api/v1/stats", s.handleDisabledEndpoint)
 	s.Handle("GET /api/v1/system/info", s.handleDisabledEndpoint)
-	s.Handle("GET /api/v1/stats/traffic", s.handleTrafficStats)
 	s.Handle("GET /api/v1/stats/users", s.handleDisabledEndpoint)
 
 	s.Handle("GET /api/v1/dhcp/status", s.handleDisabledEndpoint)

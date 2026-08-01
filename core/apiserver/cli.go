@@ -55,7 +55,7 @@ func CLIDeleteUser(username string) (bool, error) {
 	return true, nil
 }
 
-func CLIUpsertUser(username string, trafficLimit int64, disableNeural bool) (privateKeyB64, publicKeyB64 string, err error) {
+func CLIUpsertUser(username string, trafficLimit int64) (privateKeyB64, publicKeyB64 string, err error) {
 	loadUsers()
 
 	userStoreMu.Lock()
@@ -64,7 +64,6 @@ func CLIUpsertUser(username string, trafficLimit int64, disableNeural bool) (pri
 			if trafficLimit > 0 {
 				u.TrafficLimit = trafficLimit
 			}
-			u.DisableNeural = disableNeural
 			privateKeyB64, publicKeyB64 = u.PrivateKey, u.PublicKey
 			userStoreMu.Unlock()
 			saveUsers()
@@ -78,14 +77,13 @@ func CLIUpsertUser(username string, trafficLimit int64, disableNeural bool) (pri
 		return "", "", err
 	}
 	user := &User{
-		ID:            nextUserID,
-		Username:      username,
-		PrivateKey:    keys.PrivateKey,
-		PublicKey:     keys.PublicKey,
-		TrafficLimit:  trafficLimit,
-		DisableNeural: disableNeural,
-		Status:        "active",
-		CreatedAt:     time.Now(),
+		ID:           nextUserID,
+		Username:     username,
+		PrivateKey:   keys.PrivateKey,
+		PublicKey:    keys.PublicKey,
+		TrafficLimit: trafficLimit,
+		Status:       "active",
+		CreatedAt:    time.Now(),
 	}
 	userStore[nextUserID] = user
 	nextUserID++
@@ -145,7 +143,6 @@ func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport stri
 		Transport:        transport,
 		ObfsPreset:       "default",
 		ObfsProfile:      "vk",
-		DisableNeural:    user.DisableNeural,
 		EnableASNBypass:  true,
 		TLSFingerprint:   fingerprintOrDefault(whispera.Fingerprint),
 		WhisperaFPRaw:    whispera.FPRaw,
