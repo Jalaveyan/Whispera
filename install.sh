@@ -8,6 +8,7 @@ DAT_PATH="/usr/local/share/whispera"
 CONF_PATH="/etc/whispera"
 BIN_PATH="/usr/local/bin"
 LOG_PATH="/var/log/whispera"
+INITCWND_SCRIPT="/usr/local/bin/whispera-initcwnd"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -250,15 +251,15 @@ setup_bbr() {
         return
     fi
     
-    if ! grep -q "tcp_congestion_control" /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null; then
-        cat >> /etc/sysctl.conf <<EOF
+    modprobe tcp_bbr 2>/dev/null
+    echo "tcp_bbr" > /etc/modules-load.d/whispera-bbr.conf
 
+    cat > /etc/sysctl.d/98-whispera-bbr.conf <<EOF
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
-    fi
 
-    sysctl -p >/dev/null 2>&1
+    sysctl --system >/dev/null 2>&1
 
     if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
         log_success "BBR enabled"
@@ -403,7 +404,7 @@ EOF
     sleep 2
 
     if systemctl is-active --quiet fail2ban 2>/dev/null; then
-        log_success "Fail2ban installed and running (sshd + whispera + panel jails)"
+        log_success "Fail2ban installed and running (sshd + whispera jails)"
         log_info "Config: /etc/fail2ban/jail.local"
     else
         log_warn "Fail2ban installed but not running. Check: journalctl -u fail2ban"
@@ -578,6 +579,8 @@ EOF
 
     sysctl --system >/dev/null 2>&1
 
+    setup_bbr
+
     if ! grep -q "nofile 1000000" /etc/security/limits.conf 2>/dev/null; then
         cat >> /etc/security/limits.conf <<'EOF'
 * soft nofile 1000000
@@ -585,7 +588,43 @@ EOF
 EOF
     fi
 
+    apply_initcwnd
+
     log_success "System optimized"
+}
+
+apply_initcwnd() {
+    cat > "$INITCWND_SCRIPT" <<'EOF'
+#!/bin/bash
+# Widen the TCP initial congestion window: the default of 10 segments (~14.6 KB)
+# throttles every new connection to one small burst per RTT. It lives on the
+# route, so a DHCP renew or reboot drops it — hence re-applied on every start.
+def=$(ip -4 route show default 2>/dev/null | head -1)
+[ -z "$def" ] && exit 0
+dev=$(echo "$def" | sed -n 's/.*dev \([^ ]*\).*/\1/p')
+via=$(echo "$def" | sed -n 's/.*via \([^ ]*\).*/\1/p')
+[ -z "$dev" ] && exit 0
+if [ -n "$via" ]; then
+    ip route change default via "$via" dev "$dev" initcwnd 30 initrwnd 30
+else
+    ip route change default dev "$dev" initcwnd 30 initrwnd 30
+fi
+EOF
+    chmod +x "$INITCWND_SCRIPT"
+
+    mkdir -p /etc/systemd/system/whispera.service.d
+    cat > /etc/systemd/system/whispera.service.d/initcwnd.conf <<EOF
+[Service]
+ExecStartPost=-+$INITCWND_SCRIPT
+EOF
+    systemctl daemon-reload 2>/dev/null
+
+    "$INITCWND_SCRIPT" 2>/dev/null
+    if ip route show default | grep -q initcwnd; then
+        log_success "initcwnd/initrwnd 30 applied (re-applied on every service start)"
+    else
+        log_warn "initcwnd not applied"
+    fi
 }
 
 setup_autoupdate() {
@@ -713,50 +752,48 @@ show_extras_menu() {
         _row "  Config:     /etc/whispera/config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
-        _row "  1.  BBR           - Faster TCP (recommended)"
-        _row "  2.  WARP          - Hide server IP via Cloudflare"
-        _row "  3.  Fail2ban      - Protect SSH from brute-force"
-        _row "  4.  Swap          - Add 2GB swap (for low-RAM servers)"
-        _row "  5.  Optimize      - Tune sysctl for high performance"
-        _row "  6.  Auto-update   - Daily auto-update from GitHub"
-        _row "  7.  SSH Hardening - Disable password auth (keys only)"
-        _row "  8.  PostgreSQL    - User accounts, traffic, billing"
-        _row "  9.  Telegram      - Configure notifications"
-        _row " 10.  Backups       - Daily database backups"
+        _row "  1.  WARP          - Hide server IP via Cloudflare"
+        _row "  2.  Fail2ban      - Protect SSH from brute-force"
+        _row "  3.  Swap          - Add 2GB swap (for low-RAM servers)"
+        _row "  4.  Optimize      - BBR + sysctl + initcwnd (recommended)"
+        _row "  5.  Auto-update   - Daily auto-update from GitHub"
+        _row "  6.  SSH Hardening - Disable password auth (keys only)"
+        _row "  7.  PostgreSQL    - User accounts, traffic, billing"
+        _row "  8.  Telegram      - Configure notifications"
+        _row "  9.  Backups       - Daily database backups"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  SERVICE MANAGEMENT"
-        _row " 11.  Start         - Start Whispera service"
-        _row " 12.  Stop          - Stop Whispera service"
-        _row " 13.  Restart       - Restart Whispera service"
-        _row " 14.  Status        - Check service status"
-        _row " 15.  View Logs     - Watch live logs"
-        _row " 16.  Edit Config   - Modify config.yaml"
+        _row " 10.  Start         - Start Whispera service"
+        _row " 11.  Stop          - Stop Whispera service"
+        _row " 12.  Restart       - Restart Whispera service"
+        _row " 13.  Status        - Check service status"
+        _row " 14.  View Logs     - Watch live logs"
+        _row " 15.  Edit Config   - Modify config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row " 17.  Update        - Update Whispera from GitHub"
+        _row " 16.  Update        - Update Whispera from GitHub"
         _row "  0.  Exit"
         echo -e "${BLUE}╚${SEP}╝${PLAIN}"
         echo ""
 
         read -rp "  Select option: " choice
         case $choice in
-            1) setup_bbr ;;
-            2) setup_warp ;;
-            3) setup_fail2ban ;;
-            4) setup_swap ;;
-            5) setup_sysctl ;;
-            6) setup_autoupdate ;;
-            7) setup_ssh_hardening ;;
-            8) setup_postgres ;;
-            9) setup_telegram ;;
-            10) setup_backups ;;
-            a|A) setup_bbr; setup_sysctl; setup_postgres; setup_backups ;;
-            11) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
-            12) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
-            13) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
-            14) systemctl status whispera ;;
-            15) journalctl -u whispera -f ;;
-            16) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
-            17)
+            1) setup_warp ;;
+            2) setup_fail2ban ;;
+            3) setup_swap ;;
+            4) setup_sysctl ;;
+            5) setup_autoupdate ;;
+            6) setup_ssh_hardening ;;
+            7) setup_postgres ;;
+            8) setup_telegram ;;
+            9) setup_backups ;;
+            a|A) setup_sysctl; setup_postgres; setup_backups ;;
+            10) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
+            11) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
+            12) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
+            13) systemctl status whispera ;;
+            14) journalctl -u whispera -f ;;
+            15) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
+            16)
                 pkill -9 whispera 2>/dev/null
                 bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera/main/update.sh)
                 ;;
@@ -1066,11 +1103,6 @@ database:
   max_conns: 25
   min_conns: 5
 
-ml:
-  enabled: false
-  server_url: "https://127.0.0.1:8000"
-  token_file: ""
-
 EOF
     
     log_success "Config saved to $CONF_PATH/config.yaml"
@@ -1279,7 +1311,6 @@ setup_systemd() {
     fi
 
     mkdir -p "$LOG_PATH"
-    mkdir -p "$DAT_PATH/panel/public/uploads"
     mkdir -p /var/lib/whispera/acme
     chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$DAT_PATH" "$LOG_PATH" /var/lib/whispera 2>/dev/null || true
     chmod 750 "$CONF_PATH"
@@ -1322,7 +1353,6 @@ WantedBy=multi-user.target
 EOF
 
     log_info "ML engine is built into the main Whispera binary (no Python required)"
-    _enable_ml_in_config
 
     systemctl daemon-reload
     systemctl enable whispera >/dev/null 2>&1
@@ -1466,7 +1496,7 @@ install_relay() {
     check_os
     print_logo
 
-    log_info "Installing Whispera relay (minimal, no panel/DB)..."
+    log_info "Installing Whispera relay (minimal, no DB)..."
 
     install_dependencies
     install_go
@@ -1601,7 +1631,6 @@ main() {
     install_go
     clone_or_update_repo
     build_whispera
-    [[ -z "${WHISPERA_DOMAIN:-}" ]] && install_panel
 
     if [[ ! -f "$CONF_PATH/config.yaml" ]]; then
         generate_keys
@@ -1647,8 +1676,6 @@ main() {
     echo ""
     echo -e "  ${YELLOW}DB Password:${PLAIN}    $PG_PASS"
 
-    setup_dns_discovery
-    
     show_extras_menu
 }
 

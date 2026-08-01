@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,42 +22,34 @@ const (
 	ModuleVersion = "1.0.0"
 )
 
-type MLConfig struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
-
-	ServerURL string `yaml:"server_url" json:"server_url"`
-
-	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
-
-	TokenFile string `yaml:"token_file" json:"token_file"`
+type ServerConfig struct {
+	Server        ServerSettings     `yaml:"server"`
+	Transport     TransportConfig    `yaml:"transport"`
+	Session       SessionConfig      `yaml:"session"`
+	Routing       RoutingConfig      `yaml:"routing"`
+	Obfuscation   ObfuscationConfig  `yaml:"obfuscation"`
+	API           APIConfig          `yaml:"api"`
+	Logging       LoggingConfig      `yaml:"logging"`
+	Relay         RelayConfig        `yaml:"relay"`
+	Whispera      WhisperaConfig     `yaml:"whispera"`
+	GRPC          GRPCConfig         `yaml:"grpc" json:"grpc"`
+	YaDisk        YaDiskConfig       `yaml:"yadisk" json:"yadisk"`
+	Inbounds      []InboundConfig    `yaml:"inbounds" json:"inbounds"`
+	Outbounds     []OutboundConfig   `yaml:"outbounds" json:"outbounds"`
+	StealthMode   string             `yaml:"stealth_mode" json:"stealth_mode"`
+	Database      DatabaseConfig     `yaml:"database" json:"database"`
+	Notifications NotificationConfig `yaml:"notifications" json:"notifications"`
+	Bot           BotConfig          `yaml:"bot" json:"bot"`
+	NATS          NATSConfig         `yaml:"nats" json:"nats"`
+	Update        UpdateConfig       `yaml:"update" json:"update"`
 }
 
-type ServerConfig struct {
-	Server         ServerSettings     `yaml:"server"`
-	Transport      TransportConfig    `yaml:"transport"`
-	Session        SessionConfig      `yaml:"session"`
-	Routing        RoutingConfig      `yaml:"routing"`
-	Obfuscation    ObfuscationConfig  `yaml:"obfuscation"`
-	API            APIConfig          `yaml:"api"`
-	Logging        LoggingConfig      `yaml:"logging"`
-	Relay          RelayConfig        `yaml:"relay"`
-	Whispera       WhisperaConfig     `yaml:"whispera"`
-	GRPC           GRPCConfig         `yaml:"grpc" json:"grpc"`
-	YaDisk         YaDiskConfig       `yaml:"yadisk" json:"yadisk"`
-	Inbounds       []InboundConfig    `yaml:"inbounds" json:"inbounds"`
-	Outbounds      []OutboundConfig   `yaml:"outbounds" json:"outbounds"`
-	RelayMode      string             `yaml:"relay_mode" json:"relay_mode"`
-	UpstreamServer string             `yaml:"upstream_server" json:"upstream_server"`
-	VKRelay        VKRelayConfig      `yaml:"vk_relay" json:"vk_relay"`
-	StealthMode    string             `yaml:"stealth_mode" json:"stealth_mode"`
-	Database       DatabaseConfig     `yaml:"database" json:"database"`
-	Notifications  NotificationConfig `yaml:"notifications" json:"notifications"`
-	Bot            BotConfig          `yaml:"bot" json:"bot"`
-	NATS           NATSConfig         `yaml:"nats" json:"nats"`
-	Update         UpdateConfig       `yaml:"update" json:"update"`
-	Correlation    CorrelationConfig  `yaml:"correlation" json:"correlation"`
-	SNIBypass      SNIBypassConfig    `yaml:"sni_bypass" json:"sni_bypass"`
-	ML             MLConfig           `yaml:"ml" json:"ml"`
+type RelayConfig struct {
+	MaxStreams    int    `yaml:"max_streams"`
+	EnableTCP     bool   `yaml:"enable_tcp"`
+	EnableUDP     bool   `yaml:"enable_udp"`
+	Debug         bool   `yaml:"debug"`
+	UpstreamProxy string `yaml:"upstream_proxy"`
 }
 
 type BotConfig struct {
@@ -92,33 +85,6 @@ type UpdateConfig struct {
 	PublicKey     string   `yaml:"public_key" json:"public_key"`
 	Channel       string   `yaml:"channel" json:"channel"`
 	CheckInterval Duration `yaml:"check_interval" json:"check_interval"`
-}
-
-type CorrelationConfig struct {
-	Enabled         bool `yaml:"enabled" json:"enabled"`
-	PaddingEnabled  bool `yaml:"padding" json:"padding"`
-	JitterEnabled   bool `yaml:"jitter" json:"jitter"`
-	CoverTraffic    bool `yaml:"cover_traffic" json:"cover_traffic"`
-	MaxJitterMs     int  `yaml:"max_jitter_ms" json:"max_jitter_ms"`
-	CoverRateMs     int  `yaml:"cover_rate_ms" json:"cover_rate_ms"`
-	RateBytesPerSec int  `yaml:"rate_bytes_per_sec" json:"rate_bytes_per_sec"`
-}
-
-type SNIBypassConfig struct {
-	Enabled      bool   `yaml:"enabled" json:"enabled"`
-	Mode         string `yaml:"mode" json:"mode"`
-	FragmentSize int    `yaml:"fragment_size" json:"fragment_size"`
-	Fingerprint  string `yaml:"fingerprint" json:"fingerprint"`
-}
-
-type VKRelayConfig struct {
-	Enabled    bool   `yaml:"enabled" json:"enabled"`
-	Mode       string `yaml:"mode" json:"mode"`
-	Token      string `yaml:"token" json:"token"`
-	GroupID    int64  `yaml:"group_id" json:"group_id"`
-	PeerID     int64  `yaml:"peer_id" json:"peer_id"`
-	ServerMode bool   `yaml:"server_mode" json:"server_mode"`
-	StreamKey  string `yaml:"stream_key" json:"stream_key"`
 }
 
 type OutboundConfig struct {
@@ -355,6 +321,12 @@ func (p *Provider) saveConfig(path string) error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
+	if previous, err := os.ReadFile(path); err == nil {
+		if err := os.WriteFile(path+".bak", previous, 0600); err != nil {
+			log.Printf("[config] could not back up %s before overwrite: %v", path, err)
+		}
+	}
+
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
@@ -563,13 +535,15 @@ func (p *Provider) Load(source string) error {
 	cfg := *cfgPtr
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		if te, ok := err.(*yaml.TypeError); ok {
-			for _, msg := range te.Errors {
-				log.Printf("[config] %s: invalid value ignored, using default: %s", source, msg)
-			}
-		} else {
+		te, ok := err.(*yaml.TypeError)
+		if !ok {
 			return fmt.Errorf("failed to parse config: %w", err)
 		}
+		for _, msg := range te.Errors {
+			log.Printf("[config] %s: %s", source, msg)
+		}
+		return fmt.Errorf("failed to parse %s: %s (refusing to start on defaults — fix the file, settings would be overwritten)",
+			source, strings.Join(te.Errors, "; "))
 	}
 
 	p.mu.Lock()

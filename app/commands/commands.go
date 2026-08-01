@@ -6,11 +6,11 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
-	"github.com/nekoskin/whispera/app/db"
 	"github.com/nekoskin/whispera/common/ipdetect"
 	"github.com/nekoskin/whispera/core/apiserver"
 	"github.com/nekoskin/whispera/core/config"
 	"github.com/nekoskin/whispera/core/protocol"
+	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"net"
 	"os"
 	"strconv"
@@ -71,55 +71,6 @@ func RunPubkeyCmd() {
 	}
 	pub, _ := curve25519.X25519(private, curve25519.Basepoint)
 	fmt.Println(base64.StdEncoding.EncodeToString(pub))
-	os.Exit(0)
-}
-
-func RunCreateAdminCmd() {
-	createAdminCmd := flag.NewFlagSet("create-admin", flag.ExitOnError)
-	email := createAdminCmd.String("email", "", "Admin email")
-	password := createAdminCmd.String("password", "", "Admin password")
-	dbURL := createAdminCmd.String("db", "", "PostgreSQL URL")
-
-	createAdminCmd.Parse(os.Args[2:])
-
-	if *email == "" || *password == "" || *dbURL == "" {
-		fmt.Fprintln(os.Stderr, "whispera create-admin -email <email> -password <pass> -db <postgres_url>")
-		os.Exit(1)
-	}
-
-	cfg := db.DefaultConfig()
-	cfg.URL = *dbURL
-	database, err := db.New(cfg)
-
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to connect to DB: %v\n", err)
-		os.Exit(1)
-	}
-
-	defer database.Close()
-
-	ctx := context.Background()
-	user, err := database.GetUserByEmail(ctx, *email)
-	if err != nil {
-		user, err = database.CreateUser(ctx, *email, *password, 0, nil, "http2", "browser", "vk", "", "")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to create user: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("User %s created\n", *email)
-	} else {
-		if err := database.UpdateUser(ctx, user.ID, *email, *password); err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to update password: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("User %s password updated\n", *email)
-	}
-
-	if err := database.SetAdmin(ctx, user.ID, true); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to set admin: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("User %s is now an admin\n", *email)
 	os.Exit(0)
 }
 
@@ -188,11 +139,6 @@ func resolveWhisperaQUICAddr(enableQUIC bool, sc *config.ServerConfig, cfgProvid
 		}
 		fmt.Printf("QUIC will also listen on port %d (restart server to activate)\n", quicPort)
 	}
-	if err := apiserver.OpenFirewallPort(quicPort); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: firewall rule not applied: %v\n", err)
-	} else {
-		fmt.Printf("Opened port %d in ufw (tcp+udp)\n", quicPort)
-	}
 	return net.JoinHostPort(quicHost, effectiveQUICPortStr)
 }
 
@@ -207,9 +153,8 @@ func RunCreateKeyCmd() {
 	transportFlag := createKeyCmd.String("transport", "whispera", "Base transport for this key: whispera, grpc, or yadisk")
 	yadiskToken := createKeyCmd.String("yadisk-token", "", "Yandex.Disk OAuth token (only with -transport yadisk; saved to server config if not already set there)")
 	yadiskSession := createKeyCmd.String("yadisk-session", "", "Yandex.Disk session/folder id (only with -transport yadisk; auto-generated if empty)")
-	neuralFlag := createKeyCmd.String("neural", "disable", "Per-user neural (default off): client-side RL agents + seeding this user's flow into the server GAN. The GAN runner only starts if at least one user has -neural enable (enable/disable)")
-	sniFlag := createKeyCmd.String("sni", "", "Clone this real domain's TLS certificate and present it via SNI for this key (only with -transport whispera; empty = auto-picked from a default pool, or the server's ACME domain if configured)")
-	fingerprintFlag := createKeyCmd.String("fingerprint", "auto", "TLS fingerprint for the tunnel ClientHello: auto (embed freshest harvested chrome), or a named uTLS profile: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random")
+	sniFlag := createKeyCmd.String("sni", "", "Clone this real domain's TLS certificate and present it via SNI for this key (only with -transport whispera; required unless whispera.domain is set in the server config)")
+	fingerprintFlag := createKeyCmd.String("fingerprint", "auto", "TLS fingerprint for the tunnel ClientHello: auto (embed freshest collected chrome), or a named uTLS profile: chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random")
 	selfCertFlag := createKeyCmd.String("self-cert", "", "Clone a self-signed cert for the SNI and pin it in the key (enable/disable; default: auto from server config)")
 	ownDomainFlag := createKeyCmd.String("own-domain", "", "Key targets a Caddy + real-domain front: SNI/addr = the domain, no cert pin (enable/disable; default: auto from server config)")
 	domainFlag := createKeyCmd.String("domain", "", "Real domain for -own-domain mode (Caddy front); addr and SNI of the key are set to this. Empty = whispera.domain from config")
@@ -220,13 +165,8 @@ func RunCreateKeyCmd() {
 		fmt.Fprintln(os.Stderr, "whispera create-key -user <name> -port <port> [-config <path>] [-traffic-limit <bytes>] [-quic enable|disable] [-quic-port <port>] [-transport whispera|grpc|yadisk] [-yadisk-token <token>] [-yadisk-session <id>] [-neural enable|disable] [-sni <real-domain>] [-fingerprint <name>] [-self-cert enable|disable] [-own-domain enable|disable]")
 		os.Exit(1)
 	}
-	if *fingerprintFlag != "auto" && !protocol.IsKnownFingerprint(*fingerprintFlag) {
+	if *fingerprintFlag != "auto" && !fingerprint.IsKnown(*fingerprintFlag) {
 		fmt.Fprintf(os.Stderr, "Error: unknown -fingerprint %q (auto, chrome, chrome_120, chrome_115, firefox, firefox_120, safari, ios, android, edge, random)\n", *fingerprintFlag)
-		os.Exit(1)
-	}
-	disableNeural := strings.EqualFold(*neuralFlag, "disable")
-	if !disableNeural && !strings.EqualFold(*neuralFlag, "enable") {
-		fmt.Fprintf(os.Stderr, "Error: -neural must be \"enable\" or \"disable\", got %q\n", *neuralFlag)
 		os.Exit(1)
 	}
 	if *port < 1 || *port > 65535 {
@@ -346,11 +286,6 @@ func RunCreateKeyCmd() {
 		} else {
 			fmt.Printf("Port %d is already a gRPC listener — reusing it\n", *port)
 		}
-		if err := apiserver.OpenFirewallPort(*port); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: firewall rule not applied: %v\n", err)
-		} else {
-			fmt.Printf("Opened port %d in ufw (tcp+udp)\n", *port)
-		}
 	case "yadisk":
 	default:
 		portTaken := *port == chmPort
@@ -376,14 +311,9 @@ func RunCreateKeyCmd() {
 		} else {
 			fmt.Printf("Port %d is already a whispera listener — reusing it\n", *port)
 		}
-		if err := apiserver.OpenFirewallPort(*port); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: firewall rule not applied: %v\n", err)
-		} else {
-			fmt.Printf("Opened port %d in ufw (tcp+udp)\n", *port)
-		}
 	}
 
-	privateKeyB64, publicKeyB64, err := apiserver.CLIUpsertUser(*user, *trafficLimit, disableNeural)
+	privateKeyB64, publicKeyB64, err := apiserver.CLIUpsertUser(*user, *trafficLimit)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create user: %v\n", err)
 		os.Exit(1)
@@ -457,7 +387,8 @@ func RunCreateKeyCmd() {
 				whisperaSNI = sc.Whispera.Domain
 			}
 			if whisperaSNI == "" {
-				whisperaSNI = protocol.DefaultSNIFor(*user)
+				fmt.Fprintln(os.Stderr, "Error: -sni <real-domain> is required (no whispera.domain in config)")
+				os.Exit(1)
 			}
 		}
 
@@ -504,13 +435,13 @@ func RunCreateKeyCmd() {
 		fpName := *fingerprintFlag
 		fpRaw := ""
 		if fpName == "auto" {
-			if raw, ok := protocol.FreshestRawFingerprint(apiserver.FingerprintStoreDir, "chrome"); ok {
+			if raw, ok := fingerprint.FreshestRaw(apiserver.FingerprintStoreDir, "chrome"); ok {
 				fpRaw = base64.StdEncoding.EncodeToString(raw)
 				fpName = "chrome"
-				fmt.Printf("Embedded freshest harvested chrome fingerprint (%d bytes) from %s\n", len(raw), apiserver.FingerprintStoreDir)
+				fmt.Printf("Embedded freshest collected chrome fingerprint (%d bytes) from %s\n", len(raw), apiserver.FingerprintStoreDir)
 			} else {
 				fpName = "chrome"
-				fmt.Printf("No harvested fingerprint in %s — using named uTLS chrome\n", apiserver.FingerprintStoreDir)
+				fmt.Printf("No collected fingerprint in %s — using named uTLS chrome\n", apiserver.FingerprintStoreDir)
 			}
 		}
 

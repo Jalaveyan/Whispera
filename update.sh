@@ -6,6 +6,7 @@ WORK_DIR="/opt/whispera"
 BIN_PATH="/usr/local/bin"
 DAT_PATH="/usr/local/share/whispera"
 CONF_PATH="/etc/whispera"
+INITCWND_SCRIPT="/usr/local/bin/whispera-initcwnd"
 BRANCH="main"
 
 RED='\033[0;31m'
@@ -83,12 +84,6 @@ restore() {
         chmod +x "$BIN_PATH/whispera"
     fi
 
-    if [[ -d "$DAT_PATH/panel.bak" ]]; then
-        log_info "Restoring panel..."
-        rm -rf "$DAT_PATH/panel"
-        cp -r "$DAT_PATH/panel.bak" "$DAT_PATH/panel"
-    fi
-
     systemctl daemon-reload
     if systemctl restart whispera 2>/dev/null; then
         log_success "Rollback complete. System restored to previous state."
@@ -115,15 +110,15 @@ setup_bbr() {
         return
     fi
     
-    if ! grep -q "tcp_congestion_control" /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null; then
-        cat >> /etc/sysctl.conf <<EOF
+    modprobe tcp_bbr 2>/dev/null
+    echo "tcp_bbr" > /etc/modules-load.d/whispera-bbr.conf
 
+    cat > /etc/sysctl.d/98-whispera-bbr.conf <<EOF
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
-    fi
 
-    sysctl -p >/dev/null 2>&1
+    sysctl --system >/dev/null 2>&1
 
     if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
         log_success "BBR enabled"
@@ -363,7 +358,43 @@ fs.file-max = 1000000
 EOF
 
     sysctl --system >/dev/null 2>&1
+    setup_bbr
+    apply_initcwnd
     log_success "System optimized"
+}
+
+apply_initcwnd() {
+    cat > "$INITCWND_SCRIPT" <<'EOF'
+#!/bin/bash
+# Widen the TCP initial congestion window: the default of 10 segments (~14.6 KB)
+# throttles every new connection to one small burst per RTT. It lives on the
+# route, so a DHCP renew or reboot drops it — hence re-applied on every start.
+def=$(ip -4 route show default 2>/dev/null | head -1)
+[ -z "$def" ] && exit 0
+dev=$(echo "$def" | sed -n 's/.*dev \([^ ]*\).*/\1/p')
+via=$(echo "$def" | sed -n 's/.*via \([^ ]*\).*/\1/p')
+[ -z "$dev" ] && exit 0
+if [ -n "$via" ]; then
+    ip route change default via "$via" dev "$dev" initcwnd 30 initrwnd 30
+else
+    ip route change default dev "$dev" initcwnd 30 initrwnd 30
+fi
+EOF
+    chmod +x "$INITCWND_SCRIPT"
+
+    mkdir -p /etc/systemd/system/whispera.service.d
+    cat > /etc/systemd/system/whispera.service.d/initcwnd.conf <<EOF
+[Service]
+ExecStartPost=-+$INITCWND_SCRIPT
+EOF
+    systemctl daemon-reload 2>/dev/null
+
+    "$INITCWND_SCRIPT" 2>/dev/null
+    if ip route show default | grep -q initcwnd; then
+        log_success "initcwnd/initrwnd 30 applied (re-applied on every service start)"
+    else
+        log_warn "initcwnd not applied"
+    fi
 }
 
 setup_autoupdate() {
@@ -395,45 +426,10 @@ echo "$CHANGED"
 
 GO_CHANGED=$(echo "$CHANGED" | grep -E '\.(go)$|^go\.(mod|sum)$' || true)
 ML_PY_CHANGED=$(echo "$CHANGED" | grep -E '^(neural|ml_engine)/.*\.py$' || true)
-PANEL_CHANGED=$(echo "$CHANGED" | grep -E '^panel/' || true)
 
 if [[ -n "$ML_PY_CHANGED" ]]; then
     echo "ML files updated — restarting whispera (ML is built-in)"
     systemctl restart whispera 2>/dev/null && echo "whispera restarted" || echo "whispera not running"
-fi
-
-if [[ -n "$PANEL_CHANGED" ]]; then
-    echo "Panel files updated — redeploying static files"
-    if [[ -d "panel/public" ]]; then
-        FA_BACKUP=""
-        if [[ -d "$DAT_PATH/panel/public/vendor/fa" ]]; then
-            FA_BACKUP=$(mktemp -d)
-            cp -r "$DAT_PATH/panel/public/vendor/fa" "$FA_BACKUP/fa"
-        fi
-        rm -rf "$DAT_PATH/panel/public"
-        mkdir -p "$DAT_PATH/panel"
-        cp -r panel/public "$DAT_PATH/panel/public"
-        if [[ -n "$FA_BACKUP" ]]; then
-            mkdir -p "$DAT_PATH/panel/public/vendor"
-            cp -r "$FA_BACKUP/fa" "$DAT_PATH/panel/public/vendor/fa"
-            rm -rf "$FA_BACKUP"
-        elif [[ ! -f "$DAT_PATH/panel/public/vendor/fa/all.min.css" ]]; then
-            FA_VER="6.5.1"
-            FA_DIR="$DAT_PATH/panel/public/vendor/fa"
-            FA_BASE="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/${FA_VER}"
-            mkdir -p "$FA_DIR/webfonts"
-            if curl -fsSL "${FA_BASE}/css/all.min.css" -o "$FA_DIR/all.min.css" 2>/dev/null; then
-                for wf in fa-solid-900 fa-regular-400 fa-brands-400; do
-                    curl -fsSL "${FA_BASE}/webfonts/${wf}.woff2" -o "$FA_DIR/webfonts/${wf}.woff2" 2>/dev/null || true
-                    curl -fsSL "${FA_BASE}/webfonts/${wf}.ttf"   -o "$FA_DIR/webfonts/${wf}.ttf"   2>/dev/null || true
-                done
-                sed -i "s|../webfonts/|/vendor/fa/webfonts/|g" "$FA_DIR/all.min.css"
-            fi
-        fi
-        chmod -R a+rX "$DAT_PATH/panel/public"
-        chown -R whispera:whispera "$DAT_PATH/panel" 2>/dev/null || true
-    fi
-    nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && echo "panel redeployed" || true
 fi
 
 if [[ -n "$GO_CHANGED" ]]; then
@@ -687,50 +683,48 @@ show_extras_menu() {
         _row "              Config: /etc/whispera/config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
-        _row "  1.  BBR           - Faster TCP (recommended)"
-        _row "  2.  WARP          - Hide server IP via Cloudflare"
-        _row "  3.  Fail2ban      - Protect SSH from brute-force"
-        _row "  4.  Swap          - Add 2GB swap (for low-RAM servers)"
-        _row "  5.  Optimize      - Tune sysctl for high performance"
-        _row "  6.  Auto-update   - Daily auto-update from GitHub"
-        _row "  7.  SSH Hardening - Disable password auth (keys only)"
-        _row "  8.  PostgreSQL    - User accounts, traffic, billing"
-        _row "  9.  Telegram      - Configure notifications"
-        _row " 10.  Backups       - Daily database backups"
+        _row "  1.  WARP          - Hide server IP via Cloudflare"
+        _row "  2.  Fail2ban      - Protect SSH from brute-force"
+        _row "  3.  Swap          - Add 2GB swap (for low-RAM servers)"
+        _row "  4.  Optimize      - BBR + sysctl + initcwnd (recommended)"
+        _row "  5.  Auto-update   - Daily auto-update from GitHub"
+        _row "  6.  SSH Hardening - Disable password auth (keys only)"
+        _row "  7.  PostgreSQL    - User accounts, traffic, billing"
+        _row "  8.  Telegram      - Configure notifications"
+        _row "  9.  Backups       - Daily database backups"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  SERVICE MANAGEMENT"
-        _row " 11.  Start         - Start Whispera service"
-        _row " 12.  Stop          - Stop Whispera service"
-        _row " 13.  Restart       - Restart Whispera service"
-        _row " 14.  Status        - Check service status"
-        _row " 15.  View Logs     - Watch live logs"
-        _row " 16.  Edit Config   - Modify config.yaml"
-        _row " 17.  Update        - Update"
-        _row " 18.  Change pass   - Generate a new password"
+        _row " 10.  Start         - Start Whispera service"
+        _row " 11.  Stop          - Stop Whispera service"
+        _row " 12.  Restart       - Restart Whispera service"
+        _row " 13.  Status        - Check service status"
+        _row " 14.  View Logs     - Watch live logs"
+        _row " 15.  Edit Config   - Modify config.yaml"
+        _row " 16.  Update        - Update"
+        _row " 17.  Change pass   - Generate a new password"
         _row "  0.  Exit"
         echo -e "${BLUE}╚${SEP}╝${PLAIN}"
         echo ""
 
         read -rp "  Select option: " choice
         case $choice in
-            1) setup_bbr ;;
-            2) setup_warp ;;
-            3) setup_fail2ban ;;
-            4) setup_swap ;;
-            5) setup_sysctl ;;
-            6) setup_autoupdate ;;
-            7) setup_ssh_hardening ;;
-            8) setup_postgres ;;
-            9) setup_telegram ;;
-            10) setup_backups ;;
-            11) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
-            12) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
-            13) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
-            14) systemctl status whispera ;;
-            15) journalctl -u whispera -f ;;
-            16) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
-            17) bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera/main/update.sh) ;;
-            18)
+            1) setup_warp ;;
+            2) setup_fail2ban ;;
+            3) setup_swap ;;
+            4) setup_sysctl ;;
+            5) setup_autoupdate ;;
+            6) setup_ssh_hardening ;;
+            7) setup_postgres ;;
+            8) setup_telegram ;;
+            9) setup_backups ;;
+            10) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
+            11) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
+            12) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
+            13) systemctl status whispera ;;
+            14) journalctl -u whispera -f ;;
+            15) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
+            16) bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera/main/update.sh) ;;
+            17)
                 read -rp "  New password (leave empty to generate): " NEW_PASS
                 if [[ -z "$NEW_PASS" ]]; then
                     NEW_PASS=$(gen_password 20)
@@ -891,10 +885,6 @@ do_update() {
 
     log_info "Creating backup of current version..."
     cp "$BIN_PATH/whispera" "$BIN_PATH/whispera.bak" 2>/dev/null || true
-    if [[ -d "$DAT_PATH/panel" ]]; then
-        rm -rf "$DAT_PATH/panel.bak"
-        cp -r "$DAT_PATH/panel" "$DAT_PATH/panel.bak"
-    fi
 
     log_info "Updating Whispera server..."
     export PATH=$PATH:/usr/local/go/bin
@@ -999,11 +989,6 @@ do_update() {
         log_info "Enabled file logging for whispera service"
     fi
 
-    if [[ -d "$DAT_PATH/panel" ]]; then
-        mkdir -p "$DAT_PATH/panel/public/uploads"
-        chown -R whispera:whispera "$DAT_PATH/panel/public" 2>/dev/null || true
-    fi
-
     local SVC=/etc/systemd/system/whispera.service
     if [[ -f "$SVC" ]]; then
         local RELOAD=false
@@ -1078,7 +1063,6 @@ do_update() {
         rm -f /etc/systemd/system/whispera-ml.service
         systemctl daemon-reload
     fi
-    _enable_ml_in_config
     _enable_whispera_in_config
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then

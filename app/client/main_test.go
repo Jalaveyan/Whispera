@@ -40,20 +40,6 @@ func TestPickServerAddressUnknownTransportFallsBackToServer(t *testing.T) {
 	}
 }
 
-func TestResolveMLTokenEmptyWithoutMLServerURL(t *testing.T) {
-	cfg := &config.ClientConfig{MLToken: "should-be-ignored"}
-	if got := resolveMLToken(cfg); got != "" {
-		t.Errorf("resolveMLToken() = %q, want \"\" when MLServerURL is empty", got)
-	}
-}
-
-func TestResolveMLTokenPrefersExplicitToken(t *testing.T) {
-	cfg := &config.ClientConfig{MLServerURL: "https://ml.example.com", MLToken: "explicit-token"}
-	if got := resolveMLToken(cfg); got != "explicit-token" {
-		t.Errorf("resolveMLToken() = %q, want %q", got, "explicit-token")
-	}
-}
-
 func TestLoadClientConfigUsesServerAddrFlag(t *testing.T) {
 	origServer, origKey, origPath := *serverAddr, *connKey, *configPath
 	defer func() {

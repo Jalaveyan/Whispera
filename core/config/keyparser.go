@@ -11,27 +11,23 @@ import (
 )
 
 type ConnectionKey struct {
-	Version    int      `json:"v"`
-	Name       string   `json:"name,omitempty"`
-	KeyID      string   `json:"kid,omitempty"`
-	ExpiresAt  int64    `json:"exp,omitempty"`
-	Server     string   `json:"server"`
-	ServerAlts []string `json:"server_alts,omitempty"`
-	ServerTCP  string   `json:"server_tcp,omitempty"`
-	ServerWS   string   `json:"server_ws,omitempty"`
-	PSK        string   `json:"psk"`
-	ServerPub  string   `json:"pub"`
-	ObfsPreset string   `json:"obfs"`
-	Transport  string   `json:"transport"`
+	Version    int    `json:"v"`
+	Name       string `json:"name,omitempty"`
+	KeyID      string `json:"kid,omitempty"`
+	ExpiresAt  int64  `json:"exp,omitempty"`
+	Server     string `json:"server"`
+	ServerTCP  string `json:"server_tcp,omitempty"`
+	ServerWS   string `json:"server_ws,omitempty"`
+	PSK        string `json:"psk"`
+	ServerPub  string `json:"pub"`
+	ObfsPreset string `json:"obfs"`
+	Transport  string `json:"transport"`
 
 	ObfsProfile string `json:"obfs_profile,omitempty"`
 
-	DisableNeural bool `json:"disable_neural,omitempty"`
-
-	EnableASNBypass    bool   `json:"asn_bypass"`
-	TLSFingerprint     string `json:"tls_fingerprint,omitempty"`
-	DomainFrontHost    string `json:"front_host,omitempty"`
-	ResidentialProxies string `json:"res_proxies,omitempty"`
+	EnableASNBypass bool   `json:"asn_bypass"`
+	TLSFingerprint  string `json:"tls_fingerprint,omitempty"`
+	DomainFrontHost string `json:"front_host,omitempty"`
 
 	RussianService string `json:"russian_service,omitempty"`
 
@@ -52,10 +48,6 @@ type ConnectionKey struct {
 	YaDiskSessionID  string `json:"yadisk_session_id,omitempty"`
 
 	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
-
-	MLServerURL string `json:"ml_server_url,omitempty"`
-
-	MLToken string `json:"ml_token,omitempty"`
 
 	SubscriptionURL string `json:"sub_url,omitempty"`
 }
@@ -132,13 +124,6 @@ func parseWhisperaURLKey(u *url.URL) (*ConnectionKey, error) {
 			return nil, fmt.Errorf("connection key expired")
 		}
 		applyConnKeyDefaults(ck)
-		q := u.Query()
-		if val := q.Get("ml_token"); val != "" {
-			ck.MLToken = val
-		}
-		if val := q.Get("ml"); val != "" && ck.MLServerURL == "" {
-			ck.MLServerURL = val
-		}
 		if !hasServerAddr(ck) {
 			return nil, fmt.Errorf("key must contain at least one server address (server or server_tcp)")
 		}
@@ -207,12 +192,6 @@ func parseWhisperaQueryKey(u *url.URL) (*ConnectionKey, error) {
 	} else if val := q.Get("rs"); val != "" {
 		ck.RussianService = val
 	}
-	if val := q.Get("ml"); val != "" {
-		ck.MLServerURL = val
-	}
-	if val := q.Get("ml_token"); val != "" {
-		ck.MLToken = val
-	}
 	if val := q.Get("kid"); val != "" {
 		ck.KeyID = val
 	}
@@ -278,7 +257,6 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 
 	cfg := &ClientConfig{
 		Server:           ck.Server,
-		ServerAlts:       append([]string(nil), ck.ServerAlts...),
 		ServerTCP:        ck.ServerTCP,
 		ServerWS:         ck.ServerWS,
 		PSK:              ck.PSK,
@@ -288,8 +266,6 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		RussianService:   ck.RussianService,
 		TransportConfig:  ck.TransportConfig,
 		Transport:        ck.Transport,
-		MLServerURL:      ck.MLServerURL,
-		MLToken:          ck.MLToken,
 		WhisperaAddr:     whisperaAddr,
 		WhisperaSNI:      ck.WhisperaSNI,
 		WhisperaQUICAddr: ck.WhisperaQUICAddr,
@@ -301,7 +277,6 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		GRPCUseTLS:       ck.GRPCUseTLS,
 		YaDiskOAuthToken: ck.YaDiskOAuthToken,
 		YaDiskSessionID:  ck.YaDiskSessionID,
-		DisableNeural:    ck.DisableNeural,
 	}
 
 	if traits, ok := transportRegistry[ck.Transport]; ok {

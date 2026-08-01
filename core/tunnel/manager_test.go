@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"net"
 	"testing"
-	"time"
 )
 
 type spliceReadConn struct {
@@ -115,12 +114,6 @@ func TestQualityMetrics(t *testing.T) {
 	rtt, missed := m.GetQualityMetrics()
 	if rtt != 0 || missed != 0 {
 		t.Errorf("GetQualityMetrics() = (%v, %d), want (0, 0) on fresh Manager", rtt, missed)
-	}
-
-	m.updateQualityRTT(50 * time.Millisecond)
-	rtt, _ = m.GetQualityMetrics()
-	if rtt != 50*time.Millisecond {
-		t.Errorf("GetQualityMetrics() rtt = %v, want %v after first sample", rtt, 50*time.Millisecond)
 	}
 }
 

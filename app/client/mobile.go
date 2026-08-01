@@ -9,9 +9,6 @@ import (
 	"github.com/nekoskin/whispera/common/runtime/lifecycle"
 )
 
-// fatalf ends startup on an unrecoverable error. As a forked CLI that means
-// exiting the process; in-process (mobileMode) it must NOT kill the host app —
-// it logs and unwinds just the client goroutine.
 func fatalf(format string, a ...any) {
 	if mobileMode {
 		stdlog.Printf(format, a...)
@@ -47,8 +44,6 @@ func Start(key, socks, logFile, fingerprint string, hwid bool) {
 	}
 	mobileMode = true
 	mobileRunning = true
-	// Create the lifecycle up front so Stop() can always find it (no race with
-	// RunMain setting it mid-startup) — the deterministic in-process stop.
 	pkgLC = lifecycle.NewManager(lifecycle.Config{
 		ShutdownTimeout: 1 * time.Second,
 		GracefulStop:    true,

@@ -4,13 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/nekoskin/whispera/core/agent"
 	"io"
 	stdlog "log"
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"golang.org/x/net/proxy"
@@ -22,9 +20,6 @@ func startControlServer(ctx context.Context) {
 	mux.HandleFunc("/auth", handleAuth)
 	mux.HandleFunc("/connections", handleConnections)
 	mux.HandleFunc("/connections/", handleConnectionAction)
-	mux.HandleFunc("/agent", handleAgent)
-	mux.HandleFunc("/agent/recommend", handleAgentRecommend)
-	mux.HandleFunc("/agent/report", handleAgentReport)
 	mux.HandleFunc("/connections/split", handleConnectionsSplit)
 	mux.HandleFunc("/spoof", handleSpoof)
 	mux.HandleFunc("/subscription", handleSubscription)
@@ -32,8 +27,6 @@ func startControlServer(ctx context.Context) {
 	mux.HandleFunc("/multi-bridges", handleMultiBridges(ctx))
 	mux.HandleFunc("/multi-bridges/", handleMultiBridgeByID)
 	mux.HandleFunc("/speedtest", handleSpeedtest)
-	mux.HandleFunc("/region", handleRegion)
-	mux.HandleFunc("/regions", handleRegions)
 	mux.HandleFunc("/global-sni", handleGlobalSNI)
 	mux.HandleFunc("/logs", handleLogs)
 	mux.HandleFunc("/wake", handleWake)
@@ -353,46 +346,6 @@ func handleConnProfile(w http.ResponseWriter, r *http.Request, entry *TransportE
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
 
-func handleAgent(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if globalAgent == nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{"state": "disabled"})
-		return
-	}
-	json.NewEncoder(w).Encode(globalAgent.Stats())
-}
-
-func handleAgentRecommend(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	if globalAgent == nil {
-		http.Error(w, "agent not running", http.StatusServiceUnavailable)
-		return
-	}
-	transport, server := globalAgent.SelectTransport()
-	json.NewEncoder(w).Encode(map[string]string{
-		"transport": transport,
-		"server":    server,
-	})
-}
-
-func handleAgentReport(w http.ResponseWriter, r *http.Request) {
-	if globalAgent == nil {
-		http.Error(w, "agent not running", http.StatusServiceUnavailable)
-		return
-	}
-	var result agent.ProbeResult
-	if err := json.NewDecoder(r.Body).Decode(&result); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	if result.Timestamp.IsZero() {
-		result.Timestamp = time.Now()
-	}
-	globalAgent.ReportResult(result)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-}
-
 func handleConnectionsSplit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	entries := pool.List()
@@ -556,82 +509,6 @@ func handleSpeedtest(w http.ResponseWriter, r *http.Request) {
 
 	result := runSpeedTest(r.Context(), *socksAddr, req.Target, req.Token, req.DownloadMB, req.UploadMB)
 	json.NewEncoder(w).Encode(result)
-}
-
-func handleRegion(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet {
-		json.NewEncoder(w).Encode(map[string]string{"region": getGlobalRegion()})
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "GET or POST required", http.StatusMethodNotAllowed)
-		return
-	}
-	var body struct {
-		Region string `json:"region"`
-	}
-	json.NewDecoder(r.Body).Decode(&body)
-	if body.Region == "" {
-		body.Region = "auto"
-	}
-	globalRegion.Store(body.Region)
-	for _, e := range pool.List() {
-		if reconnectEntry != nil {
-			go reconnectEntry(e)
-		}
-	}
-	json.NewEncoder(w).Encode(map[string]string{"region": body.Region})
-}
-
-func handleRegions(w http.ResponseWriter, r *http.Request) {
-	if len(cfgRegions) == 0 {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"region": getGlobalRegion(), "regions": map[string]interface{}{}})
-		return
-	}
-	type regionInfo struct {
-		Servers   []string `json:"servers"`
-		LatencyMs float64  `json:"latency_ms,omitempty"`
-		Error     string   `json:"error,omitempty"`
-	}
-	result := make(map[string]*regionInfo, len(cfgRegions))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for code, servers := range cfgRegions {
-		code, servers := code, servers
-		ri := &regionInfo{Servers: servers}
-		result[code] = ri
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			best := time.Duration(1<<62 - 1)
-			for _, srv := range servers {
-				conn, err := (&net.Dialer{Timeout: 500 * time.Millisecond}).DialContext(context.Background(), "tcp", srv)
-				if err != nil {
-					continue
-				}
-				t := time.Now()
-				conn.Close()
-				lat := time.Since(t)
-				if lat < best {
-					best = lat
-				}
-			}
-			mu.Lock()
-			if best < time.Duration(1<<62-1) {
-				ri.LatencyMs = float64(best.Milliseconds())
-			} else {
-				ri.Error = "unreachable"
-			}
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"region":  getGlobalRegion(),
-		"regions": result,
-	})
 }
 
 func handleGlobalSNI(w http.ResponseWriter, r *http.Request) {

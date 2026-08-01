@@ -28,7 +28,6 @@ type Config struct {
 	WriteTimeout time.Duration
 	KeepAlive    time.Duration
 	MaxConns     int
-	BufferSize   int
 }
 
 func DefaultConfig() *Config {
@@ -38,7 +37,6 @@ func DefaultConfig() *Config {
 		WriteTimeout: 30 * time.Second,
 		KeepAlive:    30 * time.Second,
 		MaxConns:     10000,
-		BufferSize:   32 * 1024 * 1024,
 	}
 }
 
@@ -159,10 +157,6 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		tcpConn.SetNoDelay(true)
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(t.config.KeepAlive)
-		if t.config.BufferSize > 0 {
-			tcpConn.SetReadBuffer(t.config.BufferSize)
-			tcpConn.SetWriteBuffer(t.config.BufferSize)
-		}
 	}
 
 	atomic.AddInt64(&t.connCount, 1)
@@ -198,10 +192,6 @@ func (t *Transport) Accept() (net.Conn, error) {
 		tcpConn.SetNoDelay(true)
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(t.config.KeepAlive)
-		if t.config.BufferSize > 0 {
-			tcpConn.SetReadBuffer(t.config.BufferSize)
-			tcpConn.SetWriteBuffer(t.config.BufferSize)
-		}
 	}
 
 	if atomic.LoadInt64(&t.activeConns) >= int64(t.config.MaxConns) {
