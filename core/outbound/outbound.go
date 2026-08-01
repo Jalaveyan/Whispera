@@ -1,4 +1,4 @@
-package dataplane
+package outbound
 
 import (
 	"context"
@@ -43,12 +43,6 @@ func (c *cascadeConn) Close() error {
 		c.closeFns[i]()
 	}
 	return err
-}
-
-func (om *OutboundManager) SetStealthMode(mode string) {
-	om.mu.Lock()
-	om.stealthMode = mode
-	om.mu.Unlock()
 }
 
 func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
@@ -135,7 +129,7 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 		return err
 	}
 
-	tManager.SetDependencies(nil, hsMod, nil, cryptoMod)
+	tManager.SetDependencies(nil, hsMod, cryptoMod)
 
 	if err := tManager.Init(context.Background(), tCfg); err != nil {
 		return err
@@ -264,7 +258,7 @@ func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.Outbound
 	if err != nil {
 		return nil, err
 	}
-	mgr.SetDependencies(nil, hsMod, nil, cryptoMod)
+	mgr.SetDependencies(nil, hsMod, cryptoMod)
 	_ = mgr.Init(context.Background(), tCfg)
 	_ = mgr.Start()
 
@@ -273,17 +267,6 @@ func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.Outbound
 		return nil, err
 	}
 	return mgr, nil
-}
-
-func (om *OutboundManager) RemoveOutbound(tag string) {
-	om.mu.Lock()
-	defer om.mu.Unlock()
-
-	if t, exists := om.outbounds[tag]; exists {
-		t.Stop()
-		delete(om.outbounds, tag)
-		delete(om.outboundCfgs, tag)
-	}
 }
 
 func (om *OutboundManager) Dial(ctx context.Context, tag string, network, addr string) (net.Conn, error) {
@@ -296,10 +279,6 @@ func (om *OutboundManager) Dial(ctx context.Context, tag string, network, addr s
 	}
 
 	return t.DialStream(ctx, network, addr)
-}
-
-func (om *OutboundManager) ForwardPacket(packet []byte, tag string) error {
-	return fmt.Errorf("outbound packet forwarding not supported (stream-only transport)")
 }
 
 func (om *OutboundManager) UpdateOutbounds(configs []config.OutboundConfig) {
