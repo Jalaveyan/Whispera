@@ -5,18 +5,18 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"github.com/nekoskin/whispera/core/protocol"
-	"github.com/nekoskin/whispera/core/transport/grpc"
-	"github.com/nekoskin/whispera/core/transport/yadisk"
 	"net"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/nekoskin/whispera/core/protocol"
+	"github.com/nekoskin/whispera/core/protocol/quic"
+	"github.com/nekoskin/whispera/core/transport/grpc"
+	"github.com/nekoskin/whispera/core/transport/yadisk"
+
 	quicgo "github.com/quic-go/quic-go"
 )
-
-const defaultWhisperaSNI = "vk.com"
 
 func helloSplitEnabled() bool { return os.Getenv("WHISPERA_HELLO_SPLIT") == "1" }
 
@@ -45,29 +45,32 @@ func sendAltTransportAuth(conn net.Conn, psk []byte) error {
 	return nil
 }
 
-type rtLane struct {
-	mu     sync.Mutex
-	quicGD *protocol.RTDatagramClient
+const datagramDialTimeout = 15 * time.Second
+
+type datagramLane struct {
+	mu      sync.Mutex
+	quicGD  *quic.DatagramClient
+	dialing bool
 }
 
-type rtLaneManager struct {
+type selector struct {
 	m *Manager
 
 	sessionCache any
-	lane         rtLane
+	lane         datagramLane
 	strategy     *protocol.HandshakeStrategy
 }
 
-func newRTLaneManager(m *Manager) *rtLaneManager {
-	return &rtLaneManager{
+func newSelector(m *Manager) *selector {
+	return &selector{
 		m:            m,
 		sessionCache: protocol.SharedSessionCache(),
 		strategy:     protocol.NewHandshakeStrategy(),
 	}
 }
 
-func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error), bool) {
-	m := rl.m
+func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool) {
+	m := s.m
 	if !m.config.EnableWhispera || len(m.config.WhisperaSecret) == 0 {
 		return nil, false
 	}
@@ -76,8 +79,8 @@ func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error)
 		addr = m.config.ServerAddr
 	}
 	sni := m.config.WhisperaSNI
-	if sni == "" || net.ParseIP(sni) != nil {
-		sni = defaultWhisperaSNI
+	if net.ParseIP(sni) != nil {
+		sni = ""
 	}
 	var tcpDialer func(context.Context, string, string) (net.Conn, error)
 	if m.asnBypassDialer != nil {
@@ -89,32 +92,10 @@ func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error)
 		SharedSecret:  m.config.WhisperaSecret,
 		ServerCertPin: m.config.WhisperaCertPin,
 		ServerIDPub:   m.config.WhisperaIDPub,
-		SessionCache:  rl.sessionCache,
+		SessionCache:  s.sessionCache,
 		TCPDialer:     tcpDialer,
-		EnableQUIC:    m.config.WhisperaQUICAddr != "",
-		QUICAddr:      m.config.WhisperaQUICAddr,
-		OnQUICConn: func(c *quicgo.Conn) {
-			gd := protocol.NewRTDatagramClient(c)
-			g := &rl.lane
-			g.mu.Lock()
-			old := g.quicGD
-			g.quicGD = gd
-			g.mu.Unlock()
-			if old != nil {
-				old.Close()
-			}
-			go func() {
-				<-c.Context().Done()
-				g.mu.Lock()
-				if g.quicGD == gd {
-					g.quicGD = nil
-				}
-				g.mu.Unlock()
-				gd.Close()
-			}()
-		},
 	}
-	strategy := rl.strategy
+	strategy := s.strategy
 	return func(ctx context.Context) (net.Conn, error) {
 		c := *cCfg
 		if helloSplitEnabled() {
@@ -128,8 +109,71 @@ func (rl *rtLaneManager) whisperaDial() (func(context.Context) (net.Conn, error)
 	}, true
 }
 
-func (rl *rtLaneManager) grpcDial() (func(context.Context) (net.Conn, error), bool) {
-	m := rl.m
+func (s *selector) startDatagramLane() {
+	m := s.m
+	if !m.config.EnableWhispera || m.config.WhisperaQUICAddr == "" || len(m.config.WhisperaSecret) == 0 {
+		return
+	}
+
+	s.lane.mu.Lock()
+	if s.lane.quicGD != nil || s.lane.dialing {
+		s.lane.mu.Unlock()
+		return
+	}
+	s.lane.dialing = true
+	s.lane.mu.Unlock()
+
+	sni := m.config.WhisperaSNI
+	if net.ParseIP(sni) != nil {
+		sni = ""
+	}
+	cfg := &protocol.ClientConfig{
+		ServerAddr:    m.config.WhisperaAddr,
+		ServerName:    sni,
+		SharedSecret:  m.config.WhisperaSecret,
+		ServerCertPin: m.config.WhisperaCertPin,
+		ServerIDPub:   m.config.WhisperaIDPub,
+		QUICAddr:      m.config.WhisperaQUICAddr,
+		OnQUICConn:    s.adoptDatagramConn,
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), datagramDialTimeout)
+		defer cancel()
+
+		if err := protocol.DialRTDatagrams(ctx, cfg); err != nil {
+			log.Warn("datagram lane unavailable, UDP stays on the tunnel: %v", err)
+		}
+		s.lane.mu.Lock()
+		s.lane.dialing = false
+		s.lane.mu.Unlock()
+	}()
+}
+
+func (s *selector) adoptDatagramConn(c *quicgo.Conn) {
+	gd := quic.NewDatagramClient(c)
+
+	s.lane.mu.Lock()
+	old := s.lane.quicGD
+	s.lane.quicGD = gd
+	s.lane.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+
+	go func() {
+		<-c.Context().Done()
+		s.lane.mu.Lock()
+		if s.lane.quicGD == gd {
+			s.lane.quicGD = nil
+		}
+		s.lane.mu.Unlock()
+		gd.Close()
+	}()
+}
+
+func (s *selector) grpcDial() (func(context.Context) (net.Conn, error), bool) {
+	m := s.m
 	if !m.config.EnableGRPC || m.config.GRPCAddr == "" {
 		return nil, false
 	}
@@ -155,8 +199,8 @@ func (rl *rtLaneManager) grpcDial() (func(context.Context) (net.Conn, error), bo
 	}, true
 }
 
-func (rl *rtLaneManager) yadiskDial() (func(context.Context) (net.Conn, error), bool) {
-	m := rl.m
+func (s *selector) yadiskDial() (func(context.Context) (net.Conn, error), bool) {
+	m := s.m
 	if !m.config.EnableYaDisk || m.config.YaDiskOAuthToken == "" {
 		return nil, false
 	}
@@ -183,36 +227,26 @@ func (rl *rtLaneManager) yadiskDial() (func(context.Context) (net.Conn, error), 
 	}, true
 }
 
-func (rl *rtLaneManager) dial() func(context.Context) (net.Conn, error) {
-	if d, ok := rl.whisperaDial(); ok {
+func (s *selector) dial() func(context.Context) (net.Conn, error) {
+	if d, ok := s.whisperaDial(); ok {
 		return d
 	}
-	if d, ok := rl.grpcDial(); ok {
+	if d, ok := s.grpcDial(); ok {
 		return d
 	}
-	if d, ok := rl.yadiskDial(); ok {
+	if d, ok := s.yadiskDial(); ok {
 		return d
 	}
 	return nil
 }
 
-func (m *Manager) RTDatagram(ctx context.Context, addr string) (*protocol.RTDatagramClient, func(), bool) {
+func (m *Manager) DatagramClient(addr string) (*quic.DatagramClient, bool) {
 	if !m.config.EnableWhispera {
-		return nil, nil, false
+		return nil, false
 	}
-	gd, ok := m.rtLane.AcquireRTDatagram(ctx)
-	if !ok {
-		return nil, nil, false
-	}
-	return gd, m.rtLane.ReleaseRTDatagram, true
-}
-
-func (rl *rtLaneManager) AcquireRTDatagram(ctx context.Context) (gd *protocol.RTDatagramClient, ok bool) {
-	g := &rl.lane
-	g.mu.Lock()
-	gd = g.quicGD
-	g.mu.Unlock()
+	s := &m.selector.lane
+	s.mu.Lock()
+	gd := s.quicGD
+	s.mu.Unlock()
 	return gd, gd != nil
 }
-
-func (rl *rtLaneManager) ReleaseRTDatagram() {}

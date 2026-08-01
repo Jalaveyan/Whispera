@@ -10,37 +10,35 @@ import (
 )
 
 type ClientConfig struct {
-	Server              string   `yaml:"server" json:"server"`
-	ServerAlts          []string `yaml:"server_alts,omitempty" json:"server_alts,omitempty"`
-	ServerTCP           string   `yaml:"server_tcp" json:"server_tcp"`
-	ServerWS            string   `yaml:"server_ws" json:"server_ws"`
-	WhisperaAddr        string   `yaml:"whispera_addr" json:"whispera_addr"`
-	WhisperaSNI         string   `yaml:"whispera_sni" json:"whispera_sni"`
-	WhisperaCertPin     string   `yaml:"whispera_cert_pin" json:"whispera_cert_pin"`
-	WhisperaIDPub       string   `yaml:"whispera_idpub" json:"whispera_idpub"`
-	WhisperaFPRaw       string   `yaml:"tls_fp_raw" json:"tls_fp_raw"`
-	WhisperaQUICAddr    string   `yaml:"whispera_quic_addr" json:"whispera_quic_addr"`
-	WhisperaStripeOn    bool     `yaml:"whispera_stripe_on" json:"whispera_stripe_on"`
-	WhisperaStripeN     int      `yaml:"whispera_stripe_n" json:"whispera_stripe_n"`
-	WhisperaStripeStart int      `yaml:"whispera_stripe_start" json:"whispera_stripe_start"`
-	GRPCAddr            string   `yaml:"grpc_addr" json:"grpc_addr"`
-	GRPCServerName      string   `yaml:"grpc_server_name" json:"grpc_server_name"`
-	GRPCUseTLS          bool     `yaml:"grpc_use_tls" json:"grpc_use_tls"`
-	YaDiskOAuthToken    string   `yaml:"yadisk_oauth_token" json:"yadisk_oauth_token"`
-	DisableNeural       bool     `yaml:"disable_neural" json:"disable_neural"`
-	YaDiskSessionID     string   `yaml:"yadisk_session_id" json:"yadisk_session_id"`
-	ServerWS2           string   `yaml:"server_ws2" json:"server_ws2"`
-	TUN                 string   `yaml:"tun" json:"tun"`
-	TunIP               string   `yaml:"tun_ip" json:"tun_ip"`
-	TunGateway          string   `yaml:"tun_gateway" json:"tun_gateway"`
-	TunPrefix           int      `yaml:"tun_prefix" json:"tun_prefix"`
-	Metrics             string   `yaml:"metrics" json:"metrics"`
-	ServerPub           string   `yaml:"server_pub" json:"server_pub"`
-	PSK                 string   `yaml:"psk" json:"psk"`
-	DualMode            bool     `yaml:"dual_mode" json:"dual_mode"`
-	StunSrv             string   `yaml:"stun_srv" json:"stun_srv"`
-	ProxyMode           bool     `yaml:"proxy_mode" json:"proxy_mode"`
-	KeepaliveSec        int      `yaml:"keepalive" json:"keepalive"`
+	Server              string `yaml:"server" json:"server"`
+	ServerTCP           string `yaml:"server_tcp" json:"server_tcp"`
+	ServerWS            string `yaml:"server_ws" json:"server_ws"`
+	WhisperaAddr        string `yaml:"whispera_addr" json:"whispera_addr"`
+	WhisperaSNI         string `yaml:"whispera_sni" json:"whispera_sni"`
+	WhisperaCertPin     string `yaml:"whispera_cert_pin" json:"whispera_cert_pin"`
+	WhisperaIDPub       string `yaml:"whispera_idpub" json:"whispera_idpub"`
+	WhisperaFPRaw       string `yaml:"tls_fp_raw" json:"tls_fp_raw"`
+	WhisperaQUICAddr    string `yaml:"whispera_quic_addr" json:"whispera_quic_addr"`
+	WhisperaStripeOn    bool   `yaml:"whispera_stripe_on" json:"whispera_stripe_on"`
+	WhisperaStripeN     int    `yaml:"whispera_stripe_n" json:"whispera_stripe_n"`
+	WhisperaStripeStart int    `yaml:"whispera_stripe_start" json:"whispera_stripe_start"`
+	GRPCAddr            string `yaml:"grpc_addr" json:"grpc_addr"`
+	GRPCServerName      string `yaml:"grpc_server_name" json:"grpc_server_name"`
+	GRPCUseTLS          bool   `yaml:"grpc_use_tls" json:"grpc_use_tls"`
+	YaDiskOAuthToken    string `yaml:"yadisk_oauth_token" json:"yadisk_oauth_token"`
+	YaDiskSessionID     string `yaml:"yadisk_session_id" json:"yadisk_session_id"`
+	ServerWS2           string `yaml:"server_ws2" json:"server_ws2"`
+	TUN                 string `yaml:"tun" json:"tun"`
+	TunIP               string `yaml:"tun_ip" json:"tun_ip"`
+	TunGateway          string `yaml:"tun_gateway" json:"tun_gateway"`
+	TunPrefix           int    `yaml:"tun_prefix" json:"tun_prefix"`
+	Metrics             string `yaml:"metrics" json:"metrics"`
+	ServerPub           string `yaml:"server_pub" json:"server_pub"`
+	PSK                 string `yaml:"psk" json:"psk"`
+	DualMode            bool   `yaml:"dual_mode" json:"dual_mode"`
+	StunSrv             string `yaml:"stun_srv" json:"stun_srv"`
+	ProxyMode           bool   `yaml:"proxy_mode" json:"proxy_mode"`
+	KeepaliveSec        int    `yaml:"keepalive" json:"keepalive"`
 
 	SplitTunnel      bool   `yaml:"split_tunnel" json:"split_tunnel"`
 	SplitTunnelRules string `yaml:"split_tunnel_rules" json:"split_tunnel_rules"`
@@ -109,19 +107,9 @@ type ClientConfig struct {
 
 	TransportConfig map[string]interface{} `yaml:"transport_config,omitempty" json:"transport_config,omitempty"`
 
-	MLServerURL string `yaml:"ml_server_url,omitempty" json:"ml_server_url,omitempty"`
-
-	MLToken string `yaml:"ml_token,omitempty" json:"ml_token,omitempty"`
-
-	MLTokenFile string `yaml:"ml_token_file,omitempty" json:"ml_token_file,omitempty"`
-
 	SubscriptionURL string `yaml:"subscription_url,omitempty" json:"subscription_url,omitempty"`
 
 	ForceSNI string `yaml:"force_sni,omitempty" json:"force_sni,omitempty"`
-
-	Regions map[string][]string `yaml:"regions,omitempty" json:"regions,omitempty"`
-
-	PreferredRegion string `yaml:"region,omitempty" json:"region,omitempty"`
 }
 
 type ClientRoutingConfig struct {
@@ -181,16 +169,15 @@ type ClientFailoverConfig struct {
 }
 
 type ClientASNBypassConfig struct {
-	Enabled            bool     `yaml:"enabled" json:"enabled"`
-	Strategy           string   `yaml:"strategy" json:"strategy"`
-	TLSFingerprint     string   `yaml:"tls_fingerprint" json:"tls_fingerprint"`
-	DomainFrontHost    string   `yaml:"front_host" json:"front_host"`
-	ResidentialProxies []string `yaml:"residential_proxies" json:"residential_proxies"`
-	ProxyRotation      bool     `yaml:"proxy_rotation" json:"proxy_rotation"`
-	EnableJA3Random    bool     `yaml:"ja3_randomize" json:"ja3_randomize"`
-	EnableECH          bool     `yaml:"enable_ech" json:"enable_ech"`
-	ConnectionBurst    int      `yaml:"connection_burst" json:"connection_burst"`
-	BurstCooldownMs    int      `yaml:"burst_cooldown_ms" json:"burst_cooldown_ms"`
+	Enabled         bool   `yaml:"enabled" json:"enabled"`
+	Strategy        string `yaml:"strategy" json:"strategy"`
+	TLSFingerprint  string `yaml:"tls_fingerprint" json:"tls_fingerprint"`
+	DomainFrontHost string `yaml:"front_host" json:"front_host"`
+	ProxyRotation   bool   `yaml:"proxy_rotation" json:"proxy_rotation"`
+	EnableJA3Random bool   `yaml:"ja3_randomize" json:"ja3_randomize"`
+	EnableECH       bool   `yaml:"enable_ech" json:"enable_ech"`
+	ConnectionBurst int    `yaml:"connection_burst" json:"connection_burst"`
+	BurstCooldownMs int    `yaml:"burst_cooldown_ms" json:"burst_cooldown_ms"`
 }
 
 func LoadClient(path string) (*ClientConfig, error) {

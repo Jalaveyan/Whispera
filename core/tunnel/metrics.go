@@ -1,22 +1,11 @@
 package tunnel
 
 import (
-	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	"sync/atomic"
 	"time"
-)
 
-func (m *Manager) updateQualityRTT(rtt time.Duration) {
-	const alpha = 0.2
-	old := atomic.LoadInt64(&m.qualityRTTEWMA)
-	var newEWMA int64
-	if old == 0 {
-		newEWMA = int64(rtt)
-	} else {
-		newEWMA = int64(float64(old)*(1-alpha) + float64(rtt)*alpha)
-	}
-	atomic.StoreInt64(&m.qualityRTTEWMA, newEWMA)
-}
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+)
 
 func (m *Manager) GetQualityMetrics() (avgRTT time.Duration, missedKeepalives int) {
 	return time.Duration(atomic.LoadInt64(&m.qualityRTTEWMA)),

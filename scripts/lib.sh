@@ -83,11 +83,16 @@ setup_telegram() {
     fi
 
     log_info "Updating config..."
-    sed -i "s|admin_id: .*|admin_id: $TG_ID|" "$CONF_PATH/config.yaml"
-    sed -i "s|chat_id: .*|chat_id: \"$TG_ID\"|" "$CONF_PATH/config.yaml"
-    sed -i "s|token: \"YOUR_TELEGRAM_BOT_TOKEN\"|token: \"$TG_TOKEN\"|g" "$CONF_PATH/config.yaml"
-    sed -i "/^bot:/,/^[^ ]/ s|enabled: false|enabled: true|" "$CONF_PATH/config.yaml"
-    sed -i "/^notifications:/,/^[^ ]/ s|enabled: false|enabled: true|" "$CONF_PATH/config.yaml"
+    sed -i "/^bot:/,/^[^ ]/ {
+        s|token: .*|token: \"$TG_TOKEN\"|
+        s|admin_id: .*|admin_id: $TG_ID|
+        s|enabled: false|enabled: true|
+    }" "$CONF_PATH/config.yaml"
+    sed -i "/^notifications:/,/^[^ ]/ {
+        s|token: .*|token: \"$TG_TOKEN\"|
+        s|chat_id: .*|chat_id: \"$TG_ID\"|
+        s|enabled: false|enabled: true|
+    }" "$CONF_PATH/config.yaml"
 
     log_info "Testing bot connection..."
     local TEST_RESULT=$(curl -s "https://api.telegram.org/bot${TG_TOKEN}/getMe" 2>/dev/null)
@@ -197,18 +202,6 @@ EOF
         systemctl enable --now whispera-decoy-refresh.timer >/dev/null 2>&1
         log_success "Decoy refresh timer installed (every ${interval}, randomized up to 6h)"
     fi
-}
-
-_enable_ml_in_config() {
-    local cfg="${CONF_PATH}/config.yaml"
-    [[ -f "$cfg" ]] || return
-    if grep -q "^ml:" "$cfg"; then
-        sed -i '/^ml:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
-    else
-        printf '\nml:\n  enabled: true\n  server_url: "https://127.0.0.1:8000"\n  token_file: ""\n' >> "$cfg"
-    fi
-    refresh_config "$cfg"
-    log_success "ML enabled in config.yaml"
 }
 
 _enable_whispera_in_config() {

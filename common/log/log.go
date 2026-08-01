@@ -259,20 +259,6 @@ func Module(name string) *Logger {
 	return &Logger{s: global().Named(name).Sugar()}
 }
 
-func SetLevel(level Level) {
-	globalOnce.Do(buildGlobal)
-	globalLevel.SetLevel(toZapLevel(level))
-}
-
-func SetOutput(w io.Writer) {
-	globalOnce.Do(buildGlobal)
-	globalErrSink.set(w)
-}
-
-func Warn(msg string, args ...interface{}) {
-	Module("").Warn(msg, args...)
-}
-
 func Snapshot(limit int, minLevel Level) []Entry {
 	globalOnce.Do(buildGlobal)
 	return globalRing.snapshot(limit, minLevel)

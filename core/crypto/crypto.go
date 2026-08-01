@@ -296,7 +296,6 @@ func (a *aeadWrapper) Encrypt(seq uint32, aad, plaintext []byte) ([]byte, error)
 	}
 	binary.BigEndian.PutUint32(a.nonceBuf[len(a.nonceBuf)-4:], seq)
 
-	// Pre-size so Seal appends without allocating.
 	dst := make([]byte, 0, len(plaintext)+a.aead.Overhead())
 	ciphertext := a.aead.Seal(dst, a.nonceBuf, plaintext, aad)
 
@@ -310,7 +309,6 @@ func (a *aeadWrapper) Decrypt(seq uint32, aad, ciphertext []byte) ([]byte, error
 	}
 	binary.BigEndian.PutUint32(a.nonceBuf[len(a.nonceBuf)-4:], seq)
 
-	// Pre-size so Open appends without allocating.
 	dst := make([]byte, 0, len(ciphertext))
 	plaintext, err := a.aead.Open(dst, a.nonceBuf, ciphertext, aad)
 	if err != nil {

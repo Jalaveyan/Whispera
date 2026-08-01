@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/nekoskin/whispera/common/dns"
-	"github.com/nekoskin/whispera/core/agent"
 	"github.com/nekoskin/whispera/core/config"
 	"github.com/nekoskin/whispera/core/socks5"
 	"github.com/nekoskin/whispera/core/tunnel"
@@ -92,17 +91,6 @@ func getGlobalSNI() string {
 	return ""
 }
 
-var globalRegion atomic.Value
-
-func getGlobalRegion() string {
-	if v := globalRegion.Load(); v != nil {
-		return v.(string)
-	}
-	return "auto"
-}
-
-var cfgRegions map[string][]string
-
 var pool = &TransportPool{
 	entries: make(map[string]*TransportEntry),
 }
@@ -112,8 +100,6 @@ var reconnectEntry func(e *TransportEntry)
 var controlAddr = "127.0.0.1:10801"
 
 var adminToken string
-
-var globalAgent *agent.ProxyAgent
 
 var globalDNS *dns.Resolver
 var globalMultiRouter *socks5.MultiRouter

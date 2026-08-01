@@ -82,18 +82,3 @@ func TestHandleConnCloseDisablesEntry(t *testing.T) {
 		t.Errorf("handleConnClose() entry.Status = %v, want %v", status, connStatusDisconnected)
 	}
 }
-
-func TestHandleRegionGet(t *testing.T) {
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/region", nil)
-	w := httptest.NewRecorder()
-
-	handleRegion(w, req)
-
-	var body map[string]string
-	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if _, ok := body["region"]; !ok {
-		t.Errorf("handleRegion() response missing \"region\" key: %v", body)
-	}
-}
