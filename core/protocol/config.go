@@ -3,7 +3,6 @@ package protocol
 import (
 	"context"
 	"net"
-	"sync"
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
@@ -43,29 +42,14 @@ type ServerConfig struct {
 	QUICListenAddr       string
 	ExtraQUICListenAddrs []string
 
-	GetUsers         func() []UserEntry
-	OnConn           func(conn net.Conn, userID string, secret []byte)
-	GANDecide        GANDecideFunc
-	IsNeuralDisabled func(userID string) bool
+	GetUsers func() []UserEntry
+	OnConn   func(conn net.Conn, userID string, secret []byte)
 
 	sessionRegistry
 }
 
-func effectiveGANDecide(cfg *ServerConfig, userID string) GANDecideFunc {
-	if cfg.GANDecide == nil {
-		return nil
-	}
-	if cfg.IsNeuralDisabled != nil && cfg.IsNeuralDisabled(userID) {
-		return func(float64, float64, float64) GANAction { return GANAction{} }
-	}
-	return cfg.GANDecide
-}
-
 type sessionRegistry struct {
-	proxy       *decoyProxy
-	sessions    sync.Map
-	sessionMu   sync.Mutex
-	sessionCond *sync.Cond
+	proxy *decoyProxy
 
 	seenTokens tokenSeenSet
 
@@ -76,40 +60,4 @@ const replayWindowSeconds = (2*authWindowTolerance + 1) * authWindowSeconds
 
 func (r *sessionRegistry) consumeToken(token string) bool {
 	return r.seenTokens.consume(token, time.Now().Unix())
-}
-
-func (r *sessionRegistry) initCond() {
-	if r.sessionCond == nil {
-		r.sessionCond = sync.NewCond(&r.sessionMu)
-	}
-}
-
-func (r *sessionRegistry) storeSession(key string, sess *restSession) {
-	r.sessions.Store(key, sess)
-	r.sessionCond.Broadcast()
-}
-
-func (r *sessionRegistry) waitSession(key string, timeout time.Duration) (*restSession, bool) {
-	deadline := time.Now().Add(timeout)
-	r.sessionMu.Lock()
-	defer r.sessionMu.Unlock()
-	var wakeTimer *time.Timer
-	defer func() {
-		if wakeTimer != nil {
-			wakeTimer.Stop()
-		}
-	}()
-	for {
-		if v, ok := r.sessions.Load(key); ok {
-			return v.(*restSession), true
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return nil, false
-		}
-		if wakeTimer == nil {
-			wakeTimer = time.AfterFunc(remaining, r.sessionCond.Broadcast)
-		}
-		r.sessionCond.Wait()
-	}
 }

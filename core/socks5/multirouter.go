@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nekoskin/whispera/core/protocol"
+	"github.com/nekoskin/whispera/core/protocol/quic"
 )
 
 type RouteRule struct {
@@ -107,12 +107,12 @@ func (r *MultiRouter) DialStream(ctx context.Context, network, addr string) (net
 	return t.DialStream(ctx, network, addr)
 }
 
-func (r *MultiRouter) RTDatagram(ctx context.Context, addr string) (*protocol.RTDatagramClient, func(), bool) {
+func (r *MultiRouter) DatagramClient(addr string) (*quic.DatagramClient, bool) {
 	t := r.resolve(addr)
 	if t == nil {
-		return nil, nil, false
+		return nil, false
 	}
-	return t.RTDatagram(ctx, addr)
+	return t.DatagramClient(addr)
 }
 
 func (r *MultiRouter) resolve(host string) TunnelManager {

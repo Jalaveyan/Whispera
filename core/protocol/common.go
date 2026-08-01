@@ -4,8 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/binary"
-	"fmt"
+	stdlog "log"
 	mrand "math/rand"
 	"net"
 	"os"
@@ -15,8 +14,16 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 	utls "github.com/refraction-networking/utls"
 
-	"github.com/nekoskin/whispera/common/log"
+	logger "github.com/nekoskin/whispera/common/log"
 )
+
+var loggedTransportModes sync.Map
+
+func logTransportMode(mode string) {
+	if _, seen := loggedTransportModes.LoadOrStore(mode, struct{}{}); !seen {
+		stdlog.Printf("whispera: transport=%s", mode)
+	}
+}
 
 type UserEntry struct {
 	UserID string
@@ -41,10 +48,8 @@ var decoyGraph = [4][]string{
 }
 
 const (
-	sessionCookie       = "_s"
-	headerToken         = "Authorization"
-	contentType         = "application/octet-stream"
-	contentTypeDownload = "video/mp4"
+	rtDatagramTokenHeader   = "X-Client-Data"
+	rtDatagramSessionHeader = "X-Request-Id"
 )
 
 const perflowMagic byte = 0xE7
@@ -56,6 +61,17 @@ func perflowEnabled() bool { return os.Getenv("WHISPERA_PERFLOW") != "0" }
 const SpliceProtoBit byte = 0x80
 
 func SpliceEnabled() bool { return perflowEnabled() && os.Getenv("WHISPERA_SPLICE") != "0" }
+
+func StreamMuxEnabled() bool { return os.Getenv("WHISPERA_STREAM_MUX") == "1" }
+
+func NetConnOf(c net.Conn) net.Conn {
+	if nc, ok := c.(interface{ NetConn() net.Conn }); ok {
+		if raw := nc.NetConn(); raw != nil {
+			return raw
+		}
+	}
+	return nil
+}
 
 func chromeLikeQUICConfig() *quicgo.Config {
 	return &quicgo.Config{
@@ -74,35 +90,8 @@ func chromeLikeQUICConfig() *quicgo.Config {
 	}
 }
 
-func encodeSession(sessionID []byte, anchor time.Time) string {
-	buf := make([]byte, 24)
-	copy(buf, sessionID)
-	binary.BigEndian.PutUint64(buf[16:], uint64(anchor.Unix()))
-	return base64.RawURLEncoding.EncodeToString(buf)
-}
-
-func decodeSession(s string) (sessionID []byte, anchor time.Time, err error) {
-	buf, err := base64.RawURLEncoding.DecodeString(s)
-	if err != nil || len(buf) != 24 {
-		return nil, time.Time{}, fmt.Errorf("whispera: bad session header")
-	}
-	sessionID = buf[:16]
-	anchor = time.Unix(int64(binary.BigEndian.Uint64(buf[16:])), 0)
-	return
-}
-
-var defaultSNIPool = []string{
-	"yandex.ru", "ya.ru", "mail.ru", "vk.com", "ok.ru",
-	"rutube.ru", "dzen.ru", "avito.ru", "ozon.ru", "wildberries.ru",
-}
-
 func validSNI(s string) bool {
 	return s != "" && net.ParseIP(s) == nil
-}
-
-func DefaultSNIFor(seed string) string {
-	sum := sha256.Sum256([]byte(seed))
-	return defaultSNIPool[int(sum[0])%len(defaultSNIPool)]
 }
 
 func pickSNI(cfg *ClientConfig) string {
@@ -116,7 +105,7 @@ func pickSNI(cfg *ClientConfig) string {
 		pool = append(pool, cfg.ServerName)
 	}
 	if len(pool) == 0 {
-		pool = defaultSNIPool
+		return ""
 	}
 	return pool[mrand.Intn(len(pool))]
 }

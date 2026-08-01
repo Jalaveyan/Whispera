@@ -5,17 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
-	"fmt"
-	"math/rand"
 	"time"
-)
-
-var (
-	pathPrefixes = []string{
-		"/api/v1/", "/api/v2/", "/cdn/", "/static/", "/assets/",
-		"/media/", "/content/", "/data/", "/resources/", "/files/",
-	}
-	pathExts = []string{"", "", "", ".json", ".js", ".css", ".woff2", ".bin"}
 )
 
 const authWindowSeconds = 30
@@ -23,35 +13,6 @@ const authWindowSeconds = 30
 const authWindowTolerance = 1
 
 const clockDriftProbeWindows = 10
-
-func GeneratePath(seed uint64, seq int) string {
-	mix := int64(seed>>1) ^ int64(seq)*0x517cc1b727220a95
-	rng := rand.New(rand.NewSource(mix))
-
-	prefix := pathPrefixes[rng.Intn(len(pathPrefixes))]
-	ext := pathExts[rng.Intn(len(pathExts))]
-
-	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-	n := 8 + rng.Intn(12)
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = chars[rng.Intn(len(chars))]
-	}
-
-	return fmt.Sprintf("%s%s%s", prefix, string(b), ext)
-}
-
-var (
-	apiPrefixes  = []string{"/api/v1/", "/api/v2/", "/api/"}
-	apiEndpoints = []string{"events", "log", "track", "telemetry", "metrics", "beacon", "collect", "stats", "session", "batch"}
-)
-
-func GenerateAPIPath(seed uint64) string {
-	rng := rand.New(rand.NewSource(int64(seed) ^ 0x2545f4914f6cdd1d))
-	prefix := apiPrefixes[rng.Intn(len(apiPrefixes))]
-	ep := apiEndpoints[rng.Intn(len(apiEndpoints))]
-	return prefix + ep
-}
 
 func AuthToken(authKey []byte, window int64, sessionID []byte) string {
 	mac := hmac.New(sha256.New, authKey)

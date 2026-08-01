@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	stdlog "log"
@@ -11,8 +12,9 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
+
+	quicpkg "github.com/nekoskin/whispera/core/protocol/quic"
 
 	quicgo "github.com/quic-go/quic-go"
 	http3 "github.com/quic-go/quic-go/http3"
@@ -21,7 +23,7 @@ import (
 )
 
 func quicConnContext(ctx context.Context, c *quicgo.Conn) context.Context {
-	return context.WithValue(ctx, rtConnContextKey, c)
+	return context.WithValue(ctx, quicpkg.ConnContextKey, c)
 }
 
 type noDelayListener struct {
@@ -128,7 +130,7 @@ func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux
 		if err != nil {
 			return
 		}
-		camoConn := newQUICCamoConn(pconn, camoKeys, camoAddr)
+		camoConn := quicpkg.NewCamoConn(pconn, camoKeys, camoAddr, decoyIPRateAllow)
 		go func() { _ = srv.Serve(camoConn) }()
 	}
 
@@ -182,7 +184,6 @@ func serveBackendH2C(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux)
 }
 
 func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
-	cfg.initCond()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		handleRequest(w, r, cfg)
@@ -408,147 +409,50 @@ func handlePerflowConn(c net.Conn, cfg *ServerConfig) {
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
-	_, cookieErr := r.Cookie(sessionCookie)
-	hasSess := func() bool { return cookieErr == nil }
-
-	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
-		traceLog.Infow("debug_request_route", "method", r.Method, "content_length", r.ContentLength, "has_session", hasSess(), "remote", r.RemoteAddr, "proto", r.Proto)
-	}
-
-	switch r.Method {
-	case http.MethodOptions:
-		handleRESTOptions(w)
-		return
-	case http.MethodDelete:
-		handleRESTDelete(w)
-		return
-	case http.MethodGet:
-		path := r.URL.Path
-		if strings.HasPrefix(path, "/video/") {
-			if strings.HasSuffix(path, ".m3u8") {
-				handleHLSPlaylist(w, r, cfg)
-			} else {
-				handleHLSSegment(w, r, cfg)
-			}
-			return
-		}
-		if hasSess() {
-			handleRESTDownload(w, r, cfg)
-			return
-		}
-		traceLog.Infow("handle_request_decoy_fallback", "reason", "no_session_cookie", "method", r.Method, "remote", r.RemoteAddr)
-		serveDecoy(w, r, cfg)
-		return
-	case http.MethodPost, http.MethodPut, http.MethodPatch:
-		if hasSess() {
-			if r.ContentLength < 0 {
-				handleClientStream(w, r, cfg)
-			} else {
-				handleRESTUpload(w, r, cfg)
-			}
-			return
-		}
-		traceLog.Infow("handle_request_decoy_fallback", "reason", "no_session_cookie", "method", r.Method, "remote", r.RemoteAddr)
-		serveDecoy(w, r, cfg)
-		return
-	default:
-		serveDecoy(w, r, cfg)
+	if r.Method == http.MethodPost && registerRTDatagrams(w, r, cfg) {
 		return
 	}
+	serveDecoy(w, r, cfg)
 }
 
-func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
-	tokenHdr := r.Header.Get(headerToken)
+func registerRTDatagrams(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) bool {
+	tokenHdr := r.Header.Get(rtDatagramTokenHeader)
 	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
-		traceLog.Infow("client_stream_decoy_fallback", "reason", "missing_or_malformed_token_header", "remote", r.RemoteAddr)
-		serveDecoy(w, r, cfg)
-		return
+		return false
 	}
+
+	quicConn, ok := r.Context().Value(quicpkg.ConnContextKey).(*quicgo.Conn)
+	if !ok {
+		traceLog.Infow("rt_datagram_decoy_fallback", "reason", "not_a_quic_request", "remote", r.RemoteAddr, "proto", r.Proto)
+		return false
+	}
+	sessionID, err := hex.DecodeString(r.Header.Get(rtDatagramSessionHeader))
+	if err != nil || len(sessionID) == 0 {
+		return false
+	}
+
 	token := tokenHdr[7:]
-
-	sessCookie, err := r.Cookie(sessionCookie)
-	if err != nil {
-		traceLog.Infow("client_stream_decoy_fallback", "reason", "missing_session_cookie", "remote", r.RemoteAddr)
-		serveDecoy(w, r, cfg)
-		return
-	}
-	sessionID, _, err := decodeSession(sessCookie.Value)
-	if err != nil {
-		traceLog.Infow("client_stream_decoy_fallback", "reason", "session_decode_failed", "remote", r.RemoteAddr)
-		serveDecoy(w, r, cfg)
-		return
-	}
-
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
-		traceLog.Infow("client_stream_decoy_fallback", "reason", "secret_not_resolved", "remote", r.RemoteAddr)
-		serveDecoy(w, r, cfg)
-		return
+		traceLog.Infow("rt_datagram_decoy_fallback", "reason", "secret_not_resolved", "remote", r.RemoteAddr)
+		return false
 	}
 	if !cfg.consumeToken(token) {
-		traceLog.Infow("client_stream_decoy_fallback", "reason", "token_replay_or_expired", "remote", r.RemoteAddr, "user", userID)
-		serveDecoy(w, r, cfg)
-		return
+		traceLog.Infow("rt_datagram_decoy_fallback", "reason", "token_replay_or_expired", "remote", r.RemoteAddr, "user", userID)
+		return false
 	}
 
-	startedAt := time.Now()
-	traceLog.Infow("client_stream_authenticated",
-		"user", userID,
-		"remote", r.RemoteAddr,
-		"proto", r.Proto,
-		"content_length", r.ContentLength,
-	)
+	quicpkg.RegisterDatagramConn(sessionID, quicConn)
+	traceLog.Infow("rt_datagram_registered", "user", userID, "remote", r.RemoteAddr)
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", contentTypeDownload)
+	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	local := staticAddr{"tcp", r.Host}
-	remote := staticAddr{"tcp", r.RemoteAddr}
-	conn := newHTTPStreamConn(r.Body, w, flusher.Flush, local, remote, effectiveGANDecide(cfg, userID))
-	fc := NewFrameConn(conn)
-
-	defer func() {
-		fc.Close()
-		<-fc.writerDone
-	}()
-
-	if quicConn, ok := r.Context().Value(rtConnContextKey).(*quicgo.Conn); ok {
-		RegisterRTQUICConn(sessionID, quicConn)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
 	}
-
-	if cfg.OnConn != nil {
-		cfg.OnConn(fc, userID, secret)
-	}
-
-	select {
-	case <-conn.done:
-		traceLog.Infow("client_stream_closed",
-			"reason", "conn_done",
-			"remote", r.RemoteAddr,
-			"dur_ms", time.Since(startedAt).Milliseconds(),
-			"up_bytes", atomic.LoadInt64(&conn.upBytes),
-			"down_bytes", atomic.LoadInt64(&conn.downBytes),
-		)
-	case <-r.Context().Done():
-		traceLog.Warnw("client_stream_closed",
-			"reason", "request_context_done",
-			"remote", r.RemoteAddr,
-			"dur_ms", time.Since(startedAt).Milliseconds(),
-			"up_bytes", atomic.LoadInt64(&conn.upBytes),
-			"down_bytes", atomic.LoadInt64(&conn.downBytes),
-			"err", r.Context().Err().Error(),
-		)
-	}
+	<-r.Context().Done()
+	return true
 }
 
 func resolveSecret(cfg *ServerConfig, token string, sessionID []byte) ([]byte, string) {

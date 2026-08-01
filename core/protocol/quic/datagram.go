@@ -1,4 +1,4 @@
-package protocol
+package quic
 
 import (
 	"context"
@@ -8,25 +8,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nekoskin/whispera/core/relay"
 	quicgo "github.com/quic-go/quic-go"
 )
 
 const (
-	rtFECK                 = 10
-	rtFECM                 = 4
-	rtDatagramMaxProtected = 1100
-	rtFECBlockWait         = 30 * time.Millisecond
-	rtFECSweepEvery        = 10 * time.Millisecond
-	rtUDPTargetIdle        = 2 * time.Minute
+	fecK                 = 10
+	fecM                 = 4
+	datagramMaxProtected = 1100
+	fecSweepEvery        = 10 * time.Millisecond
+	udpTargetIdle        = 2 * time.Minute
 )
+
+var fecBlockWait = 30 * time.Millisecond
 
 const (
-	rtMarkerFEC byte = 0xFF
-	rtMarkerRaw byte = 0xFE
+	markerFEC byte = 0xFF
+	markerRaw byte = 0xFE
 )
 
-func encodeRTAddr(host string, port uint16) []byte {
+func encodeAddr(host string, port uint16) []byte {
 	var b []byte
 	if ip := net.ParseIP(host); ip != nil {
 		if ip4 := ip.To4(); ip4 != nil {
@@ -43,7 +43,7 @@ func encodeRTAddr(host string, port uint16) []byte {
 	return binary.BigEndian.AppendUint16(b, port)
 }
 
-func decodeRTAddr(b []byte) (host string, port uint16, rest []byte, ok bool) {
+func decodeAddr(b []byte) (host string, port uint16, rest []byte, ok bool) {
 	if len(b) < 1 {
 		return "", 0, nil, false
 	}
@@ -72,44 +72,44 @@ func decodeRTAddr(b []byte) (host string, port uint16, rest []byte, ok bool) {
 	}
 }
 
-type rtFECSender struct {
+type fecSender struct {
 	mu         sync.Mutex
-	enc        *relay.FECEncoder
+	enc        *FECEncoder
 	blockStart uint32
 	cnt        int
 	lastAt     time.Time
 }
 
-func newRTFECSender() *rtFECSender {
-	return &rtFECSender{enc: relay.NewFECEncoder(rtFECK, rtFECM)}
+func newRTFECSender() *fecSender {
+	return &fecSender{enc: NewFECEncoder(fecK, fecM)}
 }
 
-func (s *rtFECSender) flushLocked() [][]byte {
+func (s *fecSender) flushLocked() [][]byte {
 	if s.cnt == 0 {
 		return nil
 	}
 	var pkts [][]byte
-	for s.cnt < rtFECK {
+	for s.cnt < fecK {
 		seq := s.blockStart + uint32(s.cnt)
 		pkts = append(pkts, s.enc.EncodeFEC(nil, seq, 0))
 		s.cnt++
 	}
-	parityBase := s.blockStart + uint32(rtFECK)
+	parityBase := s.blockStart + uint32(fecK)
 	pkts = append(pkts, s.enc.GetParityPackets(parityBase, 0)...)
-	s.blockStart += uint32(rtFECK + rtFECM)
+	s.blockStart += uint32(fecK + fecM)
 	s.cnt = 0
 	return pkts
 }
 
-func (s *rtFECSender) encode(payload []byte) [][]byte {
-	if len(payload) > rtDatagramMaxProtected || s.enc == nil {
-		return [][]byte{append([]byte{rtMarkerRaw}, payload...)}
+func (s *fecSender) encode(payload []byte) [][]byte {
+	if len(payload) > datagramMaxProtected || s.enc == nil {
+		return [][]byte{append([]byte{markerRaw}, payload...)}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var pkts [][]byte
-	if s.cnt > 0 && time.Since(s.lastAt) >= rtFECBlockWait {
+	if s.cnt > 0 && time.Since(s.lastAt) >= fecBlockWait {
 		pkts = s.flushLocked()
 	}
 	s.lastAt = time.Now()
@@ -117,36 +117,36 @@ func (s *rtFECSender) encode(payload []byte) [][]byte {
 	seq := s.blockStart + uint32(s.cnt)
 	pkts = append(pkts, s.enc.EncodeFEC(payload, seq, 0))
 	s.cnt++
-	if s.cnt == rtFECK {
-		parityBase := s.blockStart + uint32(rtFECK)
+	if s.cnt == fecK {
+		parityBase := s.blockStart + uint32(fecK)
 		pkts = append(pkts, s.enc.GetParityPackets(parityBase, 0)...)
-		s.blockStart += uint32(rtFECK + rtFECM)
+		s.blockStart += uint32(fecK + fecM)
 		s.cnt = 0
 	}
 	return pkts
 }
 
-type rtFECReceiver struct {
+type fecReceiver struct {
 	mu       sync.Mutex
-	dec      *relay.FECDecoder
+	dec      *FECDecoder
 	received map[uint32][]byte
 	firstAt  map[uint32]time.Time
 }
 
-func newRTFECReceiver() *rtFECReceiver {
-	return &rtFECReceiver{
-		dec:      relay.NewFECDecoder(rtFECK, rtFECM),
+func newRTFECReceiver() *fecReceiver {
+	return &fecReceiver{
+		dec:      NewFECDecoder(fecK, fecM),
 		received: make(map[uint32][]byte),
 		firstAt:  make(map[uint32]time.Time),
 	}
 }
 
-func (r *rtFECReceiver) ingest(packet []byte) {
-	if len(packet) < 9 || packet[0] != rtMarkerFEC {
+func (r *fecReceiver) ingest(packet []byte) {
+	if len(packet) < 9 || packet[0] != markerFEC {
 		return
 	}
 	seq := binary.BigEndian.Uint32(packet[1:5])
-	blockSize := uint32(rtFECK + rtFECM)
+	blockSize := uint32(fecK + fecM)
 	blockStart := (seq / blockSize) * blockSize
 	posInBlock := seq - blockStart
 
@@ -154,7 +154,7 @@ func (r *rtFECReceiver) ingest(packet []byte) {
 	if _, ok := r.firstAt[blockStart]; !ok {
 		r.firstAt[blockStart] = time.Now()
 	}
-	if posInBlock < uint32(rtFECK) {
+	if posInBlock < uint32(fecK) {
 		dataLen := binary.BigEndian.Uint16(packet[7:9])
 		if int(dataLen)+9 <= len(packet) {
 			r.received[seq] = append([]byte{}, packet[9:9+int(dataLen)]...)
@@ -165,19 +165,19 @@ func (r *rtFECReceiver) ingest(packet []byte) {
 	r.dec.DecodeFEC(packet, seq)
 }
 
-func (r *rtFECReceiver) sweep(deliver func([]byte)) {
+func (r *fecReceiver) sweep(deliver func([]byte)) {
 	var due []uint32
 
 	r.mu.Lock()
 	now := time.Now()
 	for bs, t := range r.firstAt {
 		have := 0
-		for i := uint32(0); i < uint32(rtFECK); i++ {
+		for i := uint32(0); i < uint32(fecK); i++ {
 			if _, ok := r.received[bs+i]; ok {
 				have++
 			}
 		}
-		if have == rtFECK || now.Sub(t) >= rtFECBlockWait {
+		if have == fecK || now.Sub(t) >= fecBlockWait {
 			due = append(due, bs)
 		}
 	}
@@ -191,10 +191,10 @@ func (r *rtFECReceiver) sweep(deliver func([]byte)) {
 	}
 }
 
-func (r *rtFECReceiver) deliverBlock(blockStart uint32, deliver func([]byte)) {
+func (r *fecReceiver) deliverBlock(blockStart uint32, deliver func([]byte)) {
 	r.mu.Lock()
 	missing := false
-	for i := uint32(0); i < uint32(rtFECK); i++ {
+	for i := uint32(0); i < uint32(fecK); i++ {
 		if _, ok := r.received[blockStart+i]; !ok {
 			missing = true
 			break
@@ -203,10 +203,10 @@ func (r *rtFECReceiver) deliverBlock(blockStart uint32, deliver func([]byte)) {
 	r.mu.Unlock()
 
 	if missing {
-		recovered := r.dec.Reconstruct(blockStart, rtFECK, rtFECM)
+		recovered := r.dec.Reconstruct(blockStart, fecK, fecM)
 		r.mu.Lock()
 		ri := 0
-		for i := uint32(0); i < uint32(rtFECK); i++ {
+		for i := uint32(0); i < uint32(fecK); i++ {
 			if _, ok := r.received[blockStart+i]; !ok && ri < len(recovered) {
 				r.received[blockStart+i] = recovered[ri]
 				ri++
@@ -216,50 +216,50 @@ func (r *rtFECReceiver) deliverBlock(blockStart uint32, deliver func([]byte)) {
 	}
 
 	r.mu.Lock()
-	payloads := make([][]byte, 0, rtFECK)
-	for i := uint32(0); i < uint32(rtFECK); i++ {
+	payloads := make([][]byte, 0, fecK)
+	for i := uint32(0); i < uint32(fecK); i++ {
 		if p, ok := r.received[blockStart+i]; ok && len(p) > 0 {
 			payloads = append(payloads, p)
 		}
 		delete(r.received, blockStart+i)
 	}
-	for i := uint32(rtFECK); i < uint32(rtFECK+rtFECM); i++ {
+	for i := uint32(fecK); i < uint32(fecK+fecM); i++ {
 		delete(r.received, blockStart+i)
 	}
 	r.mu.Unlock()
 
-	r.dec.Forget(blockStart, rtFECK, rtFECM)
+	r.dec.Forget(blockStart, fecK, fecM)
 
 	for _, p := range payloads {
 		deliver(p)
 	}
 }
 
-func processIncomingRTDatagram(packet []byte, recv *rtFECReceiver, deliver func([]byte)) {
+func processIncoming(packet []byte, recv *fecReceiver, deliver func([]byte)) {
 	if len(packet) == 0 {
 		return
 	}
 	switch packet[0] {
-	case rtMarkerRaw:
+	case markerRaw:
 		deliver(append([]byte{}, packet[1:]...))
-	case rtMarkerFEC:
+	case markerFEC:
 		recv.ingest(packet)
 	}
 }
 
-type RTDatagramClient struct {
+type DatagramClient struct {
 	conn     *quicgo.Conn
-	sender   *rtFECSender
-	receiver *rtFECReceiver
+	sender   *fecSender
+	receiver *fecReceiver
 	cancel   context.CancelFunc
 
 	mu      sync.Mutex
 	targets map[string]chan []byte
 }
 
-func NewRTDatagramClient(conn *quicgo.Conn) *RTDatagramClient {
+func NewDatagramClient(conn *quicgo.Conn) *DatagramClient {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &RTDatagramClient{
+	c := &DatagramClient{
 		conn:     conn,
 		sender:   newRTFECSender(),
 		receiver: newRTFECReceiver(),
@@ -271,8 +271,8 @@ func NewRTDatagramClient(conn *quicgo.Conn) *RTDatagramClient {
 	return c
 }
 
-func (c *RTDatagramClient) deliver(payload []byte) {
-	host, port, data, ok := decodeRTAddr(payload)
+func (c *DatagramClient) deliver(payload []byte) {
+	host, port, data, ok := decodeAddr(payload)
 	if !ok {
 		return
 	}
@@ -288,18 +288,18 @@ func (c *RTDatagramClient) deliver(payload []byte) {
 	c.mu.Unlock()
 }
 
-func (c *RTDatagramClient) receiveLoop(ctx context.Context) {
+func (c *DatagramClient) receiveLoop(ctx context.Context) {
 	for {
 		data, err := c.conn.ReceiveDatagram(ctx)
 		if err != nil {
 			return
 		}
-		processIncomingRTDatagram(data, c.receiver, c.deliver)
+		processIncoming(data, c.receiver, c.deliver)
 	}
 }
 
-func (c *RTDatagramClient) sweepLoop(ctx context.Context) {
-	t := time.NewTicker(rtFECSweepEvery)
+func (c *DatagramClient) sweepLoop(ctx context.Context) {
+	t := time.NewTicker(fecSweepEvery)
 	defer t.Stop()
 	for {
 		select {
@@ -311,8 +311,8 @@ func (c *RTDatagramClient) sweepLoop(ctx context.Context) {
 	}
 }
 
-func (c *RTDatagramClient) SendUDP(host string, port uint16, payload []byte) error {
-	full := append(encodeRTAddr(host, port), payload...)
+func (c *DatagramClient) SendUDP(host string, port uint16, payload []byte) error {
+	full := append(encodeAddr(host, port), payload...)
 	for _, pkt := range c.sender.encode(full) {
 		if err := c.conn.SendDatagram(pkt); err != nil {
 			return err
@@ -321,7 +321,7 @@ func (c *RTDatagramClient) SendUDP(host string, port uint16, payload []byte) err
 	return nil
 }
 
-func (c *RTDatagramClient) RegisterTarget(host string, port uint16) (<-chan []byte, func()) {
+func (c *DatagramClient) RegisterTarget(host string, port uint16) (<-chan []byte, func()) {
 	key := net.JoinHostPort(host, strconv.Itoa(int(port)))
 	ch := make(chan []byte, 64)
 	c.mu.Lock()
@@ -341,23 +341,23 @@ func (c *RTDatagramClient) RegisterTarget(host string, port uint16) (<-chan []by
 	return ch, unregister
 }
 
-func (c *RTDatagramClient) Close() {
+func (c *DatagramClient) Close() {
 	c.cancel()
 }
 
-type rtServerSession struct {
+type serverSession struct {
 	conn     *quicgo.Conn
-	sender   *rtFECSender
-	receiver *rtFECReceiver
+	sender   *fecSender
+	receiver *fecReceiver
 	cancel   context.CancelFunc
 
 	mu      sync.Mutex
 	targets map[string]net.Conn
 }
 
-func newRTServerSession(conn *quicgo.Conn) *rtServerSession {
+func newServerSession(conn *quicgo.Conn) *serverSession {
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &rtServerSession{
+	s := &serverSession{
 		conn:     conn,
 		sender:   newRTFECSender(),
 		receiver: newRTFECReceiver(),
@@ -369,18 +369,18 @@ func newRTServerSession(conn *quicgo.Conn) *rtServerSession {
 	return s
 }
 
-func (s *rtServerSession) receiveLoop(ctx context.Context) {
+func (s *serverSession) receiveLoop(ctx context.Context) {
 	for {
 		data, err := s.conn.ReceiveDatagram(ctx)
 		if err != nil {
 			return
 		}
-		processIncomingRTDatagram(data, s.receiver, s.handlePayload)
+		processIncoming(data, s.receiver, s.handlePayload)
 	}
 }
 
-func (s *rtServerSession) sweepLoop(ctx context.Context) {
-	t := time.NewTicker(rtFECSweepEvery)
+func (s *serverSession) sweepLoop(ctx context.Context) {
+	t := time.NewTicker(fecSweepEvery)
 	defer t.Stop()
 	for {
 		select {
@@ -392,8 +392,8 @@ func (s *rtServerSession) sweepLoop(ctx context.Context) {
 	}
 }
 
-func (s *rtServerSession) handlePayload(payload []byte) {
-	host, port, udpPayload, ok := decodeRTAddr(payload)
+func (s *serverSession) handlePayload(payload []byte) {
+	host, port, udpPayload, ok := decodeAddr(payload)
 	if !ok {
 		return
 	}
@@ -417,7 +417,7 @@ func (s *rtServerSession) handlePayload(payload []byte) {
 	_, _ = uc.Write(udpPayload)
 }
 
-func (s *rtServerSession) pumpTargetResponses(uc net.Conn, key, host string, port uint16) {
+func (s *serverSession) pumpTargetResponses(uc net.Conn, key, host string, port uint16) {
 	defer func() {
 		s.mu.Lock()
 		delete(s.targets, key)
@@ -426,12 +426,12 @@ func (s *rtServerSession) pumpTargetResponses(uc net.Conn, key, host string, por
 	}()
 	buf := make([]byte, 65535)
 	for {
-		_ = uc.SetReadDeadline(time.Now().Add(rtUDPTargetIdle))
+		_ = uc.SetReadDeadline(time.Now().Add(udpTargetIdle))
 		n, err := uc.Read(buf)
 		if err != nil {
 			return
 		}
-		payload := append(encodeRTAddr(host, port), buf[:n]...)
+		payload := append(encodeAddr(host, port), buf[:n]...)
 		for _, pkt := range s.sender.encode(payload) {
 			if err := s.conn.SendDatagram(pkt); err != nil {
 				traceLog.Warnw("rt_datagram_target_send_failed", "target", key, "err", err.Error())
@@ -440,7 +440,7 @@ func (s *rtServerSession) pumpTargetResponses(uc net.Conn, key, host string, por
 	}
 }
 
-func (s *rtServerSession) Close() {
+func (s *serverSession) Close() {
 	s.cancel()
 	s.mu.Lock()
 	for _, uc := range s.targets {
@@ -449,36 +449,36 @@ func (s *rtServerSession) Close() {
 	s.mu.Unlock()
 }
 
-type rtConnCtxKey struct{}
+type connCtxKey struct{}
 
-var rtConnContextKey = rtConnCtxKey{}
+var ConnContextKey = connCtxKey{}
 
 var (
-	rtSessionsMu sync.Mutex
-	rtSessions   = make(map[string]*rtServerSession)
+	sessionsMu sync.Mutex
+	sessions   = make(map[string]*serverSession)
 )
 
-func RegisterRTQUICConn(sessionID []byte, conn *quicgo.Conn) {
+func RegisterDatagramConn(sessionID []byte, conn *quicgo.Conn) {
 	if conn == nil || len(sessionID) == 0 {
 		return
 	}
 	key := string(sessionID)
-	rtSessionsMu.Lock()
-	if old, ok := rtSessions[key]; ok {
+	sessionsMu.Lock()
+	if old, ok := sessions[key]; ok {
 		old.Close()
 	}
-	sess := newRTServerSession(conn)
-	rtSessions[key] = sess
-	rtSessionsMu.Unlock()
+	sess := newServerSession(conn)
+	sessions[key] = sess
+	sessionsMu.Unlock()
 	traceLog.Infow("rt_datagram_session_registered", "remote", conn.RemoteAddr().String())
 
 	go func() {
 		<-conn.Context().Done()
-		rtSessionsMu.Lock()
-		if rtSessions[key] == sess {
-			delete(rtSessions, key)
+		sessionsMu.Lock()
+		if sessions[key] == sess {
+			delete(sessions, key)
 		}
-		rtSessionsMu.Unlock()
+		sessionsMu.Unlock()
 		sess.Close()
 	}()
 }

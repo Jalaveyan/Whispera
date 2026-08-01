@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"io"
 	mrand "math/rand"
 	"net"
@@ -162,7 +163,7 @@ func (g *DecoyGate) idle() bool {
 type decoyDriver struct {
 	gate       *DecoyGate
 	client     *http.Client
-	prof       browserProfile
+	prof       fingerprint.Profile
 	origin     string
 	serverAddr string
 	sni        string
@@ -187,7 +188,7 @@ func (d *decoyDriver) get(ctx context.Context, path string) {
 		return
 	}
 	req.Host = d.sni
-	d.prof.apply(req, d.origin)
+	d.prof.Apply(req, d.origin)
 	if resp, err := d.client.Do(req); err == nil {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
@@ -237,10 +238,10 @@ func (d *decoyDriver) run(ctx context.Context) {
 	}
 }
 
-func newDecoyClient(cfg *ClientConfig) (*http.Client, browserProfile, string, string, func()) {
+func newDecoyClient(cfg *ClientConfig) (*http.Client, fingerprint.Profile, string, string, func()) {
 	sni := sessionSNI(cfg)
-	helloID, helloRaw, uaID := sessionFingerprint()
-	prof := newBrowserProfile(uaID)
+	helloID, helloRaw, uaID := fingerprint.Session()
+	prof := fingerprint.NewProfile(uaID)
 
 	var dialedMu sync.Mutex
 	var dialed []net.Conn
@@ -269,7 +270,7 @@ func newDecoyClient(cfg *ClientConfig) (*http.Client, browserProfile, string, st
 		}
 		var uConn *utls.UConn
 		if len(helloRaw) > 0 {
-			spec, err := specFromRaw(helloRaw)
+			spec, err := fingerprint.SpecFromRaw(helloRaw)
 			if err != nil {
 				rawConn.Close()
 				return nil, err

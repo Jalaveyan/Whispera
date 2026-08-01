@@ -5,8 +5,9 @@ import (
 	crand "crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
-	"errors"
+	"encoding/hex"
 	"fmt"
+	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"hash/fnv"
 	"io"
 	"math"
@@ -17,6 +18,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nekoskin/whispera/core/protocol/camo"
+	quicpkg "github.com/nekoskin/whispera/core/protocol/quic"
 
 	"github.com/nekoskin/whispera/neural"
 
@@ -227,20 +231,12 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	anchor := time.Now().UTC().Truncate(time.Second)
 
 	keys := DeriveKeys(cfg.SharedSecret)
-	sched := NewWindowScheduler(keys.Behavior, sessionID, anchor)
-
-	windowIdx := sched.CurrentIndex()
-	bp := DeriveBehaviorParams(keys.Behavior, windowIdx, sessionID)
-	path := GeneratePath(bp.PathSeed, windowIdx)
 	token := AuthToken(keys.Auth, anchor.Unix()/authWindowSeconds, sessionID)
 
 	sni := sessionSNI(cfg)
-	origin := "https://" + sni
+	helloID, helloRaw, _ := fingerprint.Session()
 
-	helloID, helloRaw, uaID := sessionFingerprint()
-	prof := newBrowserProfile(uaID)
-
-	camoKey := deriveCamoKey(cfg.SharedSecret)
+	camoKey := camo.DeriveKey(cfg.SharedSecret)
 
 	d := &clientDialer{
 		cfg:      cfg,
@@ -250,36 +246,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		helloRaw: helloRaw,
 	}
 
-	if perflowEnabled() && !cfg.EnableQUIC {
-		return dialPerflow(ctx, d, sessionID, token)
-	}
-
-	h2Transport := newH2Transport(d.dialTLS)
-
-	if splitEnabled() && !cfg.EnableQUIC {
-		addr := cfg.ServerAddr
-		conn, serr := clientSplit(ctx, h2Transport, splitParams{
-			base:      fmt.Sprintf("https://%s", addr),
-			uploadURL: fmt.Sprintf("https://%s%s", addr, GenerateAPIPath(bp.PathSeed)),
-			sni:       sni,
-			origin:    origin,
-			token:     token,
-			sessionID: sessionID,
-			anchor:    anchor,
-			prof:      prof,
-			local:     staticAddr{"tcp", addr},
-			remote:    staticAddr{"tcp", addr},
-		})
-		if serr == nil {
-			return conn, nil
-		}
-		if !errors.Is(serr, errSplitUnsupported) {
-			return nil, serr
-		}
-		logTransportMode("single-post-fallback: " + serr.Error())
-	}
-
-	return establishPostTunnel(ctx, d, h2Transport, path, token, origin, prof, sessionID, anchor)
+	return dialPerflow(ctx, d, sessionID, token)
 }
 
 type clientDialer struct {
@@ -332,7 +299,7 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 	}
 	var spec *utls.ClientHelloSpec
 	if useSpec && len(d.helloRaw) > 0 {
-		s, err := specFromRaw(d.helloRaw)
+		s, err := fingerprint.SpecFromRaw(d.helloRaw)
 		if err != nil {
 			return nil, fmt.Errorf("whispera: fingerprint: %w", err)
 		}
@@ -344,7 +311,7 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 		}
 		spec = &s
 	}
-	dropPQKeyShares(spec)
+	fingerprint.DropPQKeyShares(spec)
 	uConn := utls.UClient(rawConn, uCfg, utls.HelloCustom)
 	if err := uConn.ApplyPreset(spec); err != nil {
 		return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
@@ -354,8 +321,8 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 	}
 	if d.camoKey != nil {
 		if hello := uConn.HandshakeState.Hello; hello != nil && len(hello.Random) == 32 {
-			if keyShare := extractX25519KeyShare(hello.KeyShares); len(keyShare) > 0 {
-				marker := buildCamoMarker(d.camoKey, keyShare)
+			if keyShare := camo.ExtractX25519KeyShare(hello.KeyShares); len(keyShare) > 0 {
+				marker := camo.BuildMarker(d.camoKey, keyShare)
 				copy(hello.Random, marker[:])
 			}
 		}
@@ -396,16 +363,6 @@ func (d *clientDialer) dialTLS(ctx context.Context, network, addr string, _ *tls
 	return uConn, nil
 }
 
-func (d *clientDialer) closeDialed() {
-	d.mu.Lock()
-	conns := d.dialed
-	d.dialed = nil
-	d.mu.Unlock()
-	for _, c := range conns {
-		_ = c.Close()
-	}
-}
-
 func dialPerflow(ctx context.Context, d *clientDialer, sessionID []byte, token string) (net.Conn, error) {
 	uConn, err := d.dialTLS(ctx, "tcp", d.cfg.ServerAddr, nil)
 	if err != nil {
@@ -424,94 +381,46 @@ func dialPerflow(ctx context.Context, d *clientDialer, sessionID []byte, token s
 	return uConn, nil
 }
 
-func establishPostTunnel(ctx context.Context, d *clientDialer, h2Transport *http2.Transport, path, token, origin string, prof browserProfile, sessionID []byte, anchor time.Time) (net.Conn, error) {
-	cfg := d.cfg
-	sni := d.sni
-
-	pr, pw := io.Pipe()
-	bpw := newBufferedPipeWriter(pw)
-
-	tunnelAddr := cfg.ServerAddr
-	if cfg.EnableQUIC && cfg.QUICAddr != "" {
-		tunnelAddr = cfg.QUICAddr
+func DialRTDatagrams(ctx context.Context, cfg *ClientConfig) error {
+	if cfg.QUICAddr == "" {
+		return fmt.Errorf("whispera: no QUIC address configured")
 	}
-	url := fmt.Sprintf("https://%s%s", tunnelAddr, path)
 
-	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
+	sessionID := make([]byte, 16)
+	if _, err := crand.Read(sessionID); err != nil {
+		return fmt.Errorf("whispera: session id: %w", err)
+	}
+	anchor := time.Now().UTC().Truncate(time.Second)
+	keys := DeriveKeys(cfg.SharedSecret)
+	token := AuthToken(keys.Auth, anchor.Unix()/authWindowSeconds, sessionID)
 
-	req, err := http.NewRequestWithContext(tunnelCtx, http.MethodPost, url, pr)
+	sni := sessionSNI(cfg)
+	tr := newQUICTransport(cfg, sni)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("https://%s/", cfg.QUICAddr), http.NoBody)
 	if err != nil {
-		tunnelCancel()
-		pr.Close()
-		bpw.Close()
-		return nil, fmt.Errorf("whispera: build request: %w", err)
+		return err
 	}
 	req.Host = sni
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set(headerToken, "Bearer "+token)
-	prof.apply(req, origin)
-	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: encodeSession(sessionID, anchor)})
+	req.Header.Set(rtDatagramTokenHeader, "Bearer "+token)
+	req.Header.Set(rtDatagramSessionHeader, hex.EncodeToString(sessionID))
 
-	local := staticAddr{"tcp", tunnelAddr}
-	remote := staticAddr{"tcp", tunnelAddr}
-	pc := newPipelinedConn(pr, bpw, tunnelCancel, local, remote)
-
-	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-
-	var tunnelTransport http.RoundTripper
-	if cfg.EnableQUIC {
-		tunnelTransport = newQUICTransport(cfg, sni)
-	} else {
-		tunnelTransport = h2Transport
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		return fmt.Errorf("whispera: rt datagram register: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return fmt.Errorf("whispera: rt datagram register: status %d", resp.StatusCode)
 	}
 
-	client := &http.Client{Transport: tunnelTransport, CheckRedirect: noRedirect}
-
+	logTransportMode("rt-datagrams")
 	go func() {
-		<-tunnelCtx.Done()
-		d.closeDialed()
-		h2Transport.CloseIdleConnections()
-		if c, ok := tunnelTransport.(interface{ Close() error }); ok {
-			_ = c.Close()
-		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
 	}()
-
-	fc := NewFrameConn(pc)
-
-	connected := make(chan error, 1)
-	go func() {
-		resp, err := client.Do(req)
-		if err != nil {
-			pc.deliver(nil)
-			connected <- err
-			return
-		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			pc.deliver(nil)
-			connected <- fmt.Errorf("whispera: server returned status %d", resp.StatusCode)
-			return
-		}
-		if !pc.deliver(resp.Body) {
-			resp.Body.Close()
-		}
-		connected <- nil
-	}()
-
-	select {
-	case err := <-connected:
-		if err != nil {
-			tunnelCancel()
-			pc.Close()
-			return nil, fmt.Errorf("whispera: tunnel POST not established: %w", err)
-		}
-	case <-ctx.Done():
-		tunnelCancel()
-		pc.Close()
-		return nil, ctx.Err()
-	}
-
-	return fc, nil
+	return nil
 }
 
 func newQUICTransport(cfg *ClientConfig, sni string) http.RoundTripper {
@@ -535,8 +444,8 @@ func newQUICTransport(cfg *ClientConfig, sni string) http.RoundTripper {
 			if err != nil {
 				return nil, err
 			}
-			if camoKey := deriveCamoKey(cfg.SharedSecret); camoKey != nil {
-				if probe, perr := buildQUICCamoProbe(camoKey, sni); perr == nil {
+			if camoKey := camo.DeriveKey(cfg.SharedSecret); camoKey != nil {
+				if probe, perr := quicpkg.BuildCamoProbe(camoKey, sni); perr == nil {
 					_, _ = pconn.WriteToUDP(probe, udpAddr)
 				}
 			}

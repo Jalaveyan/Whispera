@@ -1,17 +1,18 @@
-package protocol
+package fingerprint
 
 import (
 	"fmt"
-	"github.com/nekoskin/whispera/common/fsown"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/nekoskin/whispera/common/fsown"
+
 	utls "github.com/refraction-networking/utls"
 )
 
-func kindFromName(name string) browserKind {
+func kindFromName(name string) kind {
 	switch name {
 	case "firefox", "firefox_120":
 		return kindFirefox
@@ -27,7 +28,7 @@ func PersistRawFingerprint(dir string, raw []byte) error {
 	if _, err := fp.FingerprintClientHello(raw); err != nil {
 		return err
 	}
-	key, ok := harvestKey(raw)
+	key, ok := collectKey(raw)
 	if !ok {
 		return fmt.Errorf("whispera: not a client hello")
 	}
@@ -51,7 +52,7 @@ func PersistRawFingerprint(dir string, raw []byte) error {
 	return nil
 }
 
-func FreshestRawFingerprint(dir, kind string) ([]byte, bool) {
+func FreshestRaw(dir, kind string) ([]byte, bool) {
 	if dir == "" {
 		return nil, false
 	}
@@ -74,7 +75,7 @@ func FreshestRawFingerprint(dir, kind string) ([]byte, bool) {
 		if err != nil {
 			continue
 		}
-		if classifyClientHello(data) != want {
+		if ClassifyClientHello(data) != want {
 			continue
 		}
 		if best == nil || info.ModTime().After(bestMod) {
@@ -98,41 +99,41 @@ func looksLikeRealBrowser(raw []byte) bool {
 	return false
 }
 
-var harvestOnce sync.Once
+var collectOnce sync.Once
 
 var (
-	harvestDirMu       sync.RWMutex
-	harvestDirOverride string
+	collectDirMu       sync.RWMutex
+	collectDirOverride string
 )
 
-func SetHarvestDir(dir string) {
-	harvestDirMu.Lock()
-	harvestDirOverride = dir
-	harvestDirMu.Unlock()
+func SetCollectDir(dir string) {
+	collectDirMu.Lock()
+	collectDirOverride = dir
+	collectDirMu.Unlock()
 }
 
-func harvestDirPath() string {
-	harvestDirMu.RLock()
-	d := harvestDirOverride
-	harvestDirMu.RUnlock()
+func collectDirPath() string {
+	collectDirMu.RLock()
+	d := collectDirOverride
+	collectDirMu.RUnlock()
 	if d != "" {
 		return d
 	}
 	return os.Getenv("WHISPERA_FP_DIR")
 }
 
-func HarvestRawClientHello(record []byte) error {
+func CollectRawClientHello(record []byte) error {
 	fp := &utls.Fingerprinter{AllowBluntMimicry: true}
 	spec, err := fp.FingerprintClientHello(record)
 	if err != nil {
 		return err
 	}
-	addHarvestedFingerprint(spec, record)
+	AddCollected(spec, record)
 	return nil
 }
 
 func persistFingerprint(key string, raw []byte) {
-	dir := harvestDirPath()
+	dir := collectDirPath()
 	if dir == "" || len(raw) == 0 {
 		return
 	}
@@ -150,7 +151,7 @@ func persistFingerprint(key string, raw []byte) {
 	_ = os.Rename(tmp, path)
 }
 
-func LoadHarvestDir(dir string) (int, error) {
+func LoadCollectDir(dir string) (int, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return 0, err
@@ -164,18 +165,30 @@ func LoadHarvestDir(dir string) (int, error) {
 		if rerr != nil {
 			continue
 		}
-		if HarvestRawClientHello(data) == nil {
+		if CollectRawClientHello(data) == nil {
 			n++
 		}
 	}
 	return n, nil
 }
 
-func initHarvest() {
+func initCollect() {
 	loadSeedFingerprints()
-	dir := harvestDirPath()
+	dir := collectDirPath()
 	if dir == "" {
 		return
 	}
-	_, _ = LoadHarvestDir(dir)
+	_, _ = LoadCollectDir(dir)
+}
+
+func CollectFromHello(raw []byte) {
+	if !looksLikeRealBrowser(raw) {
+		return
+	}
+	dir := collectDirPath()
+	if dir == "" {
+		return
+	}
+	rawCopy := append([]byte(nil), raw...)
+	go func() { _ = PersistRawFingerprint(dir, rawCopy) }()
 }

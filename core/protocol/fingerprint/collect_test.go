@@ -1,4 +1,4 @@
-package protocol
+package fingerprint
 
 import (
 	"net"
@@ -7,7 +7,7 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
-func TestHarvestRoundTrip(t *testing.T) {
+func TestCollectRoundTrip(t *testing.T) {
 	c1, c2 := net.Pipe()
 	defer c1.Close()
 	defer c2.Close()
@@ -26,11 +26,11 @@ func TestHarvestRoundTrip(t *testing.T) {
 	rec[3], rec[4] = byte(len(raw)>>8), byte(len(raw))
 	copy(rec[5:], raw)
 
-	before := len(harvestSpecs)
-	if err := HarvestRawClientHello(rec); err != nil {
-		t.Fatalf("HarvestRawClientHello: %v", err)
+	before := len(collectSpecs)
+	if err := CollectRawClientHello(rec); err != nil {
+		t.Fatalf("CollectRawClientHello: %v", err)
 	}
-	if len(harvestSpecs) != before+1 {
-		t.Fatalf("harvested spec not added: %d -> %d", before, len(harvestSpecs))
+	if len(collectSpecs) != before+1 {
+		t.Fatalf("collected spec not added: %d -> %d", before, len(collectSpecs))
 	}
 }

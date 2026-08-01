@@ -1,4 +1,4 @@
-package protocol
+package quic
 
 import (
 	"crypto/aes"
@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+
+	"github.com/nekoskin/whispera/core/protocol/camo"
 
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/crypto/hkdf"
@@ -147,7 +149,7 @@ func buildMarkedClientHello(camoKey []byte, sni string) (chBytes, keyShare, rand
 	if hello == nil || len(hello.Random) != 32 {
 		return nil, nil, nil, errors.New("whispera: quic probe: no client hello random")
 	}
-	ks := extractX25519KeyShare(hello.KeyShares)
+	ks := camo.ExtractX25519KeyShare(hello.KeyShares)
 	if len(ks) == 0 {
 		return nil, nil, nil, errors.New("whispera: quic probe: no x25519 key share")
 	}
@@ -157,7 +159,7 @@ func buildMarkedClientHello(camoKey []byte, sni string) (chBytes, keyShare, rand
 			break
 		}
 	}
-	marker := buildCamoMarker(camoKey, ks)
+	marker := camo.BuildMarker(camoKey, ks)
 	copy(hello.Random, marker[:])
 	hello.Raw = nil
 	raw, err := hello.Marshal()
@@ -175,7 +177,7 @@ func quicCryptoFrame(data []byte) []byte {
 	return f
 }
 
-func buildQUICCamoProbe(camoKey []byte, sni string) ([]byte, error) {
+func BuildCamoProbe(camoKey []byte, sni string) ([]byte, error) {
 	dcid := randomBytes(8)
 	scid := randomBytes(8)
 	if dcid == nil || scid == nil {
@@ -368,7 +370,7 @@ func parseQUICInitialClientHello(packet []byte) (*parsedQUICInitial, error) {
 		dcid:     dcid,
 		sni:      msg.ServerName,
 		random:   msg.Random,
-		keyShare: extractX25519KeyShare(msg.KeyShares),
+		keyShare: camo.ExtractX25519KeyShare(msg.KeyShares),
 	}, nil
 }
 

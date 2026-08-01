@@ -2,16 +2,16 @@ package protocol
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"io"
 	"net"
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/nekoskin/whispera/core/protocol/camo"
 
 	utls "github.com/refraction-networking/utls"
 )
@@ -40,82 +40,6 @@ const (
 	camoMaxHandshake  = 8192
 	camoDialTimeout   = 5 * time.Second
 )
-
-func deriveCamoKey(psk []byte) []byte {
-	if len(psk) != 32 {
-		return nil
-	}
-	mac := hmac.New(sha256.New, psk)
-	mac.Write([]byte("whispera-camo-v1"))
-	return mac.Sum(nil)
-}
-
-func extractX25519KeyShare(shares []utls.KeyShare) []byte {
-	for _, ks := range shares {
-		if ks.Group == utls.X25519 {
-			return ks.Data
-		}
-	}
-	return nil
-}
-
-func camoMarkerForWindow(key []byte, window int64, keyShare []byte) [32]byte {
-	var out [32]byte
-	mac := hmac.New(sha256.New, key)
-	var wb [8]byte
-	binary.BigEndian.PutUint64(wb[:], uint64(window))
-	mac.Write(wb[:])
-	mac.Write(keyShare)
-	copy(out[:], mac.Sum(nil))
-	return out
-}
-
-func buildCamoMarker(key []byte, keyShare []byte) [32]byte {
-	w := time.Now().Unix() / camoWindowSeconds
-	return camoMarkerForWindow(key, w, keyShare)
-}
-
-func camoMarkerMatches(keys [][]byte, random []byte, keyShare []byte) bool {
-	if len(random) != 32 || len(keys) == 0 || len(keyShare) == 0 {
-		return false
-	}
-	w := time.Now().Unix() / camoWindowSeconds
-	for _, key := range keys {
-		if len(key) == 0 {
-			continue
-		}
-		for cand := w - camoWindowTol; cand <= w+camoWindowTol; cand++ {
-			marker := camoMarkerForWindow(key, cand, keyShare)
-			if hmac.Equal(marker[:], random) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func probeCamoMarkerDrift(keys [][]byte, random []byte, keyShare []byte) (driftWindows int64, found bool) {
-	if len(random) != 32 || len(keys) == 0 || len(keyShare) == 0 {
-		return 0, false
-	}
-	w := time.Now().Unix() / camoWindowSeconds
-	for _, key := range keys {
-		if len(key) == 0 {
-			continue
-		}
-		for offset := int64(camoWindowTol + 1); offset <= clockDriftProbeWindows; offset++ {
-			up := camoMarkerForWindow(key, w+offset, keyShare)
-			if hmac.Equal(up[:], random) {
-				return offset, true
-			}
-			down := camoMarkerForWindow(key, w-offset, keyShare)
-			if hmac.Equal(down[:], random) {
-				return -offset, true
-			}
-		}
-	}
-	return 0, false
-}
 
 type peekedHello struct {
 	raw      []byte
@@ -172,7 +96,7 @@ func peekClientHello(conn net.Conn) (*peekedHello, error) {
 			raw:      raw,
 			random:   msg.Random,
 			sni:      msg.ServerName,
-			keyShare: extractX25519KeyShare(msg.KeyShares),
+			keyShare: camo.ExtractX25519KeyShare(msg.KeyShares),
 		}, nil
 	}
 }
@@ -322,7 +246,7 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	remote := conn.RemoteAddr().String()
 	keys := l.keysFn()
 	ph, err := peekClientHello(conn)
-	if err == nil && camoMarkerMatches(keys, ph.random, ph.keyShare) {
+	if err == nil && camo.MarkerMatches(keys, ph.random, ph.keyShare) {
 		traceLog.Infow("camo_authenticated", "remote", remote, "sni", ph.sni)
 		pc := &prefixConn{Conn: conn, prefix: ph.raw}
 		select {
@@ -343,7 +267,7 @@ func (l *camouflageListener) handle(conn net.Conn) {
 		return
 	}
 	if err == nil {
-		if drift, found := probeCamoMarkerDrift(keys, ph.random, ph.keyShare); found {
+		if drift, found := camo.MarkerDrift(keys, ph.random, ph.keyShare); found {
 			traceLog.Warnw("camo_marker_drift_suspected", "remote", remote, "sni", ph.sni,
 				"drift_windows", drift, "drift_seconds", drift*camoWindowSeconds)
 		}
@@ -354,11 +278,8 @@ func (l *camouflageListener) handle(conn net.Conn) {
 		return
 	}
 
-	if err == nil && validSNI(ph.sni) && looksLikeRealBrowser(ph.raw) {
-		if dir := harvestDirPath(); dir != "" {
-			rawCopy := append([]byte(nil), ph.raw...)
-			go func() { _ = PersistRawFingerprint(dir, rawCopy) }()
-		}
+	if err == nil && validSNI(ph.sni) {
+		fingerprint.CollectFromHello(ph.raw)
 	}
 
 	target := l.decoyAddr(ph.sni)
@@ -385,12 +306,12 @@ func camoKeysFunc(cfg *ServerConfig) func() [][]byte {
 	return func() [][]byte {
 		keys := make([][]byte, 0, 4)
 		if len(cfg.SharedSecret) == 32 {
-			keys = append(keys, deriveCamoKey(cfg.SharedSecret))
+			keys = append(keys, camo.DeriveKey(cfg.SharedSecret))
 		}
 		if cfg.GetUsers != nil {
 			for _, u := range cfg.GetUsers() {
 				if len(u.PSK) == 32 {
-					keys = append(keys, deriveCamoKey(u.PSK))
+					keys = append(keys, camo.DeriveKey(u.PSK))
 				}
 			}
 		}

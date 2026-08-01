@@ -1,4 +1,4 @@
-package protocol
+package fingerprint
 
 import (
 	"fmt"
@@ -56,10 +56,10 @@ var acceptLanguages = []string{
 	"ar-SA,ar;q=0.9,en;q=0.8",
 }
 
-type browserKind int
+type kind int
 
 const (
-	kindChromium browserKind = iota
+	kindChromium kind = iota
 	kindFirefox
 	kindSafari
 )
@@ -82,7 +82,7 @@ func uaForFingerprint(id utls.ClientHelloID) string {
 	}
 }
 
-func kindForFingerprint(id utls.ClientHelloID) browserKind {
+func kindForFingerprint(id utls.ClientHelloID) kind {
 	client := strings.ToLower(id.Client)
 	switch {
 	case strings.Contains(client, "firefox"):
@@ -94,17 +94,17 @@ func kindForFingerprint(id utls.ClientHelloID) browserKind {
 	}
 }
 
-type browserProfile struct {
+type Profile struct {
 	ua         string
 	lang       string
-	kind       browserKind
+	kind       kind
 	chBrands   string
 	chMobile   string
 	chPlatform string
 }
 
-func newBrowserProfile(id utls.ClientHelloID) browserProfile {
-	p := browserProfile{
+func NewProfile(id utls.ClientHelloID) Profile {
+	p := Profile{
 		ua:   uaForFingerprint(id),
 		lang: acceptLanguages[rand.Intn(len(acceptLanguages))],
 		kind: kindForFingerprint(id),
@@ -115,7 +115,7 @@ func newBrowserProfile(id utls.ClientHelloID) browserProfile {
 	return p
 }
 
-func (p browserProfile) apply(req *http.Request, origin string) {
+func (p Profile) Apply(req *http.Request, origin string) {
 	req.Header.Set("User-Agent", p.ua)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Accept-Language", p.lang)
