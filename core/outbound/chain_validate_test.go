@@ -1,4 +1,4 @@
-package dataplane
+package outbound
 
 import (
 	"github.com/nekoskin/whispera/core/config"

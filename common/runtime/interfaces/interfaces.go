@@ -218,13 +218,6 @@ type HandshakeHandler interface {
 	SetRateLimiter(rate float64, burst int)
 }
 
-type DataPlane interface {
-	Module
-	ProcessInbound(ctx context.Context, packet *Packet, session Session) error
-	ProcessOutbound(ctx context.Context, data []byte, session Session) error
-	SetTUN(tun TUNDevice)
-}
-
 type TUNDevice interface {
 	Name() string
 	Read(buf []byte) (int, error)

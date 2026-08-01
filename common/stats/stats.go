@@ -1,7 +1,6 @@
 package stats
 
 import (
-	"fmt"
 	"github.com/nekoskin/whispera/common/log"
 	"sync"
 	"sync/atomic"
@@ -44,17 +43,6 @@ type TrafficSnapshot struct {
 	PacketsRx int64     `json:"packets_rx"`
 	PacketsTx int64     `json:"packets_tx"`
 	UserCount int       `json:"user_count"`
-}
-
-type GlobalStats struct {
-	TotalBytesRx   int64             `json:"total_bytes_rx"`
-	TotalBytesTx   int64             `json:"total_bytes_tx"`
-	TotalPacketsRx int64             `json:"total_packets_rx"`
-	TotalPacketsTx int64             `json:"total_packets_tx"`
-	ActiveUsers    int               `json:"active_users"`
-	Uptime         string            `json:"uptime"`
-	UptimeSeconds  int64             `json:"uptime_seconds"`
-	History        []TrafficSnapshot `json:"history,omitempty"`
 }
 
 func New() *TrafficStats {
@@ -136,47 +124,6 @@ func (s *TrafficStats) getOrCreateUser(userID string) *UserStats {
 	return user
 }
 
-func (s *TrafficStats) GetGlobalStats() *GlobalStats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	uptime := time.Since(s.startTime)
-
-	return &GlobalStats{
-		TotalBytesRx:   s.totalBytesRx.Load(),
-		TotalBytesTx:   s.totalBytesTx.Load(),
-		TotalPacketsRx: s.totalPacketsRx.Load(),
-		TotalPacketsTx: s.totalPacketsTx.Load(),
-		ActiveUsers:    s.countActiveUsers(),
-		Uptime:         formatDuration(uptime),
-		UptimeSeconds:  int64(uptime.Seconds()),
-		History:        s.history,
-	}
-}
-
-func (s *TrafficStats) GetUserStats(userID string) *UserStats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if user, ok := s.userStats[userID]; ok {
-		copy := *user
-		return &copy
-	}
-	return nil
-}
-
-func (s *TrafficStats) GetAllUserStats() []*UserStats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]*UserStats, 0, len(s.userStats))
-	for _, user := range s.userStats {
-		copy := *user
-		result = append(result, &copy)
-	}
-	return result
-}
-
 func (s *TrafficStats) TakeSnapshot() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -195,32 +142,6 @@ func (s *TrafficStats) TakeSnapshot() {
 	if len(s.history) > s.historySize {
 		s.history = s.history[len(s.history)-s.historySize:]
 	}
-}
-
-func (s *TrafficStats) countActiveUsers() int {
-	count := 0
-	cutoff := time.Now().Add(-5 * time.Minute)
-
-	for _, user := range s.userStats {
-		if user.LastActivity.After(cutoff) || user.SessionCount > 0 {
-			count++
-		}
-	}
-	return count
-}
-
-func formatDuration(d time.Duration) string {
-	days := int(d.Hours()) / 24
-	hours := int(d.Hours()) % 24
-	minutes := int(d.Minutes()) % 60
-
-	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
-	}
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm", hours, minutes)
-	}
-	return fmt.Sprintf("%dm", minutes)
 }
 
 var (
@@ -248,16 +169,4 @@ func AddRx(userID string, bytes int64) {
 
 func AddTx(userID string, bytes int64) {
 	Global().AddTx(userID, bytes)
-}
-
-func GetGlobalStats() *GlobalStats {
-	return Global().GetGlobalStats()
-}
-
-func GetUserStats(userID string) *UserStats {
-	return Global().GetUserStats(userID)
-}
-
-func GetAllUserStats() []*UserStats {
-	return Global().GetAllUserStats()
 }

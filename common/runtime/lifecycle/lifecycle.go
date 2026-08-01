@@ -194,12 +194,6 @@ func (m *Manager) Registry() registry.Registry {
 	return m.registry
 }
 
-func (m *Manager) OnStop(cb func() error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.onStop = append(m.onStop, cb)
-}
-
 func (m *Manager) OnShutdown(cb func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
