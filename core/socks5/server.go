@@ -5,12 +5,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/nekoskin/whispera/common/log"
 	"io"
 	"net"
 	"runtime/debug"
 	"sync"
 	"time"
+
+	logger "github.com/nekoskin/whispera/common/log"
 )
 
 const (
@@ -94,20 +95,6 @@ func NewSOCKS5Server(addr string, handler func(net.Conn, string, uint16) error) 
 
 func (s *SOCKS5Server) SetAuthHandler(handler AuthHandler) {
 	s.authHandler = handler
-}
-
-func (s *SOCKS5Server) SetUDPAddr(addr *net.UDPAddr) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.udpAddr = addr
-}
-
-func (s *SOCKS5Server) SetUDPHandler(h func(net.Conn) error) {
-	s.udpHandler = h
-}
-
-func (s *SOCKS5Server) SetPacketHandler(h PacketHandler) {
-	s.packetHandler = h
 }
 
 func (s *SOCKS5Server) SetUDPRelayHandler(h UDPRelayHandler) {

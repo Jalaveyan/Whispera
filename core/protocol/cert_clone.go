@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"github.com/nekoskin/whispera/common/fsown"
 	"math/big"
 	"net"
 	"os"
@@ -17,6 +16,8 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	"github.com/nekoskin/whispera/common/fsown"
 )
 
 type ClonedCertInfo struct {

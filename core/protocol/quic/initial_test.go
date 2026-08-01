@@ -1,8 +1,10 @@
-package protocol
+package quic
 
 import (
 	"bytes"
 	"testing"
+
+	"github.com/nekoskin/whispera/core/protocol/camo"
 )
 
 func TestQUICVarintRoundTrip(t *testing.T) {
@@ -23,14 +25,14 @@ func TestQUICVarintRoundTrip(t *testing.T) {
 }
 
 func TestQUICCamoProbeRoundTrip(t *testing.T) {
-	camoKey := deriveCamoKey(bytes.Repeat([]byte{0x42}, 32))
+	camoKey := camo.DeriveKey(bytes.Repeat([]byte{0x42}, 32))
 	if camoKey == nil {
 		t.Fatal("deriveCamoKey returned nil")
 	}
 
-	probe, err := buildQUICCamoProbe(camoKey, "example.com")
+	probe, err := BuildCamoProbe(camoKey, "example.com")
 	if err != nil {
-		t.Fatalf("buildQUICCamoProbe: %v", err)
+		t.Fatalf("BuildCamoProbe: %v", err)
 	}
 	if len(probe) < quicMinInitialPacket {
 		t.Fatalf("probe packet too short: %d bytes, want >= %d", len(probe), quicMinInitialPacket)
@@ -50,12 +52,12 @@ func TestQUICCamoProbeRoundTrip(t *testing.T) {
 		t.Fatal("keyShare empty")
 	}
 
-	if !camoMarkerMatches([][]byte{camoKey}, parsed.random, parsed.keyShare) {
+	if !camo.MarkerMatches([][]byte{camoKey}, parsed.random, parsed.keyShare) {
 		t.Fatal("camoMarkerMatches: expected match with correct key")
 	}
 
-	wrongKey := deriveCamoKey(bytes.Repeat([]byte{0x99}, 32))
-	if camoMarkerMatches([][]byte{wrongKey}, parsed.random, parsed.keyShare) {
+	wrongKey := camo.DeriveKey(bytes.Repeat([]byte{0x99}, 32))
+	if camo.MarkerMatches([][]byte{wrongKey}, parsed.random, parsed.keyShare) {
 		t.Fatal("camoMarkerMatches: unexpected match with wrong key")
 	}
 }

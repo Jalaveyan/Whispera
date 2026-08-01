@@ -6,26 +6,26 @@ import (
 	"time"
 )
 
-var HarvestHook func([]byte)
+var CollectHook func([]byte)
 
-var lastHarvest atomic.Int64
+var lastCollect atomic.Int64
 
-type harvestPeekReader struct {
+type collectPeekReader struct {
 	io.Reader
 	done bool
 }
 
-func (h *harvestPeekReader) Read(p []byte) (int, error) {
+func (h *collectPeekReader) Read(p []byte) (int, error) {
 	n, err := h.Reader.Read(p)
 	if !h.done && n > 0 {
 		h.done = true
-		maybeHarvest(p[:n])
+		maybeCollect(p[:n])
 	}
 	return n, err
 }
 
-func maybeHarvest(b []byte) {
-	if HarvestHook == nil || len(b) < 6 || b[0] != 0x16 || b[1] != 0x03 || b[5] != 0x01 {
+func maybeCollect(b []byte) {
+	if CollectHook == nil || len(b) < 6 || b[0] != 0x16 || b[1] != 0x03 || b[5] != 0x01 {
 		return
 	}
 	recLen := int(b[3])<<8 | int(b[4])
@@ -33,14 +33,14 @@ func maybeHarvest(b []byte) {
 		return
 	}
 	now := time.Now().UnixNano()
-	last := lastHarvest.Load()
+	last := lastCollect.Load()
 	if now-last < int64(30*time.Second) {
 		return
 	}
-	if !lastHarvest.CompareAndSwap(last, now) {
+	if !lastCollect.CompareAndSwap(last, now) {
 		return
 	}
 	rec := make([]byte, 5+recLen)
 	copy(rec, b[:5+recLen])
-	HarvestHook(rec)
+	CollectHook(rec)
 }

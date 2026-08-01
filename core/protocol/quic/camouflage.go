@@ -1,4 +1,4 @@
-package protocol
+package quic
 
 import (
 	"context"
@@ -7,21 +7,24 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	logger "github.com/nekoskin/whispera/common/log"
+	"github.com/nekoskin/whispera/core/protocol/camo"
 )
 
 const (
-	quicCamoTrustWindow  = time.Duration(authWindowTolerance*2+1) * time.Duration(authWindowSeconds) * time.Second
+	quicCamoTrustWindow  = time.Duration(camo.WindowTol*2+1) * time.Duration(camo.WindowSeconds) * time.Second
 	quicCamoIdleTimeout  = 2 * time.Minute
 	quicCamoCleanupEvery = time.Minute
 )
 
-type quicDecoySession struct {
+type decoySession struct {
 	upstream   net.Conn
 	lastActive int64
 	closeOnce  sync.Once
 }
 
-func newQUICDecoySession(listenConn net.PacketConn, clientAddr net.Addr, target string) (*quicDecoySession, error) {
+func newDecoySession(listenConn net.PacketConn, clientAddr net.Addr, target string) (*decoySession, error) {
 	if target == "" {
 		return nil, errors.New("whispera: quic decoy: no target")
 	}
@@ -29,14 +32,14 @@ func newQUICDecoySession(listenConn net.PacketConn, clientAddr net.Addr, target 
 	if err != nil {
 		return nil, err
 	}
-	s := &quicDecoySession{}
+	s := &decoySession{}
 	s.upstream = upstream
 	atomic.StoreInt64(&s.lastActive, time.Now().UnixNano())
 	go s.pump(listenConn, clientAddr)
 	return s, nil
 }
 
-func (s *quicDecoySession) pump(listenConn net.PacketConn, clientAddr net.Addr) {
+func (s *decoySession) pump(listenConn net.PacketConn, clientAddr net.Addr) {
 	defer s.Close()
 	buf := make([]byte, 65535)
 	for {
@@ -52,42 +55,44 @@ func (s *quicDecoySession) pump(listenConn net.PacketConn, clientAddr net.Addr) 
 	}
 }
 
-func (s *quicDecoySession) forward(data []byte) {
+func (s *decoySession) forward(data []byte) {
 	atomic.StoreInt64(&s.lastActive, time.Now().UnixNano())
 	_, _ = s.upstream.Write(data)
 }
 
-func (s *quicDecoySession) idleSince() time.Duration {
+func (s *decoySession) idleSince() time.Duration {
 	return time.Since(time.Unix(0, atomic.LoadInt64(&s.lastActive)))
 }
 
-func (s *quicDecoySession) Close() {
+func (s *decoySession) Close() {
 	s.closeOnce.Do(func() { s.upstream.Close() })
 }
 
-type quicCamoConn struct {
+type camoConn struct {
 	net.PacketConn
 	keysFn    func() [][]byte
+	rateAllow func(remote string) bool
 	decoyAddr func(sni string) string
 
 	mu            sync.Mutex
 	realPeers     map[string]time.Time
-	decoySessions map[string]*quicDecoySession
+	decoySessions map[string]*decoySession
 	lastClean     time.Time
 }
 
-func newQUICCamoConn(inner net.PacketConn, keysFn func() [][]byte, decoyAddr func(string) string) *quicCamoConn {
-	return &quicCamoConn{
+func NewCamoConn(inner net.PacketConn, keysFn func() [][]byte, decoyAddr func(string) string, rateAllow func(string) bool) *camoConn {
+	return &camoConn{
 		PacketConn:    inner,
 		keysFn:        keysFn,
+		rateAllow:     rateAllow,
 		decoyAddr:     decoyAddr,
 		realPeers:     make(map[string]time.Time),
-		decoySessions: make(map[string]*quicDecoySession),
+		decoySessions: make(map[string]*decoySession),
 		lastClean:     time.Now(),
 	}
 }
 
-func (c *quicCamoConn) ReadFrom(p []byte) (int, net.Addr, error) {
+func (c *camoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	for {
 		n, addr, err := c.PacketConn.ReadFrom(p)
 		if err != nil {
@@ -114,7 +119,7 @@ func (c *quicCamoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		}
 
 		parsed, perr := parseQUICInitialClientHello(p[:n])
-		if perr == nil && camoMarkerMatches(c.keysFn(), parsed.random, parsed.keyShare) {
+		if perr == nil && camo.MarkerMatches(c.keysFn(), parsed.random, parsed.keyShare) {
 			c.mu.Lock()
 			c.realPeers[key] = time.Now().Add(quicCamoTrustWindow)
 			c.mu.Unlock()
@@ -122,7 +127,7 @@ func (c *quicCamoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			continue
 		}
 
-		if !decoyIPRateAllow(key) {
+		if c.rateAllow != nil && !c.rateAllow(key) {
 			traceLog.Infow("quic_camo_relay_decoy_throttled", "remote", key)
 			continue
 		}
@@ -131,7 +136,7 @@ func (c *quicCamoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			sni = parsed.sni
 		}
 		target := c.decoyAddr(sni)
-		newSess, serr := newQUICDecoySession(c.PacketConn, addr, target)
+		newSess, serr := newDecoySession(c.PacketConn, addr, target)
 		if serr != nil {
 			continue
 		}
@@ -143,7 +148,7 @@ func (c *quicCamoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	}
 }
 
-func (c *quicCamoConn) cleanupLocked() {
+func (c *camoConn) cleanupLocked() {
 	now := time.Now()
 	if now.Sub(c.lastClean) < quicCamoCleanupEvery {
 		return
@@ -161,3 +166,5 @@ func (c *quicCamoConn) cleanupLocked() {
 		}
 	}
 }
+
+var traceLog = logger.Trace()

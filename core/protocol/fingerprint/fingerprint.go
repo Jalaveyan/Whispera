@@ -1,7 +1,8 @@
-package protocol
+package fingerprint
 
 import (
 	"encoding/binary"
+	logger "github.com/nekoskin/whispera/common/log"
 	"hash/fnv"
 	mrand "math/rand"
 	"net"
@@ -9,18 +10,20 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/nekoskin/whispera/core/protocol/camo"
+
 	utls "github.com/refraction-networking/utls"
 )
 
 var (
-	harvestMu    sync.RWMutex
-	harvestSpecs []*utls.ClientHelloSpec
-	harvestRaw   [][]byte
-	harvestKinds []browserKind
-	harvestSeen  = map[string]bool{}
+	collectMu    sync.RWMutex
+	collectSpecs []*utls.ClientHelloSpec
+	collectRaw   [][]byte
+	collectKinds []kind
+	collectSeen  = map[string]bool{}
 )
 
-const maxHarvest = 32
+const maxCollect = 32
 
 var (
 	forcedFingerprintMu sync.RWMutex
@@ -30,10 +33,10 @@ var (
 var (
 	forcedRawMu    sync.RWMutex
 	forcedRawBytes []byte
-	forcedRawKind  browserKind
+	forcedRawKind  kind
 )
 
-func specFromRaw(raw []byte) (*utls.ClientHelloSpec, error) {
+func SpecFromRaw(raw []byte) (*utls.ClientHelloSpec, error) {
 	fp := &utls.Fingerprinter{AllowBluntMimicry: true}
 	return fp.FingerprintClientHello(raw)
 }
@@ -42,7 +45,7 @@ func isPQCurve(g utls.CurveID) bool {
 	return g == utls.X25519MLKEM768 || g == utls.X25519Kyber768Draft00
 }
 
-func dropPQKeyShares(spec *utls.ClientHelloSpec) {
+func DropPQKeyShares(spec *utls.ClientHelloSpec) {
 	for _, ext := range spec.Extensions {
 		switch e := ext.(type) {
 		case *utls.KeyShareExtension:
@@ -70,7 +73,7 @@ func dropPQKeyShares(spec *utls.ClientHelloSpec) {
 }
 
 func specHandshakeReadyRaw(raw []byte) bool {
-	spec, err := specFromRaw(raw)
+	spec, err := SpecFromRaw(raw)
 	if err != nil {
 		return false
 	}
@@ -94,12 +97,12 @@ func rawHelloReplayable(raw []byte) bool {
 	return true
 }
 
-func SetForcedRawFingerprint(raw []byte) {
+func SetForcedRaw(raw []byte) {
 	var stored []byte
 	kind := kindChromium
 	if len(raw) > 0 && rawHelloReplayable(raw) && specHandshakeReadyRaw(raw) {
 		stored = append([]byte(nil), raw...)
-		kind = classifyClientHello(raw)
+		kind = ClassifyClientHello(raw)
 	}
 	forcedRawMu.Lock()
 	forcedRawBytes = stored
@@ -119,7 +122,7 @@ var namedFingerprints = map[string]utls.ClientHelloID{
 	"edge":        utls.HelloEdge_Auto,
 }
 
-func IsKnownFingerprint(name string) bool {
+func IsKnown(name string) bool {
 	if name == "random" {
 		return true
 	}
@@ -127,7 +130,7 @@ func IsKnownFingerprint(name string) bool {
 	return ok
 }
 
-func SetForcedFingerprint(name string) {
+func SetForced(name string) {
 	id, ok := namedFingerprints[name]
 	forcedFingerprintMu.Lock()
 	defer forcedFingerprintMu.Unlock()
@@ -160,38 +163,38 @@ func specHandshakeReady(spec *utls.ClientHelloSpec) bool {
 	if hello == nil || len(hello.Random) != 32 {
 		return false
 	}
-	return len(extractX25519KeyShare(hello.KeyShares)) > 0
+	return len(camo.ExtractX25519KeyShare(hello.KeyShares)) > 0
 }
 
-func addHarvestedFingerprint(spec *utls.ClientHelloSpec, raw []byte) {
+func AddCollected(spec *utls.ClientHelloSpec, raw []byte) {
 	if len(raw) == 0 || !specHandshakeReady(spec) {
 		return
 	}
-	key, keyed := harvestKey(raw)
+	key, keyed := collectKey(raw)
 
-	harvestMu.Lock()
-	if keyed && harvestSeen[key] {
-		harvestMu.Unlock()
+	collectMu.Lock()
+	if keyed && collectSeen[key] {
+		collectMu.Unlock()
 		return
 	}
 	added := false
-	if len(harvestSpecs) < maxHarvest {
-		harvestSpecs = append(harvestSpecs, spec)
-		harvestRaw = append(harvestRaw, raw)
-		harvestKinds = append(harvestKinds, classifyClientHello(raw))
+	if len(collectSpecs) < maxCollect {
+		collectSpecs = append(collectSpecs, spec)
+		collectRaw = append(collectRaw, raw)
+		collectKinds = append(collectKinds, ClassifyClientHello(raw))
 		if keyed {
-			harvestSeen[key] = true
+			collectSeen[key] = true
 		}
 		added = true
 	}
-	harvestMu.Unlock()
+	collectMu.Unlock()
 
 	if added && keyed {
 		persistFingerprint(key, raw)
 	}
 }
 
-func harvestKey(raw []byte) (string, bool) {
+func collectKey(raw []byte) (string, bool) {
 	exts, ok := clientHelloExtTypes(raw)
 	if !ok {
 		return "", false
@@ -214,33 +217,17 @@ func harvestKey(raw []byte) (string, bool) {
 	return strconv.FormatUint(h.Sum64(), 16), true
 }
 
-func AddHarvestedFingerprint(spec *utls.ClientHelloSpec) {
-	addHarvestedFingerprint(spec, nil)
+func CollectedCount() int {
+	collectMu.RLock()
+	defer collectMu.RUnlock()
+	return len(collectSpecs)
 }
 
-func HarvestedRawRecords() [][]byte {
-	harvestMu.RLock()
-	defer harvestMu.RUnlock()
-	out := make([][]byte, 0, len(harvestRaw))
-	for _, rec := range harvestRaw {
-		if rec != nil {
-			out = append(out, append([]byte(nil), rec...))
-		}
-	}
-	return out
+func CollectedCapacity() int {
+	return maxCollect
 }
 
-func HarvestedFingerprintCount() int {
-	harvestMu.RLock()
-	defer harvestMu.RUnlock()
-	return len(harvestSpecs)
-}
-
-func HarvestedFingerprintCapacity() int {
-	return maxHarvest
-}
-
-func pickFingerprint() (id utls.ClientHelloID, raw []byte, uaID utls.ClientHelloID) {
+func pick() (id utls.ClientHelloID, raw []byte, uaID utls.ClientHelloID) {
 	forcedRawMu.RLock()
 	fraw := forcedRawBytes
 	rawKind := forcedRawKind
@@ -256,14 +243,14 @@ func pickFingerprint() (id utls.ClientHelloID, raw []byte, uaID utls.ClientHello
 		return forced, nil, forced
 	}
 
-	harvestOnce.Do(initHarvest)
+	collectOnce.Do(initCollect)
 
-	harvestMu.RLock()
-	defer harvestMu.RUnlock()
+	collectMu.RLock()
+	defer collectMu.RUnlock()
 
-	if len(harvestRaw) > 0 {
-		i := mrand.Intn(len(harvestRaw))
-		return utls.HelloCustom, append([]byte(nil), harvestRaw[i]...), repIDForKind(harvestKinds[i])
+	if len(collectRaw) > 0 {
+		i := mrand.Intn(len(collectRaw))
+		return utls.HelloCustom, append([]byte(nil), collectRaw[i]...), repIDForKind(collectKinds[i])
 	}
 
 	traceLog.Errorw("fingerprint_pool_empty_emergency_hello")
@@ -277,7 +264,7 @@ var (
 	sessionFPUA   utls.ClientHelloID
 )
 
-func sessionFingerprint() (utls.ClientHelloID, []byte, utls.ClientHelloID) {
+func Session() (utls.ClientHelloID, []byte, utls.ClientHelloID) {
 	forcedRawMu.RLock()
 	fraw := forcedRawBytes
 	rawKind := forcedRawKind
@@ -294,12 +281,12 @@ func sessionFingerprint() (utls.ClientHelloID, []byte, utls.ClientHelloID) {
 	}
 
 	sessionFPOnce.Do(func() {
-		sessionFPID, sessionFPRaw, sessionFPUA = pickFingerprint()
+		sessionFPID, sessionFPRaw, sessionFPUA = pick()
 	})
 	return sessionFPID, append([]byte(nil), sessionFPRaw...), sessionFPUA
 }
 
-func repIDForKind(k browserKind) utls.ClientHelloID {
+func repIDForKind(k kind) utls.ClientHelloID {
 	switch k {
 	case kindFirefox:
 		return utls.HelloFirefox_148
@@ -316,7 +303,7 @@ const (
 	extALPSNew         = 0x44cd
 )
 
-func classifyClientHello(raw []byte) browserKind {
+func ClassifyClientHello(raw []byte) kind {
 	exts, ok := clientHelloExtTypes(raw)
 	if !ok {
 		return kindChromium
@@ -398,3 +385,5 @@ func clientHelloExtTypes(raw []byte) ([]uint16, bool) {
 	}
 	return types, true
 }
+
+var traceLog = logger.Trace()

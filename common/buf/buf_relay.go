@@ -5,8 +5,6 @@ import (
 	"net"
 )
 
-const relayBufSize = 256 * 1024
-
 func Relay(a, b net.Conn, aReader, bReader io.Reader) {
 	if aReader == nil {
 		aReader = a
@@ -18,8 +16,7 @@ func Relay(a, b net.Conn, aReader, bReader io.Reader) {
 	done := make(chan struct{}, 2)
 
 	pump := func(dst net.Conn, src io.Reader) {
-		buf := make([]byte, relayBufSize)
-		_, _ = io.CopyBuffer(dst, src, buf)
+		_, _ = Copy(NewReader(src), NewWriter(dst))
 		done <- struct{}{}
 	}
 

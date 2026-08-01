@@ -5,23 +5,24 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/nekoskin/whispera/common/buf"
-	"github.com/nekoskin/whispera/common/dns"
-	"github.com/nekoskin/whispera/common/log"
-	"github.com/nekoskin/whispera/common/runtime/base"
-	"github.com/nekoskin/whispera/common/runtime/interfaces"
-	"github.com/nekoskin/whispera/common/runtime/registry"
 	"io"
 	mrand "math/rand"
 	"net"
 	"net/url"
-	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nekoskin/whispera/common/buf"
+	"github.com/nekoskin/whispera/common/dns"
+	logger "github.com/nekoskin/whispera/common/log"
+	"github.com/nekoskin/whispera/common/runtime/base"
+	"github.com/nekoskin/whispera/common/runtime/interfaces"
+	"github.com/nekoskin/whispera/common/runtime/registry"
+	"github.com/nekoskin/whispera/core/protocol"
 
 	xmux "github.com/sagernet/sing-mux"
 	singlog "github.com/sagernet/sing/common/logger"
@@ -265,28 +266,11 @@ func (s *Server) runSession(under net.Conn, streamObf bool, usePadding bool, cli
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	if streamMuxEnabled() {
+	if protocol.StreamMuxEnabled() {
 		s.serveStreamMux(under, clientID, traceID)
 		return
 	}
 	s.handleProxyStream(traceID, clientID, under)
-}
-
-func streamMuxEnabled() bool { return os.Getenv("WHISPERA_STREAM_MUX") == "1" }
-
-const spliceProtoBit byte = 0x80
-
-func spliceOn() bool {
-	return os.Getenv("WHISPERA_PERFLOW") != "0" && os.Getenv("WHISPERA_SPLICE") != "0"
-}
-
-func netConnOf(c net.Conn) net.Conn {
-	if nc, ok := c.(interface{ NetConn() net.Conn }); ok {
-		if raw := nc.NetConn(); raw != nil {
-			return raw
-		}
-	}
-	return nil
 }
 
 const (
@@ -334,6 +318,51 @@ func (c *serverSpliceConn) countTx(n int) {
 			tc.CountTx(n)
 		}
 	}
+}
+
+func (c *serverSpliceConn) spliceFrom(src net.Conn) (int64, error) {
+	var total int64
+	pre := make([]byte, spliceMaxData)
+	for c.padLeft > 0 {
+		rn, rerr := src.Read(pre)
+		if rn > 0 {
+			if _, werr := c.raw.Write(paddedRecord(pre[:rn])); werr != nil {
+				return total, werr
+			}
+			c.countTx(rn)
+			total += int64(rn)
+			c.padLeft--
+		}
+		if rerr != nil {
+			return total, rerr
+		}
+	}
+	if dst, s := rawTCP(c.raw), rawTCP(src); dst != nil && s != nil {
+		n, err := dst.ReadFrom(s)
+		c.countTx(int(n))
+		return total + n, err
+	}
+	n, err := io.Copy(c.raw, src)
+	c.countTx(int(n))
+	return total + n, err
+}
+
+func rawTCP(c net.Conn) *net.TCPConn {
+	for c != nil {
+		if tc, ok := c.(*net.TCPConn); ok {
+			return tc
+		}
+		u, ok := c.(interface{ NetConn() net.Conn })
+		if !ok {
+			return nil
+		}
+		next := u.NetConn()
+		if next == c {
+			return nil
+		}
+		c = next
+	}
+	return nil
 }
 
 func paddedRecord(data []byte) []byte {
@@ -542,7 +571,14 @@ func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult) {
 		}
 		resCh <- copyResult{n, err, "up"}
 	}()
-	n, err := buf.Copy(buf.NewReader(target), buf.NewWriter(stream))
+
+	var n int64
+	var err error
+	if sc, ok := stream.(*serverSpliceConn); ok {
+		n, err = sc.spliceFrom(target)
+	} else {
+		n, err = buf.Copy(buf.NewReader(target), buf.NewWriter(stream))
+	}
 	if tc, ok := stream.(*net.TCPConn); ok {
 		tc.CloseWrite()
 	}
@@ -565,8 +601,8 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		return
 	}
 	proto := hdr[0]
-	splice := proto&spliceProtoBit != 0 && spliceOn()
-	proto &^= spliceProtoBit
+	splice := proto&protocol.SpliceProtoBit != 0 && protocol.SpliceEnabled()
+	proto &^= protocol.SpliceProtoBit
 	addrLen := binary.BigEndian.Uint16(hdr[1:3])
 	if addrLen == 0 || addrLen > 255 {
 		return
@@ -629,7 +665,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 
 	relayStream := stream
 	if splice {
-		if raw := netConnOf(stream); raw != nil {
+		if raw := protocol.NetConnOf(stream); raw != nil {
 			relayStream = &serverSpliceConn{Conn: stream, raw: raw, padLeft: spliceRecordsToPad}
 			logger.Trace().Infow("proxy_stream_splice", "trace_id", tunnelID, "target", targetAddr)
 		}

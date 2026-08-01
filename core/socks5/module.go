@@ -5,10 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"github.com/nekoskin/whispera/common/buf"
-	"github.com/nekoskin/whispera/common/runtime/base"
-	"github.com/nekoskin/whispera/common/runtime/interfaces"
-	"github.com/nekoskin/whispera/core/protocol"
 	"io"
 	stdlog "log"
 	"net"
@@ -16,6 +12,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nekoskin/whispera/common/buf"
+	"github.com/nekoskin/whispera/common/runtime/base"
+	"github.com/nekoskin/whispera/core/protocol"
+	"github.com/nekoskin/whispera/core/protocol/quic"
 )
 
 const (
@@ -51,12 +52,11 @@ type TunnelManager interface {
 	IsConnected() bool
 	OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error)
 	DialStream(ctx context.Context, network, addr string) (net.Conn, error)
-	// RTDatagram returns the optional FEC-protected QUIC datagram channel
-	// for the low-latency real-time lane (addr picks the bridge tunnel, same
-	// as OpenStream/DialStream), plus a release func to call once the caller
-	// is done with it. ok is false when the real-time lane isn't on QUIC —
-	// callers should fall back to OpenStream in that case.
-	RTDatagram(ctx context.Context, addr string) (*protocol.RTDatagramClient, func(), bool)
+	// DatagramClient returns the optional FEC-protected QUIC datagram channel
+	// for the low-latency real-time lane. It is shared for the tunnel's
+	// lifetime, so there is nothing to release. ok is false when the real-time
+	// lane isn't on QUIC — callers fall back to OpenStream then.
+	DatagramClient(addr string) (*quic.DatagramClient, bool)
 }
 
 func New(cfg *Config) (*Module, error) {
@@ -72,10 +72,6 @@ func New(cfg *Config) (*Module, error) {
 		Module: base.NewModule(ModuleName, ModuleVersion, nil),
 		config: cfg,
 	}, nil
-}
-
-func (m *Module) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
-	return m.Module.Init(ctx, cfg)
 }
 
 func (m *Module) Start() error {
@@ -237,8 +233,8 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	if len(replay) > 0 {
 		src = io.MultiReader(bytes.NewReader(replay), clientConn)
 	}
-	if targetPort == 443 && HarvestHook != nil {
-		src = &harvestPeekReader{Reader: src}
+	if targetPort == 443 && CollectHook != nil {
+		src = &collectPeekReader{Reader: src}
 	}
 	buf.Relay(clientConn, stream, src, nil)
 	return nil
@@ -262,8 +258,7 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	rtTargets := make(map[string]func())
 	var streamsMu sync.Mutex
 
-	var gd *protocol.RTDatagramClient
-	var rtRelease func()
+	var gd *quic.DatagramClient
 
 	defer func() {
 		streamsMu.Lock()
@@ -274,9 +269,6 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 			unregister()
 		}
 		streamsMu.Unlock()
-		if rtRelease != nil {
-			rtRelease()
-		}
 	}()
 
 	go func() {
@@ -323,9 +315,8 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 			}
 
 			if gd == nil {
-				if cand, release, ok := tunnel.RTDatagram(context.Background(), dstHost); ok {
+				if cand, ok := tunnel.DatagramClient(dstHost); ok {
 					gd = cand
-					rtRelease = release
 				}
 			}
 

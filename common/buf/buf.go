@@ -51,13 +51,6 @@ func New() *Buffer {
 	return b
 }
 
-func NewSize(n int) *Buffer {
-	if n <= Size {
-		return New()
-	}
-	return &Buffer{v: make([]byte, n)}
-}
-
 func (b *Buffer) Release() {
 	if b == nil {
 		return

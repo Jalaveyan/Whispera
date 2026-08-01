@@ -1,9 +1,10 @@
-package protocol
+package fingerprint
 
 import (
 	"net"
 	"testing"
 
+	"github.com/nekoskin/whispera/core/protocol/camo"
 	utls "github.com/refraction-networking/utls"
 )
 
@@ -41,7 +42,7 @@ func TestSeedFingerprintsValidAndCamoReady(t *testing.T) {
 		if hello == nil || len(hello.Random) != 32 {
 			t.Fatalf("%s: no hello random", e.Name())
 		}
-		if ks := extractX25519KeyShare(hello.KeyShares); len(ks) == 0 {
+		if ks := camo.ExtractX25519KeyShare(hello.KeyShares); len(ks) == 0 {
 			t.Fatalf("%s: no X25519 keyshare — camo marker cannot apply, would break handshake", e.Name())
 		}
 		c0.Close()
@@ -55,18 +56,18 @@ func TestSeedFingerprintsValidAndCamoReady(t *testing.T) {
 }
 
 func TestSeedFingerprintsLoadIntoPool(t *testing.T) {
-	harvestMu.Lock()
-	harvestSpecs = nil
-	harvestRaw = nil
-	harvestKinds = nil
-	harvestSeen = map[string]bool{}
-	harvestMu.Unlock()
+	collectMu.Lock()
+	collectSpecs = nil
+	collectRaw = nil
+	collectKinds = nil
+	collectSeen = map[string]bool{}
+	collectMu.Unlock()
 
 	n := loadSeedFingerprints()
 	if n == 0 {
 		t.Fatal("loadSeedFingerprints added 0")
 	}
-	if got := HarvestedFingerprintCount(); got == 0 {
+	if got := CollectedCount(); got == 0 {
 		t.Fatalf("pool empty after seeding, count=%d", got)
 	}
 }

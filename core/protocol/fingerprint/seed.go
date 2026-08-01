@@ -1,4 +1,4 @@
-package protocol
+package fingerprint
 
 import "embed"
 
@@ -16,7 +16,7 @@ func loadSeedFingerprints() int {
 		if err != nil {
 			continue
 		}
-		if HarvestRawClientHello(data) == nil {
+		if CollectRawClientHello(data) == nil {
 			n++
 		}
 	}
