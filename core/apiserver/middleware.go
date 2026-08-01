@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
-	"github.com/nekoskin/whispera/app/auth"
 	"net"
 	"net/http"
 	"runtime"
@@ -129,9 +128,6 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if qt := r.URL.Query().Get("token"); qt != "" && s.validateTimedToken(qt) {
 		return true
 	}
-	if claims := GetClaims(r); claims != nil && claims.HasRole(auth.RoleAdmin) {
-		return true
-	}
 	http.Error(w, `{"error":"admin access required"}`, http.StatusForbidden)
 	return false
 }
@@ -183,12 +179,6 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		if s.sessionToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) == 1 {
 			next.ServeHTTP(w, r)
-			return
-		}
-
-		if claims, err := s.jwtManager.ValidateAccessToken(token); err == nil {
-			ctx := context.WithValue(r.Context(), ctxKeyClaims, claims)
-			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 

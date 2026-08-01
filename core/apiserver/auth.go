@@ -8,8 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/nekoskin/whispera/app/auth"
-	"github.com/nekoskin/whispera/app/db"
 	"net"
 	"net/http"
 	"os"
@@ -68,28 +66,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
 		return
-	}
-
-	if database := db.Global(); database != nil {
-		user, err := database.AuthenticateUser(r.Context(), req.Username, req.Password)
-		if err == nil && user.IsAdmin {
-			s.clearLoginAttempts(clientIP)
-			AppendEvent(EventAuth, SeverityInfo, "login success", map[string]string{"ip": clientIP, "user": req.Username})
-
-			token := s.issueTimedToken(req.Username)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success":    true,
-				"token":      token,
-				"expires_in": 1800,
-				"user": map[string]string{
-					"username": req.Username,
-					"role":     "admin",
-					"id":       user.ID.String(),
-				},
-			})
-			return
-		}
 	}
 
 	expectedUsername := s.config.AdminUsername
@@ -291,128 +267,6 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 	})
-}
-
-func (s *Server) handleLoginV2(w http.ResponseWriter, r *http.Request) {
-	clientIP := s.getClientIP(r)
-	if !s.checkLoginRateLimit(clientIP) {
-		s.jsonError(w, http.StatusTooManyRequests, "Too many login attempts")
-		return
-	}
-
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	var userID string
-	var role auth.Role
-	authenticated := false
-
-	if database := db.Global(); database != nil {
-		user, err := database.AuthenticateUser(r.Context(), req.Username, req.Password)
-		if err == nil {
-			userID = user.ID.String()
-			if user.IsAdmin {
-				role = auth.RoleAdmin
-			} else {
-				role = auth.RoleUser
-			}
-			authenticated = true
-		}
-	}
-
-	if !authenticated {
-		expectedUsername := s.config.AdminUsername
-		expectedPassword := s.config.AdminPassword
-		if expectedUsername == "" {
-			expectedUsername = "admin"
-		}
-		if expectedPassword != "" {
-			uMatch := subtle.ConstantTimeCompare([]byte(req.Username), []byte(expectedUsername)) == 1
-			pMatch := subtle.ConstantTimeCompare([]byte(req.Password), []byte(expectedPassword)) == 1
-			if uMatch && pMatch {
-				userID = "admin"
-				role = auth.RoleAdmin
-				authenticated = true
-			}
-		}
-	}
-
-	if !authenticated {
-		s.jsonError(w, http.StatusUnauthorized, "Invalid credentials")
-		return
-	}
-
-	s.clearLoginAttempts(clientIP)
-
-	deviceID := r.Header.Get("X-Device-ID")
-	accessToken, refreshToken, err := s.jwtManager.IssueTokenPair(userID, role, deviceID)
-	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "Failed to issue tokens")
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":       true,
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
-		"expires_in":    int(auth.AccessTokenTTL.Seconds()),
-		"token_type":    "Bearer",
-		"user": map[string]interface{}{
-			"id":   userID,
-			"role": string(role),
-		},
-	})
-}
-
-func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		RefreshToken string `json:"refresh_token"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-
-	accessToken, refreshToken, err := s.jwtManager.RefreshAccessToken(req.RefreshToken)
-	if err != nil {
-		s.jsonError(w, http.StatusUnauthorized, "Invalid or expired refresh token")
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":       true,
-		"access_token":  accessToken,
-		"refresh_token": refreshToken,
-		"expires_in":    int(auth.AccessTokenTTL.Seconds()),
-		"token_type":    "Bearer",
-	})
-}
-
-func (s *Server) handleLogoutV2(w http.ResponseWriter, r *http.Request) {
-	authHeader := r.Header.Get("Authorization")
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		token := authHeader[7:]
-		s.jwtManager.RevokeAccessToken(token)
-	}
-
-	var req struct {
-		RefreshToken string `json:"refresh_token,omitempty"`
-	}
-	json.NewDecoder(r.Body).Decode(&req)
-	if req.RefreshToken != "" {
-		s.jwtManager.RevokeRefreshToken(req.RefreshToken)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
 func (s *Server) IsKeyRevoked(keyID string) bool {

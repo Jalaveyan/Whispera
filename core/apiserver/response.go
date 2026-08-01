@@ -22,10 +22,6 @@ func (s *Server) jsonCreated(w http.ResponseWriter, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
-func (s *Server) jsonNoContent(w http.ResponseWriter) {
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *Server) jsonError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

@@ -1,4 +1,4 @@
-package auth
+package client
 
 import (
 	"crypto/rand"
@@ -25,7 +25,7 @@ func deviceIDPath() string {
 	return filepath.Join(home, ".whispera", "device.id")
 }
 
-func LoadOrCreateDeviceID() ([16]byte, error) {
+func loadOrCreateDeviceID() ([16]byte, error) {
 	var id [16]byte
 	path := deviceIDPath()
 

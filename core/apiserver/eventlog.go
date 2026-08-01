@@ -63,21 +63,3 @@ func (r *eventRing) append(e LogEvent) {
 		r.count++
 	}
 }
-
-func (r *eventRing) Recent(n int) []LogEvent {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if n > r.count {
-		n = r.count
-	}
-	out := make([]LogEvent, n)
-	for i := 0; i < n; i++ {
-		idx := (r.head - 1 - i + eventRingSize) % eventRingSize
-		out[i] = r.buf[idx]
-	}
-	return out
-}
-
-func RecentEvents(n int) []LogEvent {
-	return globalEventRing.Recent(n)
-}
