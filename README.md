@@ -16,7 +16,7 @@ bash <(curl -sL https://raw.githubusercontent.com/nekoskin/whispera/main/install
 bash menu
 ```
 
-Select item 17
+Select item 16
 
 ### Create keys, subscriptions, and view all keys
 
