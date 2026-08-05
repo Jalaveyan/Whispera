@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"hash/fnv"
@@ -33,6 +34,8 @@ import (
 )
 
 const dialTimeout = 10 * time.Second
+
+const helloServerWork = 200 * time.Millisecond
 
 type helloSplitConn struct {
 	net.Conn
@@ -339,19 +342,46 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 	return uConn, nil
 }
 
+func helloBudget(rtt time.Duration) time.Duration {
+	return rtt + helloServerWork
+}
+
+func (d *clientDialer) dialRawTimed(ctx context.Context, network, addr string) (net.Conn, time.Duration, error) {
+	start := time.Now()
+	conn, err := d.dialRaw(ctx, network, addr)
+	return conn, time.Since(start), err
+}
+
+func (d *clientDialer) handshakeWithin(ctx context.Context, rawConn net.Conn, rtt time.Duration, useSpec bool) (*utls.UConn, error) {
+	hsCtx, cancel := context.WithTimeout(ctx, helloBudget(rtt))
+	defer cancel()
+	return d.tlsHandshake(hsCtx, rawConn, useSpec)
+}
+
+func helloRetryWorthwhile(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return false
+	}
+	return !errors.Is(err, os.ErrDeadlineExceeded)
+}
+
 func (d *clientDialer) dialTLS(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-	rawConn, err := d.dialRaw(ctx, network, addr)
+	rawConn, rtt, err := d.dialRawTimed(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}
-	uConn, err := d.tlsHandshake(ctx, rawConn, true)
-	if err != nil && len(d.helloRaw) > 0 {
+	uConn, err := d.handshakeWithin(ctx, rawConn, rtt, true)
+	if err != nil && len(d.helloRaw) > 0 && helloRetryWorthwhile(ctx, err) {
 		rawConn.Close()
-		rawConn, err = d.dialRaw(ctx, network, addr)
+		rawConn, rtt, err = d.dialRawTimed(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
-		uConn, err = d.tlsHandshake(ctx, rawConn, false)
+		uConn, err = d.handshakeWithin(ctx, rawConn, rtt, false)
 	}
 	if err != nil {
 		rawConn.Close()

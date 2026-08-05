@@ -94,6 +94,9 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	}
 	conn, err := dial(ctx)
 	if err != nil {
+		if ctx.Err() == nil {
+			m.setError(err)
+		}
 		return nil, fmt.Errorf("direct dial: %w", err)
 	}
 
@@ -213,6 +216,9 @@ func (m *Manager) openStreamMux(ctx context.Context, proto byte, addr string, po
 	}
 	conn, err := c.DialContext(ctx, "tcp", singM.ParseSocksaddrHostPort(addr, port))
 	if err != nil {
+		if ctx.Err() == nil {
+			m.setError(err)
+		}
 		return nil, fmt.Errorf("stream-mux dial: %w", err)
 	}
 	if _, err := conn.Write([]byte{proto}); err != nil {
