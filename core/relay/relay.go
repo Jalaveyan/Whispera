@@ -121,7 +121,7 @@ func dialTarget(dialer proxy.Dialer, network, host string, port uint16) (net.Con
 		return dial(addr)
 	}
 	var lastErr error
-	for _, ip := range ips {
+	for _, ip := range preferIPv6(ips) {
 		conn, derr := dial(net.JoinHostPort(ip.String(), strconv.Itoa(int(port))))
 		if derr == nil {
 			return conn, nil
@@ -129,6 +129,21 @@ func dialTarget(dialer proxy.Dialer, network, host string, port uint16) (net.Con
 		lastErr = derr
 	}
 	return nil, lastErr
+}
+
+func preferIPv6(ips []net.IP) []net.IP {
+	out := make([]net.IP, 0, len(ips))
+	for _, ip := range ips {
+		if ip.To4() == nil {
+			out = append(out, ip)
+		}
+	}
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			out = append(out, ip)
+		}
+	}
+	return out
 }
 
 type Server struct {
