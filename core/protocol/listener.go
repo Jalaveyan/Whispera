@@ -55,11 +55,12 @@ func buildServerTLSConfig(cfg *ServerConfig) (*tls.Config, error) {
 		}
 		decoyCertDir := cfg.DecoyCertDir
 		return &tls.Config{
-			Certificates:     []tls.Certificate{cert},
-			NextProtos:       []string{"h2", "http/1.1"},
-			MinVersion:       tls.VersionTLS13,
-			CipherSuites:     cdnCipherSuites,
-			CurvePreferences: cdnCurves,
+			Certificates:           []tls.Certificate{cert},
+			NextProtos:             []string{"h2", "http/1.1"},
+			MinVersion:             tls.VersionTLS13,
+			CipherSuites:           cdnCipherSuites,
+			CurvePreferences:       cdnCurves,
+			SessionTicketsDisabled: SpliceEnabled(),
 			GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
 				return nil, nil
 			},
@@ -94,6 +95,7 @@ func buildServerTLSConfig(cfg *ServerConfig) (*tls.Config, error) {
 	tlsCfg.MinVersion = tls.VersionTLS12
 	tlsCfg.CipherSuites = cdnCipherSuites
 	tlsCfg.CurvePreferences = cdnCurves
+	tlsCfg.SessionTicketsDisabled = SpliceEnabled()
 	domain := cfg.Domain
 	origGet := tlsCfg.GetCertificate
 	tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
