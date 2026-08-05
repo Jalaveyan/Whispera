@@ -258,7 +258,7 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	rtTargets := make(map[string]func())
 	var streamsMu sync.Mutex
 
-	var gd *quic.DatagramClient
+	var curGD *quic.DatagramClient
 
 	defer func() {
 		streamsMu.Lock()
@@ -301,27 +301,32 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 
 		dstKey := fmt.Sprintf("%s:%d", dstHost, dstPort)
 
+		m.mu.RLock()
+		tunnel := m.tunnel
+		m.mu.RUnlock()
+
 		streamsMu.Lock()
+		if tunnel != nil {
+			lane, _ := tunnel.DatagramClient(dstHost)
+			if lane != curGD {
+				for key, unregister := range rtTargets {
+					unregister()
+					delete(rtTargets, key)
+				}
+				curGD = lane
+			}
+		}
+
 		stream, hasStream := streams[dstKey]
 		_, hasRTTarget := rtTargets[dstKey]
 		if !hasStream && !hasRTTarget {
-			m.mu.RLock()
-			tunnel := m.tunnel
-			m.mu.RUnlock()
-
 			if tunnel == nil || !tunnel.IsConnected() {
 				streamsMu.Unlock()
 				continue
 			}
 
-			if gd == nil {
-				if cand, ok := tunnel.DatagramClient(dstHost); ok {
-					gd = cand
-				}
-			}
-
-			if gd != nil {
-				ch, unregister := gd.RegisterTarget(dstHost, dstPort)
+			if curGD != nil {
+				ch, unregister := curGD.RegisterTarget(dstHost, dstPort)
 				rtTargets[dstKey] = unregister
 				hasRTTarget = true
 				go pumpRTDatagramReplies(ch, udpConn, clientAddr, dstHost, dstPort)
@@ -347,7 +352,10 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 		streamsMu.Unlock()
 
 		if hasRTTarget {
-			if err := gd.SendUDP(dstHost, dstPort, payload); err != nil {
+			if curGD == nil {
+				continue
+			}
+			if err := curGD.SendUDP(dstHost, dstPort, payload); err != nil {
 				stdlog.Printf("[SOCKS5-UDP] rt datagram send %s: %v", dstKey, err)
 			}
 			continue
