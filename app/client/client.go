@@ -205,8 +205,8 @@ func RunMain() {
 		}
 	}
 
-	restartEntry := func(e *TransportEntry, tunnelCfg *tunnel.Config) {
-		restartTransportEntry(ctx, e, tunnelCfg, hsMod, cryptoMod)
+	restartEntry := func(e *TransportEntry, tunnelCfg *tunnel.Config) bool {
+		return restartTransportEntry(ctx, e, tunnelCfg, hsMod, cryptoMod)
 	}
 
 	if asnBypassEnabled {
@@ -216,7 +216,8 @@ func RunMain() {
 	tunnelMod := newTunnelMod(transports[0])
 	tunnelMod.SetDependencies(nil, hsMod, cryptoMod)
 
-	multiRouter := socks5.NewMultiRouter(tunnelMod)
+	tunnels := newTunnelPool(restartEntry, buildBaseCfg)
+	multiRouter := socks5.NewMultiRouter(tunnels)
 	globalMultiRouter = multiRouter
 	socksMod.SetTunnel(multiRouter)
 	if err := socksMod.Start(); err != nil {
@@ -235,7 +236,6 @@ func RunMain() {
 	}
 	pool.Add(primaryEntry)
 
-	extraTunnels := make([]*tunnel.Manager, 0, len(transports)-1)
 	for i := 1; i < len(transports); i++ {
 		tr := transports[i]
 		m := newTunnelMod(tr)
@@ -254,7 +254,6 @@ func RunMain() {
 			cancel:           connCancel,
 		}
 		pool.Add(entry)
-		extraTunnels = append(extraTunnels, m)
 	}
 
 	controlAddr = "127.0.0.1:" + *controlPort
@@ -402,15 +401,8 @@ func RunMain() {
 		primaryEntry.Error = err.Error()
 		primaryEntry.mu.Unlock()
 
-		for i, m := range extraTunnels {
-			if pool.AnyConnected() {
-				socksMod.SetTunnel(m)
-				stdlog.Printf("Switched to transport %s", transports[i+1])
-				break
-			}
-		}
 		if !pool.AnyConnected() {
-			stdlog.Printf("Tunnel down — fail-closed: non-bypass traffic refused until reconnect (no unencrypted fallback); watchdog retrying")
+			stdlog.Printf("Tunnel down — fail-closed: non-bypass traffic refused until reconnect (no unencrypted fallback); retry on next stream")
 		}
 	} else {
 		primaryEntry.mu.Lock()
@@ -419,7 +411,7 @@ func RunMain() {
 		primaryEntry.mu.Unlock()
 		stdlog.Printf("Connected to proxy server via %s", transports[0])
 
-		dnsMod.SetDialContext(tunnelMod.DialStream)
+		dnsMod.SetDialContext(tunnels.DialStream)
 		stdlog.Printf("DNS now routed through tunnel")
 
 		if *noInternalTun {
@@ -449,8 +441,6 @@ func RunMain() {
 	}
 
 	stdlog.Printf("SOCKS5 proxy listening on %s", *socksAddr)
-
-	go runTransportWatchdog(ctx, primaryEntry, transports, socksMod, restartEntry, buildBaseCfg)
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

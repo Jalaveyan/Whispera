@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -19,6 +20,22 @@ type helloWriteRecorder struct {
 func (w *helloWriteRecorder) Write(b []byte) (int, error) {
 	w.writes = append(w.writes, append([]byte(nil), b...))
 	return len(b), nil
+}
+
+func TestHelloRetryWorthwhile(t *testing.T) {
+	if helloRetryWorthwhile(context.Background(), &net.OpError{Op: "read", Err: os.ErrDeadlineExceeded}) {
+		t.Fatal("timed-out handshake must not be redialed (bursts feed DPI rate-throttle)")
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if helloRetryWorthwhile(canceled, errors.New("read: software caused connection abort")) {
+		t.Fatal("canceled attempt must not be redialed")
+	}
+
+	if !helloRetryWorthwhile(context.Background(), errors.New("tls: handshake failure")) {
+		t.Fatal("plain handshake rejection must still fall back to the built-in fingerprint")
+	}
 }
 
 func TestHelloSplitConnSplitsFirstWrite(t *testing.T) {

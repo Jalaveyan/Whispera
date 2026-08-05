@@ -65,9 +65,9 @@ func handleWake(w http.ResponseWriter, r *http.Request) {
 	if reconnectEntry != nil {
 		for _, e := range pool.List() {
 			e.mu.Lock()
-			enabled := e.Enabled
+			enabled, mgr := e.Enabled, e.mgr
 			e.mu.Unlock()
-			if enabled {
+			if enabled && (mgr == nil || !mgr.IsConnected()) {
 				go reconnectEntry(e)
 				n++
 			}
