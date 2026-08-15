@@ -25,6 +25,21 @@ func deviceIDPath() string {
 	return filepath.Join(home, ".whispera", "device.id")
 }
 
+func handshakeSignalPath() string {
+	if runtime.GOOS == "windows" {
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = os.TempDir()
+		}
+		return filepath.Join(appData, "whispera", "handshake.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), ".whispera", "handshake.json")
+	}
+	return filepath.Join(home, ".whispera", "handshake.json")
+}
+
 func loadOrCreateDeviceID() ([16]byte, error) {
 	var id [16]byte
 	path := deviceIDPath()

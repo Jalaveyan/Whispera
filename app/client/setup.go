@@ -6,6 +6,8 @@ import (
 	stdlog "log"
 	mrand "math/rand"
 	"net"
+	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +23,8 @@ import (
 	"github.com/nekoskin/whispera/core/tunnel"
 )
 
+const defaultDNSUpstream = "1.1.1.1:53"
+
 func newBypassDNSResolver() *net.Resolver {
 	return &net.Resolver{
 		PreferGo: true,
@@ -31,10 +35,12 @@ func newBypassDNSResolver() *net.Resolver {
 	}
 }
 
-func setupSplitTunnel(cfg *config.ClientConfig, bypassDNS *net.Resolver) *split_tunnel.SplitTunnelManager {
+func setupSplitTunnel(cfg *config.ClientConfig) *split_tunnel.SplitTunnelManager {
 	stm := split_tunnel.NewSplitTunnelManager()
-	stm.AddRussianWhitelist()
 	stm.CreateDefaultRules()
+	if err := stm.LoadAppRules(*splitRulesJSON); err != nil {
+		stdlog.Printf("WARNING: split tunnel rules load failed: %v", err)
+	}
 	if cfg.SplitTunnel {
 		stm.SetEnabled(true)
 		if cfg.SplitTunnelMode != "" {
@@ -49,14 +55,30 @@ func setupSplitTunnel(cfg *config.ClientConfig, bypassDNS *net.Resolver) *split_
 		stm.SetEnabled(true)
 	}
 
-	go func() {
-		resolveCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		n := stm.PreResolveAndCacheIPs(resolveCtx, bypassDNS)
-		stdlog.Printf("[split-tunnel] pre-resolved %d Russian bypass IPs", n)
-	}()
-
 	return stm
+}
+
+func startGeoIPRefresh(ctx context.Context, stm *split_tunnel.SplitTunnelManager, dnsMod *dns.Resolver, dial func(context.Context, string, string) (net.Conn, error)) {
+	geo := split_tunnel.NewGeoIPSet()
+	stm.SetGeoIP(geo)
+	stm.SetResolver(dnsMod.ResolveUpstream)
+
+	client := &http.Client{
+		Timeout:   90 * time.Second,
+		Transport: &http.Transport{DialContext: dial},
+	}
+	go geo.KeepFresh(ctx, client, geoIPCachePath())
+}
+
+func geoIPCachePath() string {
+	if *logFilePath != "" {
+		return filepath.Join(filepath.Dir(*logFilePath), "geoip-ru.txt")
+	}
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		dir = os.TempDir()
+	}
+	return filepath.Join(dir, "whispera", "geoip-ru.txt")
 }
 
 func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
@@ -84,7 +106,7 @@ func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
 		}
 	}
 
-	if *forceFingerprint == "" && asnBypassFingerprint != "" {
+	if *forceFingerprint == "" && asnBypassFingerprint != "" && !fingerprint.Generating() {
 		fingerprint.SetForced(asnBypassFingerprint)
 	}
 	if *forceFingerprint == "" && cfg.WhisperaFPRaw != "" {
@@ -153,13 +175,15 @@ func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
 	}
 }
 
-func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver) {
-	dnsUpstreamAddr := ""
-	if *dnsUpstream != "" && !strings.EqualFold(*dnsUpstream, "system") {
+func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver, *split_tunnel.SplitTunnelManager) {
+	dnsUpstreamAddr := defaultDNSUpstream
+	if strings.EqualFold(*dnsUpstream, "system") {
+		dnsUpstreamAddr = ""
+	} else if *dnsUpstream != "" {
 		dnsUpstreamAddr = *dnsUpstream
 	}
 	bypassDNSResolver := newBypassDNSResolver()
-	stm := setupSplitTunnel(cfg, bypassDNSResolver)
+	stm := setupSplitTunnel(cfg)
 
 	socksMod, _ := socks5.New(&socks5.Config{
 		ListenAddr:    *socksAddr,
@@ -181,7 +205,7 @@ func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver) {
 		BypassFunc:     stm.ShouldBypassByHostname,
 		BypassResolver: bypassDNSResolver,
 	})
-	return socksMod, dnsMod
+	return socksMod, dnsMod, stm
 }
 
 func setupCoreModules() (*handshake.Handler, *crypto.Provider) {

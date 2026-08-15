@@ -24,7 +24,7 @@ var (
 	pkgLC         *lifecycle.Manager
 )
 
-func Start(key, socks, logFile, fingerprint string, hwid bool) {
+func Start(key, socks, logFile, fingerprint, dns, rules string, hwid bool) {
 	mobileMu.Lock()
 	if mobileRunning {
 		old := pkgLC
@@ -52,6 +52,8 @@ func Start(key, socks, logFile, fingerprint string, hwid bool) {
 	*socksAddr = socks
 	*logFilePath = logFile
 	*forceFingerprint = fingerprint
+	*dnsUpstream = dns
+	*splitRulesJSON = rules
 	*hwidFlag = hwid
 	*noInternalTun = true
 	mobileMu.Unlock()

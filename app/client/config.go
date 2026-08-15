@@ -1,10 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"io"
 	stdlog "log"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	logger "github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/core/config"
@@ -53,18 +56,123 @@ func mlDefaultDataDir() string {
 	return "data"
 }
 
+const (
+	logKeepBytes = 256 << 10
+	logTrimEvery = time.Hour
+)
+
+type trimmingLog struct {
+	mu   sync.Mutex
+	f    *os.File
+	path string
+}
+
+var (
+	currentLog   *trimmingLog
+	currentLogMu sync.Mutex
+)
+
+func openTrimmingLog(path string) (*trimmingLog, error) {
+	currentLogMu.Lock()
+	defer currentLogMu.Unlock()
+
+	if currentLog != nil {
+		if err := currentLog.reopen(path); err != nil {
+			return nil, err
+		}
+		return currentLog, nil
+	}
+
+	t, err := newTrimmingLog(path)
+	if err != nil {
+		return nil, err
+	}
+	currentLog = t
+	go t.keepTrimmed()
+	return t, nil
+}
+
+func (t *trimmingLog) reopen(path string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.path == path {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	t.f.Close()
+	t.f, t.path = f, path
+	return nil
+}
+
+func newTrimmingLog(path string) (*trimmingLog, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return nil, err
+	}
+	return &trimmingLog{f: f, path: path}, nil
+}
+
+func (t *trimmingLog) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.f.Write(p)
+}
+
+func (t *trimmingLog) keepTrimmed() {
+	ticker := time.NewTicker(logTrimEvery)
+	defer ticker.Stop()
+	for range ticker.C {
+		t.trim()
+	}
+}
+
+func (t *trimmingLog) trim() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	fi, err := t.f.Stat()
+	if err != nil || fi.Size() <= logKeepBytes {
+		return
+	}
+
+	src, err := os.Open(t.path)
+	if err != nil {
+		return
+	}
+	tail := make([]byte, logKeepBytes)
+	n, _ := src.ReadAt(tail, fi.Size()-logKeepBytes)
+	src.Close()
+	if n == 0 {
+		return
+	}
+	tail = tail[:n]
+	if i := bytes.IndexByte(tail, '\n'); i >= 0 {
+		tail = tail[i+1:]
+	}
+	if err := t.f.Truncate(0); err != nil {
+		return
+	}
+	if _, err := t.f.Seek(0, io.SeekStart); err != nil {
+		return
+	}
+	t.f.Write(tail)
+}
+
 func setupLogging() {
 	underSystemd := os.Getenv("JOURNAL_STREAM") != "" || os.Getenv("INVOCATION_ID") != ""
 
 	var logWriter io.Writer
 	if *logFilePath != "" {
-		logFile, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		trimmed, err := openTrimmingLog(*logFilePath)
 		if err != nil {
 			rb := newRingLogBuffer(2000)
 			globalLogBuf = rb
 			logWriter = rb
 		} else {
-			logWriter = logFile
+			logWriter = trimmed
 		}
 	} else if underSystemd {
 		logWriter = os.Stdout
@@ -80,6 +188,9 @@ func setupLogging() {
 	stdlog.SetOutput(logWriter)
 	log.SetOutput(logWriter)
 	log = logger.Module("client")
+	if lvl := os.Getenv("WHISPERA_LOG_LEVEL"); lvl != "" {
+		log.SetLevel(logger.ParseLevel(lvl))
+	}
 	stdlog.Printf("Whispera Client v%s starting...", Version)
 }
 

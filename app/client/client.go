@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -52,6 +53,7 @@ var (
 	noInternalTun    = flag.Bool("no-tun", true, "Disable internal TUN (use external like Mihomo)")
 	russianService   = flag.String("russian-service", "", "Enable Russian Service masquerading (e.g. vk_video)")
 	controlPort      = flag.String("control-port", "10801", "Control server port (default 10801)")
+	splitRulesJSON   = flag.String("split-rules", "", "Split tunnel rules as JSON, same format the host app uses")
 	dnsUpstream      = flag.String("dns", "", "DNS upstream: host:port for UDP (8.8.8.8:53), https://... for DoH (https://1.1.1.1/dns-query). Empty = 1.1.1.1:53. 'system' = ISP resolver")
 	spoofIPs         = flag.String("spoof-ips", "", "Comma-separated source IPs for IP spoofing (requires multiple local IPs)")
 	adminTokenFlag   = flag.String("admin-token", "", "Admin token required for privileged control endpoints (e.g. /spoof). Empty = no auth")
@@ -94,7 +96,36 @@ func RunMain() {
 
 	hsMod, cryptoMod := setupCoreModules()
 
-	socksMod, dnsMod := setupNetworking(cfg)
+	handshakeSignal := protocol.NewHandshakeStrategy()
+	if signalPath := handshakeSignalPath(); signalPath != "" {
+		if err := os.MkdirAll(filepath.Dir(signalPath), 0o700); err != nil {
+			stdlog.Printf("handshake signal dir: %v", err)
+		}
+		if err := handshakeSignal.Load(signalPath); err != nil && !os.IsNotExist(err) {
+			stdlog.Printf("handshake signal load: %v", err)
+		}
+		defer func() {
+			if err := handshakeSignal.Save(signalPath); err != nil {
+				stdlog.Printf("handshake signal save: %v", err)
+			}
+		}()
+		go func() {
+			t := time.NewTicker(30 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if err := handshakeSignal.Save(signalPath); err != nil {
+						stdlog.Printf("handshake signal save: %v", err)
+					}
+				}
+			}
+		}()
+	}
+
+	socksMod, dnsMod, stm := setupNetworking(cfg)
 	defer func() {
 		for _, e := range pool.List() {
 			e.mu.Lock()
@@ -134,6 +165,7 @@ func RunMain() {
 
 	newTunnelMod := func(tr string) *tunnel.Manager {
 		m, _ := tunnel.New(&tunnel.Config{
+			HandshakeStrategy:       handshakeSignal,
 			ServerAddr:              serverAddress,
 			ServerAddrTCP:           fallbackTCP,
 			Transport:               tr,
@@ -180,6 +212,7 @@ func RunMain() {
 		}
 
 		return &tunnel.Config{
+			HandshakeStrategy:       handshakeSignal,
 			ServerAddr:              serverAddress,
 			ServerAddrTCP:           fallbackTCP,
 			Transport:               tr,
@@ -278,6 +311,7 @@ func RunMain() {
 
 	newMultiBridgeTunnel = func(bridgeCtx context.Context, bridgeID, bridgeAddr string, rules []string) {
 		m, err := tunnel.New(&tunnel.Config{
+			HandshakeStrategy:       handshakeSignal,
 			ServerAddr:              bridgeAddr,
 			ServerAddrTCP:           bridgeAddr,
 			Transport:               transports[0],
@@ -411,9 +445,6 @@ func RunMain() {
 		primaryEntry.mu.Unlock()
 		stdlog.Printf("Connected to proxy server via %s", transports[0])
 
-		dnsMod.SetDialContext(tunnels.DialStream)
-		stdlog.Printf("DNS now routed through tunnel")
-
 		if *noInternalTun {
 			stdlog.Printf("External TUN mode: external router will handle TUN/routing")
 			stdlog.Printf("SOCKS5 proxy ready at %s", *socksAddr)
@@ -439,6 +470,10 @@ func RunMain() {
 			}
 		}
 	}
+
+	dnsMod.SetDialContext(tunnels.DialStream)
+	stdlog.Printf("DNS now routed through tunnel")
+	startGeoIPRefresh(ctx, stm, dnsMod, tunnels.DialStream)
 
 	stdlog.Printf("SOCKS5 proxy listening on %s", *socksAddr)
 

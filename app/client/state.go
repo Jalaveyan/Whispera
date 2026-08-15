@@ -186,7 +186,10 @@ func (p *TransportPool) AnyConnected() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	for _, e := range p.entries {
-		if e.Status == connStatusConnected && e.Enabled {
+		e.mu.Lock()
+		connected := e.Status == connStatusConnected && e.Enabled
+		e.mu.Unlock()
+		if connected {
 			return true
 		}
 	}
