@@ -35,7 +35,6 @@ func readFullIdle(conn net.Conn, buf []byte, idle time.Duration) (int, error) {
 
 const (
 	camoWindowSeconds = authWindowSeconds
-	camoWindowTol     = authWindowTolerance
 	camoPeekTimeout   = 4 * time.Second
 	camoMaxHandshake  = 8192
 	camoDialTimeout   = 5 * time.Second

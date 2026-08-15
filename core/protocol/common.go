@@ -60,6 +60,14 @@ func perflowEnabled() bool { return os.Getenv("WHISPERA_PERFLOW") != "0" }
 
 const SpliceProtoBit byte = 0x80
 
+// FullFrameProtoBit asks the server to keep framing records for the whole
+// session instead of stopping after the first few — a stream that loses TLS
+// record structure halfway through is trivially spotted. On by default; the
+// switch exists because a client newer than its server would break on the bit.
+const FullFrameProtoBit byte = 0x40
+
+func FullFrameEnabled() bool { return os.Getenv("WHISPERA_FULL_FRAME") != "0" }
+
 func SpliceEnabled() bool { return perflowEnabled() && os.Getenv("WHISPERA_SPLICE") != "0" }
 
 func StreamMuxEnabled() bool { return os.Getenv("WHISPERA_STREAM_MUX") == "1" }

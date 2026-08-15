@@ -290,3 +290,68 @@ func TestHandshakeStrategyObserveOutOfRange(t *testing.T) {
 		t.Fatalf("SelectSplit returned invalid arm %d", arm)
 	}
 }
+
+type errConn struct {
+	net.Conn
+	err error
+}
+
+func (c errConn) Read([]byte) (int, error)  { return 0, c.err }
+func (c errConn) Write([]byte) (int, error) { return 0, c.err }
+func (c errConn) Close() error              { return nil }
+
+func newLiveConn(errText string, fired *int) *livenessConn {
+	return &livenessConn{Conn: errConn{err: errors.New(errText)}, onReset: func() { *fired++ }}
+}
+
+func TestLivenessConnFiresOnceOnEarlyReset(t *testing.T) {
+	fired := 0
+	lc := newLiveConn("read tcp: connection reset by peer", &fired)
+	lc.markEstablished()
+	_, _ = lc.Read(make([]byte, 1))
+	_, _ = lc.Read(make([]byte, 1))
+	if fired != 1 {
+		t.Fatalf("early reset on a live tunnel must fire exactly once, got %d", fired)
+	}
+}
+
+func TestLivenessConnSilentBeforeEstablished(t *testing.T) {
+	fired := 0
+	lc := newLiveConn("connection reset by peer", &fired)
+	_, _ = lc.Read(make([]byte, 1))
+	if fired != 0 {
+		t.Fatalf("a handshake-phase reset is the handshake signal's job, got %d", fired)
+	}
+}
+
+func TestLivenessConnIgnoresCloseAndNetworkChange(t *testing.T) {
+	fired := 0
+	closed := newLiveConn("connection reset by peer", &fired)
+	closed.markEstablished()
+	closed.Close()
+	_, _ = closed.Read(make([]byte, 1))
+	if fired != 0 {
+		t.Fatalf("our own Close must not read as censorship, got %d", fired)
+	}
+
+	moved := 0
+	netChange := newLiveConn("read tcp: software caused connection abort", &moved)
+	netChange.markEstablished()
+	_, _ = netChange.Read(make([]byte, 1))
+	if moved != 0 {
+		t.Fatalf("ECONNABORTED is a network change, not the censor, got %d", moved)
+	}
+}
+
+func TestLivenessConnIgnoresLateReset(t *testing.T) {
+	fired := 0
+	lc := newLiveConn("connection reset by peer", &fired)
+	lc.markEstablished()
+	lc.mu.Lock()
+	lc.establishedAt = time.Now().Add(-liveResetWindow - time.Second)
+	lc.mu.Unlock()
+	_, _ = lc.Read(make([]byte, 1))
+	if fired != 0 {
+		t.Fatalf("a reset after a long healthy life is normal churn, got %d", fired)
+	}
+}

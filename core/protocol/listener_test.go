@@ -141,9 +141,6 @@ func TestHandshakeStrategyPolicyAvoidsCensoredArm(t *testing.T) {
 	defer os.Unsetenv("WHISPERA_HS_POLICY")
 
 	h := NewHandshakeStrategy()
-	if h.policy == nil {
-		t.Fatal("policy not enabled with WHISPERA_HS_POLICY=1")
-	}
 
 	const censoredArm = 2
 	const ctx = "vk.com"
@@ -162,6 +159,6 @@ func TestHandshakeStrategyPolicyAvoidsCensoredArm(t *testing.T) {
 	}
 
 	if survival := float64(okTail) / float64(tail); survival < 0.85 {
-		t.Errorf("survival in last %d handshakes = %.2f, want >0.85 — policy did not learn to avoid the censored arm", tail, survival)
+		t.Errorf("survival in last %d handshakes = %.2f, want >0.85 — the bandit did not learn to avoid the censored arm", tail, survival)
 	}
 }

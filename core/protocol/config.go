@@ -6,6 +6,7 @@ import (
 	"time"
 
 	quicgo "github.com/quic-go/quic-go"
+	utls "github.com/refraction-networking/utls"
 )
 
 type ClientConfig struct {
@@ -23,7 +24,11 @@ type ClientConfig struct {
 	OnQUICConn func(*quicgo.Conn)
 
 	HelloSplitOffset int
+	HelloID          utls.ClientHelloID
+	HelloRaw         []byte
 	OnHandshake      func(result HandshakeResult, latency time.Duration)
+	OnLiveReset      func()
+	OnLiveOK         func()
 }
 
 type ServerConfig struct {
