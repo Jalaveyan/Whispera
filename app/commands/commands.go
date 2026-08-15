@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"github.com/nekoskin/whispera/common/fsown"
 	"github.com/nekoskin/whispera/common/ipdetect"
 	"github.com/nekoskin/whispera/core/apiserver"
 	"github.com/nekoskin/whispera/core/config"
@@ -408,6 +409,7 @@ func RunCreateKeyCmd() {
 				fmt.Fprintf(os.Stderr, "Warning: SNI %q is not a valid hostname — falling back to the server's default cert\n", whisperaSNI)
 			} else {
 				os.MkdirAll(decoyCertDir, 0755)
+				fsown.MatchParent(decoyCertDir)
 				info, err := protocol.CloneCertToFiles(whisperaSNI, certPath, keyPath)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to clone certificate for SNI %q: %v — falling back to the server's default cert\n", whisperaSNI, err)

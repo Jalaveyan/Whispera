@@ -52,6 +52,7 @@ load_integrity_key() {
 refresh_config() {
     local cfg="${1:-$CONF_PATH/config.yaml}"
     if [[ ! -f "$cfg" ]]; then return 0; fi
+    chown -R whispera:whispera "$CONF_PATH" 2>/dev/null || true
     load_integrity_key
     local bin
     bin=$(command -v whispera 2>/dev/null) || bin="$BIN_PATH/whispera"
