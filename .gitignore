@@ -54,6 +54,8 @@ test.*
 *.userosscache
 *.sln.docstates
 
+.__pycache__/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -105,6 +107,17 @@ internal/obfuscation/ml/*.spec
 
 # Local agent / IDE state — must never be committed
 .claude/
+
+# Traffic captures and dumps for the offline judge in neural/ — the judge itself
+# is committed, what it reads is not: captures are large and site-specific.
+*.pcap
+*.pcapng
+neural/dumps/
+neural/*.npz
+# Generated fingerprint corpus (rebuilt by corpus_gen_test.go, BUILD_CORPUS=1).
+neural/corpus/
+neural/
+core/protocol/fingerprint/corpus_gen_test.go
 
 # Runtime-generated GAN model state
 /ml_models/

@@ -49,26 +49,26 @@ type ClientConfig struct {
 	EnableTesting    bool   `yaml:"enable_testing" json:"enable_testing"`
 	AppProfile       string `yaml:"app_profile" json:"app_profile"`
 
-	MTU           int     `yaml:"mtu" json:"mtu"`
-	PadMin        int     `yaml:"pad_min" json:"pad_min"`
-	PadMax        int     `yaml:"pad_max" json:"pad_max"`
-	ChaffSec      int     `yaml:"chaff" json:"chaff"`
-	ObfsPreset    string  `yaml:"obfs_preset" json:"obfs_preset"`
-	ObfsStrict    bool    `yaml:"obfs_strict" json:"obfs_strict"`
-	HSReadTimeout int     `yaml:"handshake_timeout" json:"handshake_timeout"`
-	UDPRetries    int     `yaml:"udp_retries" json:"udp_retries"`
-	UDPOnly       bool    `yaml:"udp_only" json:"udp_only"`
-	Watchdog      int     `yaml:"watchdog" json:"watchdog"`
-	AutoSwitch    *bool   `yaml:"auto_switch" json:"auto_switch"`
-	UDPUpgradeSec int     `yaml:"udp_upgrade_sec" json:"udp_upgrade_sec"`
-	ChaffDist     string  `yaml:"chaff_dist" json:"chaff_dist"`
-	ChaffAlpha    float64 `yaml:"chaff_alpha" json:"chaff_alpha"`
-	ChaffXm       float64 `yaml:"chaff_xm" json:"chaff_xm"`
-	ChaffSizeMin  int     `yaml:"chaff_size_min" json:"chaff_size_min"`
-	ChaffSizeMax  int     `yaml:"chaff_size_max" json:"chaff_size_max"`
-	ShapeMeanMs   int     `yaml:"shape_mean_ms" json:"shape_mean_ms"`
-	ShapeTarget   int     `yaml:"shape_target" json:"shape_target"`
-	PProf         string  `yaml:"pprof" json:"pprof"`
+	MTU           int    `yaml:"mtu" json:"mtu"`
+	PadMin        int    `yaml:"pad_min" json:"pad_min"`
+	PadMax        int    `yaml:"pad_max" json:"pad_max"`
+	//ChaffSec      int    `yaml:"chaff" json:"chaff"`
+	ObfsPreset    string `yaml:"obfs_preset" json:"obfs_preset"`
+	ObfsStrict    bool   `yaml:"obfs_strict" json:"obfs_strict"`
+	HSReadTimeout int    `yaml:"handshake_timeout" json:"handshake_timeout"`
+	UDPRetries    int    `yaml:"udp_retries" json:"udp_retries"`
+	UDPOnly       bool   `yaml:"udp_only" json:"udp_only"`
+	Watchdog      int    `yaml:"watchdog" json:"watchdog"`
+	AutoSwitch    *bool  `yaml:"auto_switch" json:"auto_switch"`
+	UDPUpgradeSec int    `yaml:"udp_upgrade_sec" json:"udp_upgrade_sec"`
+	// ChaffDist     string  `yaml:"chaff_dist" json:"chaff_dist"`
+	// ChaffAlpha    float64 `yaml:"chaff_alpha" json:"chaff_alpha"`
+	// ChaffXm       float64 `yaml:"chaff_xm" json:"chaff_xm"`
+	// ChaffSizeMin  int     `yaml:"chaff_size_min" json:"chaff_size_min"`
+	// ChaffSizeMax  int     `yaml:"chaff_size_max" json:"chaff_size_max"`
+	// ShapeMeanMs   int     `yaml:"shape_mean_ms" json:"shape_mean_ms"`
+	// ShapeTarget   int     `yaml:"shape_target" json:"shape_target"`
+	PProf string `yaml:"pprof" json:"pprof"`
 
 	UseTLS        bool   `yaml:"use_tls" json:"use_tls"`
 	TLSMode       string `yaml:"tls_mode" json:"tls_mode"`
@@ -136,11 +136,11 @@ type ClientDNSConfig struct {
 }
 
 type ClientAdBlockConfig struct {
-	Enabled       bool          `yaml:"enabled" json:"enabled"`
-	DNSBlocking   bool          `yaml:"dns_blocking" json:"dns_blocking"`
-	HTTPSBlocking bool          `yaml:"https_blocking" json:"https_blocking"`
-	MLEnabled     bool          `yaml:"ml_enabled" json:"ml_enabled"`
-	CustomRules   []AdBlockRule `yaml:"custom_rules,omitempty" json:"custom_rules,omitempty"`
+	Enabled       bool `yaml:"enabled" json:"enabled"`
+	DNSBlocking   bool `yaml:"dns_blocking" json:"dns_blocking"`
+	HTTPSBlocking bool `yaml:"https_blocking" json:"https_blocking"`
+	// MLEnabled     bool          `yaml:"ml_enabled" json:"ml_enabled"`
+	CustomRules []AdBlockRule `yaml:"custom_rules,omitempty" json:"custom_rules,omitempty"`
 }
 
 type AdBlockRule struct {
