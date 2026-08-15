@@ -245,6 +245,12 @@ func pick() (id utls.ClientHelloID, raw []byte, uaID utls.ClientHelloID) {
 
 	collectOnce.Do(initCollect)
 
+	// A generated hello if asked for: the harvested pool is finite and can be
+	// collected, a recombination of it cannot.
+	if raw, k, ok := DeviceHello(); ok {
+		return utls.HelloCustom, raw, repIDForKind(k)
+	}
+
 	collectMu.RLock()
 	defer collectMu.RUnlock()
 
@@ -255,6 +261,48 @@ func pick() (id utls.ClientHelloID, raw []byte, uaID utls.ClientHelloID) {
 
 	traceLog.Errorw("fingerprint_pool_empty_emergency_hello")
 	return utls.HelloChrome_Auto, nil, utls.HelloChrome_Auto
+}
+
+// presets is the controller's repertoire: real, uTLS-maintained browser
+// fingerprints. Unlike a frozen harvested capture, uTLS keeps these current with
+// the browser, and each one sets its own SNI correctly. The controller picks
+// among them by index under the live signal.
+var presets = []utls.ClientHelloID{
+	utls.HelloChrome_Auto,
+	utls.HelloFirefox_Auto,
+	utls.HelloSafari_Auto,
+	utls.HelloIOS_Auto,
+	utls.HelloEdge_Auto,
+}
+
+func PresetCount() int { return len(presets) }
+
+func PresetAt(i int) utls.ClientHelloID {
+	if i < 0 || i >= len(presets) {
+		return utls.HelloChrome_Auto
+	}
+	return presets[i]
+}
+
+// PoolSize is how many real (seed + harvested) fingerprints the controller can
+// choose between. These are captured whole from real clients, not recombined.
+func PoolSize() int {
+	collectOnce.Do(initCollect)
+	collectMu.RLock()
+	defer collectMu.RUnlock()
+	return len(collectRaw)
+}
+
+// RawAt returns the i-th real fingerprint from the pool, for a controller that
+// picks by index instead of at random. Out of range falls back to Chrome.
+func RawAt(i int) (utls.ClientHelloID, []byte, utls.ClientHelloID) {
+	collectOnce.Do(initCollect)
+	collectMu.RLock()
+	defer collectMu.RUnlock()
+	if i < 0 || i >= len(collectRaw) {
+		return utls.HelloChrome_Auto, nil, utls.HelloChrome_Auto
+	}
+	return utls.HelloCustom, append([]byte(nil), collectRaw[i]...), repIDForKind(collectKinds[i])
 }
 
 var (
