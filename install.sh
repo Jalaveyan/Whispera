@@ -575,6 +575,8 @@ fs.file-max = 1000000
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_max_syn_backlog = 4096
+net.core.somaxconn = 4096
 EOF
 
     sysctl --system >/dev/null 2>&1
@@ -589,26 +591,52 @@ EOF
     fi
 
     apply_initcwnd
+    setup_logrotate
 
     log_success "System optimized"
+}
+
+setup_logrotate() {
+    mkdir -p /etc/logrotate.d
+    cat > /etc/logrotate.d/whispera <<'EOF'
+/var/log/whispera/whispera.log {
+    size 50M
+    rotate 3
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+
+    mkdir -p /etc/systemd/system/logrotate.timer.d
+    cat > /etc/systemd/system/logrotate.timer.d/hourly.conf <<'EOF'
+[Timer]
+OnCalendar=
+OnCalendar=hourly
+EOF
+    systemctl daemon-reload 2>/dev/null
+    systemctl restart logrotate.timer 2>/dev/null
 }
 
 apply_initcwnd() {
     cat > "$INITCWND_SCRIPT" <<'EOF'
 #!/bin/bash
 # Widen the TCP initial congestion window: the default of 10 segments (~14.6 KB)
-# throttles every new connection to one small burst per RTT. It lives on the
-# route, so a DHCP renew or reboot drops it — hence re-applied on every start.
+# throttles every new connection to one small burst per RTT. With a connection
+# per flow that cost is paid again by every stream.
+#
+# The setting lives on the route, so a DHCP renew or reboot drops it. Reuse the
+# whole existing route line instead of rebuilding it from parts: metric is part
+# of the route key, so "change default via X dev Y" misses a route carrying
+# "metric 100" and fails silently.
 def=$(ip -4 route show default 2>/dev/null | head -1)
 [ -z "$def" ] && exit 0
-dev=$(echo "$def" | sed -n 's/.*dev \([^ ]*\).*/\1/p')
-via=$(echo "$def" | sed -n 's/.*via \([^ ]*\).*/\1/p')
-[ -z "$dev" ] && exit 0
-if [ -n "$via" ]; then
-    ip route change default via "$via" dev "$dev" initcwnd 30 initrwnd 30
-else
-    ip route change default dev "$dev" initcwnd 30 initrwnd 30
-fi
+case "$def" in
+    *initcwnd\ 30*) exit 0 ;;
+esac
+spec=$(echo "$def" | sed 's/ initcwnd [0-9]*//; s/ initrwnd [0-9]*//')
+ip route change $spec initcwnd 30 initrwnd 30
 EOF
     chmod +x "$INITCWND_SCRIPT"
 
@@ -619,11 +647,33 @@ ExecStartPost=-+$INITCWND_SCRIPT
 EOF
     systemctl daemon-reload 2>/dev/null
 
+    install_initcwnd_hooks
+
     "$INITCWND_SCRIPT" 2>/dev/null
     if ip route show default | grep -q initcwnd; then
-        log_success "initcwnd/initrwnd 30 applied (re-applied on every service start)"
+        log_success "initcwnd/initrwnd 30 applied (re-applied on route change)"
     else
         log_warn "initcwnd not applied"
+    fi
+}
+
+install_initcwnd_hooks() {
+    if [[ -d /etc/dhcp ]]; then
+        mkdir -p /etc/dhcp/dhclient-exit-hooks.d
+        cat > /etc/dhcp/dhclient-exit-hooks.d/whispera-initcwnd <<EOF
+[ "\$reason" = BOUND ] || [ "\$reason" = RENEW ] || [ "\$reason" = REBIND ] || [ "\$reason" = REBOOT ] || return 0
+$INITCWND_SCRIPT 2>/dev/null || true
+EOF
+        chmod +x /etc/dhcp/dhclient-exit-hooks.d/whispera-initcwnd
+    fi
+
+    if [[ -d /etc/networkd-dispatcher ]]; then
+        mkdir -p /etc/networkd-dispatcher/routable.d
+        cat > /etc/networkd-dispatcher/routable.d/50-whispera-initcwnd <<EOF
+#!/bin/bash
+$INITCWND_SCRIPT 2>/dev/null || true
+EOF
+        chmod +x /etc/networkd-dispatcher/routable.d/50-whispera-initcwnd
     fi
 }
 
