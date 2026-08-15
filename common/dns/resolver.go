@@ -165,6 +165,25 @@ func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error)
 	return ips, nil
 }
 
+func (r *Resolver) ResolveUpstream(ctx context.Context, domain string) ([]net.IP, error) {
+	if ip := net.ParseIP(domain); ip != nil {
+		return []net.IP{ip}, nil
+	}
+	if r.config.CacheEnabled {
+		if ips, _ := r.cache.Get(ctx, domain); ips != nil {
+			return ips, nil
+		}
+	}
+	ips, err := r.resolveUpstream(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	if r.config.CacheEnabled && len(ips) > 0 {
+		_ = r.cache.Set(ctx, domain, ips, r.config.CacheTTL)
+	}
+	return ips, nil
+}
+
 func (r *Resolver) SetDialContext(dialFn func(ctx context.Context, network, address string) (net.Conn, error)) {
 	r.dialCtxMu.Lock()
 	r.dialCtx = dialFn

@@ -7,6 +7,7 @@ import (
 	"github.com/nekoskin/whispera/common/app_detection"
 	"net"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -36,7 +37,25 @@ type SplitTunnelManager struct {
 	config      *SplitTunnelConfig
 	rules       []SplitTunnelRule
 	appDetector *app_detection.AppDetector
+	geo         *GeoIPSet
+	resolve     ResolveFunc
+	byCountry   bool
+	verdicts    map[string]verdict
 }
+
+type ResolveFunc func(ctx context.Context, host string) ([]net.IP, error)
+
+type verdict struct {
+	bypass  bool
+	expires time.Time
+}
+
+const (
+	verdictTTL      = 10 * time.Minute
+	resolveTimeout  = 3 * time.Second
+	verdictMax      = 4096
+	appRulePriority = 200
+)
 
 func NewSplitTunnelManager() *SplitTunnelManager {
 	return &SplitTunnelManager{
@@ -49,6 +68,7 @@ func NewSplitTunnelManager() *SplitTunnelManager {
 		},
 		rules:       []SplitTunnelRule{},
 		appDetector: app_detection.NewAppDetector(),
+		byCountry:   true,
 	}
 }
 
@@ -68,8 +88,14 @@ func (stm *SplitTunnelManager) LoadConfig(filename string) error {
 	}
 
 	stm.mu.Lock()
-	stm.config = &config
-	stm.rules = config.Rules
+	if config.Mode != "" {
+		stm.config.Mode = config.Mode
+	}
+	if config.DefaultAction != "" {
+		stm.config.DefaultAction = config.DefaultAction
+	}
+	stm.rules = append(stm.rules, config.Rules...)
+	sortRulesByPriority(stm.rules)
 	stm.mu.Unlock()
 
 	return nil
@@ -80,7 +106,14 @@ func (stm *SplitTunnelManager) AddRule(rule *SplitTunnelRule) {
 	rule.Modified = time.Now().Unix()
 	stm.mu.Lock()
 	stm.rules = append(stm.rules, *rule)
+	sortRulesByPriority(stm.rules)
 	stm.mu.Unlock()
+}
+
+func sortRulesByPriority(rules []SplitTunnelRule) {
+	sort.SliceStable(rules, func(i, j int) bool {
+		return rules[i].Priority > rules[j].Priority
+	})
 }
 
 func (stm *SplitTunnelManager) SetMode(mode string) {
@@ -117,6 +150,7 @@ func (stm *SplitTunnelManager) ShouldBypassByIP(ipStr string) bool {
 	}
 	stm.mu.RLock()
 	rules := stm.rules
+	geo, byCountry := stm.geo, stm.byCountry
 	stm.mu.RUnlock()
 	for _, rule := range rules {
 		if !rule.Enabled || rule.Type != "ip" {
@@ -126,7 +160,18 @@ func (stm *SplitTunnelManager) ShouldBypassByIP(ipStr string) bool {
 			return rule.Action == "direct"
 		}
 	}
+	if geo != nil && byCountry {
+		if ip := net.ParseIP(ipStr); ip != nil {
+			return geo.Contains(ip)
+		}
+	}
 	return false
+}
+
+func (stm *SplitTunnelManager) SetGeoIP(geo *GeoIPSet) {
+	stm.mu.Lock()
+	stm.geo = geo
+	stm.mu.Unlock()
 }
 
 func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
@@ -138,12 +183,148 @@ func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
 	rules := stm.rules
 	stm.mu.RUnlock()
 	for _, rule := range rules {
-		if !rule.Enabled || rule.Type != "domain" {
+		if !rule.Enabled || !matchesDomainRule(rule, hostname) {
 			continue
 		}
-		if matchesDomainSuffix(hostname, strings.ToLower(rule.Value)) {
-			return rule.Action == "direct"
+		return rule.Action == "direct"
+	}
+	return stm.bypassByCountry(hostname)
+}
+
+func (stm *SplitTunnelManager) bypassByCountry(hostname string) bool {
+	stm.mu.RLock()
+	geo, resolve, byCountry := stm.geo, stm.resolve, stm.byCountry
+	v, ok := stm.verdicts[hostname]
+	stm.mu.RUnlock()
+
+	if !byCountry {
+		return false
+	}
+	if ok && time.Now().Before(v.expires) {
+		return v.bypass
+	}
+	if geo == nil || resolve == nil || geo.Len() == 0 {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
+	defer cancel()
+	ips, err := resolve(ctx, hostname)
+	if err != nil {
+		return false
+	}
+
+	bypass := false
+	for _, ip := range ips {
+		if geo.Contains(ip) {
+			bypass = true
+			break
 		}
+	}
+
+	stm.mu.Lock()
+	if stm.verdicts == nil || len(stm.verdicts) >= verdictMax {
+		stm.pruneVerdicts()
+	}
+	stm.verdicts[hostname] = verdict{bypass: bypass, expires: time.Now().Add(verdictTTL)}
+	stm.mu.Unlock()
+
+	return bypass
+}
+
+func (stm *SplitTunnelManager) pruneVerdicts() {
+	if stm.verdicts == nil {
+		stm.verdicts = make(map[string]verdict)
+		return
+	}
+	now := time.Now()
+	for host, v := range stm.verdicts {
+		if now.After(v.expires) {
+			delete(stm.verdicts, host)
+		}
+	}
+	if len(stm.verdicts) >= verdictMax {
+		stm.verdicts = make(map[string]verdict)
+	}
+}
+
+func (stm *SplitTunnelManager) SetResolver(fn ResolveFunc) {
+	stm.mu.Lock()
+	stm.resolve = fn
+	stm.verdicts = nil
+	stm.mu.Unlock()
+}
+
+type appRule struct {
+	Kind    string `json:"kind"`
+	Suffix  string `json:"suffix,omitempty"`
+	Keyword string `json:"keyword,omitempty"`
+	Domain  string `json:"domain,omitempty"`
+	CIDR    string `json:"cidr,omitempty"`
+	Action  string `json:"action"`
+}
+
+func (stm *SplitTunnelManager) LoadAppRules(data string) error {
+	if strings.TrimSpace(data) == "" {
+		return nil
+	}
+	var in []appRule
+	if err := json.Unmarshal([]byte(data), &in); err != nil {
+		return fmt.Errorf("failed to parse app rules: %w", err)
+	}
+
+	byCountry := false
+	converted := make([]SplitTunnelRule, 0, len(in))
+	for _, r := range in {
+		if r.Kind == "geoip" {
+			byCountry = strings.EqualFold(r.Action, "DIRECT")
+			continue
+		}
+		action := "tunnel"
+		switch strings.ToUpper(r.Action) {
+		case "DIRECT":
+			action = "direct"
+		case "REJECT", "BLOCK":
+			continue
+		}
+
+		var kind, value string
+		switch r.Kind {
+		case "domain-suffix":
+			kind, value = "domain", r.Suffix
+		case "domain-exact":
+			kind, value = "domain-exact", r.Domain
+		case "domain-keyword":
+			kind, value = "domain-keyword", r.Keyword
+		case "ip-cidr":
+			kind, value = "ip", r.CIDR
+		}
+		if value == "" {
+			continue
+		}
+		converted = append(converted, SplitTunnelRule{
+			Type: kind, Value: value, Action: action, Enabled: true, Priority: appRulePriority,
+		})
+	}
+
+	stm.mu.Lock()
+	stm.rules = append(stm.rules, converted...)
+	sortRulesByPriority(stm.rules)
+	stm.byCountry = byCountry
+	stm.verdicts = nil
+	stm.mu.Unlock()
+	return nil
+}
+
+func matchesDomainRule(rule SplitTunnelRule, hostname string) bool {
+	value := strings.ToLower(rule.Value)
+	switch rule.Type {
+	case "domain":
+		return matchesDomainSuffix(hostname, value)
+	case "domain-exact":
+		return hostname == value
+	case "domain-keyword":
+		return strings.Contains(hostname, value)
 	}
 	return false
 }
@@ -172,81 +353,6 @@ func (stm *SplitTunnelManager) matchesIP(ruleValue, destIP string) bool {
 	}
 
 	return network.Contains(ip)
-}
-
-func (stm *SplitTunnelManager) PreResolveAndCacheIPs(ctx context.Context, resolver *net.Resolver) int {
-	if resolver == nil {
-		resolver = net.DefaultResolver
-	}
-
-	var newRules []SplitTunnelRule
-	now := time.Now().Unix()
-
-	for _, domain := range russianBypassDomains {
-		addrs, err := resolver.LookupIPAddr(ctx, domain)
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			newRules = append(newRules, SplitTunnelRule{
-				Type:        "ip",
-				Value:       a.IP.String() + "/32",
-				Action:      "direct",
-				Description: "auto:" + domain,
-				Enabled:     true,
-				Priority:    89,
-				Created:     now,
-				Modified:    now,
-			})
-		}
-	}
-
-	if len(newRules) == 0 {
-		return 0
-	}
-
-	stm.mu.Lock()
-	stm.rules = append(stm.rules, newRules...)
-	stm.mu.Unlock()
-
-	return len(newRules)
-}
-
-var russianBypassDomains = []string{
-	"yandex.ru", "ya.ru", "yandex.net",
-	"disk.yandex.ru", "webdav.yandex.ru",
-	"mail.yandex.ru", "passport.yandex.ru",
-	"maps.yandex.ru", "api-maps.yandex.net",
-	"mc.yandex.ru", "metrika.yandex.ru",
-	"vk.com", "vkuseraudio.net", "vkuservideo.net",
-	"userapi.com", "vk.me",
-	"mail.ru", "ok.ru", "mycdn.me",
-	"sberbank.ru", "online.sberbank.ru", "sberonline.ru",
-	"tinkoff.ru", "acdn.tinkoff.ru",
-	"alfabank.ru", "vtb.ru", "raiffeisen.ru",
-	"cbr.ru",
-	"gosuslugi.ru", "esia.gosuslugi.ru",
-	"nalog.ru", "lkfl.nalog.ru",
-	"mos.ru", "pgu.mos.ru",
-	"pfr.gov.ru", "fss.ru",
-	"wildberries.ru", "ozon.ru", "avito.ru",
-	"cdek.ru", "pochta.ru",
-	"rutube.ru", "dzen.ru",
-	"rbc.ru", "ria.ru", "tass.ru",
-	"hh.ru", "superjob.ru",
-}
-
-func (stm *SplitTunnelManager) AddRussianWhitelist() {
-	for _, domain := range russianBypassDomains {
-		stm.AddRule(&SplitTunnelRule{
-			Type:        "domain",
-			Value:       domain,
-			Action:      "direct",
-			Description: "Russian service — use direct route",
-			Enabled:     true,
-			Priority:    90,
-		})
-	}
 }
 
 func (stm *SplitTunnelManager) CreateDefaultRules() {
