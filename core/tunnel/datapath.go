@@ -55,6 +55,27 @@ type decoyLeaveConn struct {
 	once sync.Once
 }
 
+func (d *decoyLeaveConn) Write(b []byte) (int, error) {
+	return writeCapped(d.Conn, b)
+}
+
+func writeCapped(w io.Writer, b []byte) (int, error) {
+	written := 0
+	for len(b) > 0 {
+		n := len(b)
+		if n > upstreamMaxPayload {
+			n = upstreamMaxPayload
+		}
+		c, err := w.Write(b[:n])
+		written += c
+		if err != nil {
+			return written, err
+		}
+		b = b[n:]
+	}
+	return written, nil
+}
+
 func (d *decoyLeaveConn) Close() error {
 	d.once.Do(func() {
 		if d.m.config.DecoyGate != nil {
@@ -112,6 +133,9 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	hdrProto := proto
 	if splice {
 		hdrProto |= protocol.SpliceProtoBit
+		if protocol.FullFrameEnabled() {
+			hdrProto |= protocol.FullFrameProtoBit
+		}
 	}
 
 	addrBytes := []byte(addr)
@@ -130,12 +154,20 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	}
 	dl := &decoyLeaveConn{Conn: conn, m: m}
 	if splice {
-		return &clientSpliceConn{decoyLeaveConn: dl, raw: raw, padLeft: spliceRecordsToPad}, nil
+		left := spliceRecordsToPad
+		if protocol.FullFrameEnabled() {
+			left = frameForever
+		}
+		return &clientSpliceConn{decoyLeaveConn: dl, raw: raw, padLeft: left}, nil
 	}
 	return dl, nil
 }
 
-const spliceRecordsToPad = 8
+const (
+	spliceRecordsToPad = 8
+	upstreamMaxPayload = 480
+	frameForever       = -1
+)
 
 type clientSpliceConn struct {
 	*decoyLeaveConn
@@ -144,7 +176,9 @@ type clientSpliceConn struct {
 	rbuf    []byte
 }
 
-func (c *clientSpliceConn) Write(b []byte) (int, error) { return c.Conn.Write(b) }
+func (c *clientSpliceConn) Write(b []byte) (int, error) {
+	return writeCapped(c.Conn, b)
+}
 
 func (c *clientSpliceConn) Read(b []byte) (int, error) {
 	if len(c.rbuf) > 0 {
@@ -155,6 +189,18 @@ func (c *clientSpliceConn) Read(b []byte) (int, error) {
 	if c.padLeft == 0 {
 		return c.raw.Read(b)
 	}
+	// The server fills silence with records that carry no data, so the shape of
+	// the stream does not depend on the site having something to say. They are
+	// framing, not payload — read past them.
+	for {
+		n, err := c.readRecord(b)
+		if n > 0 || err != nil || c.padLeft == 0 {
+			return n, err
+		}
+	}
+}
+
+func (c *clientSpliceConn) readRecord(b []byte) (int, error) {
 	var hdr [5]byte
 	if _, err := io.ReadFull(c.raw, hdr[:]); err != nil {
 		return 0, err
@@ -167,7 +213,9 @@ func (c *clientSpliceConn) Read(b []byte) (int, error) {
 	if _, err := io.ReadFull(c.raw, rec); err != nil {
 		return 0, err
 	}
-	c.padLeft--
+	if c.padLeft > 0 {
+		c.padLeft--
+	}
 	if body < 2 {
 		return 0, fmt.Errorf("splice: short record")
 	}

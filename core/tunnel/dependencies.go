@@ -3,7 +3,6 @@ package tunnel
 import (
 	"context"
 	"net"
-	"time"
 )
 
 type killSwitchController interface {
@@ -14,9 +13,4 @@ type killSwitchController interface {
 
 type tcpBypassDialer interface {
 	DialTCP(ctx context.Context, network, addr string) (net.Conn, error)
-}
-
-type tspuDetectorIface interface {
-	RecordRST(sni string, timeToRST time.Duration)
-	DetectTSPU() (dpiType int, confidence float64)
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nekoskin/whispera/core/protocol"
+	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"github.com/nekoskin/whispera/core/protocol/quic"
 	"github.com/nekoskin/whispera/core/transport/grpc"
 	"github.com/nekoskin/whispera/core/transport/yadisk"
@@ -62,10 +63,14 @@ type selector struct {
 }
 
 func newSelector(m *Manager) *selector {
+	strategy := m.config.HandshakeStrategy
+	if strategy == nil {
+		strategy = protocol.NewHandshakeStrategy()
+	}
 	return &selector{
 		m:            m,
 		sessionCache: protocol.SharedSessionCache(),
-		strategy:     protocol.NewHandshakeStrategy(),
+		strategy:     strategy,
 	}
 }
 
@@ -98,12 +103,21 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 	strategy := s.strategy
 	return func(ctx context.Context) (net.Conn, error) {
 		c := *cCfg
-		if helloSplitEnabled() {
-			offset, arm := strategy.SelectSplit(sni)
-			c.HelloSplitOffset = offset
-			c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
+		arm := strategy.Select(sni, fingerprint.PresetCount())
+		c.HelloID = fingerprint.PresetAt(arm)
+		c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
+			if result != protocol.HandshakeOK {
+				strategy.Record(sni, result)
 				strategy.Observe(sni, arm, result)
 			}
+		}
+		c.OnLiveReset = func() {
+			strategy.Record(sni, protocol.HandshakeResetFast)
+			strategy.Observe(sni, arm, protocol.HandshakeResetFast)
+		}
+		c.OnLiveOK = func() {
+			strategy.Record(sni, protocol.HandshakeOK)
+			strategy.Observe(sni, arm, protocol.HandshakeOK)
 		}
 		return protocol.Client(ctx, &c)
 	}, true
@@ -250,3 +264,4 @@ func (m *Manager) DatagramClient(addr string) (*quic.DatagramClient, bool) {
 	s.mu.Unlock()
 	return gd, gd != nil
 }
+

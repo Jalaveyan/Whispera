@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,7 +18,6 @@ import (
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	asnbypass "github.com/nekoskin/whispera/core/asn_bypass"
 	"github.com/nekoskin/whispera/core/killswitch"
-	"github.com/nekoskin/whispera/neural"
 
 	xmux "github.com/sagernet/sing-mux"
 )
@@ -85,8 +84,7 @@ type Manager struct {
 	asnBypassDialer   tcpBypassDialer
 	isTransportSecure bool
 
-	selector     *selector
-	tspuDetector tspuDetectorIface
+	selector *selector
 
 	boFailCount     int32
 	boLastSuccessAt int64
@@ -136,7 +134,15 @@ func New(cfg *Config) (*Manager, error) {
 			Strategy:               cfg.ASNBypassStrategy,
 			TLSFingerprint:         cfg.TLSFingerprint,
 			EnableJA3Randomization: cfg.EnableJA3Randomize,
-			EnableTLSFragmentation: true,
+			// Splitting the ClientHello across ~13 records of 20-60 bytes, each
+			// a millisecond or four apart, defeats a filter that looks for the
+			// SNI in the first packet — the name never lands in one segment.
+			// It is also unmistakable: no browser sends a hello that way, and it
+			// shows on the first connection without any statistics. Which of the
+			// two matters depends on what is inspecting the link, so it is a
+			// setting rather than a default, and WHISPERA_HELLO_FRAG=0 turns it
+			// off for a link where shape is what gets watched.
+			EnableTLSFragmentation: os.Getenv("WHISPERA_HELLO_FRAG") != "0",
 			TLSFragmentSize: func() int {
 				if cfg.TLSFragmentSize > 0 {
 					return cfg.TLSFragmentSize
@@ -169,8 +175,6 @@ func New(cfg *Config) (*Manager, error) {
 			})
 		}
 	}
-
-	m.tspuDetector = neural.NewTSPUDetector()
 
 	if cfg.CustomSNI != "" {
 		if cfg.TransportConfig == nil {
@@ -280,23 +284,6 @@ func (m *Manager) waitForOngoingReconnect(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) applyTSPUCountermeasure(err error, dialLatency float64) {
-	if m.tspuDetector == nil {
-		return
-	}
-	dialDur := time.Duration(dialLatency) * time.Millisecond
-	if strings.Contains(err.Error(), "reset") {
-		m.tspuDetector.RecordRST(m.currentSNI, dialDur)
-	}
-	dpiType, conf := m.tspuDetector.DetectTSPU()
-	if dpiType == neural.DPITypeNone || conf < 0.65 {
-		return
-	}
-	if cm := neural.TSPUCountermeasure(dpiType); cm != "" && cm != m.config.Transport {
-		m.config.Transport = cm
-	}
-}
-
 func (m *Manager) Reconnect(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -372,14 +359,12 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		}
 		m.connMu.Unlock()
 
-		dialStart := time.Now()
 		var err error
 		if attempts == 1 && zeroRTTSNI != "" {
 			err = m.connectInternal(ctx, false)
 		} else {
 			err = m.Connect(ctx)
 		}
-		dialLatency := float64(time.Since(dialStart).Milliseconds())
 		if err == nil {
 			atomic.StoreInt32(&m.boFailCount, 0)
 			atomic.StoreInt64(&m.boLastSuccessAt, time.Now().Unix())
@@ -387,7 +372,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			return nil
 		}
 
-		m.applyTSPUCountermeasure(err, dialLatency)
 		atomic.AddInt32(&m.boFailCount, 1)
 		m.circuitBreakerFail()
 

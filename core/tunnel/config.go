@@ -6,6 +6,7 @@ import (
 	"time"
 
 	asnbypass "github.com/nekoskin/whispera/core/asn_bypass"
+	"github.com/nekoskin/whispera/core/protocol"
 )
 
 type TunnelState int
@@ -65,6 +66,7 @@ type decoyActivity interface {
 }
 
 type Config struct {
+	HandshakeStrategy    *protocol.HandshakeStrategy
 	ServerAddr           string
 	ServerAddrTCP        string
 	Transport            string
