@@ -37,7 +37,7 @@ const (
 	whisperaIdentityFile = "/etc/whispera/identity_ed25519.key"
 )
 
-var Version = "0.0.3"
+var Version = "0.0.4"
 
 func buildCommit() string {
 	info, ok := rtdebug.ReadBuildInfo()

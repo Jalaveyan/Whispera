@@ -222,8 +222,6 @@ func initAPIServer(m *lifecycle.Manager, sc *config.ServerConfig) error {
 	globalProbeDetector.Start()
 	apiServer.SetProbeDetector(globalProbeDetector)
 
-	apiServer.Handle("/api/blockmap/report", handleBlockmapReport)
-	apiServer.Handle("/api/blockmap", handleBlockmapQuery)
 	return nil
 }
 
