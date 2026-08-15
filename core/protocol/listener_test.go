@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	"os"
 	"testing"
 	"time"
 )
@@ -136,10 +135,7 @@ func TestPerflowMuxForwardsNonMagicToAccept(t *testing.T) {
 	}
 }
 
-func TestHandshakeStrategyPolicyAvoidsCensoredArm(t *testing.T) {
-	os.Setenv("WHISPERA_HS_POLICY", "1")
-	defer os.Unsetenv("WHISPERA_HS_POLICY")
-
+func TestHandshakeStrategyAvoidsCensoredArm(t *testing.T) {
 	h := NewHandshakeStrategy()
 
 	const censoredArm = 2
