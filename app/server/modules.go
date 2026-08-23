@@ -6,12 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"time"
 
 	logger "github.com/nekoskin/whispera/common/log"
-	server "github.com/nekoskin/whispera/core/manager"
 	"github.com/nekoskin/whispera/core/relay"
 
 	"github.com/nekoskin/whispera/common/runtime/lifecycle"
@@ -19,7 +17,6 @@ import (
 	"github.com/nekoskin/whispera/core/apiserver"
 	"github.com/nekoskin/whispera/core/config"
 	"github.com/nekoskin/whispera/core/outbound"
-	"github.com/nekoskin/whispera/core/probedetector"
 	"github.com/nekoskin/whispera/core/router"
 )
 
@@ -46,6 +43,8 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		log.SetLevel(logger.ParseLevel(serverConfig.Logging.Level))
 	}
 
+	manager.SetShutdownTimeout(serverConfig.Server.GracefulStop.D())
+
 	if serverConfig.API.AuthToken == "" && *configFile != "" {
 		tokenBytes := make([]byte, 32)
 		if _, err := rand.Read(tokenBytes); err == nil {
@@ -57,23 +56,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			}
 		}
 	}
-
-	if serverConfig.API.AdminUsername == "admin" && serverConfig.API.AdminPassword == "admin" {
-		fmt.Println("The default login and username are not secure and need to be changed:")
-	}
-
-	server.Global.SetCallbacks(
-		func(inbound config.InboundConfig) error {
-			if inbound.Mode == "reverse" {
-				go StartReverseInbound(inbound, ctx.Done())
-				return nil
-			}
-			return StartInbound(inbound, serverConfig)
-		},
-		func(tag string) error {
-			return StopInbound(tag)
-		},
-	)
 
 	if *listenAddr != "" {
 		serverConfig.Server.ListenAddr = *listenAddr
@@ -124,12 +106,10 @@ func initCore(m *lifecycle.Manager, sc *config.ServerConfig) error {
 
 func initTransports(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context, cfgProvider *config.Provider) error {
 	relayServer, err := relay.New(&relay.Config{
-		MaxStreams:     sc.Relay.MaxStreams,
-		EnableTCP:      sc.Relay.EnableTCP,
-		EnableUDP:      sc.Relay.EnableUDP,
-		Debug:          sc.Relay.Debug || *debug,
-		UpstreamProxy:  sc.Relay.UpstreamProxy,
-		PaddingMaxSize: sc.Obfuscation.Padding.MaxSize,
+		EnableTCP:     sc.Relay.EnableTCP,
+		EnableUDP:     sc.Relay.EnableUDP,
+		Debug:         sc.Relay.Debug || *debug,
+		UpstreamProxy: sc.Relay.UpstreamProxy,
 	})
 	if err != nil {
 		return err
@@ -172,7 +152,7 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		}
 	}
 
-	if sc.Whispera.Enabled && sc.Whispera.Domain == "" {
+	if sc.Whispera.Enabled {
 		ensureWhisperaServerCert(sc)
 	}
 
@@ -180,11 +160,11 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		initWhispera(m, sc, ctx)
 	}
 
-	if err := initGRPC(m, sc); err != nil {
+	if err := initGRPC(ctx, m, sc); err != nil {
 		return err
 	}
 
-	if err := initYaDisk(m, sc); err != nil {
+	if err := initYaDisk(ctx, m, sc); err != nil {
 		return err
 	}
 
@@ -197,15 +177,11 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 
 func initAPIServer(m *lifecycle.Manager, sc *config.ServerConfig) error {
 	apiServer, err := apiserver.New(&apiserver.Config{
-		Enabled:           true,
-		ListenAddr:        sc.API.ListenAddr,
-		AuthToken:         sc.API.AuthToken,
-		WebRoot:           sc.API.WebRoot,
-		EnableCORS:        true,
-		AdminUsername:     sc.API.AdminUsername,
-		AdminPassword:     sc.API.AdminPassword,
-		AdminPasswordHash: sc.API.AdminPasswordHash,
-		LoginRateLimit:    sc.API.LoginRateLimit,
+		Enabled:    true,
+		ListenAddr: sc.API.ListenAddr,
+		AuthToken:  sc.API.AuthToken,
+		WebRoot:    sc.API.WebRoot,
+		EnableCORS: true,
 	})
 	if err != nil {
 		return err
@@ -217,10 +193,6 @@ func initAPIServer(m *lifecycle.Manager, sc *config.ServerConfig) error {
 	if err := m.Register(apiServer); err != nil {
 		return err
 	}
-
-	globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
-	globalProbeDetector.Start()
-	apiServer.SetProbeDetector(globalProbeDetector)
 
 	return nil
 }

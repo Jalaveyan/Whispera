@@ -134,11 +134,6 @@ func (r *registry) GetTyped(name string, target interface{}) error {
 			*t = m
 			return nil
 		}
-	case *interfaces.SessionManager:
-		if m, ok := module.(interfaces.SessionManager); ok {
-			*t = m
-			return nil
-		}
 	case *interfaces.Router:
 		if m, ok := module.(interfaces.Router); ok {
 			*t = m

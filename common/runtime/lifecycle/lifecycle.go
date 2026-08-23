@@ -21,7 +21,6 @@ type Manager struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	shutdownTimeout time.Duration
-	gracefulStop    bool
 	running         bool
 
 	onStart    []func() error
@@ -32,7 +31,6 @@ type Manager struct {
 
 type Config struct {
 	ShutdownTimeout time.Duration
-	GracefulStop    bool
 }
 
 func NewManager(cfg Config) *Manager {
@@ -44,7 +42,6 @@ func NewManager(cfg Config) *Manager {
 		ctx:             ctx,
 		cancel:          cancel,
 		shutdownTimeout: cfg.ShutdownTimeout,
-		gracefulStop:    cfg.GracefulStop,
 		onStart:         make([]func() error, 0),
 		onStop:          make([]func() error, 0),
 		onReload:        make([]func() error, 0),
@@ -85,6 +82,15 @@ func recoverPanic(idx int) {
 	if r := recover(); r != nil {
 		log.Printf("[Lifecycle] onShutdown[%d] panic: %v", idx, r)
 	}
+}
+
+func (m *Manager) SetShutdownTimeout(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	m.mu.Lock()
+	m.shutdownTimeout = d
+	m.mu.Unlock()
 }
 
 func (m *Manager) Stop() error {
