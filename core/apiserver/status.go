@@ -65,14 +65,10 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	if s.registry != nil {
-		if module, ok := s.registry.Get("config.provider"); ok {
-			if cfgProvider, ok := module.(*config2.Provider); ok {
-				cfg := cfgProvider.GetConfig()
-				resp["stealth_mode"] = cfg.StealthMode
-				resp["public_url"] = cfg.Server.PublicURL
-			}
-		}
+	if provider, ok := configProviderAs[*config2.Provider](s); ok {
+		cfg := provider.GetConfig()
+		resp["stealth_mode"] = cfg.StealthMode
+		resp["public_url"] = cfg.Server.PublicURL
 	}
 
 	s.jsonOK(w, resp)

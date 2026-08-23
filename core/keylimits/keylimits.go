@@ -29,7 +29,6 @@ type Limits struct {
 
 type Session struct {
 	SessionID string
-	KeyID     string
 	RemoteIP  string
 	StartedAt time.Time
 	LastSeen  time.Time
@@ -60,8 +59,6 @@ type Manager struct {
 
 	closersMu sync.Mutex
 	closers   map[string]map[string]func()
-
-	onSessionsDrop func(keyID, sessionID string)
 }
 
 func New(defaults Limits) *Manager {
@@ -152,7 +149,7 @@ func (m *Manager) Admit(keyID, sessionID, remoteIP string) (DenyReason, string) 
 
 	if l.MaxActiveSessions > 0 && len(km) >= l.MaxActiveSessions {
 		return ReasonActiveCap, fmt.Sprintf(
-			"Active connection limit reached (%d). To avoid this, obtain a subscription from your proxy provider or wait until another device disconnects.",
+			"Too many simultaneous connections from this key (%d). Close some tabs or applications and retry.",
 			l.MaxActiveSessions,
 		)
 	}
@@ -161,7 +158,7 @@ func (m *Manager) Admit(keyID, sessionID, remoteIP string) (DenyReason, string) 
 		unique := countUniqueIPs(km, remoteIP)
 		if unique > l.SoftIPCap {
 			return ReasonSoftIPCap, fmt.Sprintf(
-				"Too many distinct IPs on this key (%d > %d) — shared usage suspected.",
+				"IP limit exceeded (%d > %d); you will have to wait until someone disconnects.",
 				unique, l.SoftIPCap,
 			)
 		}
@@ -169,7 +166,6 @@ func (m *Manager) Admit(keyID, sessionID, remoteIP string) (DenyReason, string) 
 
 	km[sessionID] = &Session{
 		SessionID: sessionID,
-		KeyID:     keyID,
 		RemoteIP:  remoteIP,
 		StartedAt: time.Now(),
 		LastSeen:  time.Now(),
@@ -388,23 +384,47 @@ func (m *Manager) gcLoop() {
 	}
 }
 
-func (m *Manager) gcExpired() {
-	m.mu.Lock()
+type deadSession struct{ keyID, sessionID string }
 
-	now := time.Now()
-	type dead struct{ keyID, sessionID string }
-	var expired []dead
-
+func (m *Manager) sessionsWithClosers() map[deadSession]struct{} {
 	m.closersMu.Lock()
-	hasCloser := make(map[string]map[string]bool, len(m.closers))
+	defer m.closersMu.Unlock()
+	live := make(map[deadSession]struct{}, len(m.closers))
 	for kid, km := range m.closers {
-		inner := make(map[string]bool, len(km))
 		for sid := range km {
-			inner[sid] = true
+			live[deadSession{kid, sid}] = struct{}{}
 		}
-		hasCloser[kid] = inner
 	}
-	m.closersMu.Unlock()
+	return live
+}
+
+func (m *Manager) takeClosers(expired []deadSession) []func() {
+	m.closersMu.Lock()
+	defer m.closersMu.Unlock()
+
+	fns := make([]func(), 0, len(expired))
+	for _, d := range expired {
+		km, ok := m.closers[d.keyID]
+		if !ok {
+			continue
+		}
+		if fn, ok := km[d.sessionID]; ok {
+			fns = append(fns, fn)
+			delete(km, d.sessionID)
+		}
+		if len(km) == 0 {
+			delete(m.closers, d.keyID)
+		}
+	}
+	return fns
+}
+
+func (m *Manager) gcExpired() {
+	now := time.Now()
+	var expired []deadSession
+
+	m.mu.Lock()
+	live := m.sessionsWithClosers()
 
 	for keyID, km := range m.sessions {
 		ttl := m.limitsFor(keyID).SessionTTL
@@ -412,12 +432,12 @@ func (m *Manager) gcExpired() {
 			ttl = 30 * time.Minute
 		}
 		for sid, s := range km {
-			if hasCloser[keyID][sid] {
+			if _, held := live[deadSession{keyID, sid}]; held {
 				continue
 			}
 			if now.Sub(s.LastSeen) > ttl {
 				delete(km, sid)
-				expired = append(expired, dead{keyID, sid})
+				expired = append(expired, deadSession{keyID, sid})
 			}
 		}
 		if len(km) == 0 {
@@ -431,31 +451,14 @@ func (m *Manager) gcExpired() {
 	}
 	m.mu.Unlock()
 
-	if len(expired) > 0 {
-		m.totalSessions.Add(-int64(len(expired)))
+	if len(expired) == 0 {
+		return
 	}
-
-	if len(expired) > 0 {
-		m.closersMu.Lock()
-		fns := make([]func(), 0, len(expired))
-		for _, d := range expired {
-			if km, ok := m.closers[d.keyID]; ok {
-				if fn, ok := km[d.sessionID]; ok {
-					fns = append(fns, fn)
-					delete(km, d.sessionID)
-				}
-				if len(km) == 0 {
-					delete(m.closers, d.keyID)
-				}
-			}
-		}
-		m.closersMu.Unlock()
-		for _, fn := range fns {
-			fn()
-		}
+	m.totalSessions.Add(-int64(len(expired)))
+	for _, fn := range m.takeClosers(expired) {
+		fn()
 	}
 }
-
 func countUniqueIPs(km map[string]*Session, adding string) int {
 	seen := make(map[string]struct{}, len(km)+1)
 	for _, s := range km {

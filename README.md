@@ -1,6 +1,6 @@
 <img width="5189" height="640" alt="logo2" src="https://github.com/user-attachments/assets/dbace4f7-b2f7-42d7-aec0-edacdf6688e2" />
 
-### It is a fast, easy-to-use and easy-to-install censorship-bypassing proxy server disguised as a regular HTTPS connection and powered by built-in neural networks written in Go.
+### It is a fast, easy-to-use and easy-to-install censorship-bypassing proxy server disguised as a regular HTTPS connection, written in Go.
 
 ## Install and Update
 
@@ -44,43 +44,66 @@ This allows you to view all keys
 whispera view-keys
 ```
 
+```bash
+whispera view-keys -full 
+whispera view-keys -user <your user> -full
+```
+
+This manages the listener ports
+
+```bash
+whispera set-multilistener-port <port>          # change the main listener port
+whispera set-multilistener-port -add <port>     # add an extra listener port
+whispera set-multilistener-port -remove <port>  # drop an extra listener port
+whispera set-multilistener-port -list           # show every port and the keys using it
+```
+
+Every change rewrites the config, reseals the integrity checksum and restarts the service.
+Add `-no-restart` to write the config without restarting.
+
 Available options
 
 ```
--user <name> required — username (login via Whispera Auth)
+-user <name> required — username used as the whispera auth identity
 
--port <port> required — dedicated listening port for this user
+-port <port> required — dedicated listening port for this key
 
--fingerprint chrome||safari|ios|android|edge|random and the most recent Chrome fingerprint is used by default, unless you want to specify the `-fingerprint` flag and if you don't want to change the fingerprint, simply don't set this flag.
+-sni <domain> real domain whose TLS certificate is cloned and presented for this key
+              (required unless whispera.domain is set in the config)
 
--transport whispera|grpc|yadisk (default: whispera) and if you don't want to change the transport, simply don't set this flag.
+-fingerprint auto|chrome|chrome_120|chrome_115|firefox|firefox_120|safari|ios|android|edge|random
+             default is auto: it embeds the freshest collected chrome fingerprint
+
+-transport whispera|grpc|yadisk (default: whispera)
 
 -quic enable/disable tunneling over QUIC instead of TCP
 
 -quic-port <port> dedicated QUIC port (0 = reuse shared port)
 
+-self-cert enable/disable clone a self-signed cert for the SNI and pin it in the key
+
+-own-domain enable/disable the key targets a Caddy front on a real domain
+
+-domain <domain> real domain for -own-domain mode
+
 -yadisk-token <token> Yandex.Disk OAuth token (YADISK transport only)
 
 -yadisk-session <id> Yandex.Disk session/folder ID (automatically generated if empty)
 
--neural enable/disable RL agents + GAN seeding for this user
+-config <path> path to config.yaml
 ```
 
 ## Build from source
 
-Requires Go 1.25+. Pure-Go cross-compile:
+Requires Go 1.26+. Pure-Go cross-compile:
 
 ```bash
 # Server (linux only)
-CGO_ENABLED=0 go build -o whispera-server ./cmd/server
+CGO_ENABLED=0 go build -o whispera-server ./app/server
 
 # Go client (windows/linux/macos/android)
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-  go build -o whispera-go-client ./cmd/client
-
-# ML server (windows/linux/macos)
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  go build -o whispera-ml-server ./cmd/mlserver
+  go build -o whispera-go-client ./app/goclient
 ```
 
 ## If you need a cascade, I recommend using this instruction
@@ -92,6 +115,7 @@ curl -sSL https://raw.githubusercontent.com/nekoskin/whispera/main/install.sh | 
 ```
 
 Whispera secret (copy to master):
+
 ```bash
 a1b2c3...== # this is an example
 ```

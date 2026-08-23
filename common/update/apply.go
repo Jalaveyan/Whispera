@@ -32,8 +32,10 @@ func (u *Updater) Apply(info VersionInfo) error {
 	}
 
 	if err := u.atomicReplace(tmpFile); err != nil {
-		u.rollback()
-		return fmt.Errorf("replace: %w", err)
+		if rbErr := u.rollback(); rbErr != nil {
+			return fmt.Errorf("replace: %w (rollback also failed: %v — the binary may be left unusable)", err, rbErr)
+		}
+		return fmt.Errorf("replace: %w (rolled back)", err)
 	}
 
 	if u.onUpdateApplied != nil {
@@ -45,7 +47,9 @@ func (u *Updater) Apply(info VersionInfo) error {
 }
 
 func (u *Updater) backup() error {
-	os.MkdirAll(u.config.BackupDir, 0755)
+	if err := os.MkdirAll(u.config.BackupDir, 0755); err != nil {
+		return fmt.Errorf("create the backup directory %s: %w", u.config.BackupDir, err)
+	}
 	src := u.config.BinaryPath
 	dst := filepath.Join(u.config.BackupDir, fmt.Sprintf("whispera-%s.bak", u.config.CurrentVersion))
 
@@ -69,11 +73,12 @@ func (u *Updater) backup() error {
 }
 
 func (u *Updater) atomicReplace(tmpFile string) error {
-	info, err := os.Stat(u.config.BinaryPath)
-	if err == nil {
-		os.Chmod(tmpFile, info.Mode())
-	} else {
-		os.Chmod(tmpFile, 0755)
+	mode := os.FileMode(0755)
+	if info, err := os.Stat(u.config.BinaryPath); err == nil {
+		mode = info.Mode()
+	}
+	if err := os.Chmod(tmpFile, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", tmpFile, err)
 	}
 
 	return os.Rename(tmpFile, u.config.BinaryPath)

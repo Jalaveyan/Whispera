@@ -8,6 +8,7 @@ import (
 	"github.com/nekoskin/whispera/common/fsown"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -21,7 +22,6 @@ type User struct {
 	ConnectionURI string    `json:"connectionURI,omitempty"`
 	Upload        int64     `json:"upload"`
 	Download      int64     `json:"download"`
-	TrafficLimit  int64     `json:"trafficLimit"`
 	ExpiryDate    string    `json:"expiryDate,omitempty"`
 	Status        string    `json:"status"`
 	CreatedAt     time.Time `json:"createdAt"`
@@ -35,7 +35,7 @@ type User struct {
 
 var userDataFile = "/etc/whispera/users.json"
 
-const userStoreReloadInterval = 5 * time.Second
+const userStoreReloadInterval = 1 * time.Second
 
 var (
 	userStore        = make(map[int]*User)
@@ -85,11 +85,9 @@ func saveUsers() {
 		log.Error("failed to marshal users: %v", err)
 		return
 	}
-	if err := os.WriteFile(userDataFile, data, 0600); err != nil {
+	if err := fsown.WriteFile(userDataFile, data, 0600); err != nil {
 		log.Error("failed to save users: %v", err)
-		return
 	}
-	fsown.MatchParent(userDataFile)
 }
 
 func loadUsers() {
@@ -123,10 +121,20 @@ func applyUsersFromFile() {
 		usersFileModTime = info.ModTime()
 	}
 	userStoreMu.Unlock()
+	userStoreVersion.Add(1)
 }
+
+var userStoreVersion atomic.Uint64
+
+func UserStoreVersion() uint64 { return userStoreVersion.Load() }
 
 func startUserStoreWatcher() {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("PANIC in user store watcher: %v — reloads of %s have stopped", r, userDataFile)
+			}
+		}()
 		t := time.NewTicker(userStoreReloadInterval)
 		defer t.Stop()
 		for range t.C {

@@ -19,9 +19,9 @@ import (
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/lifecycle"
 	"github.com/nekoskin/whispera/common/update"
+	"github.com/nekoskin/whispera/core/config"
 	"github.com/nekoskin/whispera/core/keylimits"
 	"github.com/nekoskin/whispera/core/outbound"
-	"github.com/nekoskin/whispera/core/probedetector"
 	relay2 "github.com/nekoskin/whispera/core/relay"
 	"github.com/nekoskin/whispera/core/router"
 
@@ -31,10 +31,10 @@ import (
 var log = logger.Module("server")
 
 const (
-	whisperaCertPath     = "/etc/whispera/whispera.crt"
-	whisperaKeyPath      = "/etc/whispera/whispera.key"
-	whisperaDecoyCertDir = "/etc/whispera/decoy_certs"
-	whisperaIdentityFile = "/etc/whispera/identity_ed25519.key"
+	whisperaCertPath     = config.ServerCert
+	whisperaKeyPath      = config.ServerKey
+	whisperaDecoyCertDir = config.DecoyCertDir
+	whisperaIdentityFile = config.IdentityFile
 )
 
 var Version = "0.0.4"
@@ -65,8 +65,6 @@ func buildCommit() string {
 	return rev
 }
 
-var globalProbeDetector *probedetector.Detector
-
 var (
 	configFile     = flag.String("config", "", "Path to configuration file")
 	listenAddr     = flag.String("listen", "", "UDP/TCP listen address (default from config)")
@@ -77,10 +75,13 @@ var (
 	pprofAddr      = flag.String("pprof", "localhost:6060", "Pprof server listen address")
 )
 
+// В per-flow датапати каждый поток — отдельное соединение со своим session id,
+// поэтому MaxActiveSessions ограничивает одновременные потоки, а не устройства:
+// одна загрузка страницы легко открывает их десятки. Лимит устройств — SoftIPCap.
 var globalKeyLimits = keylimits.New(keylimits.Limits{
-	MaxActiveSessions: 10,
+	MaxActiveSessions: 512,
 	GlobalCap:         10000,
-	SoftIPCap:         50,
+	SoftIPCap:         5,
 	BurstPerMinute:    0,
 	SessionTTL:        30 * time.Minute,
 })
@@ -99,29 +100,44 @@ var (
 	portH2CChansMu sync.Mutex
 )
 
-func main() {
-	if len(os.Args) > 1 {
-		switch strings.TrimSpace(os.Args[1]) {
-		case "x25519":
-			commands.RunX25519Cmd()
-		case "pubkey":
-			commands.RunPubkeyCmd()
-		case "create-key":
-			commands.RunCreateKeyCmd()
-		case "delete-key":
-			commands.RunDeleteKeyCmd()
-		case "gen-decoy-cert":
-			commands.RunGenDecoyCertCmd()
-		case "generate-sub":
-			commands.RunGenerateSubCmd()
-		case "view-keys":
-			commands.RunViewKeysCmd()
-		case "hash-password":
-			commands.RunHashPasswordCmd()
-		case "update-checksum":
-			commands.RunUpdateChecksumCmd()
-		}
+func runSubcommand() {
+	if len(os.Args) <= 1 {
+		return
 	}
+	switch strings.TrimSpace(os.Args[1]) {
+	case "x25519":
+		commands.RunX25519Cmd()
+	case "pubkey":
+		commands.RunPubkeyCmd()
+	case "create-key":
+		commands.RunCreateKeyCmd()
+	case "delete-key":
+		commands.RunDeleteKeyCmd()
+	case "gen-decoy-cert":
+		commands.RunGenDecoyCertCmd()
+	case "generate-sub":
+		commands.RunGenerateSubCmd()
+	case "view-keys":
+		commands.RunViewKeysCmd()
+	case "update-checksum":
+		commands.RunUpdateChecksumCmd()
+	case "set-multilistener-port":
+		commands.RunSetMultilistenerPortCmd()
+	}
+}
+
+func startProfiling() {
+	runtime.SetBlockProfileRate(10000)
+	runtime.SetMutexProfileFraction(100)
+	go func() {
+		if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+			log.Warn("pprof server on %s exited: %v", *pprofAddr, err)
+		}
+	}()
+}
+
+func main() {
+	runSubcommand()
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -131,32 +147,20 @@ func main() {
 	}()
 
 	flag.Parse()
-
 	if *configFile == "" {
 		*configFile = "config.yaml"
 	}
-
-	runtime.SetBlockProfileRate(10000)
-	runtime.SetMutexProfileFraction(100)
-
-	go func() {
-		if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
-			log.Warn("pprof server on %s exited: %v", *pprofAddr, err)
-		}
-	}()
-
 	if *debug {
 		log.SetLevel(logger.LevelDebug)
 	}
-
 	if *printVersion {
 		fmt.Printf("Whispera %s (%s)\n", Version, buildCommit())
 		os.Exit(0)
 	}
+	startProfiling()
 
 	manager := lifecycle.NewManager(lifecycle.Config{
-		ShutdownTimeout: 30_000_000_000,
-		GracefulStop:    true,
+		ShutdownTimeout: 30 * time.Second,
 	})
 
 	memWatchdog := base.NewMemoryWatchdog(512, 1024, 30*time.Second)
@@ -169,11 +173,9 @@ func main() {
 	if err := createModules(manager, moduleCtx); err != nil {
 		log.Fatalf("Failed to create modules: %v", err)
 	}
-
 	if *validateConfig {
 		os.Exit(0)
 	}
-
 	if err := manager.Run(); err != nil {
 		log.Fatalf("Application error: %v", err)
 	}

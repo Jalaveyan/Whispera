@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/nekoskin/whispera/common/app_detection"
 	"net"
 	"os"
 	"sort"
@@ -33,14 +32,13 @@ type SplitTunnelConfig struct {
 }
 
 type SplitTunnelManager struct {
-	mu          sync.RWMutex
-	config      *SplitTunnelConfig
-	rules       []SplitTunnelRule
-	appDetector *app_detection.AppDetector
-	geo         *GeoIPSet
-	resolve     ResolveFunc
-	byCountry   bool
-	verdicts    map[string]verdict
+	mu        sync.RWMutex
+	config    *SplitTunnelConfig
+	rules     []SplitTunnelRule
+	geo       *GeoIPSet
+	resolve   ResolveFunc
+	byCountry bool
+	verdicts  map[string]verdict
 }
 
 type ResolveFunc func(ctx context.Context, host string) ([]net.IP, error)
@@ -66,9 +64,8 @@ func NewSplitTunnelManager() *SplitTunnelManager {
 			Version:       "1.0",
 			Rules:         []SplitTunnelRule{},
 		},
-		rules:       []SplitTunnelRule{},
-		appDetector: app_detection.NewAppDetector(),
-		byCountry:   true,
+		rules:     []SplitTunnelRule{},
+		byCountry: true,
 	}
 }
 

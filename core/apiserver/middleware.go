@@ -114,18 +114,19 @@ func (s *Server) isAllowedOrigin(origin string) bool {
 	return false
 }
 
-func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	authHdr := r.Header.Get("Authorization")
-	if strings.HasPrefix(authHdr, "Bearer ") {
-		token := authHdr[len("Bearer "):]
-		if s.sessionToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) == 1 {
-			return true
-		}
-		if s.validateTimedToken(token) {
-			return true
-		}
+func (s *Server) tokenMatches(r *http.Request) bool {
+	if s.config.AuthToken == "" {
+		return false
 	}
-	if qt := r.URL.Query().Get("token"); qt != "" && s.validateTimedToken(qt) {
+	token := r.URL.Query().Get("token")
+	if authHdr := r.Header.Get("Authorization"); strings.HasPrefix(authHdr, "Bearer ") {
+		token = authHdr[len("Bearer "):]
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(s.config.AuthToken)) == 1
+}
+
+func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if s.tokenMatches(r) {
 		return true
 	}
 	http.Error(w, `{"error":"admin access required"}`, http.StatusForbidden)
@@ -143,6 +144,10 @@ func (s *Server) requestBodyLimitMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+var publicAPIPaths = map[string]bool{
+	"/api/v1/health": true,
+}
+
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") {
@@ -150,45 +155,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if r.URL.Path == "/api/login" ||
-			r.URL.Path == "/api/auth/login" ||
-			r.URL.Path == "/api/v2/auth/login" ||
-			r.URL.Path == "/api/v2/auth/register" ||
-			r.URL.Path == "/api/v2/users/login" ||
-			r.URL.Path == "/api/v2/auth/refresh" ||
-			r.URL.Path == "/api/logout" ||
-			r.URL.Path == "/api/keys/check" ||
-			r.URL.Path == "/api/v1/speed/ping" ||
-			strings.HasSuffix(r.URL.Path, "/health") {
+		if publicAPIPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		var token string
-		auth := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if strings.HasPrefix(auth, prefix) {
-			token = auth[len(prefix):]
-		} else if qt := r.URL.Query().Get("token"); qt != "" {
-			token = qt
-		} else {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="api"`)
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-
-		if s.sessionToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) == 1 {
+		if s.tokenMatches(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		if s.validateTimedToken(token) {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		w.Header().Set("WWW-Authenticate", `Bearer realm="api", error="invalid_token", error_description="token expired or invalid"`)
-		http.Error(w, `{"error":"session expired"}`, http.StatusUnauthorized)
+		w.Header().Set("WWW-Authenticate", `Bearer realm="api"`)
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 	})
 }
 

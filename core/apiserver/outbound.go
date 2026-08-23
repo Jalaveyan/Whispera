@@ -19,6 +19,19 @@ func (s *Server) getConfigProvider() (interface{}, error) {
 	return module, nil
 }
 
+func configProviderAs[T any](s *Server) (T, bool) {
+	var zero T
+	if s.registry == nil {
+		return zero, false
+	}
+	mod, ok := s.registry.Get("config.provider")
+	if !ok {
+		return zero, false
+	}
+	v, ok := mod.(T)
+	return v, ok
+}
+
 func (s *Server) handleGetOutbounds(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return

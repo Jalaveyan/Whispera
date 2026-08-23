@@ -44,7 +44,6 @@ type Rule struct {
 type GeoIPDatabase struct {
 	mu       sync.RWMutex
 	ipRanges map[string][]*net.IPNet
-	loaded   bool
 }
 
 type GeoSiteDatabase struct {
@@ -53,7 +52,6 @@ type GeoSiteDatabase struct {
 	suffixes map[string][]string
 	keywords map[string][]string
 	regexps  map[string][]*regexp.Regexp
-	loaded   bool
 }
 
 type Router struct {
@@ -128,7 +126,6 @@ func (r *Router) LoadGeoIPFile(path string) error {
 		r.geoIP.ipRanges[code] = append(r.geoIP.ipRanges[code], ipNet)
 	}
 
-	r.geoIP.loaded = true
 	return scanner.Err()
 }
 
@@ -177,7 +174,6 @@ func (r *Router) LoadGeoSiteFile(path string) error {
 		}
 	}
 
-	r.geoSite.loaded = true
 	return scanner.Err()
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	rtdebug "runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,68 @@ func (c *prependConn) Read(b []byte) (int, error) {
 	return c.Conn.Read(b)
 }
 
+func peekConn(conn net.Conn) *prependConn {
+	var peek [3]byte
+	conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	n, _ := io.ReadFull(conn, peek[:])
+	conn.SetReadDeadline(time.Time{})
+	return &prependConn{Conn: conn, prepend: peek[:n]}
+}
+
+func h2cChanFor(listenAddr string) (chan net.Conn, bool) {
+	portH2CChansMu.Lock()
+	defer portH2CChansMu.Unlock()
+	ch, ok := portH2CChans[listenAddr]
+	return ch, ok
+}
+
+func serveInboundConn(conn net.Conn, listenAddr string) {
+	pConn := peekConn(conn)
+	prefix := pConn.prepend
+
+	if h2cCh, ok := h2cChanFor(listenAddr); ok && string(prefix) == "PRI" {
+		select {
+		case h2cCh <- pConn:
+		default:
+			pConn.Close()
+		}
+		return
+	}
+
+	release, ok := acquireConnSlot(conn.RemoteAddr())
+	if !ok {
+		pConn.Close()
+		return
+	}
+	go func() {
+		defer release()
+		if globalRelay == nil {
+			pConn.Close()
+			return
+		}
+		globalRelay.ServeTunnel(stats.WrapConn(pConn, pConn.RemoteAddr().String()), false)
+	}()
+}
+
+func acceptInbound(listener net.Listener, tag, listenAddr string) {
+	defer func() {
+		listenersMutex.Lock()
+		delete(activeListeners, tag)
+		listenersMutex.Unlock()
+	}()
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if strings.Contains(err.Error(), "use of closed network connection") {
+				return
+			}
+			continue
+		}
+		serveInboundConn(conn, listenAddr)
+	}
+}
+
 func StartInbound(inbound config.InboundConfig, serverConfig *config.ServerConfig) error {
 	listenersMutex.Lock()
 	defer listenersMutex.Unlock()
@@ -36,76 +99,22 @@ func StartInbound(inbound config.InboundConfig, serverConfig *config.ServerConfi
 		return fmt.Errorf("inbound %s already running", inbound.Tag)
 	}
 
-	listenAddr := fmt.Sprintf("%s:%d", inbound.Listen, inbound.Port)
-
 	if serverConfig.Whispera.Enabled {
 		if _, chmPort, err := net.SplitHostPort(serverConfig.Whispera.ListenAddr); err == nil && chmPort != "" && strconv.Itoa(inbound.Port) == chmPort {
 			return nil
 		}
 	}
 
+	listenAddr := net.JoinHostPort(inbound.Listen, strconv.Itoa(inbound.Port))
 	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", listenAddr, err)
 	}
-
 	activeListeners[inbound.Tag] = listener
 
-	go func() {
-		defer func() {
-			listenersMutex.Lock()
-			delete(activeListeners, inbound.Tag)
-			listenersMutex.Unlock()
-		}()
-
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				if strings.Contains(err.Error(), "use of closed network connection") {
-					return
-				}
-				continue
-			}
-
-			var peek [3]byte
-			conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-			n, _ := io.ReadFull(conn, peek[:])
-			conn.SetReadDeadline(time.Time{})
-
-			pConn := &prependConn{Conn: conn, prepend: peek[:n]}
-
-			portH2CChansMu.Lock()
-			h2cCh, hasH2C := portH2CChans[listenAddr]
-			portH2CChansMu.Unlock()
-
-			if hasH2C && n == 3 && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' {
-				select {
-				case h2cCh <- pConn:
-				default:
-					pConn.Close()
-				}
-				continue
-			}
-
-			release, ok := acquireConnSlot(conn.RemoteAddr())
-			if !ok {
-				pConn.Close()
-				continue
-			}
-			go func() {
-				defer release()
-				if globalRelay != nil {
-					globalRelay.ServeTunnel(stats.WrapConn(pConn, pConn.RemoteAddr().String()), false)
-				} else {
-					pConn.Close()
-				}
-			}()
-		}
-	}()
-
+	go acceptInbound(listener, inbound.Tag, listenAddr)
 	return nil
 }
-
 func StopInbound(tag string) error {
 	listenersMutex.Lock()
 	defer listenersMutex.Unlock()
@@ -204,6 +213,11 @@ func startFallbackTCP(m *lifecycle.Manager, sc *config.ServerConfig) error {
 }
 
 func acceptTCPLoop(t *tcp.Transport) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in tcp accept loop: %v\n%s", r, rtdebug.Stack())
+		}
+	}()
 	time.Sleep(1 * time.Second)
 	backoff := 1 * time.Millisecond
 	for {

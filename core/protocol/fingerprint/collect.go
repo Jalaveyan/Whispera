@@ -48,7 +48,9 @@ func PersistRawFingerprint(dir string, raw []byte) error {
 	}
 	now := time.Now()
 	_ = os.Chtimes(path, now, now)
-	fsown.MatchParent(path)
+	if err := fsown.MatchParent(path); err != nil {
+		return err
+	}
 	return nil
 }
 

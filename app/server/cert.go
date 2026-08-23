@@ -31,7 +31,10 @@ func ensureWhisperaServerCert(sc *config.ServerConfig) {
 		log.Warn("whispera: server cert at %s uses a signature algorithm most clients reject (e.g. Ed25519) — regenerating as ECDSA", certPath)
 	}
 
-	os.MkdirAll(filepath.Dir(certPath), 0755)
+	if err := os.MkdirAll(filepath.Dir(certPath), 0755); err != nil {
+		log.Warn("whispera: cannot create %s: %v — no server cert will be available", filepath.Dir(certPath), err)
+		return
+	}
 	if err := generateSelfSignedCert(certPath, keyPath); err != nil {
 		log.Warn("whispera: auto cert generation failed: %v", err)
 		return

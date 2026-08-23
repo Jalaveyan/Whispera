@@ -7,9 +7,7 @@ transport:
     workers: 16
 
 obfuscation:
-  enabled: true
-  ml_enabled: true
-  default_profile: "ml"
+  profile: "default"
 
 network:
   tun_name: "Whispera"

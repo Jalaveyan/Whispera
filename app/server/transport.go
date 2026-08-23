@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"io"
 	"net"
 	rtdebug "runtime/debug"
@@ -16,10 +17,45 @@ import (
 	"github.com/nekoskin/whispera/common/stats"
 	"github.com/nekoskin/whispera/core/apiserver"
 	"github.com/nekoskin/whispera/core/config"
+	"github.com/nekoskin/whispera/core/keylimits"
 	"github.com/nekoskin/whispera/core/protocol/fingerprint"
 	"github.com/nekoskin/whispera/core/transport/grpc"
 	"github.com/nekoskin/whispera/core/transport/yadisk"
 )
+
+func registeredWhisperaUsers() []protocol.UserEntry {
+	registered := apiserver.GetRegisteredUsers()
+	entries := make([]protocol.UserEntry, 0, len(registered))
+	for _, u := range registered {
+		psk, err := base64.StdEncoding.DecodeString(u.PrivateKey)
+		if err != nil || len(psk) != 32 {
+			continue
+		}
+		entries = append(entries, protocol.UserEntry{UserID: u.UserID, PSK: psk})
+	}
+	return entries
+}
+
+func serveWhisperaConn(ac protocol.AcceptedConn) {
+	sid := hex.EncodeToString(ac.SessionID)
+	remote := ac.Conn.RemoteAddr().String()
+	remoteIP, _, _ := net.SplitHostPort(remote)
+
+	if reason, msg := globalKeyLimits.Admit(ac.UserID, sid, remoteIP); reason != keylimits.ReasonNone {
+		log.Warn("whispera: refused userID=%s remote=%s reason=%s: %s", ac.UserID, remote, reason, msg)
+		protocol.WriteDenial(ac.Conn, msg)
+		ac.Conn.Close()
+		return
+	}
+
+	log.Debug("whispera: tunnel connected userID=%s remote=%s", ac.UserID, remote)
+	tracked := stats.WrapConn(ac.Conn, ac.UserID)
+	go func() {
+		defer globalKeyLimits.Release(ac.UserID, sid)
+		globalRelay.ServeTunnelResilient(tracked, false, ac.Secret)
+		log.Debug("whispera: tunnel closed userID=%s remote=%s", ac.UserID, remote)
+	}()
+}
 
 func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context) {
 	cCfg := &protocol.ServerConfig{
@@ -31,26 +67,9 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		DecoyCertDir:   whisperaDecoyCertDir,
 		ACMEDir:        sc.Whispera.ACMEDir,
 		DecoyOrigin:    sc.Whispera.DecoyOrigin,
-		GetUsers: func() []protocol.UserEntry {
-			registered := apiserver.GetRegisteredUsers()
-			entries := make([]protocol.UserEntry, 0, len(registered))
-			for _, u := range registered {
-				psk, err := base64.StdEncoding.DecodeString(u.PrivateKey)
-				if err != nil || len(psk) != 32 {
-					continue
-				}
-				entries = append(entries, protocol.UserEntry{UserID: u.UserID, PSK: psk})
-			}
-			return entries
-		},
-		OnConn: func(conn net.Conn, userID string, secret []byte) {
-			log.Info("whispera: tunnel connected userID=%s remote=%s", userID, conn.RemoteAddr())
-			tracked := stats.WrapConn(conn, userID)
-			go func() {
-				globalRelay.ServeTunnelResilient(tracked, false, secret)
-				log.Info("whispera: tunnel closed userID=%s remote=%s", userID, conn.RemoteAddr())
-			}()
-		},
+		GetUsers:       registeredWhisperaUsers,
+		UsersVersion:   apiserver.UserStoreVersion,
+		OnConn:         serveWhisperaConn,
 	}
 	cCfg.QUICListenAddr = sc.Whispera.QUICListenAddr
 	if len(sc.Whispera.ExtraPorts) > 0 {
@@ -77,7 +96,12 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 	} else {
 		protocol.SetCertIdentity(id)
 	}
-	go func() { _ = protocol.ListenAndServe(ctx, cCfg) }()
+	go protocol.EnsureSNICerts(whisperaDecoyCertDir)
+	go func() {
+		if err := protocol.ListenAndServe(ctx, cCfg); err != nil && ctx.Err() == nil {
+			log.Error("whispera: listener stopped: %v", err)
+		}
+	}()
 }
 
 func verifyAltTransportAuth(conn net.Conn) bool {
@@ -141,7 +165,45 @@ func handleAltTransportConn(conn net.Conn) {
 	globalRelay.ServeTunnelRaw(stats.WrapConn(conn, conn.RemoteAddr().String()), false)
 }
 
-func initGRPC(m *lifecycle.Manager, sc *config.ServerConfig) error {
+func acceptLoop(ctx context.Context, name string, accept func() (net.Conn, error), serve func(net.Conn)) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in %s accept loop: %v\n%s", name, r, rtdebug.Stack())
+		}
+	}()
+
+	time.Sleep(1 * time.Second)
+	backoff := 1 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		conn, err := accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			acceptBackoff(&backoff)
+			continue
+		}
+		backoff = 1 * time.Millisecond
+
+		release, ok := acquireConnSlot(conn.RemoteAddr())
+		if !ok {
+			conn.Close()
+			continue
+		}
+		go func() {
+			defer release()
+			serve(conn)
+		}()
+	}
+}
+
+func initGRPC(ctx context.Context, m *lifecycle.Manager, sc *config.ServerConfig) error {
 	if !sc.GRPC.Enabled || sc.GRPC.ListenAddr == "" {
 		return nil
 	}
@@ -169,36 +231,11 @@ func initGRPC(m *lifecycle.Manager, sc *config.ServerConfig) error {
 	if err := m.Register(t); err != nil {
 		return err
 	}
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("PANIC in grpc accept loop: %v\n%s", r, rtdebug.Stack())
-			}
-		}()
-		time.Sleep(1 * time.Second)
-		backoffGRPC := 1 * time.Millisecond
-		for {
-			conn, err := t.Accept()
-			if err != nil {
-				acceptBackoff(&backoffGRPC)
-				continue
-			}
-			backoffGRPC = 1 * time.Millisecond
-			release, ok := acquireConnSlot(conn.RemoteAddr())
-			if !ok {
-				conn.Close()
-				continue
-			}
-			go func() {
-				defer release()
-				handleAltTransportConn(conn)
-			}()
-		}
-	}()
+	go acceptLoop(ctx, "grpc", t.Accept, handleAltTransportConn)
 	return nil
 }
 
-func initYaDisk(m *lifecycle.Manager, sc *config.ServerConfig) error {
+func initYaDisk(ctx context.Context, m *lifecycle.Manager, sc *config.ServerConfig) error {
 	if !sc.YaDisk.Enabled || sc.YaDisk.OAuthToken == "" {
 		return nil
 	}
@@ -213,31 +250,6 @@ func initYaDisk(m *lifecycle.Manager, sc *config.ServerConfig) error {
 	if err := m.Register(t); err != nil {
 		return err
 	}
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Error("PANIC in yadisk accept loop: %v\n%s", r, rtdebug.Stack())
-			}
-		}()
-		time.Sleep(1 * time.Second)
-		backoffYaDisk := 1 * time.Millisecond
-		for {
-			conn, err := t.Accept()
-			if err != nil {
-				acceptBackoff(&backoffYaDisk)
-				continue
-			}
-			backoffYaDisk = 1 * time.Millisecond
-			release, ok := acquireConnSlot(conn.RemoteAddr())
-			if !ok {
-				conn.Close()
-				continue
-			}
-			go func() {
-				defer release()
-				handleAltTransportConn(conn)
-			}()
-		}
-	}()
+	go acceptLoop(ctx, "yadisk", t.Accept, handleAltTransportConn)
 	return nil
 }

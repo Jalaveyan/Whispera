@@ -4,41 +4,30 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/nekoskin/whispera/common/runtime/base"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nekoskin/whispera/common/runtime/base"
 )
 
-var testAdminPassword = func() string {
-	if v := os.Getenv("TEST_ADMIN_PASSWORD"); v != "" {
-		return v
-	}
-	return "testpass123"
-}()
+const testAuthToken = "test-api-auth-token"
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
-	secret := []byte("test-signing-secret-32-bytes!!!!!")
 	s := &Server{
 		Module: base.NewModule(ModuleName, ModuleVersion, nil),
 		config: &Config{
-			Enabled:       true,
-			ListenAddr:    ":0",
-			EnableCORS:    true,
-			AdminUsername: "admin",
-			AdminPassword: testAdminPassword,
+			Enabled:    true,
+			ListenAddr: ":0",
+			EnableCORS: true,
+			AuthToken:  testAuthToken,
 		},
 		mux:            http.NewServeMux(),
 		handlers:       make(map[string]http.HandlerFunc),
-		loginAttempts:  make(map[string][]time.Time),
-		sessionToken:   "static-test-session-token",
-		signingSecret:  secret,
-		revokedTokens:  make(map[string]time.Time),
 		revokedKeys:    make(map[string]time.Time),
 		activeConns:    make(map[string]int32),
 		maxConnsPerIP:  50,
@@ -92,74 +81,6 @@ func TestHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestLoginV1_Success(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	body := map[string]string{"username": "admin", "password": testAdminPassword}
-	rec := doRequest(handler, "POST", "/api/login", body, "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	result := parseJSON(t, rec)
-	if result["success"] != true {
-		t.Errorf("expected success=true, got %v", result["success"])
-	}
-	if result["token"] == nil || result["token"] == "" {
-		t.Error("expected non-empty token")
-	}
-	if result["expires_in"] == nil {
-		t.Error("expected expires_in field")
-	}
-
-	user, ok := result["user"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected user object in response")
-	}
-	if user["role"] != "admin" {
-		t.Errorf("expected role=admin, got %v", user["role"])
-	}
-}
-
-func TestLoginV1_InvalidPassword(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	body := map[string]string{"username": "admin", "password": "wrongpass"}
-	rec := doRequest(handler, "POST", "/api/login", body, "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestLoginV1_InvalidUsername(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	body := map[string]string{"username": "notadmin", "password": testAdminPassword}
-	rec := doRequest(handler, "POST", "/api/login", body, "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestLoginV1_RateLimit(t *testing.T) {
-	s := newTestServer(t)
-	s.config.LoginRateLimit = 3
-	handler := s.buildHandler()
-
-	body := map[string]string{"username": "admin", "password": "wrongpass"}
-	for i := 0; i < 3; i++ {
-		doRequest(handler, "POST", "/api/login", body, "")
-	}
-
-	rec := doRequest(handler, "POST", "/api/login", body, "")
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429 after rate limit, got %d", rec.Code)
-	}
-}
-
 func TestAuthMiddleware_NoToken(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
@@ -180,50 +101,36 @@ func TestAuthMiddleware_InvalidToken(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_SessionToken(t *testing.T) {
+func TestAuthMiddleware_AuthToken(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	rec := doRequest(handler, "GET", "/api/v1/status", nil, "static-test-session-token")
+	rec := doRequest(handler, "GET", "/api/v1/status", nil, testAuthToken)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 with session token, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200 with the configured token, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestAuthMiddleware_TimedToken(t *testing.T) {
+func TestAuthMiddleware_QueryToken(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	token := s.issueTimedToken("admin")
-
-	rec := doRequest(handler, "GET", "/api/v1/status", nil, token)
+	rec := doRequest(handler, "GET", "/api/v1/status?token="+testAuthToken, nil, "")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 with timed token, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200 with the token in the query, got %d", rec.Code)
 	}
 }
 
-func TestLogout_RevokesToken(t *testing.T) {
+func TestAuthMiddleware_EmptyConfiguredTokenRejects(t *testing.T) {
 	s := newTestServer(t)
+	s.config.AuthToken = ""
 	handler := s.buildHandler()
 
-	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
-	loginRec := doRequest(handler, "POST", "/api/login", loginBody, "")
-	loginResult := parseJSON(t, loginRec)
-	token := loginResult["token"].(string)
-
-	rec := doRequest(handler, "GET", "/api/v1/status", nil, token)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("token should work before logout, got %d", rec.Code)
-	}
-
-	logoutRec := doRequest(handler, "POST", "/api/logout", nil, token)
-	if logoutRec.Code != http.StatusOK {
-		t.Fatalf("logout failed: %d", logoutRec.Code)
-	}
-
-	rec = doRequest(handler, "GET", "/api/v1/status", nil, token)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("token should be revoked after logout, got %d", rec.Code)
+	for _, token := range []string{"", "anything"} {
+		rec := doRequest(handler, "GET", "/api/v1/status", nil, token)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("token %q: expected 401 when no token is configured, got %d", token, rec.Code)
+		}
 	}
 }
 
@@ -231,7 +138,7 @@ func TestStatusEndpoint(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	rec := doRequest(handler, "GET", "/api/v1/status", nil, s.sessionToken)
+	rec := doRequest(handler, "GET", "/api/v1/status", nil, testAuthToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -246,7 +153,7 @@ func TestGetConfig(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	rec := doRequest(handler, "GET", "/api/v1/config", nil, s.sessionToken)
+	rec := doRequest(handler, "GET", "/api/v1/config", nil, testAuthToken)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
@@ -261,36 +168,15 @@ func TestGetConfig(t *testing.T) {
 	}
 }
 
-func TestFullAuthFlow_V1(t *testing.T) {
+func TestRemovedEndpointsAreGone(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	loginBody := map[string]string{"username": "admin", "password": testAdminPassword}
-	loginRec := doRequest(handler, "POST", "/api/login", loginBody, "")
-	if loginRec.Code != http.StatusOK {
-		t.Fatalf("login failed: %d", loginRec.Code)
-	}
-	loginResult := parseJSON(t, loginRec)
-	token := loginResult["token"].(string)
-
-	statusRec := doRequest(handler, "GET", "/api/v1/status", nil, token)
-	if statusRec.Code != http.StatusOK {
-		t.Fatalf("status with token failed: %d", statusRec.Code)
-	}
-
-	configRec := doRequest(handler, "GET", "/api/v1/config", nil, token)
-	if configRec.Code != http.StatusOK {
-		t.Fatalf("config with token failed: %d", configRec.Code)
-	}
-
-	logoutRec := doRequest(handler, "POST", "/api/logout", nil, token)
-	if logoutRec.Code != http.StatusOK {
-		t.Fatalf("logout failed: %d", logoutRec.Code)
-	}
-
-	afterLogoutRec := doRequest(handler, "GET", "/api/v1/status", nil, token)
-	if afterLogoutRec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 after logout, got %d", afterLogoutRec.Code)
+	for _, path := range []string{"/api/login", "/api/logout", "/api/users", "/api/inbounds", "/api/v1/stats"} {
+		rec := doRequest(handler, "GET", path, nil, testAuthToken)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s should be gone, got %d", path, rec.Code)
+		}
 	}
 }
 
@@ -333,8 +219,9 @@ func TestRequestBodyLimit(t *testing.T) {
 	handler := s.buildHandler()
 
 	bigBody := make([]byte, 2<<20)
-	req, _ := http.NewRequestWithContext(context.Background(), "POST", "/api/login", bytes.NewReader(bigBody))
+	req, _ := http.NewRequestWithContext(context.Background(), "POST", "/api/outbounds/add", bytes.NewReader(bigBody))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testAuthToken)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -391,56 +278,6 @@ func TestRootEndpoint(t *testing.T) {
 	}
 }
 
-func TestLoginV1_EmptyBody(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	req, _ := http.NewRequestWithContext(context.Background(), "POST", "/api/login", bytes.NewReader([]byte("")))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for empty body, got %d", rec.Code)
-	}
-}
-
-func TestLoginV1_MalformedJSON(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	req, _ := http.NewRequestWithContext(context.Background(), "POST", "/api/login", bytes.NewReader([]byte("{bad json")))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for malformed JSON, got %d", rec.Code)
-	}
-}
-
-func TestTimedToken_Validation(t *testing.T) {
-	s := newTestServer(t)
-
-	token := s.issueTimedToken("admin")
-	if !s.validateTimedToken(token) {
-		t.Error("freshly issued token should be valid")
-	}
-
-	if s.validateTimedToken("garbage.token") {
-		t.Error("garbage token should be invalid")
-	}
-
-	if s.validateTimedToken("") {
-		t.Error("empty token should be invalid")
-	}
-
-	s.revokeToken(token)
-	if s.validateTimedToken(token) {
-		t.Error("revoked token should be invalid")
-	}
-}
-
 func TestConnLimitMiddleware(t *testing.T) {
 	s := newTestServer(t)
 	s.maxConnsPerIP = 2
@@ -459,7 +296,7 @@ func TestConnLimitMiddleware(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			rec := doRequest(handler, "GET", "/api/v1/slow", nil, s.sessionToken)
+			rec := doRequest(handler, "GET", "/api/v1/slow", nil, testAuthToken)
 			results[idx] = rec.Code
 		}(i)
 	}
@@ -469,7 +306,7 @@ func TestConnLimitMiddleware(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		rec := doRequest(handler, "GET", "/api/v1/slow", nil, s.sessionToken)
+		rec := doRequest(handler, "GET", "/api/v1/slow", nil, testAuthToken)
 		results[2] = rec.Code
 	}()
 
@@ -487,16 +324,12 @@ func TestProtectedEndpoints_RequireAuth(t *testing.T) {
 		path   string
 	}{
 		{"GET", "/api/v1/status"},
-		{"GET", "/api/v1/modules"},
 		{"GET", "/api/v1/config"},
-		{"GET", "/api/v1/stats"},
-		{"GET", "/api/v1/sessions"},
-		{"GET", "/api/users"},
-		{"GET", "/api/inbounds"},
 		{"GET", "/api/outbounds"},
-		{"GET", "/api/subscriptions"},
-		{"GET", "/api/stats"},
 		{"GET", "/api/logs"},
+		{"GET", "/api/backup"},
+		{"GET", "/api/backup/list"},
+		{"GET", "/api/fingerprints"},
 	}
 
 	for _, ep := range endpoints {

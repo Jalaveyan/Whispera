@@ -4,21 +4,20 @@ import (
 	"context"
 	"fmt"
 	"github.com/nekoskin/whispera/common/cache"
+	logger "github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/common/routing"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/events"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
-	"github.com/nekoskin/whispera/common/runtime/registry"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 )
 
-func init() {
-	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
-}
+var log = logger.Module("router")
 
 const (
 	ModuleName    = "routing.engine"
@@ -160,6 +159,14 @@ func (e *Engine) matchRule(rule *interfaces.RoutingRule, packet *interfaces.Pack
 	return true
 }
 
+var loggedUnsupportedFields sync.Map
+
+func unsupportedRuleField(field string) {
+	if _, seen := loggedUnsupportedFields.LoadOrStore(field, struct{}{}); !seen {
+		log.Warn("routing: rule field %q is not supported — every rule using it never matches", field)
+	}
+}
+
 func (e *Engine) matchCondition(cond *interfaces.RuleCondition, packet *interfaces.Packet) bool {
 	switch cond.Field {
 	case "dst_ip":
@@ -170,29 +177,37 @@ func (e *Engine) matchCondition(cond *interfaces.RuleCondition, packet *interfac
 		return e.matchPort(packet.DstAddr, cond)
 	case "src_port":
 		return e.matchPort(packet.SrcAddr, cond)
-	case "domain":
-		return e.matchDomain(cond)
-	case "protocol":
-		return e.matchProtocol(packet, cond)
 	case "session_id":
 		return e.matchSessionID(packet, cond)
 	default:
+		unsupportedRuleField(cond.Field)
 		return false
 	}
 }
 
-func (e *Engine) matchIP(addr net.Addr, cond *interfaces.RuleCondition) bool {
-	if addr == nil {
-		return false
-	}
-
-	var ip net.IP
+func addrIP(addr net.Addr) (net.IP, bool) {
 	switch a := addr.(type) {
 	case *net.UDPAddr:
-		ip = a.IP
+		return a.IP, true
 	case *net.TCPAddr:
-		ip = a.IP
-	default:
+		return a.IP, true
+	}
+	return nil, false
+}
+
+func addrPort(addr net.Addr) (int, bool) {
+	switch a := addr.(type) {
+	case *net.UDPAddr:
+		return a.Port, true
+	case *net.TCPAddr:
+		return a.Port, true
+	}
+	return 0, false
+}
+
+func (e *Engine) matchIP(addr net.Addr, cond *interfaces.RuleCondition) bool {
+	ip, ok := addrIP(addr)
+	if !ok {
 		return false
 	}
 
@@ -211,29 +226,15 @@ func (e *Engine) matchIP(addr net.Addr, cond *interfaces.RuleCondition) bool {
 		}
 	case "in":
 		if list, ok := cond.Value.([]string); ok {
-			for _, v := range list {
-				if ip.String() == v {
-					return true
-				}
-			}
+			return slices.Contains(list, ip.String())
 		}
 	}
-
 	return false
 }
 
 func (e *Engine) matchPort(addr net.Addr, cond *interfaces.RuleCondition) bool {
-	if addr == nil {
-		return false
-	}
-
-	var port int
-	switch a := addr.(type) {
-	case *net.UDPAddr:
-		port = a.Port
-	case *net.TCPAddr:
-		port = a.Port
-	default:
+	port, ok := addrPort(addr)
+	if !ok {
 		return false
 	}
 
@@ -244,43 +245,13 @@ func (e *Engine) matchPort(addr net.Addr, cond *interfaces.RuleCondition) bool {
 		}
 	case "in":
 		if list, ok := cond.Value.([]int); ok {
-			for _, v := range list {
-				if port == v {
-					return true
-				}
-			}
+			return slices.Contains(list, port)
 		}
 	case "range":
 		if r, ok := cond.Value.([]int); ok && len(r) == 2 {
 			return port >= r[0] && port <= r[1]
 		}
 	}
-
-	return false
-}
-
-func (e *Engine) matchDomain(cond *interfaces.RuleCondition) bool {
-	domain, ok := cond.Value.(string)
-	if !ok {
-		return false
-	}
-
-	switch cond.Operator {
-	case "eq":
-		return false
-	case "contains":
-		return false
-	case "suffix":
-		return false
-	case "regex":
-		return false
-	}
-
-	_ = domain
-	return false
-}
-
-func (e *Engine) matchProtocol(_ *interfaces.Packet, _ *interfaces.RuleCondition) bool {
 	return false
 }
 
@@ -292,11 +263,7 @@ func (e *Engine) matchSessionID(packet *interfaces.Packet, cond *interfaces.Rule
 		}
 	case "in":
 		if list, ok := cond.Value.([]uint32); ok {
-			for _, v := range list {
-				if packet.SessionID == v {
-					return true
-				}
-			}
+			return slices.Contains(list, packet.SessionID)
 		}
 	}
 	return false
@@ -460,34 +427,6 @@ func (e *Engine) HealthCheck() interfaces.HealthStatus {
 	return status
 }
 
-type Stats struct {
-	RuleCount       int
-	IPCacheSize     int
-	DomainCacheSize int
-	RouteHits       uint64
-	RouteMisses     uint64
-	CacheHits       uint64
-	CacheMisses     uint64
-}
-
-func (e *Engine) GetStats() Stats {
-	e.mu.RLock()
-	ruleCount := len(e.rules)
-	e.mu.RUnlock()
-
-	cacheSize := e.cache.Len()
-
-	return Stats{
-		RuleCount:       ruleCount,
-		IPCacheSize:     cacheSize,
-		DomainCacheSize: cacheSize,
-		RouteHits:       atomic.LoadUint64(&e.routeHits),
-		RouteMisses:     atomic.LoadUint64(&e.routeMisses),
-		CacheHits:       atomic.LoadUint64(&e.cacheHits),
-		CacheMisses:     atomic.LoadUint64(&e.cacheMisses),
-	}
-}
-
 func (e *Engine) LoadGeoIPFile(path string) error {
 	e.geoMu.Lock()
 	defer e.geoMu.Unlock()
@@ -513,14 +452,4 @@ func (e *Engine) LoadGeoData(dir string) error {
 		e.geoRtr = routing.NewRouter()
 	}
 	return e.geoRtr.LoadGeoData(dir)
-}
-
-func Factory(cfg interface{}) (interfaces.Module, error) {
-	var config *Config
-	if c, ok := cfg.(*Config); ok {
-		config = c
-	} else {
-		config = DefaultConfig()
-	}
-	return New(config)
 }

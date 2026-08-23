@@ -5,14 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/nekoskin/whispera/common/ipdetect"
-	"github.com/nekoskin/whispera/core/config"
-	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/nekoskin/whispera/common/fsown"
+	"github.com/nekoskin/whispera/common/ipdetect"
+	"github.com/nekoskin/whispera/core/config"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -58,7 +58,7 @@ func saveSubscriptions() {
 		log.Error("failed to marshal subscriptions: %v", err)
 		return
 	}
-	if err := os.WriteFile(subDataFile, data, 0600); err != nil {
+	if err := fsown.WriteFile(subDataFile, data, 0600); err != nil {
 		log.Error("failed to save subscriptions: %v", err)
 	}
 }
@@ -84,6 +84,54 @@ func loadSubscriptions() {
 	subStoreMu.Unlock()
 }
 
+func (s *Server) subscriptionServers(ctx context.Context, transports []string) []map[string]interface{} {
+	provider, ok := configProviderAs[interface{ GetConfig() *config.ServerConfig }](s)
+	if !ok {
+		return nil
+	}
+
+	cfg := provider.GetConfig()
+	addr := config.HostFromPublicURL(cfg.Server.PublicURL)
+	if addr == "" {
+		detectCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		addr, _ = ipdetect.DetectServerIP(detectCtx)
+		cancel()
+	}
+	return buildServerList(cfg, addr, transports)
+}
+
+func subscriptionKeys(sub *Subscription) []string {
+	userStoreMu.RLock()
+	defer userStoreMu.RUnlock()
+
+	var keys []string
+	switch {
+	case len(sub.KeyIDs) > 0:
+		wanted := make(map[string]bool, len(sub.KeyIDs))
+		for _, kid := range sub.KeyIDs {
+			wanted[kid] = true
+		}
+		for _, u := range userStore {
+			if u.ConnectionURI != "" && wanted[u.ConnectionURI] {
+				keys = append(keys, u.ConnectionURI)
+			}
+		}
+	case len(sub.UserIDs) > 0:
+		for _, uid := range sub.UserIDs {
+			if u, ok := userStore[uid]; ok && u.ConnectionURI != "" {
+				keys = append(keys, u.ConnectionURI)
+			}
+		}
+	default:
+		for _, u := range userStore {
+			if u.ConnectionURI != "" {
+				keys = append(keys, u.ConnectionURI)
+			}
+		}
+	}
+	return keys
+}
+
 func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
 	if token == "" {
@@ -94,70 +142,18 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 	subStoreMu.RLock()
 	sub, ok := subByToken[token]
 	subStoreMu.RUnlock()
-
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-	serverIP, _ := ipdetect.DetectServerIP(ctx)
-
-	var servers []map[string]interface{}
-	if s.registry != nil {
-		if mod, ok := s.registry.Get("config.provider"); ok {
-			type cfgProvider interface {
-				GetConfig() *config.ServerConfig
-			}
-			if provider, ok := mod.(cfgProvider); ok {
-				cfg := provider.GetConfig()
-				publicHost := publicHostFromURL(cfg.Server.PublicURL)
-				addr := serverIP
-				if publicHost != "" {
-					addr = publicHost
-				}
-				servers = buildServerList(cfg, addr, sub.Transports)
-			}
-		}
-	}
-
-	var keys []string
-	userStoreMu.RLock()
-	if len(sub.KeyIDs) > 0 {
-		keySet := make(map[string]bool, len(sub.KeyIDs))
-		for _, kid := range sub.KeyIDs {
-			keySet[kid] = true
-		}
-		for _, u := range userStore {
-			if u.ConnectionURI != "" && keySet[u.ConnectionURI] {
-				keys = append(keys, u.ConnectionURI)
-			}
-		}
-	} else if len(sub.UserIDs) > 0 {
-		for _, uid := range sub.UserIDs {
-			if u, ok := userStore[uid]; ok && u.ConnectionURI != "" {
-				keys = append(keys, u.ConnectionURI)
-			}
-		}
-	} else {
-		for _, u := range userStore {
-			if u.ConnectionURI != "" {
-				keys = append(keys, u.ConnectionURI)
-			}
-		}
-	}
-	userStoreMu.RUnlock()
-
-	payload := map[string]interface{}{
+	raw, err := json.Marshal(map[string]interface{}{
 		"version": "2",
 		"name":    sub.Name,
 		"updated": sub.UpdatedAt.UTC().Format(time.RFC3339),
-		"servers": servers,
-		"keys":    keys,
-	}
-
-	raw, err := json.Marshal(payload)
+		"servers": s.subscriptionServers(r.Context(), sub.Transports),
+		"keys":    subscriptionKeys(sub),
+	})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -217,7 +213,7 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 	}
 
 	if cfg.Whispera.Enabled && cfg.Whispera.ListenAddr != "" && (len(transportSet) == 0 || transportSet["whispera"]) {
-		_, port, _ := splitHostPort(cfg.Whispera.ListenAddr)
+		port := config.PortFromListenAddr(cfg.Whispera.ListenAddr)
 		cEntry := map[string]interface{}{
 			"name":      "whispera",
 			"address":   serverIP,
@@ -231,7 +227,7 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 	}
 
 	if cfg.Transport.TCP.Enabled && (len(transportSet) == 0 || transportSet["tcp"]) {
-		_, port, _ := splitHostPort(cfg.Transport.TCP.ListenAddr)
+		port := config.PortFromListenAddr(cfg.Transport.TCP.ListenAddr)
 		servers = append(servers, map[string]interface{}{
 			"name":      "tcp",
 			"address":   serverIP,
@@ -241,27 +237,6 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 	}
 
 	return servers
-}
-
-func publicHostFromURL(publicURL string) string {
-	if publicURL == "" {
-		return ""
-	}
-	s := strings.TrimPrefix(strings.TrimPrefix(publicURL, "https://"), "http://")
-	s = strings.TrimRight(s, "/")
-	if h, _, err := net.SplitHostPort(s); err == nil {
-		return h
-	}
-	return s
-}
-
-func splitHostPort(addr string) (host, port string, err error) {
-	for i := len(addr) - 1; i >= 0; i-- {
-		if addr[i] == ':' {
-			return addr[:i], addr[i+1:], nil
-		}
-	}
-	return "", addr, nil
 }
 
 func derivePublicKeyB64(privKeyB64 string) string {

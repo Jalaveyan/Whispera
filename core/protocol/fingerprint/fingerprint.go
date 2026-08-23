@@ -6,6 +6,8 @@ import (
 	"hash/fnv"
 	mrand "math/rand"
 	"net"
+	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -45,6 +47,8 @@ func isPQCurve(g utls.CurveID) bool {
 	return g == utls.X25519MLKEM768 || g == utls.X25519Kyber768Draft00
 }
 
+func DropPQEnabled() bool { return os.Getenv("WHISPERA_DROP_PQ") != "0" }
+
 func DropPQKeyShares(spec *utls.ClientHelloSpec) {
 	for _, ext := range spec.Extensions {
 		switch e := ext.(type) {
@@ -70,6 +74,23 @@ func DropPQKeyShares(spec *utls.ClientHelloSpec) {
 			e.Curves = kept
 		}
 	}
+	ensurePadding(spec)
+}
+
+func ensurePadding(spec *utls.ClientHelloSpec) {
+	for _, ext := range spec.Extensions {
+		if _, ok := ext.(*utls.UtlsPaddingExtension); ok {
+			return
+		}
+	}
+	pad := &utls.UtlsPaddingExtension{GetPaddingLen: utls.BoringPaddingStyle}
+	for i, ext := range spec.Extensions {
+		if _, ok := ext.(utls.PreSharedKeyExtension); ok {
+			spec.Extensions = slices.Insert(spec.Extensions, i, utls.TLSExtension(pad))
+			return
+		}
+	}
+	spec.Extensions = append(spec.Extensions, pad)
 }
 
 func specHandshakeReadyRaw(raw []byte) bool {
@@ -271,8 +292,6 @@ var presets = []utls.ClientHelloID{
 	utls.HelloChrome_Auto,
 	utls.HelloFirefox_Auto,
 	utls.HelloSafari_Auto,
-	utls.HelloIOS_Auto,
-	utls.HelloEdge_Auto,
 }
 
 func PresetCount() int { return len(presets) }

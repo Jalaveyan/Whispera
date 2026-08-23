@@ -219,9 +219,6 @@ func (g *GeoIPSet) KeepFresh(ctx context.Context, client *http.Client, cachePath
 		if refresh() {
 			wait, retry = geoIPRefresh, geoIPRetryMin
 		} else {
-			// Retries never stop — without the list nothing routes by country. While
-			// it is still empty the backoff stays short: there is no working list to
-			// fall back on, so a five-minute gap is a five-minute outage.
 			ceiling := geoIPRetryMax
 			if g.Len() == 0 {
 				ceiling = geoIPRetryEmpty

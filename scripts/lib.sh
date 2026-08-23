@@ -1,15 +1,30 @@
+restart_whispera() {
+    systemctl reset-failed whispera 2>/dev/null || true
+    systemctl restart whispera
+}
+
 get_public_ip() {
     local IP
-    IP=$(curl -s https://2ip.ru/api/self -m 5 2>/dev/null | grep -oE '"ip":"[^"]*"' | cut -d'"' -f4)
-    if [[ -z "$IP" ]]; then
-        IP=$(curl -s https://2ip.io -m 5 2>/dev/null | tr -d '[:space:]')
+    IP=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 \
+        | grep -vE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.)' \
+        | head -n1)
+    if [[ -n "$IP" ]]; then
+        echo "$IP"
+        return
     fi
-    if [[ -z "$IP" ]]; then
-        IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null)
-    fi
-    if [[ -z "$IP" ]]; then
-        IP=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -n1)
-    fi
+
+    local svc response code result
+    for svc in "https://api4.ipify.org" "https://ipv4.icanhazip.com" "https://4.ident.me" "https://checkip.amazonaws.com"; do
+        response=$(curl -s -w "\n%{http_code}" --max-time 3 "$svc" 2>/dev/null) || continue
+        code=$(echo "$response" | tail -n1)
+        result=$(echo "$response" | head -n-1 | tr -d '[:space:]"')
+        if [[ "$code" == "200" && "$result" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            echo "$result"
+            return
+        fi
+    done
+
+    IP=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -n1)
     echo "${IP:-localhost}"
 }
 

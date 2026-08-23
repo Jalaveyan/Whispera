@@ -6,16 +6,11 @@ import (
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/events"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
-	"github.com/nekoskin/whispera/common/runtime/registry"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 )
-
-func init() {
-	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
-}
 
 const (
 	ModuleName    = "transport.tcp"
@@ -236,22 +231,6 @@ func (t *Transport) HealthCheck() interfaces.HealthStatus {
 	return status
 }
 
-func (t *Transport) Stats() TransportStats {
-	return TransportStats{
-		ConnCount:   atomic.LoadInt64(&t.connCount),
-		ActiveConns: atomic.LoadInt64(&t.activeConns),
-		BytesRx:     atomic.LoadUint64(&t.bytesRx),
-		BytesTx:     atomic.LoadUint64(&t.bytesTx),
-	}
-}
-
-type TransportStats struct {
-	ConnCount   int64
-	ActiveConns int64
-	BytesRx     uint64
-	BytesTx     uint64
-}
-
 type trackedConn struct {
 	net.Conn
 	transport *Transport
@@ -282,14 +261,4 @@ func (c *trackedConn) Close() error {
 		return c.Conn.Close()
 	}
 	return nil
-}
-
-func Factory(cfg interface{}) (interfaces.Module, error) {
-	var config *Config
-	if c, ok := cfg.(*Config); ok {
-		config = c
-	} else {
-		config = DefaultConfig()
-	}
-	return New(config)
 }

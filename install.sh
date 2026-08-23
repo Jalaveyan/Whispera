@@ -331,7 +331,7 @@ setup_warp() {
 
             log_success "Configuration updated."
             refresh_config
-            systemctl restart whispera 2>/dev/null || true
+            restart_whispera 2>/dev/null || true
         else
             log_warn "Config file not found at $CONF_PATH/config.yaml - please configure manually"
         fi
@@ -393,10 +393,8 @@ EOF
     mkdir -p /etc/fail2ban/filter.d
     cat > /etc/fail2ban/filter.d/whispera.conf <<'EOF'
 [Definition]
-failregex = .*handshake failed.*<HOST>
-            .*auth failed.*<HOST>
-            .*invalid key.*<HOST>
-            .*connection rejected.*<HOST>
+failregex = whispera: refused userID=\S+ remote=<HOST>:\d+
+            conn limiter: refusing <HOST>,
 ignoreregex =
 EOF
 
@@ -794,7 +792,6 @@ show_extras_menu() {
         clear
 
         local SRV_IP=$(get_public_ip)
-        local ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
 
         echo ""
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
@@ -840,7 +837,7 @@ show_extras_menu() {
             a|A) setup_sysctl; setup_postgres; setup_backups ;;
             10) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
             11) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
-            12) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
+            12) restart_whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
             13) systemctl status whispera ;;
             14) journalctl -u whispera -f ;;
             15) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
@@ -1052,22 +1049,6 @@ generate_config() {
         fi
     fi
     
-    local ADMIN_PASS=$(gen_password 30)
-    echo "$ADMIN_PASS" > "$CONF_PATH/admin.pass"
-    chmod 600 "$CONF_PATH/admin.pass"
-    local ADMIN_HASH=$("$BIN_PATH/whispera" hash-password "$ADMIN_PASS" 2>/dev/null || echo "")
-
-    if [[ -n "$PG_PASS" ]]; then
-        log_info "Creating admin user in database..."
-        if "$BIN_PATH/whispera" create-admin -email "admin" -password "$ADMIN_PASS" -db "postgresql://whispera:$PG_PASS@localhost/whispera" 2>/dev/null; then
-            echo "$ADMIN_PASS" > "$CONF_PATH/admin.pass"
-            chmod 600 "$CONF_PATH/admin.pass"
-        else
-            log_warn "Failed to create admin user in database (config.yaml fallback will be used)"
-        fi
-    else
-        log_warn "Skipping admin creation (Postgres not configured)"
-    fi
 
     local DECOY_FIRST_SITE="${WHISPERA_DECOY_SITES%%,*}"
     DECOY_FIRST_SITE="${DECOY_FIRST_SITE:-https://ria.ru/}"
@@ -1119,7 +1100,6 @@ network:
   dns: "1.1.1.1"
 
 relay:
-  max_streams: 10000
   enable_tcp: true
   enable_udp: true
 
@@ -1132,10 +1112,7 @@ api:
   enabled: true
   listen_addr: "127.0.0.1:8080"
   web_root: ""
-  admin_username: "admin"
-  admin_password_hash: "$ADMIN_HASH"
   enable_cors: true
-  login_rate_limit: 5
 
 bot:
   enabled: false
@@ -1189,8 +1166,7 @@ setup_nginx_proxy() {
 
     mkdir -p /etc/nginx/conf.d
     cat > /etc/nginx/conf.d/whispera-ratelimit.conf <<'RLCONF'
-limit_req_zone $binary_remote_addr zone=panel_auth:10m rate=10r/m;
-limit_req_zone $binary_remote_addr zone=panel_api:10m  rate=60r/s;
+limit_req_zone $binary_remote_addr zone=whispera_api:10m  rate=60r/s;
 limit_req_status 429;
 RLCONF
 
@@ -1216,35 +1192,8 @@ server {
         proxy_http_version 1.1;
     }
 
-    location = /api/login {
-        limit_req  zone=panel_auth burst=5 nodelay;
-        proxy_pass         http://127.0.0.1:8080;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-    }
-
-    location /api/auth/ {
-        limit_req  zone=panel_auth burst=5 nodelay;
-        proxy_pass         http://127.0.0.1:8080;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-    }
-
-    location /api/v2/auth/ {
-        limit_req  zone=panel_auth burst=5 nodelay;
-        proxy_pass         http://127.0.0.1:8080;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-    }
-
     location /api/ {
-        limit_req  zone=panel_api burst=200 nodelay;
+        limit_req  zone=whispera_api burst=200 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -1435,7 +1384,7 @@ WEOF
 
     systemctl daemon-reload
 
-    if systemctl restart whispera 2>/dev/null; then
+    if restart_whispera 2>/dev/null; then
         log_success "Whispera service started"
     else
         log_warn "Whispera service failed to start — check /var/log/whispera/whispera.log"
@@ -1504,6 +1453,7 @@ setup_firewall() {
 
 install_cli_wrapper() {
     cat > "$BIN_PATH/whispera-mgmt" <<'EOF'
+#!/bin/bash
 case $1 in
     start) systemctl start whispera ;;
     stop) systemctl stop whispera ;;
@@ -1512,11 +1462,8 @@ case $1 in
     log|logs) journalctl -u whispera -f ;;
     config) ${EDITOR:-nano} /etc/whispera/config.yaml ;;
     key)
-        SERVER_IP=$(curl -s https://2ip.ru/api/self -m 5 2>/dev/null | grep -oE '"ip":"[^"]*"' | cut -d'"' -f4 || curl -s https://api.ipify.org -m 5 2>/dev/null || echo "YOUR_IP")
-        ADMIN_PASS=$(cat /etc/whispera/admin.pass 2>/dev/null)
-        echo "Web Panel:    https://${SERVER_IP}/"
-        echo "Admin User:   admin"
-        echo "Admin Pass:   ${ADMIN_PASS}"
+        SERVER_IP=$( . /opt/whispera/scripts/lib.sh 2>/dev/null && get_public_ip || echo "YOUR_IP" )
+        echo "Server:       ${SERVER_IP}"
         ;;
     update)
         bash /opt/whispera/update.sh
@@ -1530,11 +1477,13 @@ EOF
     chmod +x "$BIN_PATH/whispera-mgmt"
     
     cat > "$BIN_PATH/menu" <<EOF
+#!/bin/bash
 bash /opt/whispera/update.sh extras
 EOF
     chmod +x "$BIN_PATH/menu"
     
     cat > "$WORK_DIR/menu" <<EOF
+#!/bin/bash
 bash /opt/whispera/update.sh extras
 EOF
     chmod +x "$WORK_DIR/menu"
@@ -1588,7 +1537,6 @@ transport:
     buffer_size: 65536
 
 relay:
-  max_streams: 50000
   enable_tcp: true
   enable_udp: false
 
@@ -1650,7 +1598,7 @@ EOF
         chown -R whispera:whispera "$CONF_PATH" 2>/dev/null || true
         systemctl daemon-reload
         systemctl enable whispera >/dev/null 2>&1
-        systemctl restart whispera
+        restart_whispera
         log_success "Relay service started"
     fi
 
@@ -1700,17 +1648,13 @@ main() {
     _enable_whispera_in_config
     refresh_config
     if systemctl is-active whispera &>/dev/null; then
-        systemctl restart whispera >/dev/null 2>&1 || true
+        restart_whispera >/dev/null 2>&1 || true
     fi
 
     local PG_PASS=""
-    local ADMIN_PASS=""
-    
+
     if [[ -f "$CONF_PATH/postgres.env" ]]; then
         PG_PASS=$(grep POSTGRES_PASSWORD "$CONF_PATH/postgres.env" | cut -d= -f2)
-    fi
-    if [[ -f "$CONF_PATH/admin.pass" ]]; then
-        ADMIN_PASS=$(cat "$CONF_PATH/admin.pass")
     fi
 
     echo ""
@@ -1721,9 +1665,6 @@ main() {
     local SERVER_IP
     SERVER_IP=$(get_public_ip)
     echo -e "  ${YELLOW}(self sert)${PLAIN}"
-    echo ""
-    echo -e "  ${YELLOW}Admin User:${PLAIN}     admin"
-    echo -e "  ${YELLOW}Admin Password:${PLAIN} ${GREEN}$ADMIN_PASS${PLAIN}"
     echo ""
     echo -e "  ${YELLOW}DB Password:${PLAIN}    $PG_PASS"
 
@@ -1738,10 +1679,8 @@ case "${1:-}" in
     keygen)
         generate_keys
         generate_config
-        systemctl restart whispera 2>/dev/null || true
-        SERVER_IP=$(get_public_ip)
-        ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
-        log_success "Keys regenerated. Panel: https://${SERVER_IP}/ (admin / ${ADMIN_PASS})"
+        restart_whispera 2>/dev/null || true
+        log_success "Keys regenerated."
         ;;
     update)
         log_info "Updating Whispera..."
@@ -1759,7 +1698,7 @@ case "${1:-}" in
              fi
         fi
 
-        systemctl restart whispera
+        restart_whispera
         log_success "Update complete"
         ;;
     bbr)
@@ -1802,7 +1741,7 @@ case "${1:-}" in
         show_extras_menu
         ;;
     restart)
-        systemctl restart whispera
+        restart_whispera
         log_success "Whispera restarted"
         ;;
     status)

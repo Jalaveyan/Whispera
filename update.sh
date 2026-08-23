@@ -86,7 +86,7 @@ restore() {
     fi
 
     systemctl daemon-reload
-    if systemctl restart whispera 2>/dev/null; then
+    if restart_whispera 2>/dev/null; then
         log_success "Rollback complete. System restored to previous state."
     else
         log_warn "Rollback restart also failed. Trying start..."
@@ -190,7 +190,7 @@ setup_warp() {
 
             log_success "Configuration updated."
             refresh_config
-            systemctl restart whispera 2>/dev/null || true
+            restart_whispera 2>/dev/null || true
         else
             log_warn "Config file not found at $CONF_PATH/config.yaml - please configure manually"
         fi
@@ -245,10 +245,8 @@ EOF
     mkdir -p /etc/fail2ban/filter.d
     cat > /etc/fail2ban/filter.d/whispera.conf <<'EOF'
 [Definition]
-failregex = .*handshake failed.*<HOST>
-            .*auth failed.*<HOST>
-            .*invalid key.*<HOST>
-            .*connection rejected.*<HOST>
+failregex = whispera: refused userID=\S+ remote=<HOST>:\d+
+            conn limiter: refusing <HOST>,
 ignoreregex =
 EOF
 
@@ -551,8 +549,7 @@ setup_nginx_proxy() {
 
     mkdir -p /etc/nginx/conf.d
     cat > /etc/nginx/conf.d/whispera-ratelimit.conf <<'RLCONF'
-limit_req_zone $binary_remote_addr zone=panel_auth:10m rate=10r/m;
-limit_req_zone $binary_remote_addr zone=panel_api:10m  rate=60r/s;
+limit_req_zone $binary_remote_addr zone=whispera_api:10m  rate=60r/s;
 limit_req_status 429;
 RLCONF
 
@@ -575,35 +572,8 @@ server {
         proxy_http_version 1.1;
     }
 
-    location = /api/login {
-        limit_req  zone=panel_auth burst=5 nodelay;
-        proxy_pass         http://127.0.0.1:8080;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-    }
-
-    location /api/auth/ {
-        limit_req  zone=panel_auth burst=5 nodelay;
-        proxy_pass         http://127.0.0.1:8080;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-    }
-
-    location /api/v2/auth/ {
-        limit_req  zone=panel_auth burst=5 nodelay;
-        proxy_pass         http://127.0.0.1:8080;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-    }
-
     location /api/ {
-        limit_req  zone=panel_api burst=200 nodelay;
+        limit_req  zone=whispera_api burst=200 nodelay;
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
         proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -770,7 +740,7 @@ show_extras_menu() {
             9) setup_backups ;;
             10) systemctl start whispera && log_success "Service started" || log_err "Failed to start service" ;;
             11) systemctl stop whispera && log_success "Service stopped" || log_err "Failed to stop service" ;;
-            12) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
+            12) restart_whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
             13) systemctl status whispera ;;
             14) journalctl -u whispera -f ;;
             15) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
@@ -1161,7 +1131,7 @@ do_update() {
     if [[ -n "${WHISPERA_DOMAIN:-}" ]]; then
         migrate_whispera_to_backend
         if grep -q 'backend_h2c_addr:' "$CONF_PATH/config.yaml" 2>/dev/null; then
-            systemctl restart whispera && sleep 2
+            restart_whispera && sleep 2
             if ! systemctl is-active --quiet whispera; then
                 log_err "whispera failed to start in h2c backend mode — check config"
                 journalctl -u whispera -n 20 --no-pager 2>/dev/null || true

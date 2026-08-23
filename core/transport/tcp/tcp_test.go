@@ -130,13 +130,3 @@ func TestTransportType(t *testing.T) {
 		t.Errorf("expected tcp type, got %s", tr.Type())
 	}
 }
-
-func TestFactory(t *testing.T) {
-	m, err := Factory(nil)
-	if err != nil {
-		t.Fatalf("factory failed: %v", err)
-	}
-	if m.Name() != ModuleName {
-		t.Errorf("expected %s, got %s", ModuleName, m.Name())
-	}
-}

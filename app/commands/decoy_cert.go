@@ -3,6 +3,8 @@ package commands
 import (
 	"flag"
 	"fmt"
+	"github.com/nekoskin/whispera/common/fsown"
+	"github.com/nekoskin/whispera/core/config"
 	"github.com/nekoskin/whispera/core/protocol"
 	"os"
 	"time"
@@ -11,8 +13,8 @@ import (
 func RunGenDecoyCertCmd() {
 	genCmd := flag.NewFlagSet("gen-decoy-cert", flag.ExitOnError)
 	domain := genCmd.String("domain", "", "Real-world domain to clone the certificate fields from (e.g. example.com)")
-	outCert := genCmd.String("out-cert", "/etc/whispera/whispera.crt", "Output path for the generated certificate (PEM)")
-	outKey := genCmd.String("out-key", "/etc/whispera/whispera.key", "Output path for the generated private key (PEM)")
+	outCert := genCmd.String("out-cert", config.ServerCert, "Output path for the generated certificate (PEM)")
+	outKey := genCmd.String("out-key", config.ServerKey, "Output path for the generated private key (PEM)")
 
 	genCmd.Parse(os.Args[2:])
 
@@ -21,10 +23,18 @@ func RunGenDecoyCertCmd() {
 		os.Exit(1)
 	}
 
+	loadCertIdentity()
+
 	info, err := protocol.CloneCertToFiles(*domain, *outCert, *outKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to generate decoy certificate: %v\n", err)
 		os.Exit(1)
+	}
+	for _, path := range []string{*outCert, *outKey} {
+		if err := fsown.MatchParent(path); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: the service will not be able to read %s: %v\n", path, err)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Printf("Cloned certificate fields from %s\n", *domain)

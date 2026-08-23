@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"testing"
 
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
@@ -38,8 +39,7 @@ func TestRouteCachesDestinationAcrossCalls(t *testing.T) {
 		t.Fatalf("expected block on first route, got %v", dest.Type)
 	}
 
-	stats := e.GetStats()
-	if stats.CacheMisses == 0 {
+	if atomic.LoadUint64(&e.cacheMisses) == 0 {
 		t.Fatalf("expected at least one cache miss on first call")
 	}
 
@@ -51,8 +51,7 @@ func TestRouteCachesDestinationAcrossCalls(t *testing.T) {
 		t.Fatalf("expected block on cached route, got %v", dest2.Type)
 	}
 
-	stats2 := e.GetStats()
-	if stats2.CacheHits == 0 {
-		t.Fatalf("expected at least one cache hit on second call, stats=%+v", stats2)
+	if hits := atomic.LoadUint64(&e.cacheHits); hits == 0 {
+		t.Fatalf("expected at least one cache hit on second call, hits=%d", hits)
 	}
 }

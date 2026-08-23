@@ -3,28 +3,43 @@ package main
 import (
 	"net"
 	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/nekoskin/whispera/common/ipdetect"
 )
 
 const (
-	maxGlobalTCPConns = 10000
-	maxTCPConnsPerIP  = 200
+	maxTCPConnsPerIP = 200
+
+	refusalLogInterval = 60
 )
 
 var (
 	connLimiterMu    sync.Mutex
-	connLimiterTotal int
 	connLimiterPerIP = make(map[string]int)
+
+	lastRefusalLog atomic.Int64
 )
 
+func logRefusal(ip string) {
+	now := time.Now().Unix()
+	prev := lastRefusalLog.Load()
+	if now-prev < refusalLogInterval || !lastRefusalLog.CompareAndSwap(prev, now) {
+		return
+	}
+	log.Warn("conn limiter: refusing %s, per-IP cap %d reached — this looks like a block to that client", ip, maxTCPConnsPerIP)
+}
+
 func acquireConnSlot(addr net.Addr) (release func(), ok bool) {
-	ip := connLimiterIP(addr)
+	ip := ipdetect.HostFromAddr(addr)
 
 	connLimiterMu.Lock()
-	if connLimiterTotal >= maxGlobalTCPConns || connLimiterPerIP[ip] >= maxTCPConnsPerIP {
+	if connLimiterPerIP[ip] >= maxTCPConnsPerIP {
 		connLimiterMu.Unlock()
+		logRefusal(ip)
 		return nil, false
 	}
-	connLimiterTotal++
 	connLimiterPerIP[ip]++
 	connLimiterMu.Unlock()
 
@@ -32,7 +47,6 @@ func acquireConnSlot(addr net.Addr) (release func(), ok bool) {
 	release = func() {
 		once.Do(func() {
 			connLimiterMu.Lock()
-			connLimiterTotal--
 			connLimiterPerIP[ip]--
 			if connLimiterPerIP[ip] <= 0 {
 				delete(connLimiterPerIP, ip)
@@ -41,12 +55,4 @@ func acquireConnSlot(addr net.Addr) (release func(), ok bool) {
 		})
 	}
 	return release, true
-}
-
-func connLimiterIP(addr net.Addr) string {
-	host, _, err := net.SplitHostPort(addr.String())
-	if err != nil {
-		return addr.String()
-	}
-	return host
 }

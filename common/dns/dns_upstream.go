@@ -14,67 +14,30 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP, error) {
-	r.dialCtxMu.RLock()
-	dialFn := r.dialCtx
-	r.dialCtxMu.RUnlock()
-
-	r.upstreamMu.RLock()
-	upstream := r.config.Upstream
-	r.upstreamMu.RUnlock()
-
-	if strings.HasPrefix(upstream, "https://") {
-		return r.resolveDoH(ctx, upstream, domain)
-	}
-
-	if strings.HasPrefix(upstream, "tls://") {
-		host := strings.TrimPrefix(upstream, "tls://")
-		ips, err := r.resolveDoT(ctx, host, domain)
-		if err == nil {
-			return ips, nil
-		}
-		if ips, err2 := r.resolveDoH(ctx, dohFallbackFor(host), domain); err2 == nil {
-			return ips, nil
-		}
-		return nil, err
-	}
-
-	if strings.HasPrefix(upstream, "quic://") {
-		host := strings.TrimPrefix(upstream, "quic://")
-		ips, err := r.resolveDoQ(ctx, host, domain)
-		if err == nil {
-			return ips, nil
-		}
-		if ips, err2 := r.resolveDoH(ctx, dohFallbackFor(host), domain); err2 == nil {
-			return ips, nil
-		}
-		return nil, err
-	}
-
-	if upstream == "" || strings.EqualFold(upstream, "system") {
-		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, domain)
-		if err != nil {
-			return nil, err
-		}
-		ips := make([]net.IP, len(addrs))
-		for i, a := range addrs {
-			ips[i] = a.IP
-		}
+func (r *Resolver) withDoHFallback(ctx context.Context, host, domain string, ips []net.IP, err error) ([]net.IP, error) {
+	if err == nil {
 		return ips, nil
 	}
+	if fallback, err2 := r.resolveDoH(ctx, dohFallbackFor(host), domain); err2 == nil {
+		return fallback, nil
+	}
+	return nil, err
+}
 
-	if dialFn != nil {
-		ips, err := r.resolveTCPDNS(ctx, dialFn, upstream, domain)
-		if err == nil {
-			return ips, nil
-		}
-		if ips, err2 := r.resolveDoH(ctx, dohFallbackFor(upstream), domain); err2 == nil {
-			return ips, nil
-		}
+func resolveSystem(ctx context.Context, domain string) ([]net.IP, error) {
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, domain)
+	if err != nil {
 		return nil, err
 	}
+	ips := make([]net.IP, len(addrs))
+	for i, a := range addrs {
+		ips[i] = a.IP
+	}
+	return ips, nil
+}
 
-	resolver := &net.Resolver{
+func plainUDPResolver(upstream string) *net.Resolver {
+	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			addr := upstream
@@ -85,7 +48,41 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 			return d.DialContext(ctx, "udp", addr)
 		},
 	}
-	ips, err := resolver.LookupIP(ctx, "ip", domain)
+}
+
+func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP, error) {
+	r.dialCtxMu.RLock()
+	dialFn := r.dialCtx
+	r.dialCtxMu.RUnlock()
+
+	r.upstreamMu.RLock()
+	upstream := r.config.Upstream
+	r.upstreamMu.RUnlock()
+
+	switch {
+	case strings.HasPrefix(upstream, "https://"):
+		return r.resolveDoH(ctx, upstream, domain)
+
+	case strings.HasPrefix(upstream, "tls://"):
+		host := strings.TrimPrefix(upstream, "tls://")
+		ips, err := r.resolveDoT(ctx, host, domain)
+		return r.withDoHFallback(ctx, host, domain, ips, err)
+
+	case strings.HasPrefix(upstream, "quic://"):
+		host := strings.TrimPrefix(upstream, "quic://")
+		ips, err := r.resolveDoQ(ctx, host, domain)
+		return r.withDoHFallback(ctx, host, domain, ips, err)
+
+	case upstream == "" || strings.EqualFold(upstream, "system"):
+		return resolveSystem(ctx, domain)
+	}
+
+	if dialFn != nil {
+		ips, err := r.resolveTCPDNS(ctx, dialFn, upstream, domain)
+		return r.withDoHFallback(ctx, upstream, domain, ips, err)
+	}
+
+	ips, err := plainUDPResolver(upstream).LookupIP(ctx, "ip", domain)
 	if err == nil {
 		return ips, nil
 	}

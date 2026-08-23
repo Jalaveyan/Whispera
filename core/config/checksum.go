@@ -5,9 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/nekoskin/whispera/common/fsown"
 	"os"
 	"path/filepath"
-	"time"
 )
 
 var integrityKey = func() string {
@@ -43,7 +43,7 @@ func (p *Provider) UpdateChecksum() error {
 	dir := filepath.Dir(p.configPath)
 	checksumPath := filepath.Join(dir, checksumFile)
 
-	return os.WriteFile(checksumPath, []byte(sum), 0644)
+	return fsown.WriteFile(checksumPath, []byte(sum), 0644)
 }
 
 func (p *Provider) VerifyIntegrity() error {
@@ -77,17 +77,5 @@ func (p *Provider) VerifyIntegrity() error {
 
 func (p *Provider) AlertAndDie(reason string) {
 	fmt.Printf("CRITICAL SECURITY ALERT: %s\n", reason)
-
-	done := make(chan struct{})
-	go func() {
-		_ = p.SendNotification(fmt.Sprintf("🚨 **CRITICAL SECURITY ALERT** 🚨\n\nServer is shutting down due to integrity violation!\n\nReason: %s", reason))
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-	}
-
 	os.Exit(1)
 }

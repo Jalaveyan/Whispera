@@ -10,7 +10,6 @@ linters:
     - dogsled
     - errcheck
     - exhaustive
-    - gochecknoinits
     - goprintffuncname
     - govet
     - ineffassign
@@ -19,6 +18,7 @@ linters:
     - noctx
     - whitespace
     - unused
+    - staticcheck
   disable:
     - funlen
     - gocyclo
@@ -32,7 +32,6 @@ linters:
     - goconst
     - revive
     - gocritic
-    - staticcheck
     - gochecknoinits
   settings:
     exhaustive:
@@ -41,6 +40,8 @@ linters:
       min-complexity: 100
     misspell:
       locale: US
+    staticcheck:
+      checks: ["all", "-ST*", "-QF*"]
   exclusions:
     presets:
       - std-error-handling
@@ -66,7 +67,7 @@ linters:
       - linters: [errcheck]
         text: "SendNotification|Send\\b"
       - linters: [errcheck]
-        text: "Chmod|MkdirAll|WriteFile|Seek"
+        text: "Chmod|Seek"
       - linters: [errcheck]
         text: "SwitchProfile|LearnFromTraffic|InjectFault|ProcessOutbound"
       - linters: [errcheck]
@@ -85,12 +86,8 @@ linters:
         text: "Sscanf|Decode|Release|Persist|persist|writeWithRetry|tcpConn\\.Read|reader\\.Read"
       - linters: [errcheck]
         text: "cmd\\.|Parse\\b"
-      - linters: [errcheck]
-        path: "yatelemost|vkwebrtc"
-      - linters: [errcheck]
-        path: "correlation|marionette"
-      - linters: [errcheck]
-        path: "server/dynamic"
+      - linters: [staticcheck]
+        text: "SA6002"
       - linters: [unused]
         text: "field .* is unused"
       - path: _test\.go

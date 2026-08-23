@@ -75,7 +75,6 @@ type SubscriptionManager struct {
 	interval time.Duration
 	onChange func([]*ConnectionKey)
 	stop     chan struct{}
-	lastKeys []*ConnectionKey
 }
 
 func NewSubscriptionManager(subURL string, interval time.Duration, onChange func([]*ConnectionKey)) *SubscriptionManager {
@@ -104,7 +103,6 @@ func (s *SubscriptionManager) ForceRefresh() ([]*ConnectionKey, error) {
 
 func (s *SubscriptionManager) run() {
 	if keys, err := s.fetch(); err == nil {
-		s.lastKeys = keys
 		if s.onChange != nil {
 			s.onChange(keys)
 		}
@@ -121,7 +119,6 @@ func (s *SubscriptionManager) run() {
 			if err != nil || len(keys) == 0 {
 				continue
 			}
-			s.lastKeys = keys
 			if s.onChange != nil {
 				s.onChange(keys)
 			}

@@ -66,7 +66,6 @@ type connConfig struct {
 
 	spoofMu  sync.RWMutex
 	spoofIPs []string
-	spoofIdx uint64
 }
 
 func (c *connConfig) RateLimitKB() int { return int(c.rateLimitKB.Load()) }

@@ -3,10 +3,12 @@ package config
 import (
 	"context"
 	"fmt"
+	"github.com/nekoskin/whispera/common/fsown"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/events"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,84 +25,49 @@ const (
 )
 
 type ServerConfig struct {
-	Server        ServerSettings     `yaml:"server"`
-	Transport     TransportConfig    `yaml:"transport"`
-	Session       SessionConfig      `yaml:"session"`
-	Routing       RoutingConfig      `yaml:"routing"`
-	Obfuscation   ObfuscationConfig  `yaml:"obfuscation"`
-	API           APIConfig          `yaml:"api"`
-	Logging       LoggingConfig      `yaml:"logging"`
-	Relay         RelayConfig        `yaml:"relay"`
-	Whispera      WhisperaConfig     `yaml:"whispera"`
-	GRPC          GRPCConfig         `yaml:"grpc" json:"grpc"`
-	YaDisk        YaDiskConfig       `yaml:"yadisk" json:"yadisk"`
-	Inbounds      []InboundConfig    `yaml:"inbounds" json:"inbounds"`
-	Outbounds     []OutboundConfig   `yaml:"outbounds" json:"outbounds"`
-	StealthMode   string             `yaml:"stealth_mode" json:"stealth_mode"`
-	Database      DatabaseConfig     `yaml:"database" json:"database"`
-	Notifications NotificationConfig `yaml:"notifications" json:"notifications"`
-	Bot           BotConfig          `yaml:"bot" json:"bot"`
-	NATS          NATSConfig         `yaml:"nats" json:"nats"`
-	Update        UpdateConfig       `yaml:"update" json:"update"`
+	Server      ServerSettings    `yaml:"server"`
+	Transport   TransportConfig   `yaml:"transport"`
+	Session     SessionConfig     `yaml:"session"`
+	Routing     RoutingConfig     `yaml:"routing"`
+	Obfuscation ObfuscationConfig `yaml:"obfuscation"`
+	API         APIConfig         `yaml:"api"`
+	Logging     LoggingConfig     `yaml:"logging"`
+	Relay       RelayConfig       `yaml:"relay"`
+	Whispera    WhisperaConfig    `yaml:"whispera"`
+	GRPC        GRPCConfig        `yaml:"grpc" json:"grpc"`
+	YaDisk      YaDiskConfig      `yaml:"yadisk" json:"yadisk"`
+	Inbounds    []InboundConfig   `yaml:"inbounds" json:"inbounds"`
+	Outbounds   []OutboundConfig  `yaml:"outbounds" json:"outbounds"`
+	StealthMode string            `yaml:"stealth_mode" json:"stealth_mode"`
+	Update      UpdateConfig      `yaml:"update" json:"update"`
 }
 
 type RelayConfig struct {
-	MaxStreams    int    `yaml:"max_streams"`
 	EnableTCP     bool   `yaml:"enable_tcp"`
 	EnableUDP     bool   `yaml:"enable_udp"`
 	Debug         bool   `yaml:"debug"`
 	UpstreamProxy string `yaml:"upstream_proxy"`
 }
 
-type BotConfig struct {
-	Enabled         bool    `yaml:"enabled" json:"enabled"`
-	Token           string  `yaml:"token" json:"token"`
-	Debug           bool    `yaml:"debug" json:"debug"`
-	AdminID         int64   `yaml:"admin_id" json:"admin_id"`
-	MonitorAdminIDs []int64 `yaml:"monitor_admin_ids" json:"monitor_admin_ids"`
-}
-
-func (c *BotConfig) Validate() error {
-	if c.Enabled && c.Token == "" {
-		return fmt.Errorf("bot token is required when enabled")
-	}
-	return nil
-}
-
-type DatabaseConfig struct {
-	PostgresURL string `yaml:"postgres_url" json:"postgres_url"`
-	MaxConns    int    `yaml:"max_conns" json:"max_conns"`
-	MinConns    int    `yaml:"min_conns" json:"min_conns"`
-}
-
-type NATSConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	URL     string `yaml:"url" json:"url"`
-	Prefix  string `yaml:"prefix" json:"prefix"`
-}
-
 type UpdateConfig struct {
 	Enabled       bool     `yaml:"enabled" json:"enabled"`
 	ManifestURL   string   `yaml:"manifest_url" json:"manifest_url"`
 	PublicKey     string   `yaml:"public_key" json:"public_key"`
-	Channel       string   `yaml:"channel" json:"channel"`
 	CheckInterval Duration `yaml:"check_interval" json:"check_interval"`
 }
 
 type OutboundConfig struct {
 	Tag      string                 `yaml:"tag" json:"tag"`
-	Protocol string                 `yaml:"protocol" json:"protocol"`
 	Address  string                 `yaml:"address" json:"address"`
 	Settings map[string]interface{} `yaml:"settings" json:"settings"`
 	Chain    []string               `yaml:"chain" json:"chain"`
 }
 
 type InboundConfig struct {
-	Tag      string `yaml:"tag" json:"tag"`
-	Protocol string `yaml:"protocol" json:"protocol"`
-	Listen   string `yaml:"listen" json:"listen"`
-	Port     int    `yaml:"port" json:"port"`
-	Ports    []int  `yaml:"ports,omitempty" json:"ports,omitempty"`
+	Tag    string `yaml:"tag" json:"tag"`
+	Listen string `yaml:"listen" json:"listen"`
+	Port   int    `yaml:"port" json:"port"`
+	Ports  []int  `yaml:"ports,omitempty" json:"ports,omitempty"`
 
 	Mode       string `yaml:"mode,omitempty" json:"mode,omitempty"`
 	RemoteAddr string `yaml:"remote_addr,omitempty" json:"remote_addr,omitempty"`
@@ -108,8 +75,6 @@ type InboundConfig struct {
 	Settings map[string]interface{} `yaml:"settings" json:"settings"`
 
 	StreamSettings StreamConfig `yaml:"stream_settings" json:"stream_settings"`
-
-	Sniffing SniffingConfig `yaml:"sniffing" json:"sniffing"`
 }
 
 type StreamConfig struct {
@@ -117,7 +82,6 @@ type StreamConfig struct {
 	Security string                 `yaml:"security" json:"security"`
 	TLS      TLSConfig              `yaml:"tls" json:"tls"`
 	WS       WebSocketConfig        `yaml:"ws" json:"ws"`
-	H2C      H2CStreamConfig        `yaml:"h2c" json:"h2c"`
 	Params   map[string]interface{} `yaml:"params,omitempty" json:"params,omitempty"`
 }
 
@@ -135,8 +99,7 @@ type H2CStreamConfig struct {
 }
 
 type SniffingConfig struct {
-	Enabled      bool     `yaml:"enabled" json:"enabled"`
-	DestOverride []string `yaml:"dest_override" json:"dest_override"`
+	Enabled bool `yaml:"enabled" json:"enabled"`
 }
 
 type WhisperaConfig struct {
@@ -148,9 +111,6 @@ type WhisperaConfig struct {
 	Domain         string `yaml:"domain" json:"domain"`
 	ACMEDir        string `yaml:"acme_dir" json:"acme_dir"`
 	DecoyOrigin    string `yaml:"decoy_origin" json:"decoy_origin"`
-	GANIface       string `yaml:"gan_iface" json:"gan_iface"`
-	GANPort        int    `yaml:"gan_port" json:"gan_port"`
-	GANMaxPadding  int    `yaml:"gan_max_padding" json:"gan_max_padding"`
 	Secret         string `yaml:"secret" json:"secret"`
 	QUICListenAddr string `yaml:"quic_listen_addr" json:"quic_listen_addr"`
 	ExtraPorts     []int  `yaml:"extra_ports,omitempty" json:"extra_ports,omitempty"`
@@ -175,12 +135,10 @@ type YaDiskConfig struct {
 type ServerSettings struct {
 	Name         string   `yaml:"name" json:"name"`
 	ListenAddr   string   `yaml:"listen_addr" json:"listen_addr"`
-	TUNName      string   `yaml:"tun_name" json:"tun_name"`
 	MTU          int      `yaml:"mtu" json:"mtu"`
 	Workers      int      `yaml:"workers" json:"workers"`
 	GracefulStop Duration `yaml:"graceful_stop" json:"graceful_stop"`
 	PrivateKey   string   `yaml:"private_key" json:"private_key"`
-	UUID         string   `yaml:"uuid" json:"uuid"`
 	PublicURL    string   `yaml:"public_url" json:"public_url"`
 }
 
@@ -199,9 +157,6 @@ type SessionConfig struct {
 }
 
 type RoutingConfig struct {
-	RulesFile    string `yaml:"rules_file"`
-	DefaultRoute string `yaml:"default_route"`
-
 	Geo struct {
 		Enabled        bool     `yaml:"enabled"`
 		GeoIPFile      string   `yaml:"geoip_file"`
@@ -217,37 +172,18 @@ type RoutingConfig struct {
 }
 
 type ObfuscationConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	Profile     string `yaml:"profile"`
-	ThreatLevel int    `yaml:"threat_level"`
-
-	Padding struct {
-		Enabled bool `yaml:"enabled"`
-		MinSize int  `yaml:"min_size"`
-		MaxSize int  `yaml:"max_size"`
-	} `yaml:"padding"`
-
-	Chaff struct {
-		Enabled  bool     `yaml:"enabled"`
-		Interval Duration `yaml:"interval"`
-		MinSize  int      `yaml:"min_size"`
-		MaxSize  int      `yaml:"max_size"`
-	} `yaml:"chaff"`
+	Profile string `yaml:"profile"`
 }
 
 type APIConfig struct {
-	Enabled           bool     `yaml:"enabled"`
-	ListenAddr        string   `yaml:"listen_addr"`
-	AuthToken         string   `yaml:"auth_token"`
-	WebRoot           string   `yaml:"web_root"`
-	EnableCORS        bool     `yaml:"enable_cors"`
-	AllowedOrigins    []string `yaml:"allowed_origins"`
-	TLSCert           string   `yaml:"tls_cert"`
-	TLSKey            string   `yaml:"tls_key"`
-	AdminUsername     string   `yaml:"admin_username"`
-	AdminPassword     string   `yaml:"admin_password"`
-	AdminPasswordHash string   `yaml:"admin_password_hash"`
-	LoginRateLimit    int      `yaml:"login_rate_limit"`
+	Enabled        bool     `yaml:"enabled"`
+	ListenAddr     string   `yaml:"listen_addr"`
+	AuthToken      string   `yaml:"auth_token"`
+	WebRoot        string   `yaml:"web_root"`
+	EnableCORS     bool     `yaml:"enable_cors"`
+	AllowedOrigins []string `yaml:"allowed_origins"`
+	TLSCert        string   `yaml:"tls_cert"`
+	TLSKey         string   `yaml:"tls_key"`
 }
 
 type LoggingConfig struct {
@@ -283,6 +219,8 @@ func New(configPath string) (*Provider, error) {
 type Duration time.Duration
 
 func (d Duration) D() time.Duration { return time.Duration(d) }
+
+func (d Duration) MarshalYAML() (interface{}, error) { return time.Duration(d).String(), nil }
 
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 	if value.Kind != yaml.ScalarNode {
@@ -327,7 +265,7 @@ func (p *Provider) saveConfig(path string) error {
 		}
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := fsown.WriteFile(path, data, 0644); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
@@ -354,8 +292,6 @@ func (p *Provider) Update(fn func(*ServerConfig)) error {
 	}
 
 	p.notifyChanges(oldConfig, p.config)
-
-	go p.SendNotification("Configuration updated successfully via API.")
 
 	return nil
 }
@@ -388,7 +324,6 @@ func (p *Provider) watchConfigFile() {
 					p.SetHealthy(false, fmt.Sprintf("reload error: %v", err))
 				} else {
 					p.lastModified = info.ModTime()
-					go p.SendNotification("Configuration reloaded from disk (Authorized).")
 				}
 			}
 		}
@@ -427,8 +362,6 @@ func (p *Provider) Start() error {
 		"config_path": p.configPath,
 	})
 
-	go p.SendNotification("Server started successfully. Integrity check passed.")
-
 	return nil
 }
 
@@ -451,17 +384,15 @@ func DefaultServerConfig() *ServerConfig {
 		Server: ServerSettings{
 			Name:         "whispera-server",
 			ListenAddr:   ":443",
-			TUNName:      "tun0",
 			MTU:          1420,
 			Workers:      8,
 			GracefulStop: Duration(30 * time.Second),
 		},
 		Inbounds: []InboundConfig{
 			{
-				Tag:      "default-inbound",
-				Protocol: "whispera",
-				Listen:   "0.0.0.0",
-				Port:     8443,
+				Tag:    "default-inbound",
+				Listen: "0.0.0.0",
+				Port:   8443,
 				StreamSettings: StreamConfig{
 					Network:  "tcp",
 					Security: "none",
@@ -474,13 +405,9 @@ func DefaultServerConfig() *ServerConfig {
 			CleanupInterval:   Duration(1 * time.Minute),
 			KeepaliveInterval: Duration(30 * time.Second),
 		},
-		Routing: RoutingConfig{
-			DefaultRoute: "direct",
-		},
+		Routing: RoutingConfig{},
 		Obfuscation: ObfuscationConfig{
-			Enabled:     true,
-			Profile:     "default",
-			ThreatLevel: 5,
+			Profile: "default",
 		},
 		API: APIConfig{
 			Enabled:    true,
@@ -494,17 +421,9 @@ func DefaultServerConfig() *ServerConfig {
 			Output: "stdout",
 		},
 		Relay: RelayConfig{
-			MaxStreams: 10000,
-			EnableTCP:  true,
-			EnableUDP:  true,
-			Debug:      false,
-		},
-		Bot: BotConfig{
-			Enabled:         false,
-			Token:           "",
-			Debug:           false,
-			AdminID:         0,
-			MonitorAdminIDs: []int64{},
+			EnableTCP: true,
+			EnableUDP: true,
+			Debug:     false,
 		},
 	}
 }
@@ -544,6 +463,10 @@ func (p *Provider) Load(source string) error {
 		}
 		return fmt.Errorf("failed to parse %s: %s (refusing to start on defaults — fix the file, settings would be overwritten)",
 			source, strings.Join(te.Errors, "; "))
+	}
+
+	if err := cfg.fill(); err != nil {
+		return fmt.Errorf("invalid config %s: %w", source, err)
 	}
 
 	p.mu.Lock()
@@ -710,16 +633,79 @@ func (p *Provider) Validate() error {
 	p.mu.RLock()
 	cfg := p.config
 	p.mu.RUnlock()
+	return cfg.validate()
+}
 
-	if cfg.Server.ListenAddr == "" {
+func (c *ServerConfig) fill() error {
+	d := DefaultServerConfig()
+
+	if c.Server.ListenAddr == "" {
+		c.Server.ListenAddr = d.Server.ListenAddr
+	}
+	if c.Server.MTU == 0 {
+		c.Server.MTU = d.Server.MTU
+	}
+	if c.Server.Workers == 0 {
+		c.Server.Workers = d.Server.Workers
+	}
+	if c.Server.GracefulStop == 0 {
+		c.Server.GracefulStop = d.Server.GracefulStop
+	}
+	if c.Session.MaxSessions == 0 {
+		c.Session.MaxSessions = d.Session.MaxSessions
+	}
+
+	fillDuration(&c.Server.GracefulStop, d.Server.GracefulStop)
+	fillDuration(&c.Session.SessionTimeout, d.Session.SessionTimeout)
+	fillDuration(&c.Session.CleanupInterval, d.Session.CleanupInterval)
+	fillDuration(&c.Session.KeepaliveInterval, d.Session.KeepaliveInterval)
+
+	return c.validate()
+}
+
+const maxSaneDuration = Duration(30 * 24 * time.Hour)
+
+func fillDuration(v *Duration, fallback Duration) {
+	if *v <= 0 || *v > maxSaneDuration {
+		*v = fallback
+	}
+}
+
+func (c *ServerConfig) validate() error {
+	if c.Server.ListenAddr == "" {
 		return fmt.Errorf("server.listen_addr is required")
 	}
-	if cfg.Server.MTU < 576 || cfg.Server.MTU > 65535 {
-		return fmt.Errorf("server.mtu must be between 576 and 65535")
+	if _, _, err := net.SplitHostPort(c.Server.ListenAddr); err != nil {
+		return fmt.Errorf("server.listen_addr %q must be host:port: %w", c.Server.ListenAddr, err)
 	}
-	if cfg.Session.MaxSessions < 1 {
-		return fmt.Errorf("session.max_sessions must be at least 1")
+	if c.Server.MTU < 576 || c.Server.MTU > 65535 {
+		return fmt.Errorf("server.mtu is %d, must be between 576 and 65535", c.Server.MTU)
 	}
-
+	if c.Session.MaxSessions < 1 {
+		return fmt.Errorf("session.max_sessions is %d, must be at least 1", c.Session.MaxSessions)
+	}
+	if c.Whispera.Enabled && c.Whispera.ListenAddr != "" {
+		if _, _, err := net.SplitHostPort(c.Whispera.ListenAddr); err != nil {
+			return fmt.Errorf("whispera.listen_addr %q must be host:port: %w", c.Whispera.ListenAddr, err)
+		}
+	}
 	return nil
+}
+
+func HostFromPublicURL(publicURL string) string {
+	if publicURL == "" {
+		return ""
+	}
+	s := strings.TrimRight(strings.TrimPrefix(strings.TrimPrefix(publicURL, "https://"), "http://"), "/")
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		return h
+	}
+	return s
+}
+
+func PortFromListenAddr(addr string) string {
+	if _, port, err := net.SplitHostPort(addr); err == nil {
+		return port
+	}
+	return addr
 }

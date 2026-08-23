@@ -266,6 +266,8 @@ func Snapshot(limit int, minLevel Level) []Entry {
 
 var (
 	traceLog  *zap.SugaredLogger
+	nopLog    *zap.SugaredLogger
+	traceOff  bool
 	traceOnce sync.Once
 )
 
@@ -275,6 +277,11 @@ func Trace() *zap.SugaredLogger {
 			WithOptions(zap.AddCaller(), zap.IncreaseLevel(zapcore.InfoLevel)).
 			Named("tuntrace").
 			Sugar()
+		nopLog = zap.NewNop().Sugar()
+		traceOff = os.Getenv("WHISPERA_TRACE") == "0"
 	})
+	if traceOff {
+		return nopLog
+	}
 	return traceLog
 }
