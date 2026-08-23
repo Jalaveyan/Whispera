@@ -11,7 +11,6 @@ import (
 
 const (
 	rulePrefix     = "Whispera-KillSwitch"
-	ruleBlockAll   = rulePrefix + "-BlockAll"
 	ruleAllowVPN   = rulePrefix + "-AllowVPN"
 	ruleAllowLAN   = rulePrefix + "-AllowLAN"
 	ruleAllowDNS   = rulePrefix + "-AllowDNS"
@@ -21,6 +20,7 @@ const (
 type WindowsKillSwitch struct {
 	mu          sync.Mutex
 	rulesActive bool
+	savedPolicy string
 }
 
 func NewPlatformImpl() (Platform, error) {
@@ -41,11 +41,13 @@ func (w *WindowsKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, al
 	defer w.mu.Unlock()
 	defer func() {
 		if err != nil {
+			w.restorePolicy()
 			w.cleanupRules()
 			w.rulesActive = false
 		}
 	}()
 	w.cleanupRules()
+	w.savedPolicy = w.currentPolicy()
 	if err = w.addRule(ruleAllowLocal, "in", "allow", "localip=127.0.0.1"); err != nil {
 		return fmt.Errorf("failed to allow loopback in: %w", err)
 	}
@@ -82,11 +84,8 @@ func (w *WindowsKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, al
 		w.tryRule(ruleName+"-In", "in", "allow", fmt.Sprintf("remoteip=%s", ipStr))
 		w.tryRule(ruleName+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", ipStr))
 	}
-	if err = w.addBlockAllRule(ruleBlockAll+"-In", "in"); err != nil {
-		return fmt.Errorf("failed to block all inbound: %w", err)
-	}
-	if err = w.addBlockAllRule(ruleBlockAll+"-Out", "out"); err != nil {
-		return fmt.Errorf("failed to block all outbound: %w", err)
+	if err = w.setPolicy("blockinbound,blockoutbound"); err != nil {
+		return fmt.Errorf("failed to set blocking policy: %w", err)
 	}
 
 	w.rulesActive = true
@@ -97,10 +96,52 @@ func (w *WindowsKillSwitch) Disable() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	w.restorePolicy()
 	w.cleanupRules()
 	w.rulesActive = false
 
 	return nil
+}
+
+func (w *WindowsKillSwitch) currentPolicy() string {
+	cmd := exec.CommandContext(context.Background(), "netsh", "advfirewall", "show", "currentprofile", "firewallpolicy")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.Contains(strings.ToLower(line), "firewallpolicy") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		policy := fields[len(fields)-1]
+		if strings.Contains(policy, ",") {
+			return policy
+		}
+	}
+	return ""
+}
+
+func (w *WindowsKillSwitch) setPolicy(policy string) error {
+	cmd := exec.CommandContext(context.Background(), "netsh", "advfirewall", "set", "allprofiles", "firewallpolicy", policy)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("netsh set firewallpolicy %s: %v, output: %s", policy, err, string(out))
+	}
+	return nil
+}
+
+func (w *WindowsKillSwitch) restorePolicy() {
+	policy := w.savedPolicy
+	if policy == "" {
+		policy = "blockinbound,allowoutbound"
+	}
+	if err := w.setPolicy(policy); err != nil {
+		log.Warn("killswitch: restore firewall policy: %v", err)
+	}
+	w.savedPolicy = ""
 }
 
 func (w *WindowsKillSwitch) IsActive() (bool, error) {
@@ -129,26 +170,6 @@ func (w *WindowsKillSwitch) addRule(name, direction, action, extra string) error
 	if extra != "" {
 		parts := strings.Fields(extra)
 		args = append(args, parts...)
-	}
-
-	cmd := exec.CommandContext(context.Background(), "netsh", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("netsh failed: %v, output: %s", err, string(output))
-	}
-
-	return nil
-}
-func (w *WindowsKillSwitch) addBlockAllRule(name, direction string) error {
-	args := []string{
-		"advfirewall", "firewall", "add", "rule",
-		fmt.Sprintf("name=%s", name),
-		fmt.Sprintf("dir=%s", direction),
-		"action=block",
-		"enable=yes",
-		"profile=any",
-		"localip=any",
-		"remoteip=any",
 	}
 
 	cmd := exec.CommandContext(context.Background(), "netsh", args...)

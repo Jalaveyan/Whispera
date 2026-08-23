@@ -7,7 +7,6 @@ import (
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/events"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
-	"github.com/nekoskin/whispera/common/runtime/registry"
 	"io"
 	"net"
 	"runtime/debug"
@@ -32,10 +31,6 @@ func recoveryStreamInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc
 		}
 	}()
 	return handler(srv, ss)
-}
-
-func init() {
-	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
 }
 
 const (
@@ -229,9 +224,8 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	atomic.AddInt64(&t.activeConns, 1)
 
 	return &grpcConn{
-		stream:    stream,
-		transport: t,
-		grpcConn:  conn,
+		grpcStreamConn: grpcStreamConn{stream: stream, transport: t},
+		client:         conn,
 	}, nil
 }
 
@@ -366,9 +360,8 @@ func (s *tunnelServer) Tunnel(stream TunnelService_TunnelServer) error {
 	atomic.AddInt64(&s.transport.activeConns, 1)
 
 	conn := &grpcServerConn{
-		stream:    stream,
-		transport: s.transport,
-		closeChan: make(chan struct{}),
+		grpcStreamConn: grpcStreamConn{stream: stream, transport: s.transport},
+		closeChan:      make(chan struct{}),
 	}
 
 	select {
@@ -385,16 +378,20 @@ func (s *tunnelServer) Tunnel(stream TunnelService_TunnelServer) error {
 	return nil
 }
 
-type grpcConn struct {
-	stream    TunnelService_TunnelClient
+type grpcStream interface {
+	Send(*TunnelData) error
+	Recv() (*TunnelData, error)
+}
+
+type grpcStreamConn struct {
+	stream    grpcStream
 	transport *Transport
-	grpcConn  *grpc.ClientConn
 	readBuf   []byte
 	closed    int32
 	mu        sync.Mutex
 }
 
-func (c *grpcConn) Read(b []byte) (n int, err error) {
+func (c *grpcStreamConn) Read(b []byte) (n int, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -418,95 +415,50 @@ func (c *grpcConn) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-func (c *grpcConn) Write(b []byte) (n int, err error) {
-	err = c.stream.Send(&TunnelData{Value: b})
-	if err != nil {
+func (c *grpcStreamConn) Write(b []byte) (n int, err error) {
+	if err = c.stream.Send(&TunnelData{Value: b}); err != nil {
 		return 0, err
 	}
 	atomic.AddUint64(&c.transport.bytesTx, uint64(len(b)))
 	return len(b), nil
+}
+
+func (c *grpcStreamConn) closeOnce() bool {
+	if !atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
+		return false
+	}
+	atomic.AddInt64(&c.transport.activeConns, -1)
+	return true
+}
+
+func (c *grpcStreamConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (c *grpcStreamConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *grpcStreamConn) SetDeadline(t time.Time) error      { return nil }
+func (c *grpcStreamConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *grpcStreamConn) SetWriteDeadline(t time.Time) error { return nil }
+
+type grpcConn struct {
+	grpcStreamConn
+	client *grpc.ClientConn
 }
 
 func (c *grpcConn) Close() error {
-	if atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
-		atomic.AddInt64(&c.transport.activeConns, -1)
-		c.grpcConn.Close()
+	if c.closeOnce() {
+		c.client.Close()
 	}
 	return nil
 }
 
-func (c *grpcConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
-func (c *grpcConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
-func (c *grpcConn) SetDeadline(t time.Time) error      { return nil }
-func (c *grpcConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *grpcConn) SetWriteDeadline(t time.Time) error { return nil }
-
 type grpcServerConn struct {
-	stream    TunnelService_TunnelServer
-	transport *Transport
-	readBuf   []byte
-	closed    int32
+	grpcStreamConn
 	closeChan chan struct{}
-	mu        sync.Mutex
-}
-
-func (c *grpcServerConn) Read(b []byte) (n int, err error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if len(c.readBuf) > 0 {
-		n = copy(b, c.readBuf)
-		c.readBuf = c.readBuf[n:]
-		atomic.AddUint64(&c.transport.bytesRx, uint64(n))
-		return n, nil
-	}
-
-	data, err := c.stream.Recv()
-	if err != nil {
-		return 0, err
-	}
-
-	n = copy(b, data.Value)
-	if n < len(data.Value) {
-		c.readBuf = data.Value[n:]
-	}
-	atomic.AddUint64(&c.transport.bytesRx, uint64(n))
-	return n, nil
-}
-
-func (c *grpcServerConn) Write(b []byte) (n int, err error) {
-	err = c.stream.Send(&TunnelData{Value: b})
-	if err != nil {
-		return 0, err
-	}
-	atomic.AddUint64(&c.transport.bytesTx, uint64(len(b)))
-	return len(b), nil
 }
 
 func (c *grpcServerConn) Close() error {
-	if atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
-		atomic.AddInt64(&c.transport.activeConns, -1)
-		if c.closeChan != nil {
-			close(c.closeChan)
-		}
+	if c.closeOnce() && c.closeChan != nil {
+		close(c.closeChan)
 	}
 	return nil
-}
-
-func (c *grpcServerConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
-func (c *grpcServerConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
-func (c *grpcServerConn) SetDeadline(t time.Time) error      { return nil }
-func (c *grpcServerConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *grpcServerConn) SetWriteDeadline(t time.Time) error { return nil }
-
-func Factory(cfg interface{}) (interfaces.Module, error) {
-	var config *Config
-	if c, ok := cfg.(*Config); ok {
-		config = c
-	} else {
-		config = DefaultConfig()
-	}
-	return New(config)
 }
 
 var _ = (metadata.MD)(nil)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -419,6 +420,11 @@ func (s *serverSession) handlePayload(payload []byte) {
 
 func (s *serverSession) pumpTargetResponses(uc net.Conn, key, host string, port uint16) {
 	defer func() {
+		if r := recover(); r != nil {
+			traceLog.Errorf("PANIC in quic target pump: %v\n%s", r, debug.Stack())
+		}
+	}()
+	defer func() {
 		s.mu.Lock()
 		delete(s.targets, key)
 		s.mu.Unlock()
@@ -428,14 +434,16 @@ func (s *serverSession) pumpTargetResponses(uc net.Conn, key, host string, port 
 	for {
 		_ = uc.SetReadDeadline(time.Now().Add(udpTargetIdle))
 		n, err := uc.Read(buf)
+		if n > 0 {
+			payload := append(encodeAddr(host, port), buf[:n]...)
+			for _, pkt := range s.sender.encode(payload) {
+				if serr := s.conn.SendDatagram(pkt); serr != nil {
+					traceLog.Warnw("rt_datagram_target_send_failed", "target", key, "err", serr.Error())
+				}
+			}
+		}
 		if err != nil {
 			return
-		}
-		payload := append(encodeAddr(host, port), buf[:n]...)
-		for _, pkt := range s.sender.encode(payload) {
-			if err := s.conn.SendDatagram(pkt); err != nil {
-				traceLog.Warnw("rt_datagram_target_send_failed", "target", key, "err", err.Error())
-			}
 		}
 	}
 }

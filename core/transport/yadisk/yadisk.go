@@ -7,7 +7,6 @@ import (
 	"github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
-	"github.com/nekoskin/whispera/common/runtime/registry"
 	"io"
 	"net"
 	"net/http"
@@ -18,10 +17,6 @@ import (
 )
 
 var log = logger.Module("transport_yadisk")
-
-func init() {
-	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
-}
 
 const (
 	ModuleName    = "transport.yadisk"
@@ -65,18 +60,9 @@ type Transport struct {
 	dataIn  chan []byte
 	dataOut chan []byte
 
-	connOnce sync.Once
 	connCh   chan net.Conn
 	stopCh   chan struct{}
 	stopOnce sync.Once
-}
-
-func Factory(cfg interface{}) (interfaces.Module, error) {
-	c, ok := cfg.(*Config)
-	if !ok {
-		c = DefaultConfig()
-	}
-	return New(c)
 }
 
 func New(cfg *Config) (*Transport, error) {
@@ -169,6 +155,11 @@ func (t *Transport) Accept() (net.Conn, error) {
 }
 
 func (t *Transport) sendLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in yadisk send loop: %v\n%s", r, debug.Stack())
+		}
+	}()
 	for {
 		select {
 		case <-t.stopCh:
@@ -210,6 +201,11 @@ func (t *Transport) runSendLoop() {
 }
 
 func (t *Transport) recvLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in yadisk recv loop: %v\n%s", r, debug.Stack())
+		}
+	}()
 	for {
 		select {
 		case <-t.stopCh:

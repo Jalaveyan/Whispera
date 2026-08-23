@@ -46,7 +46,6 @@ func Start(key, socks, logFile, fingerprint, dns, rules string, hwid bool) {
 	mobileRunning = true
 	pkgLC = lifecycle.NewManager(lifecycle.Config{
 		ShutdownTimeout: 1 * time.Second,
-		GracefulStop:    true,
 	})
 	*connKey = key
 	*socksAddr = socks
@@ -75,7 +74,6 @@ func Stop() {
 	mobileMu.Lock()
 	lc := pkgLC
 	pkgLC = nil
-	mobileRunning = false
 	mobileMu.Unlock()
 	if lc != nil {
 		_ = lc.Stop()

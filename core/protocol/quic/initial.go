@@ -267,61 +267,72 @@ type parsedQUICInitial struct {
 	keyShare []byte
 }
 
-func parseQUICInitialClientHello(packet []byte) (*parsedQUICInitial, error) {
+type quicInitialHeader struct {
+	dcid     []byte
+	pnOffset int
+	length   int
+}
+
+func parseQUICInitialHeader(packet []byte) (quicInitialHeader, error) {
+	var h quicInitialHeader
 	if len(packet) < 7 || packet[0]&0x80 == 0 || packet[0]&0x40 == 0 {
-		return nil, errors.New("whispera: not a quic long header packet")
+		return h, errors.New("whispera: not a quic long header packet")
 	}
-	version := binary.BigEndian.Uint32(packet[1:5])
-	if version != 1 {
-		return nil, errors.New("whispera: unsupported quic version")
+	if binary.BigEndian.Uint32(packet[1:5]) != 1 {
+		return h, errors.New("whispera: unsupported quic version")
 	}
 	if (packet[0] >> 4 & 0x3) != 0x0 {
-		return nil, errors.New("whispera: not a quic initial packet")
+		return h, errors.New("whispera: not a quic initial packet")
 	}
 
 	pos := 5
 	if pos >= len(packet) {
-		return nil, errors.New("whispera: truncated quic header")
+		return h, errors.New("whispera: truncated quic header")
 	}
 	dcidLen := int(packet[pos])
 	pos++
 	if pos+dcidLen+1 > len(packet) {
-		return nil, errors.New("whispera: truncated quic dcid")
+		return h, errors.New("whispera: truncated quic dcid")
 	}
-	dcid := append([]byte{}, packet[pos:pos+dcidLen]...)
+	h.dcid = append([]byte{}, packet[pos:pos+dcidLen]...)
 	pos += dcidLen
+
 	scidLen := int(packet[pos])
 	pos++
 	if pos+scidLen > len(packet) {
-		return nil, errors.New("whispera: truncated quic scid")
+		return h, errors.New("whispera: truncated quic scid")
 	}
 	pos += scidLen
 
 	tokenLen, n, err := quicVarintParse(packet[pos:])
 	if err != nil {
-		return nil, err
+		return h, err
 	}
 	pos += n
 	if pos+int(tokenLen) > len(packet) {
-		return nil, errors.New("whispera: truncated quic token")
+		return h, errors.New("whispera: truncated quic token")
 	}
 	pos += int(tokenLen)
 
 	lenField, n, err := quicVarintParse(packet[pos:])
 	if err != nil {
-		return nil, err
+		return h, err
 	}
 	pos += n
 	if pos+int(lenField) > len(packet) {
-		return nil, errors.New("whispera: truncated quic packet")
+		return h, errors.New("whispera: truncated quic packet")
 	}
 
-	pnOffset := pos
+	h.pnOffset = pos
+	h.length = int(lenField)
+	return h, nil
+}
 
-	clientSecret, _ := quicInitialSecrets(dcid)
+func decryptQUICInitial(packet []byte, h quicInitialHeader) ([]byte, error) {
+	clientSecret, _ := quicInitialSecrets(h.dcid)
 	key, iv, hp := quicKeyIVHP(clientSecret)
 
-	sampleOffset := pnOffset + 4
+	sampleOffset := h.pnOffset + 4
 	if sampleOffset+16 > len(packet) {
 		return nil, errors.New("whispera: quic initial too short to sample")
 	}
@@ -332,28 +343,32 @@ func parseQUICInitialClientHello(packet []byte) (*parsedQUICInitial, error) {
 
 	firstByte := packet[0] ^ (mask[0] & 0x0f)
 	pnLen := int(firstByte&0x03) + 1
+	if h.length < pnLen {
+		return nil, errors.New("whispera: quic initial length field too small")
+	}
 
 	pnBytes := make([]byte, pnLen)
-	for i := 0; i < pnLen; i++ {
-		pnBytes[i] = packet[pnOffset+i] ^ mask[1+i]
-	}
 	var pn uint64
 	for i := 0; i < pnLen; i++ {
+		pnBytes[i] = packet[h.pnOffset+i] ^ mask[1+i]
 		pn = pn<<8 | uint64(pnBytes[i])
 	}
 
-	adEnd := pnOffset + pnLen
+	adEnd := h.pnOffset + pnLen
 	ad := make([]byte, adEnd)
 	copy(ad, packet[:adEnd])
 	ad[0] = firstByte
-	copy(ad[pnOffset:adEnd], pnBytes)
+	copy(ad[h.pnOffset:adEnd], pnBytes)
 
-	if int(lenField) < pnLen {
-		return nil, errors.New("whispera: quic initial length field too small")
+	return quicOpen(key, iv, pn, packet[adEnd:h.pnOffset+h.length], ad)
+}
+
+func parseQUICInitialClientHello(packet []byte) (*parsedQUICInitial, error) {
+	h, err := parseQUICInitialHeader(packet)
+	if err != nil {
+		return nil, err
 	}
-	ciphertext := packet[adEnd : pnOffset+int(lenField)]
-
-	plaintext, err := quicOpen(key, iv, pn, ciphertext, ad)
+	plaintext, err := decryptQUICInitial(packet, h)
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +382,7 @@ func parseQUICInitialClientHello(packet []byte) (*parsedQUICInitial, error) {
 		return nil, errors.New("whispera: failed to parse client hello from quic initial")
 	}
 	return &parsedQUICInitial{
-		dcid:     dcid,
+		dcid:     h.dcid,
 		sni:      msg.ServerName,
 		random:   msg.Random,
 		keyShare: camo.ExtractX25519KeyShare(msg.KeyShares),

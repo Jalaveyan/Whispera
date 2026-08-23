@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	stdlog "log"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -228,6 +229,17 @@ func loadClientConfig() *config.ClientConfig {
 
 	if cfg.Server == "" && cfg.ServerTCP == "" {
 		fatalf("No server address specified. Use -server, -key, or -config")
+	}
+	for _, a := range []struct{ field, addr string }{
+		{"server", cfg.Server},
+		{"server_tcp", cfg.ServerTCP},
+	} {
+		if a.addr == "" {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(a.addr); err != nil {
+			fatalf("%s = %q has no port: write it as host:port (the server listens on 443 unless whispera.listen_addr says otherwise)", a.field, a.addr)
+		}
 	}
 
 	stdlog.Printf("Starting Whispera Client v%s", Version)

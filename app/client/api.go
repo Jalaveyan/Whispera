@@ -148,7 +148,10 @@ func handleConnToggle(w http.ResponseWriter, r *http.Request, entry *TransportEn
 	var body struct {
 		Enabled bool `json:"enabled"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
 	entry.mu.Lock()
 	entry.Enabled = body.Enabled
 	if !body.Enabled && entry.cancel != nil {
@@ -163,7 +166,10 @@ func handleConnObfuscation(w http.ResponseWriter, r *http.Request, entry *Transp
 	var body struct {
 		Enabled bool `json:"enabled"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
 	entry.mu.Lock()
 	entry.Obfuscated = body.Enabled
 	entry.ForceObfuscation = body.Enabled
@@ -565,17 +571,80 @@ type SpeedResult struct {
 	Error        string  `json:"error,omitempty"`
 }
 
-func runSpeedTest(ctx context.Context, proxyAddr, target, token string, downloadMB, uploadMB int) SpeedResult {
-	res := SpeedResult{DownloadMB: downloadMB, UploadMB: uploadMB}
+func measureLatency(ctx context.Context, client *http.Client, target string) (float64, error) {
+	latencies := make([]time.Duration, 0, 5)
+	for range 5 {
+		start := time.Now()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target+"/api/v1/speed/ping", nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		latencies = append(latencies, time.Since(start))
+	}
+	return minMs(latencies), nil
+}
 
+func measureDownload(ctx context.Context, client *http.Client, target, authHdr string, mb int) (mbps float64, serverIP string, err error) {
+	url := fmt.Sprintf("%s/api/v1/speed/download?mb=%d", target, mb)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req.Header.Set("Authorization", authHdr)
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
+		serverIP = resp.TLS.PeerCertificates[0].Subject.CommonName
+	}
+	n, _ := io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	elapsed := time.Since(start)
+	if elapsed > 0 && n > 0 {
+		mbps = float64(n) / elapsed.Seconds() / (1024 * 1024)
+	}
+	return mbps, serverIP, nil
+}
+
+func measureUpload(ctx context.Context, client *http.Client, target, authHdr string, mb int) (float64, error) {
+	size := int64(mb) << 20
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, target+"/api/v1/speed/upload", io.LimitReader(zeroReader{}, size))
+	req.Header.Set("Authorization", authHdr)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = size
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	var reported struct {
+		Mbps float64 `json:"mbps"`
+	}
+	json.NewDecoder(resp.Body).Decode(&reported)
+	resp.Body.Close()
+
+	if reported.Mbps > 0 {
+		return reported.Mbps, nil
+	}
+	if elapsed := time.Since(start); elapsed > 0 {
+		return float64(size) / elapsed.Seconds() / (1024 * 1024), nil
+	}
+	return 0, nil
+}
+
+func runSpeedTest(ctx context.Context, proxyAddr, target, token string, downloadMB, uploadMB int) SpeedResult {
 	if downloadMB <= 0 {
 		downloadMB = 10
-		res.DownloadMB = downloadMB
 	}
 	if uploadMB <= 0 {
 		uploadMB = 5
-		res.UploadMB = uploadMB
 	}
+	res := SpeedResult{DownloadMB: downloadMB, UploadMB: uploadMB}
 
 	client, err := buildSOCKS5Client(proxyAddr)
 	if err != nil {
@@ -583,68 +652,20 @@ func runSpeedTest(ctx context.Context, proxyAddr, target, token string, download
 		return res
 	}
 
-	latencies := make([]time.Duration, 0, 5)
-	for range 5 {
-		start := time.Now()
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target+"/api/v1/speed/ping", nil)
-		resp, err := client.Do(req)
-		if err != nil {
-			res.Error = fmt.Sprintf("ping: %v", err)
-			return res
-		}
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		latencies = append(latencies, time.Since(start))
+	if res.LatencyMs, err = measureLatency(ctx, client, target); err != nil {
+		res.Error = fmt.Sprintf("ping: %v", err)
+		return res
 	}
-	res.LatencyMs = minMs(latencies)
 
 	authHdr := "Bearer " + token
-
-	dlURL := fmt.Sprintf("%s/api/v1/speed/download?mb=%d", target, downloadMB)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
-	req.Header.Set("Authorization", authHdr)
-
-	dlStart := time.Now()
-	resp, err := client.Do(req)
-	if err != nil {
+	if res.DownloadMbps, res.ServerIP, err = measureDownload(ctx, client, target, authHdr, downloadMB); err != nil {
 		res.Error = fmt.Sprintf("download: %v", err)
 		return res
 	}
-	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
-		res.ServerIP = resp.TLS.PeerCertificates[0].Subject.CommonName
-	}
-	n, _ := io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	dlElapsed := time.Since(dlStart)
-	if dlElapsed > 0 && n > 0 {
-		res.DownloadMbps = float64(n) / dlElapsed.Seconds() / (1024 * 1024)
-	}
-
-	ulBytes := int64(uploadMB) << 20
-	body := io.LimitReader(zeroReader{}, ulBytes)
-	req, _ = http.NewRequestWithContext(ctx, http.MethodPost, target+"/api/v1/speed/upload", body)
-	req.Header.Set("Authorization", authHdr)
-	req.Header.Set("Content-Type", "application/octet-stream")
-	req.ContentLength = ulBytes
-
-	ulStart := time.Now()
-	resp, err = client.Do(req)
-	if err != nil {
+	if res.UploadMbps, err = measureUpload(ctx, client, target, authHdr, uploadMB); err != nil {
 		res.Error = fmt.Sprintf("upload: %v", err)
 		return res
 	}
-	var ulResp struct {
-		Mbps float64 `json:"mbps"`
-	}
-	json.NewDecoder(resp.Body).Decode(&ulResp)
-	resp.Body.Close()
-	ulElapsed := time.Since(ulStart)
-	if ulResp.Mbps > 0 {
-		res.UploadMbps = ulResp.Mbps
-	} else if ulElapsed > 0 {
-		res.UploadMbps = float64(ulBytes) / ulElapsed.Seconds() / (1024 * 1024)
-	}
-
 	return res
 }
 

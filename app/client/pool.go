@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nekoskin/whispera/core/crypto"
-	"github.com/nekoskin/whispera/core/handshake"
 	"github.com/nekoskin/whispera/core/protocol/quic"
 	"github.com/nekoskin/whispera/core/tunnel"
 )
@@ -210,7 +208,7 @@ func setEntryFailed(e *TransportEntry, err error) {
 	e.mu.Unlock()
 }
 
-func restartTransportEntry(ctx context.Context, e *TransportEntry, tunnelCfg *tunnel.Config, hsMod *handshake.Handler, cryptoMod *crypto.Provider) bool {
+func restartTransportEntry(ctx context.Context, e *TransportEntry, tunnelCfg *tunnel.Config) bool {
 	if !atomic.CompareAndSwapInt32(&e.restarting, 0, 1) {
 		return false
 	}
@@ -238,7 +236,6 @@ func restartTransportEntry(ctx context.Context, e *TransportEntry, tunnelCfg *tu
 		setEntryFailed(e, err)
 		return true
 	}
-	newMgr.SetDependencies(nil, hsMod, cryptoMod)
 	if tunnelCfg.BehavioralProfile != "" {
 		if err := newMgr.SetBehavioralProfile(tunnelCfg.BehavioralProfile); err != nil {
 			stdlog.Printf("restartEntry %s: set profile %q: %v", e.ID, tunnelCfg.BehavioralProfile, err)

@@ -201,16 +201,23 @@ func toView(e *TransportEntry) entryView {
 	defer e.mu.Unlock()
 	var qualityRTT int64
 	var missedKAs int
+	status := e.Status
 	if e.mgr != nil {
 		e.BytesUp, e.BytesDown = e.mgr.Stats()
 		e.ForceObfuscation = e.mgr.IsForceObfuscation()
 		rtt, missed := e.mgr.GetQualityMetrics()
 		qualityRTT = rtt.Milliseconds()
 		missedKAs = missed
+
+		// Нижележащий туннель может отвалиться сам, без нашего участия, и тогда
+		// поле Status так и осталось бы "connected". Спрашиваем менеджер.
+		if status == connStatusConnected && !e.mgr.IsConnected() {
+			status = connStatusDisconnected
+		}
 	}
 	return entryView{
 		ID: e.ID, Transport: e.Transport, Server: e.Server,
-		Status: e.Status, Enabled: e.Enabled, Obfuscated: e.Obfuscated,
+		Status: status, Enabled: e.Enabled, Obfuscated: e.Obfuscated,
 		Mux: e.Mux, RateLimitKB: e.RateLimitKB, SNI: e.SNI,
 		BytesUp: e.BytesUp, BytesDown: e.BytesDown,
 		ConnectedAt: e.ConnectedAt, Error: e.Error,

@@ -7,9 +7,6 @@ import (
 	"fmt"
 	"github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/core/config"
-	"github.com/nekoskin/whispera/core/crypto"
-	"github.com/nekoskin/whispera/core/handshake"
-	"github.com/nekoskin/whispera/core/session"
 	"github.com/nekoskin/whispera/core/tunnel"
 	"net"
 	"sync"
@@ -45,26 +42,13 @@ func (c *cascadeConn) Close() error {
 	return err
 }
 
-func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
-	om.mu.Lock()
-	defer om.mu.Unlock()
-
-	if _, exists := om.outbounds[cfg.Tag]; exists {
-		return fmt.Errorf("outbound %s already exists", cfg.Tag)
-	}
-
-	om.outboundCfgs[cfg.Tag] = cfg
-
-	russiaMode := om.stealthMode == "russia"
-
+func (om *OutboundManager) tunnelConfigFor(cfg config.OutboundConfig) *tunnel.Config {
 	tCfg := &tunnel.Config{
 		ServerAddr:        cfg.Address,
 		KeepaliveInterval: 15 * time.Second,
 		ReconnectInterval: 5 * time.Second,
-		EnableRotation:    false,
 	}
-
-	if russiaMode {
+	if om.stealthMode == "russia" {
 		tCfg.Transport = "asn_bypass"
 	}
 
@@ -83,54 +67,29 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	}
 
 	if len(cfg.Chain) > 0 {
-		hops := cfg.Chain
-		targetAddr := cfg.Address
+		hops, targetAddr := cfg.Chain, cfg.Address
 		tCfg.CustomDialFn = func(ctx context.Context) (net.Conn, error) {
 			return om.dialCascade(ctx, hops, targetAddr)
 		}
 	}
+	return tCfg
+}
 
-	cryptoMod, err := crypto.New(nil)
-	if err != nil {
-		return fmt.Errorf("outbound %s: crypto init: %w", cfg.Tag, err)
-	}
-	if err := cryptoMod.Init(context.Background(), nil); err != nil {
-		return fmt.Errorf("outbound %s: crypto init: %w", cfg.Tag, err)
-	}
-	if err := cryptoMod.Start(); err != nil {
-		return fmt.Errorf("outbound %s: crypto start: %w", cfg.Tag, err)
-	}
+func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
+	om.mu.Lock()
+	defer om.mu.Unlock()
 
-	sessMod, err := session.New(&session.Config{MaxSessions: 10})
-	if err != nil {
-		return fmt.Errorf("outbound %s: session init: %w", cfg.Tag, err)
+	if _, exists := om.outbounds[cfg.Tag]; exists {
+		return fmt.Errorf("outbound %s already exists", cfg.Tag)
 	}
-	if err := sessMod.Init(context.Background(), nil); err != nil {
-		return fmt.Errorf("outbound %s: session init: %w", cfg.Tag, err)
-	}
-	if err := sessMod.Start(); err != nil {
-		return fmt.Errorf("outbound %s: session start: %w", cfg.Tag, err)
-	}
+	om.outboundCfgs[cfg.Tag] = cfg
 
-	hsMod, err := handshake.New(&handshake.Config{RateLimit: 100})
-	if err != nil {
-		return fmt.Errorf("outbound %s: handshake init: %w", cfg.Tag, err)
-	}
-	hsMod.SetDependencies(cryptoMod, sessMod)
-	if err := hsMod.Init(context.Background(), nil); err != nil {
-		return fmt.Errorf("outbound %s: handshake init: %w", cfg.Tag, err)
-	}
-	if err := hsMod.Start(); err != nil {
-		return fmt.Errorf("outbound %s: handshake start: %w", cfg.Tag, err)
-	}
+	tCfg := om.tunnelConfigFor(cfg)
 
 	tManager, err := tunnel.New(tCfg)
 	if err != nil {
 		return err
 	}
-
-	tManager.SetDependencies(nil, hsMod, cryptoMod)
-
 	if err := tManager.Init(context.Background(), tCfg); err != nil {
 		return err
 	}
@@ -139,9 +98,7 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	}
 
 	om.outbounds[cfg.Tag] = tManager
-
 	go func() { _ = tManager.Connect(context.Background()) }()
-
 	return nil
 }
 
@@ -211,7 +168,6 @@ func (om *OutboundManager) cleanupFns(fns []func()) {
 func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.OutboundConfig, transport net.Conn) (*tunnel.Manager, error) {
 	tCfg := tunnel.DefaultConfig()
 	tCfg.ServerAddr = cfg.Address
-	tCfg.EnableRotation = false
 	tCfg.MaxReconnectAttempts = 1
 	tCfg.KeepaliveInterval = 30 * time.Second
 	tCfg.CustomDialFn = func(_ context.Context) (net.Conn, error) {
@@ -232,33 +188,10 @@ func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.Outbound
 		}
 	}
 
-	cryptoMod, err := crypto.New(nil)
-	if err != nil {
-		return nil, err
-	}
-	_ = cryptoMod.Init(context.Background(), nil)
-	_ = cryptoMod.Start()
-
-	sessMod, err := session.New(&session.Config{MaxSessions: 2})
-	if err != nil {
-		return nil, err
-	}
-	_ = sessMod.Init(context.Background(), nil)
-	_ = sessMod.Start()
-
-	hsMod, err := handshake.New(&handshake.Config{RateLimit: 10})
-	if err != nil {
-		return nil, err
-	}
-	hsMod.SetDependencies(cryptoMod, sessMod)
-	_ = hsMod.Init(context.Background(), nil)
-	_ = hsMod.Start()
-
 	mgr, err := tunnel.New(tCfg)
 	if err != nil {
 		return nil, err
 	}
-	mgr.SetDependencies(nil, hsMod, cryptoMod)
 	_ = mgr.Init(context.Background(), tCfg)
 	_ = mgr.Start()
 

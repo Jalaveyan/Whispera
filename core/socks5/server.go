@@ -78,7 +78,6 @@ type SOCKS5Server struct {
 	packetHandler   PacketHandler
 	udpRelayHandler UDPRelayHandler
 	udpHandler      func(net.Conn) error
-	udpAddr         *net.UDPAddr
 	mu              sync.RWMutex
 	log             *logger.Logger
 	listener        net.Listener
@@ -482,6 +481,12 @@ func (s *SOCKS5Server) handleUDPAssociate(conn net.Conn, atyp byte) (string, uin
 }
 
 func (s *SOCKS5Server) handleUDPRelay(udpListener *net.UDPConn, tcpConn net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("PANIC in socks5 udp relay: %v\n%s", r, debug.Stack())
+			udpListener.Close()
+		}
+	}()
 	defer udpListener.Close()
 	defer func() {
 		if r := recover(); r != nil {

@@ -156,12 +156,11 @@ func (fe *FECEncoder) reset() {
 }
 
 type FECDecoder struct {
-	k             int
-	m             int
-	packetBuffer  map[uint32][]byte
-	bufferMutex   sync.RWMutex
-	recoveryCount int
-	totalPackets  int
+	k            int
+	m            int
+	packetBuffer map[uint32][]byte
+	bufferMutex  sync.RWMutex
+	totalPackets int
 }
 
 func NewFECDecoder(k, m int) *FECDecoder {
