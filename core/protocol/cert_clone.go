@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,7 +43,11 @@ func fetchRealCert(domain string) (*x509.Certificate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tls dial %s: %w", addr, err)
 	}
-	conn := rawConn.(*tls.Conn)
+	conn, ok := rawConn.(*tls.Conn)
+	if !ok {
+		rawConn.Close()
+		return nil, fmt.Errorf("tls dial %s returned %T, not a TLS connection", addr, rawConn)
+	}
 	defer conn.Close()
 
 	certs := conn.ConnectionState().PeerCertificates
@@ -77,7 +83,7 @@ func cloneCertTemplate(real *x509.Certificate) (*x509.Certificate, error) {
 	}, nil
 }
 
-func existingValidClone(certPath, keyPath string) (*ClonedCertInfo, bool) {
+func existingValidClone(domain, certPath, keyPath string) (*ClonedCertInfo, bool) {
 	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil || len(pair.Certificate) == 0 {
 		return nil, false
@@ -89,7 +95,7 @@ func existingValidClone(certPath, keyPath string) (*ClonedCertInfo, bool) {
 	if time.Now().After(leaf.NotAfter.Add(-24 * time.Hour)) {
 		return nil, false
 	}
-	if activeCertIdentity() != nil && !certHasBinding(leaf) {
+	if id := activeCertIdentity(); id != nil && !verifyCertBinding(id.PubB64(), domain, leaf) {
 		return nil, false
 	}
 	return &ClonedCertInfo{
@@ -135,8 +141,19 @@ func reuseExistingClone(certPath, keyPath string) (*ecdsa.PrivateKey, *x509.Cert
 	}
 }
 
+func writePEM(path string, mode os.FileMode, block *pem.Block) error {
+	var buf bytes.Buffer
+	if err := pem.Encode(&buf, block); err != nil {
+		return fmt.Errorf("encode %s: %w", path, err)
+	}
+	if err := fsown.WriteFile(path, buf.Bytes(), mode); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	return nil
+}
+
 func CloneCertToFiles(domain, outCert, outKey string) (*ClonedCertInfo, error) {
-	if info, ok := existingValidClone(outCert, outKey); ok {
+	if info, ok := existingValidClone(domain, outCert, outKey); ok {
 		return info, nil
 	}
 
@@ -166,6 +183,9 @@ func CloneCertToFiles(domain, outCert, outKey string) (*ClonedCertInfo, error) {
 			return nil, fmt.Errorf("build identity binding: %w", err)
 		}
 		template.ExtraExtensions = append(template.ExtraExtensions, ext)
+		if selExt, err := id.selectorExtension(); err == nil {
+			template.ExtraExtensions = append(template.ExtraExtensions, selExt)
+		}
 	}
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
@@ -173,26 +193,24 @@ func CloneCertToFiles(domain, outCert, outKey string) (*ClonedCertInfo, error) {
 		return nil, fmt.Errorf("create certificate: %w", err)
 	}
 
-	certOut, err := os.OpenFile(outCert, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", outCert, err)
+	if err := writePEM(outCert, 0644, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes}); err != nil {
+		return nil, err
 	}
-	pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	certOut.Close()
 
 	keyBytes, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
 		return nil, fmt.Errorf("marshal private key: %w", err)
 	}
-	keyOut, err := os.OpenFile(outKey, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", outKey, err)
+	if err := writePEM(outKey, 0640, &pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		return nil, err
 	}
-	pem.Encode(keyOut, &pem.Block{Type: "PRIVATE KEY", Bytes: keyBytes})
-	keyOut.Close()
 
-	fsown.MatchParent(outCert)
-	fsown.MatchParent(outKey)
+	if err := fsown.MatchParent(outCert); err != nil {
+		return nil, fmt.Errorf("the service will not be able to read the clone: %w", err)
+	}
+	if err := fsown.MatchParent(outKey); err != nil {
+		return nil, fmt.Errorf("the service will not be able to read the clone: %w", err)
+	}
 
 	return &ClonedCertInfo{
 		Subject:   template.Subject.String(),
@@ -211,13 +229,20 @@ func SNICertPaths(decoyCertDir, sni string) (certPath, keyPath string, ok bool) 
 	return filepath.Join(decoyCertDir, sni+".crt"), filepath.Join(decoyCertDir, sni+".key"), true
 }
 
+type cachedSNICert struct {
+	cert    *tls.Certificate
+	modTime time.Time
+	size    int64
+	gen     uint64
+}
+
 var (
 	sniCertCacheMu    sync.RWMutex
-	sniCertCache      = map[string]*tls.Certificate{}
+	sniCertCache      = map[string]cachedSNICert{}
 	sniCertLoadFailed sync.Map
 )
 
-func loadSNICert(decoyCertDir, sni string) (*tls.Certificate, bool) {
+func loadSNICert(decoyCertDir, sni string, gen uint64) (*tls.Certificate, bool) {
 	certPath, keyPath, ok := SNICertPaths(decoyCertDir, sni)
 	if !ok {
 		return nil, false
@@ -225,14 +250,24 @@ func loadSNICert(decoyCertDir, sni string) (*tls.Certificate, bool) {
 
 	sniCertCacheMu.RLock()
 	c, found := sniCertCache[sni]
+	fresh := found && c.gen == gen
 	sniCertCacheMu.RUnlock()
-	if found {
-		return c, true
+	if fresh {
+		return c.cert, true
+	}
+
+	fi, statErr := os.Stat(certPath)
+	if found && statErr == nil && c.modTime.Equal(fi.ModTime()) && c.size == fi.Size() {
+		sniCertCacheMu.Lock()
+		c.gen = gen
+		sniCertCache[sni] = c
+		sniCertCacheMu.Unlock()
+		return c.cert, true
 	}
 
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
-		if _, statErr := os.Stat(certPath); statErr == nil {
+		if statErr == nil {
 			if _, seen := sniCertLoadFailed.LoadOrStore(sni, true); !seen {
 				traceLog.Errorw("decoy_sni_cert_load_failed", "sni", sni,
 					"hint", "clone exists but unreadable (check ownership: must match the service user); serving static cert -> client cert-pin mismatch",
@@ -250,8 +285,42 @@ func loadSNICert(decoyCertDir, sni string) (*tls.Certificate, bool) {
 		}
 	}
 
+	entry := cachedSNICert{cert: &cert, gen: gen}
+	if fi, err := os.Stat(certPath); err == nil {
+		entry.modTime, entry.size = fi.ModTime(), fi.Size()
+	}
 	sniCertCacheMu.Lock()
-	sniCertCache[sni] = &cert
+	sniCertCache[sni] = entry
 	sniCertCacheMu.Unlock()
+	sniCertLoadFailed.Delete(sni)
 	return &cert, true
+}
+
+func EnsureSNICerts(decoyCertDir string) {
+	entries, err := os.ReadDir(decoyCertDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".crt" {
+			continue
+		}
+		sni := strings.TrimSuffix(e.Name(), ".crt")
+		certPath, keyPath, ok := SNICertPaths(decoyCertDir, sni)
+		if !ok {
+			continue
+		}
+		if _, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+			continue
+		}
+		info, err := CloneCertToFiles(sni, certPath, keyPath)
+		if err != nil {
+			traceLog.Errorw("decoy_sni_cert_unrepairable", "sni", sni,
+				"hint", "this SNI will be served the static cert, and every key pinned to it will refuse the connection",
+				"err", err.Error())
+			continue
+		}
+		traceLog.Warnw("decoy_sni_cert_reissued", "sni", sni, "subject", info.Subject,
+			"hint", "the clone on disk was unreadable or broken; a fresh one was issued, so keys carrying a cert pin (rather than an identity key) must be reissued")
+	}
 }

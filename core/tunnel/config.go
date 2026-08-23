@@ -5,7 +5,6 @@ import (
 	"net"
 	"time"
 
-	asnbypass "github.com/nekoskin/whispera/core/asn_bypass"
 	"github.com/nekoskin/whispera/core/protocol"
 )
 
@@ -47,6 +46,7 @@ type WhisperaOptions struct {
 	WhisperaSecret   []byte
 	WhisperaCertPin  string
 	WhisperaIDPub    string
+	WhisperaSelPub   string
 	WhisperaQUICAddr string
 	WhisperaMux      int
 
@@ -68,7 +68,6 @@ type decoyActivity interface {
 type Config struct {
 	HandshakeStrategy    *protocol.HandshakeStrategy
 	ServerAddr           string
-	ServerAddrTCP        string
 	Transport            string
 	PSK                  []byte
 	TransportWhitelist   []string
@@ -77,21 +76,14 @@ type Config struct {
 	ReconnectInterval    time.Duration
 	ReconnectMaxDelay    time.Duration
 	MaxReconnectAttempts int
-	DisableAutoReconnect bool
 	DecoyGate            decoyActivity
 	ConnectionTimeout    time.Duration
-	EnableRotation       bool
-	RotationInterval     time.Duration
-	DrainingTimeout      time.Duration
 	KillSwitchEnabled    bool
 	KillSwitchAllowLAN   bool
 	KillSwitchAllowDNS   bool
 
-	EnableASNBypass    bool
-	ASNBypassStrategy  asnbypass.Strategy
-	TLSFingerprint     string
-	DomainFrontHost    string
-	EnableJA3Randomize bool
+	EnableASNBypass bool
+	DomainFrontHost string
 
 	WhisperaOptions
 
@@ -113,10 +105,6 @@ type Config struct {
 	TLSFragmentSize int
 
 	ForceSNI string
-
-	QualityMissedKeepalives int
-
-	PaddingMaxSize int
 }
 
 func DefaultConfig() *Config {
@@ -126,9 +114,6 @@ func DefaultConfig() *Config {
 		ReconnectMaxDelay:    30 * time.Second,
 		MaxReconnectAttempts: 0,
 		ConnectionTimeout:    90 * time.Second,
-		EnableRotation:       true,
-		RotationInterval:     60 * time.Minute,
-		DrainingTimeout:      90 * time.Minute,
 		ForceObfuscation:     true,
 	}
 }
@@ -145,12 +130,6 @@ func (c *Config) Validate() error {
 	}
 	if c.ConnectionTimeout <= 0 {
 		c.ConnectionTimeout = 90 * time.Second
-	}
-	if c.RotationInterval < 1*time.Minute {
-		c.RotationInterval = 15 * time.Minute
-	}
-	if c.DrainingTimeout < c.RotationInterval {
-		c.DrainingTimeout = c.RotationInterval * 2
 	}
 	return nil
 }

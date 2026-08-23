@@ -36,11 +36,11 @@ func TestPerflowMuxAuthenticatesAndPositionsStream(t *testing.T) {
 	got := make(chan call, 1)
 	cfg := &ServerConfig{
 		SharedSecret: secret,
-		OnConn: func(c net.Conn, userID string, _ []byte) {
+		OnConn: func(ac AcceptedConn) {
 			tail := make([]byte, 4)
-			_, _ = io.ReadFull(c, tail)
-			got <- call{userID, tail}
-			c.Close()
+			_, _ = io.ReadFull(ac.Conn, tail)
+			got <- call{ac.UserID, tail}
+			ac.Conn.Close()
 		},
 	}
 	mux := newPerflowMux(ln, cfg)
@@ -74,7 +74,7 @@ func TestPerflowMuxRejectsBadToken(t *testing.T) {
 	secret := make([]byte, 32)
 	crand.Read(secret)
 	called := make(chan struct{}, 1)
-	cfg := &ServerConfig{SharedSecret: secret, OnConn: func(net.Conn, string, []byte) { called <- struct{}{} }}
+	cfg := &ServerConfig{SharedSecret: secret, OnConn: func(AcceptedConn) { called <- struct{}{} }}
 	mux := newPerflowMux(ln, cfg)
 	defer mux.Close()
 

@@ -16,6 +16,7 @@ type ClientConfig struct {
 	SharedSecret  []byte
 	ServerCertPin string
 	ServerIDPub   string
+	ServerSelPub  string
 	SessionCache  any
 	TCPDialer     func(ctx context.Context, network, addr string) (net.Conn, error)
 
@@ -27,6 +28,7 @@ type ClientConfig struct {
 	HelloID          utls.ClientHelloID
 	HelloRaw         []byte
 	OnHandshake      func(result HandshakeResult, latency time.Duration)
+	OnServerSelPub   func(selPub string)
 	OnLiveReset      func()
 	OnLiveOK         func()
 }
@@ -47,16 +49,25 @@ type ServerConfig struct {
 	QUICListenAddr       string
 	ExtraQUICListenAddrs []string
 
-	GetUsers func() []UserEntry
-	OnConn   func(conn net.Conn, userID string, secret []byte)
+	GetUsers     func() []UserEntry
+	UsersVersion func() uint64
+	OnConn       func(AcceptedConn)
 
 	sessionRegistry
+}
+
+type AcceptedConn struct {
+	Conn      net.Conn
+	UserID    string
+	SessionID []byte
+	Secret    []byte
 }
 
 type sessionRegistry struct {
 	proxy *decoyProxy
 
 	seenTokens tokenSeenSet
+	selectors  selectorIndex
 
 	altSvcHeader string
 }

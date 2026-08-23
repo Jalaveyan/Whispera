@@ -55,15 +55,12 @@ func CLIDeleteUser(username string) (bool, error) {
 	return true, nil
 }
 
-func CLIUpsertUser(username string, trafficLimit int64) (privateKeyB64, publicKeyB64 string, err error) {
+func CLIUpsertUser(username string) (privateKeyB64, publicKeyB64 string, err error) {
 	loadUsers()
 
 	userStoreMu.Lock()
 	for _, u := range userStore {
 		if u.Username == username {
-			if trafficLimit > 0 {
-				u.TrafficLimit = trafficLimit
-			}
 			privateKeyB64, publicKeyB64 = u.PrivateKey, u.PublicKey
 			userStoreMu.Unlock()
 			saveUsers()
@@ -77,13 +74,12 @@ func CLIUpsertUser(username string, trafficLimit int64) (privateKeyB64, publicKe
 		return "", "", err
 	}
 	user := &User{
-		ID:           nextUserID,
-		Username:     username,
-		PrivateKey:   keys.PrivateKey,
-		PublicKey:    keys.PublicKey,
-		TrafficLimit: trafficLimit,
-		Status:       "active",
-		CreatedAt:    time.Now(),
+		ID:         nextUserID,
+		Username:   username,
+		PrivateKey: keys.PrivateKey,
+		PublicKey:  keys.PublicKey,
+		Status:     "active",
+		CreatedAt:  time.Now(),
 	}
 	userStore[nextUserID] = user
 	nextUserID++
@@ -99,6 +95,7 @@ type WhisperaKeyOptions struct {
 	QUICAddr    string
 	CertPin     string
 	IDPub       string
+	SelPub      string
 	Fingerprint string
 	FPRaw       string
 }
@@ -151,6 +148,7 @@ func CLIBuildConnectionKey(username, serverAddr, serverPubKeyB64, transport stri
 		WhisperaQUICAddr: whispera.QUICAddr,
 		WhisperaCertPin:  whispera.CertPin,
 		WhisperaIDPub:    whispera.IDPub,
+		WhisperaSelPub:   whispera.SelPub,
 		GRPCAddr:         alt.GRPCAddr,
 		GRPCServerName:   alt.GRPCServerName,
 		GRPCUseTLS:       alt.GRPCUseTLS,

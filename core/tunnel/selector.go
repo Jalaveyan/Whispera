@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nekoskin/whispera/core/protocol"
@@ -60,6 +61,13 @@ type selector struct {
 	sessionCache any
 	lane         datagramLane
 	strategy     *protocol.HandshakeStrategy
+
+	selPub atomic.Value
+}
+
+func (s *selector) learnedSelPub() string {
+	v, _ := s.selPub.Load().(string)
+	return v
 }
 
 func newSelector(m *Manager) *selector {
@@ -97,28 +105,41 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 		SharedSecret:  m.config.WhisperaSecret,
 		ServerCertPin: m.config.WhisperaCertPin,
 		ServerIDPub:   m.config.WhisperaIDPub,
+		ServerSelPub:  m.config.WhisperaSelPub,
 		SessionCache:  s.sessionCache,
 		TCPDialer:     tcpDialer,
 	}
 	strategy := s.strategy
+	splitCtx := sni + "|split"
 	return func(ctx context.Context) (net.Conn, error) {
 		c := *cCfg
+		if c.ServerSelPub == "" {
+			c.ServerSelPub = s.learnedSelPub()
+		}
+		c.OnServerSelPub = func(selPub string) { s.selPub.Store(selPub) }
 		arm := strategy.Select(sni, fingerprint.PresetCount())
 		c.HelloID = fingerprint.PresetAt(arm)
-		c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
-			if result != protocol.HandshakeOK {
-				strategy.Record(sni, result)
-				strategy.Observe(sni, arm, result)
+
+		splitArm := -1
+		if helloSplitEnabled() {
+			c.HelloSplitOffset, splitArm = strategy.SelectSplit(splitCtx)
+		}
+
+		observe := func(result protocol.HandshakeResult) {
+			strategy.Record(sni, result)
+			strategy.Observe(sni, arm, result)
+			if splitArm >= 0 {
+				strategy.Observe(splitCtx, splitArm, result)
 			}
 		}
-		c.OnLiveReset = func() {
-			strategy.Record(sni, protocol.HandshakeResetFast)
-			strategy.Observe(sni, arm, protocol.HandshakeResetFast)
+
+		c.OnHandshake = func(result protocol.HandshakeResult, _ time.Duration) {
+			if result != protocol.HandshakeOK {
+				observe(result)
+			}
 		}
-		c.OnLiveOK = func() {
-			strategy.Record(sni, protocol.HandshakeOK)
-			strategy.Observe(sni, arm, protocol.HandshakeOK)
-		}
+		c.OnLiveReset = func() { observe(protocol.HandshakeResetFast) }
+		c.OnLiveOK = func() { observe(protocol.HandshakeOK) }
 		return protocol.Client(ctx, &c)
 	}, true
 }
@@ -147,6 +168,7 @@ func (s *selector) startDatagramLane() {
 		SharedSecret:  m.config.WhisperaSecret,
 		ServerCertPin: m.config.WhisperaCertPin,
 		ServerIDPub:   m.config.WhisperaIDPub,
+		ServerSelPub:  m.config.WhisperaSelPub,
 		QUICAddr:      m.config.WhisperaQUICAddr,
 		OnQUICConn:    s.adoptDatagramConn,
 	}
@@ -264,4 +286,3 @@ func (m *Manager) DatagramClient(addr string) (*quic.DatagramClient, bool) {
 	s.mu.Unlock()
 	return gd, gd != nil
 }
-

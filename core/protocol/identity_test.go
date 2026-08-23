@@ -56,10 +56,10 @@ func TestVerifyByKeyRoundTrip(t *testing.T) {
 	const sni = "53.img.avito.st"
 	der, pin := buildBoundCert(t, id, sni)
 
-	if err := certVerifier("", id.PubB64(), sni)([][]byte{der}, nil); err != nil {
+	if err := certVerifier("", id.PubB64(), sni, nil)([][]byte{der}, nil); err != nil {
 		t.Fatalf("verify-by-key should accept a bound cert: %v", err)
 	}
-	if err := certVerifier("", id.PubB64(), "other.example")([][]byte{der}, nil); err == nil {
+	if err := certVerifier("", id.PubB64(), "other.example", nil)([][]byte{der}, nil); err == nil {
 		t.Fatal("verify-by-key must reject a binding for a different SNI")
 	}
 
@@ -67,11 +67,11 @@ func TestVerifyByKeyRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := certVerifier("", other.PubB64(), sni)([][]byte{der}, nil); err == nil {
+	if err := certVerifier("", other.PubB64(), sni, nil)([][]byte{der}, nil); err == nil {
 		t.Fatal("verify-by-key must reject a binding from a different identity")
 	}
 
-	if err := certVerifier(pin, id.PubB64(), sni)([][]byte{der}, nil); err != nil {
+	if err := certVerifier(pin, id.PubB64(), sni, nil)([][]byte{der}, nil); err != nil {
 		t.Fatalf("pin+idpub should accept: %v", err)
 	}
 }
@@ -80,17 +80,17 @@ func TestVerifyByKeyPinFallback(t *testing.T) {
 	const sni = "53.img.avito.st"
 	der, pin := buildBoundCert(t, nil, sni)
 
-	if err := certVerifier(pin, "", sni)([][]byte{der}, nil); err != nil {
+	if err := certVerifier(pin, "", sni, nil)([][]byte{der}, nil); err != nil {
 		t.Fatalf("pin-only must accept an unbound cert with matching pin: %v", err)
 	}
 	id, err := LoadOrCreateCertIdentity(filepath.Join(t.TempDir(), "id.key"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := certVerifier(pin, id.PubB64(), sni)([][]byte{der}, nil); err != nil {
+	if err := certVerifier(pin, id.PubB64(), sni, nil)([][]byte{der}, nil); err != nil {
 		t.Fatalf("unbound cert should still pass via pin fallback: %v", err)
 	}
-	if err := certVerifier("", id.PubB64(), sni)([][]byte{der}, nil); err == nil {
+	if err := certVerifier("", id.PubB64(), sni, nil)([][]byte{der}, nil); err == nil {
 		t.Fatal("unbound cert with idpub and no pin must be rejected")
 	}
 }

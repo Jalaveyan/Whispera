@@ -36,6 +36,7 @@ type ConnectionKey struct {
 	WhisperaQUICAddr string `json:"whispera_quic_addr,omitempty"`
 	WhisperaCertPin  string `json:"whispera_pin,omitempty"`
 	WhisperaIDPub    string `json:"whispera_idpub,omitempty"`
+	WhisperaSelPub   string `json:"whispera_selpub,omitempty"`
 	WhisperaFPRaw    string `json:"tls_fp_raw,omitempty"`
 
 	ChameleonAddr string `json:"chameleon_addr,omitempty"`
@@ -55,20 +56,6 @@ type ConnectionKey struct {
 type transportTraits struct {
 	udpOnly       bool
 	primaryServer func(ck *ConnectionKey) string
-}
-type KeyGenOptions struct {
-	Name              string
-	KeyID             string
-	ExpiresAt         int64
-	ObfsProfile       string
-	ObfsPreset        string
-	Transport         string
-	ASNBypass         bool
-	TLSFingerprint    string
-	DefaultMarionette string
-	DomainFront       string
-	RussianService    string
-	TransportConfig   map[string]interface{}
 }
 
 func (ck *ConnectionKey) IsExpired() bool {
@@ -262,7 +249,6 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		PSK:              ck.PSK,
 		ServerPub:        ck.ServerPub,
 		ObfsPreset:       ck.ObfsPreset,
-		AppProfile:       ck.ObfsProfile,
 		RussianService:   ck.RussianService,
 		TransportConfig:  ck.TransportConfig,
 		Transport:        ck.Transport,
@@ -271,6 +257,7 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		WhisperaQUICAddr: ck.WhisperaQUICAddr,
 		WhisperaCertPin:  ck.WhisperaCertPin,
 		WhisperaIDPub:    ck.WhisperaIDPub,
+		WhisperaSelPub:   ck.WhisperaSelPub,
 		WhisperaFPRaw:    ck.WhisperaFPRaw,
 		GRPCAddr:         ck.GRPCAddr,
 		GRPCServerName:   ck.GRPCServerName,
@@ -286,12 +273,8 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 	if ck.EnableASNBypass {
 		cfg.ASNBypass = &ClientASNBypassConfig{
 			Enabled:         true,
-			Strategy:        "tls_masquerade",
 			TLSFingerprint:  ck.TLSFingerprint,
 			DomainFrontHost: ck.DomainFrontHost,
-		}
-		if ck.DomainFrontHost != "" {
-			cfg.ASNBypass.Strategy = "domain_fronting"
 		}
 	}
 

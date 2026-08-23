@@ -3,7 +3,9 @@ package quic
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,16 +42,23 @@ func newDecoySession(listenConn net.PacketConn, clientAddr net.Addr, target stri
 }
 
 func (s *decoySession) pump(listenConn net.PacketConn, clientAddr net.Addr) {
+	defer func() {
+		if r := recover(); r != nil {
+			traceLog.Errorf("PANIC in quic decoy pump: %v\n%s", r, debug.Stack())
+		}
+	}()
 	defer s.Close()
 	buf := make([]byte, 65535)
 	for {
 		_ = s.upstream.SetReadDeadline(time.Now().Add(quicCamoIdleTimeout))
 		n, err := s.upstream.Read(buf)
-		if err != nil {
-			return
+		if n > 0 {
+			atomic.StoreInt64(&s.lastActive, time.Now().UnixNano())
+			if _, werr := listenConn.WriteTo(buf[:n], clientAddr); werr != nil {
+				return
+			}
 		}
-		atomic.StoreInt64(&s.lastActive, time.Now().UnixNano())
-		if _, err := listenConn.WriteTo(buf[:n], clientAddr); err != nil {
+		if err != nil {
 			return
 		}
 	}
@@ -70,9 +79,10 @@ func (s *decoySession) Close() {
 
 type camoConn struct {
 	net.PacketConn
-	keysFn    func() [][]byte
-	rateAllow func(remote string) bool
-	decoyAddr func(sni string) string
+	keysFn     func() [][]byte
+	bySelector func(random, keyShare []byte) bool
+	rateAllow  func(remote string) bool
+	decoyAddr  func(sni string) string
 
 	mu            sync.Mutex
 	realPeers     map[string]time.Time
@@ -80,16 +90,34 @@ type camoConn struct {
 	lastClean     time.Time
 }
 
-func NewCamoConn(inner net.PacketConn, keysFn func() [][]byte, decoyAddr func(string) string, rateAllow func(string) bool) *camoConn {
+func (c *camoConn) authenticate(parsed *parsedQUICInitial) bool {
+	if c.bySelector != nil && c.bySelector(parsed.random, parsed.keyShare) {
+		return true
+	}
+	return camo.MarkerMatches(c.keysFn(), parsed.random, parsed.keyShare)
+}
+
+func NewCamoConn(inner net.PacketConn, keysFn func() [][]byte, bySelector func(random, keyShare []byte) bool, decoyAddr func(string) string, rateAllow func(string) bool) *camoConn {
 	return &camoConn{
 		PacketConn:    inner,
 		keysFn:        keysFn,
+		bySelector:    bySelector,
 		rateAllow:     rateAllow,
 		decoyAddr:     decoyAddr,
 		realPeers:     make(map[string]time.Time),
 		decoySessions: make(map[string]*decoySession),
 		lastClean:     time.Now(),
 	}
+}
+
+func parseInitialSafely(packet []byte) (parsed *parsedQUICInitial, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			parsed, err = nil, fmt.Errorf("whispera: quic initial parse panicked: %v", r)
+			traceLog.Errorw("quic_initial_parse_panic", "err", fmt.Sprint(r), "size", len(packet))
+		}
+	}()
+	return parseQUICInitialClientHello(packet)
 }
 
 func (c *camoConn) ReadFrom(p []byte) (int, net.Addr, error) {
@@ -118,8 +146,8 @@ func (c *camoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 			continue
 		}
 
-		parsed, perr := parseQUICInitialClientHello(p[:n])
-		if perr == nil && camo.MarkerMatches(c.keysFn(), parsed.random, parsed.keyShare) {
+		parsed, perr := parseInitialSafely(p[:n])
+		if perr == nil && c.authenticate(parsed) {
 			c.mu.Lock()
 			c.realPeers[key] = time.Now().Add(quicCamoTrustWindow)
 			c.mu.Unlock()

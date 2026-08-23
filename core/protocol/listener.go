@@ -11,7 +11,9 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	quicpkg "github.com/nekoskin/whispera/core/protocol/quic"
@@ -37,48 +39,7 @@ func (serverErrLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func buildServerTLSConfig(cfg *ServerConfig) (*tls.Config, error) {
-	cdnCipherSuites := []uint16{
-		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
-		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-	}
-	cdnCurves := []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}
-
-	if cfg.TLSCert != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
-		if err != nil {
-			return nil, fmt.Errorf("whispera: load cert: %w", err)
-		}
-		decoyCertDir := cfg.DecoyCertDir
-		return &tls.Config{
-			Certificates:           []tls.Certificate{cert},
-			NextProtos:             []string{"h2", "http/1.1"},
-			MinVersion:             tls.VersionTLS13,
-			CipherSuites:           cdnCipherSuites,
-			CurvePreferences:       cdnCurves,
-			SessionTicketsDisabled: SpliceEnabled(),
-			GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
-				return nil, nil
-			},
-			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-				if hello.ServerName != "" {
-					if c, ok := loadSNICert(decoyCertDir, hello.ServerName); ok {
-						return c, nil
-					}
-				}
-				return &cert, nil
-			},
-		}, nil
-	}
-
-	if cfg.Domain == "" {
-		return nil, fmt.Errorf("whispera: neither TLSCert nor Domain configured")
-	}
-
+func newACMEManager(cfg *ServerConfig) *autocert.Manager {
 	cacheDir := cfg.ACMEDir
 	if cacheDir == "" {
 		cacheDir = "/var/lib/whispera/acme"
@@ -88,25 +49,104 @@ func buildServerTLSConfig(cfg *ServerConfig) (*tls.Config, error) {
 		HostPolicy: autocert.HostWhitelist(cfg.Domain),
 		Cache:      autocert.DirCache(cacheDir),
 	}
-	go func() { _ = http.ListenAndServe(":80", m.HTTPHandler(nil)) }()
+	go func() {
+		if err := http.ListenAndServe(":80", m.HTTPHandler(nil)); err != nil {
+			traceLog.Errorw("acme_http_listener_failed", "err", err.Error(),
+				"hint", "port 80 is needed for the http-01 challenge; certificate renewal will fail")
+		}
+	}()
+	return m
+}
 
-	tlsCfg := m.TLSConfig()
+var cdnCipherSuites = []uint16{
+	tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+	tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+	tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+	tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+}
+
+var cdnCurves = []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384}
+
+func sniCertResolver(cfg *ServerConfig, static *tls.Certificate) func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	decoyCertDir, domain := cfg.DecoyCertDir, cfg.Domain
+
+	var acmeGet func(*tls.ClientHelloInfo) (*tls.Certificate, error)
+	if domain != "" {
+		acmeGet = newACMEManager(cfg).GetCertificate
+	}
+
+	return func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		if hello.ServerName != "" {
+			if acmeGet != nil && hello.ServerName == domain {
+				return acmeGet(hello)
+			}
+			var gen uint64
+			if cfg.UsersVersion != nil {
+				gen = cfg.UsersVersion()
+			}
+			if c, ok := loadSNICert(decoyCertDir, hello.ServerName, gen); ok {
+				return c, nil
+			}
+		}
+		if acmeGet != nil {
+			patched := *hello
+			patched.ServerName = domain
+			return acmeGet(&patched)
+		}
+		return static, nil
+	}
+}
+
+func staticCertTLSConfig(cfg *ServerConfig) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+	if err != nil {
+		return nil, fmt.Errorf("whispera: load cert: %w", err)
+	}
+	return &tls.Config{
+		Certificates:           []tls.Certificate{cert},
+		NextProtos:             []string{"h2", "http/1.1"},
+		MinVersion:             tls.VersionTLS13,
+		CipherSuites:           cdnCipherSuites,
+		CurvePreferences:       cdnCurves,
+		SessionTicketsDisabled: SpliceEnabled(),
+		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			return nil, nil
+		},
+		GetCertificate: sniCertResolver(cfg, &cert),
+	}, nil
+}
+
+func acmeTLSConfig(cfg *ServerConfig) *tls.Config {
+	tlsCfg := newACMEManager(cfg).TLSConfig()
 	tlsCfg.NextProtos = []string{"h2", "http/1.1"}
 	tlsCfg.MinVersion = tls.VersionTLS12
 	tlsCfg.CipherSuites = cdnCipherSuites
 	tlsCfg.CurvePreferences = cdnCurves
 	tlsCfg.SessionTicketsDisabled = SpliceEnabled()
+
 	domain := cfg.Domain
 	origGet := tlsCfg.GetCertificate
 	tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		if hello.ServerName == "" || hello.ServerName != domain {
-			patched := *hello
-			patched.ServerName = domain
-			return origGet(&patched)
+		if hello.ServerName == domain {
+			return origGet(hello)
 		}
-		return origGet(hello)
+		patched := *hello
+		patched.ServerName = domain
+		return origGet(&patched)
 	}
-	return tlsCfg, nil
+	return tlsCfg
+}
+
+func buildServerTLSConfig(cfg *ServerConfig) (*tls.Config, error) {
+	if cfg.TLSCert != "" {
+		return staticCertTLSConfig(cfg)
+	}
+	if cfg.Domain == "" {
+		return nil, fmt.Errorf("whispera: neither TLSCert nor Domain configured")
+	}
+	return acmeTLSConfig(cfg), nil
 }
 
 func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux, tlsCfg *tls.Config, camoKeys func() [][]byte, camoAddr func(sni string) string) (*http3.Server, []*http3.Server) {
@@ -130,10 +170,16 @@ func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux
 	serve := func(srv *http3.Server, addr string) {
 		pconn, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp", addr)
 		if err != nil {
+			traceLog.Errorw("quic_listen_failed", "addr", addr, "err", err.Error(),
+				"hint", "the datagram lane is down; clients fall back to TCP only")
 			return
 		}
-		camoConn := quicpkg.NewCamoConn(pconn, camoKeys, camoAddr, decoyIPRateAllow)
-		go func() { _ = srv.Serve(camoConn) }()
+		camoConn := quicpkg.NewCamoConn(pconn, camoKeys, quicSelector(cfg), camoAddr, decoyIPRateAllow)
+		go func() {
+			if err := srv.Serve(camoConn); err != nil && ctx.Err() == nil {
+				traceLog.Errorw("quic_serve_stopped", "addr", addr, "err", err.Error())
+			}
+		}()
 	}
 
 	h3srv := newServer()
@@ -185,24 +231,75 @@ func serveBackendH2C(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux)
 	}
 }
 
+func sweepSeenTokens(ctx context.Context, cfg *ServerConfig) {
+	ticker := time.NewTicker(replayWindowSeconds * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cfg.seenTokens.sweep(time.Now().Unix())
+		}
+	}
+}
+
+func newWhisperaHTTPServer(listenAddr string, mux http.Handler, tlsCfg *tls.Config) (*http.Server, error) {
+	srv := &http.Server{
+		Addr:      listenAddr,
+		Handler:   mux,
+		TLSConfig: tlsCfg,
+		ErrorLog:  stdlog.New(serverErrLogWriter{}, "", 0),
+		ConnState: func(c net.Conn, state http.ConnState) {
+			traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", state.String())
+		},
+	}
+	if err := http2.ConfigureServer(srv, &http2.Server{
+		MaxUploadBufferPerConnection: 1 << 28,
+		MaxUploadBufferPerStream:     1 << 26,
+	}); err != nil {
+		return nil, fmt.Errorf("whispera: h2 server config: %w", err)
+	}
+	return srv, nil
+}
+
+func quicSelector(cfg *ServerConfig) func(random, keyShare []byte) bool {
+	return func(random, keyShare []byte) bool {
+		_, ok := resolveBySelector(cfg, random, keyShare)
+		return ok
+	}
+}
+
+func camoTLSListener(base net.Listener, cfg *ServerConfig, tlsCfg *tls.Config, camoKeys func() [][]byte, camoAddr func(string) string) net.Listener {
+	bySelector := func(random, keyShare []byte) (string, []byte, bool) {
+		entry, ok := resolveBySelector(cfg, random, keyShare)
+		return entry.userID, entry.psk, ok
+	}
+	ln := tls.NewListener(newCamouflageListener(base, camoKeys, bySelector, camoAddr), tlsCfg)
+	if perflowEnabled() {
+		return newPerflowMux(ln, cfg)
+	}
+	return ln
+}
+
+func serveExtraListeners(ctx context.Context, cfg *ServerConfig, srv *http.Server, tlsCfg *tls.Config, camoKeys func() [][]byte, camoAddr func(string) string) {
+	for _, extraAddr := range cfg.ExtraListenAddrs {
+		extraLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", extraAddr)
+		if err != nil {
+			traceLog.Warnw("whispera_extra_listen_failed", "addr", extraAddr, "err", err.Error())
+			continue
+		}
+		base := &noDelayListener{TCPListener: extraLn.(*net.TCPListener)}
+		go srv.Serve(camoTLSListener(base, cfg, tlsCfg, camoKeys, camoAddr))
+	}
+}
+
 func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		handleRequest(w, r, cfg)
 	})
-
-	go func() {
-		ticker := time.NewTicker(replayWindowSeconds * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				cfg.seenTokens.sweep(time.Now().Unix())
-			}
-		}
-	}()
+	go sweepSeenTokens(ctx, cfg)
 
 	if cfg.BackendH2CAddr != "" {
 		return serveBackendH2C(ctx, cfg, mux)
@@ -217,22 +314,9 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	if err != nil {
 		return err
 	}
-
-	srv := &http.Server{
-		Addr:      listenAddr,
-		Handler:   mux,
-		TLSConfig: tlsCfg,
-		ErrorLog:  stdlog.New(serverErrLogWriter{}, "", 0),
-		ConnState: func(c net.Conn, state http.ConnState) {
-			traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", state.String())
-		},
-	}
-
-	if err := http2.ConfigureServer(srv, &http2.Server{
-		MaxUploadBufferPerConnection: 1 << 28,
-		MaxUploadBufferPerStream:     1 << 26,
-	}); err != nil {
-		return fmt.Errorf("whispera: h2 server config: %w", err)
+	srv, err := newWhisperaHTTPServer(listenAddr, mux, tlsCfg)
+	if err != nil {
+		return err
 	}
 
 	if cfg.DecoyOrigin != "" {
@@ -247,7 +331,6 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	camoAddr := camoDecoyAddr(cfg.DecoyOrigin)
 
 	h3srv, extraH3srvs := startQUICServers(ctx, cfg, mux, tlsCfg, camoKeys, camoAddr)
-
 	go func() {
 		<-ctx.Done()
 		if h3srv != nil {
@@ -259,29 +342,14 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		srv.Close()
 	}()
 
-	for _, extraAddr := range cfg.ExtraListenAddrs {
-		extraLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", extraAddr)
-		if err != nil {
-			continue
-		}
-		extraBase := &noDelayListener{TCPListener: extraLn.(*net.TCPListener)}
-		var extraTLSLn net.Listener = tls.NewListener(newCamouflageListener(extraBase, camoKeys, camoAddr), tlsCfg)
-		if perflowEnabled() {
-			extraTLSLn = newPerflowMux(extraTLSLn, cfg)
-		}
-		go srv.Serve(extraTLSLn)
-	}
+	serveExtraListeners(ctx, cfg, srv, tlsCfg, camoKeys, camoAddr)
 
 	rawLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("whispera: listen: %w", err)
 	}
-	baseLn := &noDelayListener{TCPListener: rawLn.(*net.TCPListener)}
-	var tlsLn net.Listener = tls.NewListener(newCamouflageListener(baseLn, camoKeys, camoAddr), tlsCfg)
-	if perflowEnabled() {
-		tlsLn = newPerflowMux(tlsLn, cfg)
-	}
-	return srv.Serve(tlsLn)
+	base := &noDelayListener{TCPListener: rawLn.(*net.TCPListener)}
+	return srv.Serve(camoTLSListener(base, cfg, tlsCfg, camoKeys, camoAddr))
 }
 
 func (l *noDelayListener) Accept() (net.Conn, error) {
@@ -327,6 +395,12 @@ func (m *perflowMux) run() {
 }
 
 func (m *perflowMux) classify(c net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			traceLog.Errorw("perflow_classify_panic", "remote", c.RemoteAddr().String(), "err", fmt.Sprint(r), "stack", string(debug.Stack()))
+			c.Close()
+		}
+	}()
 	c.SetReadDeadline(time.Now().Add(perflowPreambleTimeout))
 	var first [1]byte
 	if _, err := io.ReadFull(c, first[:]); err != nil {
@@ -371,43 +445,49 @@ func (m *perflowMux) Close() error {
 }
 
 func handlePerflowConn(c net.Conn, cfg *ServerConfig) {
+	remote := c.RemoteAddr().String()
+	reject := func(reason string, err error) {
+		traceLog.Infow("perflow_preamble_rejected", "remote", remote, "reason", reason, "err", err)
+		c.Close()
+	}
+
 	c.SetReadDeadline(time.Now().Add(perflowPreambleTimeout))
 	sessionID := make([]byte, 16)
 	if _, err := io.ReadFull(c, sessionID); err != nil {
-		c.Close()
+		reject("session_id", err)
 		return
 	}
 	var tl [2]byte
 	if _, err := io.ReadFull(c, tl[:]); err != nil {
-		c.Close()
+		reject("token_length", err)
 		return
 	}
 	tokLen := binary.BigEndian.Uint16(tl[:])
 	if tokLen == 0 || tokLen > 512 {
-		c.Close()
+		reject("token_length_out_of_range", fmt.Errorf("%d", tokLen))
 		return
 	}
 	tok := make([]byte, tokLen)
 	if _, err := io.ReadFull(c, tok); err != nil {
-		c.Close()
+		reject("token", err)
 		return
 	}
 	c.SetReadDeadline(time.Time{})
 
-	secret, userID := resolveSecret(cfg, string(tok), sessionID)
+	secret, userID := resolveSecretFor(cfg, knownUserOf(c), string(tok), sessionID)
 	if secret == nil {
-		c.Close()
+		reject("unknown_token", nil)
 		return
 	}
 	if !cfg.consumeToken(string(tok)) {
-		c.Close()
+		reject("token_replayed", nil)
 		return
 	}
 	if cfg.OnConn == nil {
-		c.Close()
+		reject("no_conn_handler", nil)
 		return
 	}
-	cfg.OnConn(c, userID, secret)
+	cfg.OnConn(AcceptedConn{Conn: c, UserID: userID, SessionID: sessionID, Secret: secret})
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
@@ -480,7 +560,16 @@ func resolveSecret(cfg *ServerConfig, token string, sessionID []byte) ([]byte, s
 	return nil, ""
 }
 
+var lastDriftProbe atomic.Int64
+
+const driftProbeInterval = 60
+
 func probeClockDriftOnFailure(cfg *ServerConfig, token string, sessionID []byte) {
+	now := time.Now().Unix()
+	prev := lastDriftProbe.Load()
+	if now-prev < driftProbeInterval || !lastDriftProbe.CompareAndSwap(prev, now) {
+		return
+	}
 	if len(cfg.SharedSecret) == 32 {
 		k := DeriveKeys(cfg.SharedSecret)
 		if drift, found := ProbeClockDrift(k.Auth, token, sessionID); found {

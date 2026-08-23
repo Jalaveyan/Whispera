@@ -1,9 +1,12 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
+	"crypto/ecdh"
 	crand "crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -22,7 +25,6 @@ import (
 
 	"github.com/nekoskin/whispera/core/protocol/camo"
 	quicpkg "github.com/nekoskin/whispera/core/protocol/quic"
-
 
 	quicgo "github.com/quic-go/quic-go"
 	http3 "github.com/quic-go/quic-go/http3"
@@ -69,6 +71,10 @@ type livenessConn struct {
 	closedByUs    bool
 	fired         bool
 }
+
+func (c *livenessConn) NetConn() net.Conn { return c.Conn }
+
+func (c *livenessConn) Note(err error) { c.note(err) }
 
 func (c *livenessConn) markEstablished() {
 	c.mu.Lock()
@@ -332,7 +338,6 @@ func (h *HandshakeStrategy) Load(path string) error {
 	return nil
 }
 
-
 func (h *HandshakeStrategy) ensure(ctx string, arms int) {
 	if len(h.sum[ctx]) < arms {
 		s := make([]float64, arms)
@@ -499,6 +504,36 @@ func (d *clientDialer) dialRaw(ctx context.Context, network, addr string) (net.C
 	return rawConn, nil
 }
 
+func (d *clientDialer) selectorFor(uConn *utls.UConn, keyShare []byte) ([camo.SelectorSize]byte, bool) {
+	var none [camo.SelectorSize]byte
+	if d.cfg.ServerSelPub == "" || len(d.cfg.SharedSecret) != 32 {
+		return none, false
+	}
+	rawPub, err := base64.StdEncoding.DecodeString(d.cfg.ServerSelPub)
+	if err != nil || len(rawPub) != 32 {
+		return none, false
+	}
+	serverPub, err := ecdh.X25519().NewPublicKey(rawPub)
+	if err != nil {
+		return none, false
+	}
+	ks := uConn.HandshakeState.State13.KeyShareKeys
+	if ks == nil {
+		return none, false
+	}
+	for _, cand := range []*ecdh.PrivateKey{ks.Ecdhe, ks.MlkemEcdhe} {
+		if cand == nil || !bytes.Equal(cand.PublicKey().Bytes(), keyShare) {
+			continue
+		}
+		sel, err := camo.BuildSelector(d.cfg.SharedSecret, cand, serverPub)
+		if err != nil {
+			return none, false
+		}
+		return sel, true
+	}
+	return none, false
+}
+
 func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSpec bool) (*utls.UConn, error) {
 	uCfg := &utls.Config{
 		ServerName:                         d.sni,
@@ -506,7 +541,7 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 		PreferSkipResumptionOnNilExtension: true,
 	}
 	if d.cfg.ServerCertPin != "" || d.cfg.ServerIDPub != "" {
-		uCfg.VerifyPeerCertificate = certVerifier(d.cfg.ServerCertPin, d.cfg.ServerIDPub, d.sni)
+		uCfg.VerifyPeerCertificate = certVerifier(d.cfg.ServerCertPin, d.cfg.ServerIDPub, d.sni, d.cfg.OnServerSelPub)
 	}
 	if d.camoKey == nil {
 		if sc, ok := d.cfg.SessionCache.(utls.ClientSessionCache); ok {
@@ -537,7 +572,9 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 		}
 		spec = &s
 	}
-	fingerprint.DropPQKeyShares(spec)
+	if fingerprint.DropPQEnabled() {
+		fingerprint.DropPQKeyShares(spec)
+	}
 	uConn := utls.UClient(rawConn, uCfg, utls.HelloCustom)
 	if err := uConn.ApplyPreset(spec); err != nil {
 		return nil, fmt.Errorf("whispera: apply fingerprint: %w", err)
@@ -548,8 +585,12 @@ func (d *clientDialer) tlsHandshake(ctx context.Context, rawConn net.Conn, useSp
 	if d.camoKey != nil {
 		if hello := uConn.HandshakeState.Hello; hello != nil && len(hello.Random) == 32 {
 			if keyShare := camo.ExtractX25519KeyShare(hello.KeyShares); len(keyShare) > 0 {
-				marker := camo.BuildMarker(d.camoKey, keyShare)
-				copy(hello.Random, marker[:])
+				if sel, ok := d.selectorFor(uConn, keyShare); ok {
+					camo.WriteRandom(hello.Random, sel, d.camoKey, time.Now().Unix()/camo.WindowSeconds, keyShare)
+				} else {
+					marker := camo.BuildMarker(d.camoKey, keyShare)
+					copy(hello.Random, marker[:])
+				}
 			}
 		}
 	}
@@ -678,7 +719,7 @@ func newQUICTransport(cfg *ClientConfig, sni string) http.RoundTripper {
 		InsecureSkipVerify: true,
 	}
 	if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
-		tlsCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
+		tlsCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni, cfg.OnServerSelPub)
 	}
 	return &http3.Transport{
 		TLSClientConfig:    tlsCfg,

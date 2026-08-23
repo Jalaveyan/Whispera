@@ -15,10 +15,7 @@ import (
 	"github.com/nekoskin/whispera/common/dns"
 	"github.com/nekoskin/whispera/common/split_tunnel"
 	"github.com/nekoskin/whispera/core/config"
-	"github.com/nekoskin/whispera/core/crypto"
-	"github.com/nekoskin/whispera/core/handshake"
 	"github.com/nekoskin/whispera/core/protocol/fingerprint"
-	"github.com/nekoskin/whispera/core/session"
 	"github.com/nekoskin/whispera/core/socks5"
 	"github.com/nekoskin/whispera/core/tunnel"
 )
@@ -81,78 +78,75 @@ func geoIPCachePath() string {
 	return filepath.Join(dir, "whispera", "geoip-ru.txt")
 }
 
-func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
-	resolvedTransport := cfg.Transport
-	if resolvedTransport == "" {
-		resolvedTransport = *transport
+func resolveServerAddress(cfg *config.ClientConfig, resolvedTransport string) string {
+	addr := pickServerAddress(cfg, resolvedTransport)
+	if addr == "" {
+		addr = cfg.Server
 	}
+	if addr == "" {
+		return ""
+	}
+	return addr
+}
 
-	serverAddress := pickServerAddress(cfg, resolvedTransport)
-	if serverAddress == "" {
-		serverAddress = cfg.Server
-	}
-	if serverAddress != "" {
-		if _, _, err := net.SplitHostPort(serverAddress); err != nil {
-			serverAddress = net.JoinHostPort(serverAddress, "8443")
-		}
-	}
-
-	asnBypassEnabled := *asnBypass
-	asnBypassFingerprint := *tlsFingerprint
+func resolveFingerprintSettings(cfg *config.ClientConfig) (bool, string) {
+	enabled := *asnBypass
+	name := *tlsFingerprint
 	if cfg.ASNBypass != nil && cfg.ASNBypass.Enabled {
-		asnBypassEnabled = true
+		enabled = true
 		if cfg.ASNBypass.TLSFingerprint != "" {
-			asnBypassFingerprint = cfg.ASNBypass.TLSFingerprint
+			name = cfg.ASNBypass.TLSFingerprint
 		}
 	}
 
-	if *forceFingerprint == "" && asnBypassFingerprint != "" && !fingerprint.Generating() {
-		fingerprint.SetForced(asnBypassFingerprint)
+	if *forceFingerprint != "" {
+		return enabled, name
 	}
-	if *forceFingerprint == "" && cfg.WhisperaFPRaw != "" {
+	if name != "" && !fingerprint.Generating() {
+		fingerprint.SetForced(name)
+	}
+	if cfg.WhisperaFPRaw != "" {
 		if raw, err := base64.StdEncoding.DecodeString(cfg.WhisperaFPRaw); err == nil {
 			fingerprint.SetForcedRaw(raw)
 		}
 	}
+	return enabled, name
+}
 
-	var whisperaSecret []byte
-	var tunnelPSK []byte
-
-	if cfg.PSK != "" {
-		if pskBytes, err := base64.StdEncoding.DecodeString(cfg.PSK); err == nil && len(pskBytes) == 32 {
-			tunnelPSK = pskBytes
-			if cfg.WhisperaAddr != "" {
-				whisperaSecret = pskBytes
-			}
-		}
+func resolveKeys(cfg *config.ClientConfig) (whisperaSecret, tunnelPSK []byte) {
+	if cfg.PSK == "" {
+		return nil, nil
 	}
-
-	if *russianService != "" {
-		cfg.RussianService = *russianService
-		stdlog.Printf("Override: Russian Service masquerading enabled: %s", cfg.RussianService)
+	pskBytes, err := base64.StdEncoding.DecodeString(cfg.PSK)
+	if err != nil || len(pskBytes) != 32 {
+		return nil, nil
 	}
-
-	activeForceSNI := *forceSNIFlag
-	if activeForceSNI == "" {
-		activeForceSNI = cfg.ForceSNI
+	if cfg.WhisperaAddr != "" {
+		whisperaSecret = pskBytes
 	}
-	if activeForceSNI != "" {
-		globalForceSNI.Store(activeForceSNI)
-		stdlog.Printf("SNI override active: all connections will use SNI=%q", activeForceSNI)
-	}
+	return whisperaSecret, pskBytes
+}
 
-	fallbackTCP := cfg.ServerTCP
-	if fallbackTCP == "" {
-		fallbackTCP = cfg.Server
+func applySNIOverride(cfg *config.ClientConfig) {
+	sni := *forceSNIFlag
+	if sni == "" {
+		sni = cfg.ForceSNI
 	}
+	if sni == "" {
+		return
+	}
+	globalForceSNI.Store(sni)
+	stdlog.Printf("SNI override active: all connections will use SNI=%q", sni)
+}
 
-	activeTransport := cfg.Transport
-	if activeTransport == "" {
-		activeTransport = *transport
+func resolveTransportList(cfg *config.ClientConfig) []string {
+	active := cfg.Transport
+	if active == "" {
+		active = *transport
 	}
 
 	var transports []string
-	for _, t := range strings.Split(activeTransport, ",") {
+	for _, t := range strings.Split(active, ",") {
 		if t = strings.TrimSpace(t); t != "" {
 			transports = append(transports, t)
 		}
@@ -163,15 +157,30 @@ func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
 	mrand.Shuffle(len(transports), func(i, j int) {
 		transports[i], transports[j] = transports[j], transports[i]
 	})
+	return transports
+}
+
+func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
+	resolvedTransport := cfg.Transport
+	if resolvedTransport == "" {
+		resolvedTransport = *transport
+	}
+
+	asnBypassEnabled, _ := resolveFingerprintSettings(cfg)
+	whisperaSecret, tunnelPSK := resolveKeys(cfg)
+
+	if *russianService != "" {
+		cfg.RussianService = *russianService
+		stdlog.Printf("Override: Russian Service masquerading enabled: %s", cfg.RussianService)
+	}
+	applySNIOverride(cfg)
 
 	return &clientRuntimeParams{
-		serverAddress:        serverAddress,
-		fallbackTCP:          fallbackTCP,
-		asnBypassEnabled:     asnBypassEnabled,
-		asnBypassFingerprint: asnBypassFingerprint,
-		whisperaSecret:       whisperaSecret,
-		tunnelPSK:            tunnelPSK,
-		transports:           transports,
+		serverAddress:    resolveServerAddress(cfg, resolvedTransport),
+		asnBypassEnabled: asnBypassEnabled,
+		whisperaSecret:   whisperaSecret,
+		tunnelPSK:        tunnelPSK,
+		transports:       resolveTransportList(cfg),
 	}
 }
 
@@ -188,7 +197,6 @@ func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver, *
 	socksMod, _ := socks5.New(&socks5.Config{
 		ListenAddr:    *socksAddr,
 		Debug:         true,
-		VPNServerAddr: cfg.Server,
 		MTU:           cfg.MTU,
 		BypassFunc:    stm.ShouldBypass,
 		BlockTorrents: true,
@@ -208,27 +216,16 @@ func setupNetworking(cfg *config.ClientConfig) (*socks5.Module, *dns.Resolver, *
 	return socksMod, dnsMod, stm
 }
 
-func setupCoreModules() (*handshake.Handler, *crypto.Provider) {
-	cryptoMod, _ := crypto.New(nil)
-	sessMod, _ := session.New(&session.Config{MaxSessions: 10})
-	hsMod, _ := handshake.New(&handshake.Config{
-		RateLimit: 100,
-		RateBurst: 50,
-		Timeout:   10 * time.Second,
-	})
-	hsMod.SetDependencies(cryptoMod, sessMod)
-
+func logDeviceID() {
 	if !*hwidFlag {
 		stdlog.Printf("HWID disabled: using a random per-connection ID")
-		return hsMod, cryptoMod
+		return
 	}
 	if deviceID, err := loadOrCreateDeviceID(); err == nil {
-		hsMod.SetDeviceID(deviceID)
 		stdlog.Printf("Device ID: %x", deviceID[:8])
 	} else {
 		stdlog.Printf("WARNING: Could not load/create device ID: %v", err)
 	}
-	return hsMod, cryptoMod
 }
 
 func whisperaOptions(cfg *config.ClientConfig, whisperaSecret []byte) tunnel.WhisperaOptions {
@@ -240,6 +237,7 @@ func whisperaOptions(cfg *config.ClientConfig, whisperaSecret []byte) tunnel.Whi
 		WhisperaQUICAddr: cfg.WhisperaQUICAddr,
 		WhisperaCertPin:  cfg.WhisperaCertPin,
 		WhisperaIDPub:    cfg.WhisperaIDPub,
+		WhisperaSelPub:   cfg.WhisperaSelPub,
 		EnableGRPC:       cfg.GRPCAddr != "",
 		GRPCAddr:         cfg.GRPCAddr,
 		GRPCServerName:   cfg.GRPCServerName,

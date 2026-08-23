@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -104,7 +105,12 @@ type prefixConn struct {
 	net.Conn
 	prefix []byte
 	off    int
+
+	knownUser string
+	knownPSK  []byte
 }
+
+func (c *prefixConn) NetConn() net.Conn { return c.Conn }
 
 func (c *prefixConn) Read(b []byte) (int, error) {
 	if c.off < len(c.prefix) {
@@ -163,20 +169,25 @@ func camoDecoyAddr(decoyOrigin string) func(sni string) string {
 
 type camouflageListener struct {
 	net.Listener
-	ready     chan net.Conn
-	closed    chan struct{}
-	closeOnce sync.Once
-	keysFn    func() [][]byte
-	decoyAddr func(sni string) string
+	ready      chan net.Conn
+	closed     chan struct{}
+	closeOnce  sync.Once
+	keysFn     func() [][]byte
+	bySelector func(random, keyShare []byte) (string, []byte, bool)
+	decoyAddr  func(sni string) string
+
+	driftMu   sync.Mutex
+	driftLast time.Time
 }
 
-func newCamouflageListener(inner net.Listener, keysFn func() [][]byte, decoyAddr func(string) string) *camouflageListener {
+func newCamouflageListener(inner net.Listener, keysFn func() [][]byte, bySelector func(random, keyShare []byte) (string, []byte, bool), decoyAddr func(string) string) *camouflageListener {
 	l := &camouflageListener{
-		Listener:  inner,
-		ready:     make(chan net.Conn),
-		closed:    make(chan struct{}),
-		keysFn:    keysFn,
-		decoyAddr: decoyAddr,
+		Listener:   inner,
+		ready:      make(chan net.Conn),
+		closed:     make(chan struct{}),
+		keysFn:     keysFn,
+		bySelector: bySelector,
+		decoyAddr:  decoyAddr,
 	}
 	go l.acceptLoop()
 	return l
@@ -207,9 +218,20 @@ func init() {
 }
 
 const (
-	decoyRateWindow = 10 * time.Second
-	decoyRateMax    = 20
+	decoyRateWindow     = 10 * time.Second
+	decoyRateMax        = 20
+	markerDriftInterval = time.Minute
 )
+
+func (l *camouflageListener) driftProbeDue() bool {
+	l.driftMu.Lock()
+	defer l.driftMu.Unlock()
+	if time.Since(l.driftLast) < markerDriftInterval {
+		return false
+	}
+	l.driftLast = time.Now()
+	return true
+}
 
 func decoyIPRateAllow(remote string) bool {
 	ip := remote
@@ -243,17 +265,30 @@ func decoyIPRateAllow(remote string) bool {
 
 func (l *camouflageListener) handle(conn net.Conn) {
 	remote := conn.RemoteAddr().String()
-	keys := l.keysFn()
-	ph, err := peekClientHello(conn)
-	if err == nil && camo.MarkerMatches(keys, ph.random, ph.keyShare) {
-		traceLog.Infow("camo_authenticated", "remote", remote, "sni", ph.sni)
-		pc := &prefixConn{Conn: conn, prefix: ph.raw}
-		select {
-		case l.ready <- pc:
-		case <-l.closed:
+	defer func() {
+		if r := recover(); r != nil {
+			traceLog.Errorw("camo_handle_panic", "remote", remote, "err", fmt.Sprint(r), "stack", string(debug.Stack()))
 			conn.Close()
 		}
-		return
+	}()
+	ph, err := peekClientHello(conn)
+
+	if err == nil && l.bySelector != nil {
+		if userID, psk, ok := l.bySelector(ph.random, ph.keyShare); ok {
+			traceLog.Infow("camo_authenticated", "remote", remote, "sni", ph.sni, "via", "selector", "user", userID)
+			l.pass(conn, ph, userID, psk)
+			return
+		}
+	}
+
+	var keys [][]byte
+	if err == nil {
+		keys = l.keysFn()
+		if camo.MarkerMatches(keys, ph.random, ph.keyShare) {
+			traceLog.Infow("camo_authenticated", "remote", remote, "sni", ph.sni, "via", "scan")
+			l.pass(conn, ph, "", nil)
+			return
+		}
 	}
 	if len(ph.raw) == 0 {
 		traceLog.Infow("camo_no_hello", "remote", remote, "err", err)
@@ -265,7 +300,10 @@ func (l *camouflageListener) handle(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	if err == nil {
+	if err == nil && l.driftProbeDue() {
+		if keys == nil {
+			keys = l.keysFn()
+		}
 		if drift, found := camo.MarkerDrift(keys, ph.random, ph.keyShare); found {
 			traceLog.Warnw("camo_marker_drift_suspected", "remote", remote, "sni", ph.sni,
 				"drift_windows", drift, "drift_seconds", drift*camoWindowSeconds)
@@ -287,6 +325,15 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	relayToOrigin(conn, ph.raw, target)
 }
 
+func (l *camouflageListener) pass(conn net.Conn, ph *peekedHello, userID string, psk []byte) {
+	pc := &prefixConn{Conn: conn, prefix: ph.raw, knownUser: userID, knownPSK: psk}
+	select {
+	case l.ready <- pc:
+	case <-l.closed:
+		conn.Close()
+	}
+}
+
 func (l *camouflageListener) Accept() (net.Conn, error) {
 	select {
 	case conn := <-l.ready:
@@ -302,18 +349,5 @@ func (l *camouflageListener) Close() error {
 }
 
 func camoKeysFunc(cfg *ServerConfig) func() [][]byte {
-	return func() [][]byte {
-		keys := make([][]byte, 0, 4)
-		if len(cfg.SharedSecret) == 32 {
-			keys = append(keys, camo.DeriveKey(cfg.SharedSecret))
-		}
-		if cfg.GetUsers != nil {
-			for _, u := range cfg.GetUsers() {
-				if len(u.PSK) == 32 {
-					keys = append(keys, camo.DeriveKey(u.PSK))
-				}
-			}
-		}
-		return keys
-	}
+	return func() [][]byte { return cfg.selectors.camoKeys(cfg) }
 }
