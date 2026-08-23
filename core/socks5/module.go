@@ -25,10 +25,9 @@ const (
 )
 
 type Config struct {
-	ListenAddr    string
-	Debug         bool
-	VPNServerAddr string
-	MTU           int
+	ListenAddr string
+	Debug      bool
+	MTU        int
 
 	BypassFunc func(addr string, port uint16) bool
 
@@ -251,25 +250,126 @@ func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error
 	return nil
 }
 
+type udpRelay struct {
+	module     *Module
+	udpConn    *net.UDPConn
+	clientAddr *net.UDPAddr
+
+	mu        sync.Mutex
+	streams   map[string]net.Conn
+	rtTargets map[string]func()
+	lane      *quic.DatagramClient
+}
+
+func (r *udpRelay) closeAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.streams {
+		s.Close()
+	}
+	for _, unregister := range r.rtTargets {
+		unregister()
+	}
+}
+
+func (r *udpRelay) switchLane(t TunnelManager, host string) {
+	if t == nil {
+		return
+	}
+	lane, _ := t.DatagramClient(host)
+	if lane == r.lane {
+		return
+	}
+	for key, unregister := range r.rtTargets {
+		unregister()
+		delete(r.rtTargets, key)
+	}
+	r.lane = lane
+}
+
+func (r *udpRelay) openTarget(t TunnelManager, key, host string, port uint16) (net.Conn, bool, bool) {
+	if stream, ok := r.streams[key]; ok {
+		return stream, false, true
+	}
+	if _, ok := r.rtTargets[key]; ok {
+		return nil, true, true
+	}
+	if t == nil || !t.IsConnected() {
+		return nil, false, false
+	}
+
+	if r.lane != nil {
+		ch, unregister := r.lane.RegisterTarget(host, port)
+		r.rtTargets[key] = unregister
+		go pumpRTDatagramReplies(ch, r.udpConn, r.clientAddr, host, port)
+		return nil, true, true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	stream, err := t.OpenStream(ctx, 0x11, host, port)
+	cancel()
+	if err != nil {
+		stdlog.Printf("[SOCKS5-UDP] DialStream %s: %v", key, err)
+		return nil, false, false
+	}
+	r.streams[key] = stream
+	go pumpUDPStreamReplies(stream, r.udpConn, r.clientAddr, host, port, func() {
+		r.dropStream(key, stream)
+	})
+	return stream, false, true
+}
+
+func (r *udpRelay) dropStream(key string, stream net.Conn) {
+	r.mu.Lock()
+	delete(r.streams, key)
+	r.mu.Unlock()
+	stream.Close()
+}
+
+func (r *udpRelay) forward(host string, port uint16, payload []byte) {
+	key := fmt.Sprintf("%s:%d", host, port)
+
+	r.module.mu.RLock()
+	t := r.module.tunnel
+	r.module.mu.RUnlock()
+
+	r.mu.Lock()
+	r.switchLane(t, host)
+	stream, viaDatagram, ok := r.openTarget(t, key, host, port)
+	lane := r.lane
+	r.mu.Unlock()
+	if !ok {
+		return
+	}
+
+	if viaDatagram {
+		if lane == nil {
+			return
+		}
+		if err := lane.SendUDP(host, port, payload); err != nil {
+			stdlog.Printf("[SOCKS5-UDP] rt datagram send %s: %v", key, err)
+		}
+		return
+	}
+
+	frame := make([]byte, 2+len(payload))
+	binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
+	copy(frame[2:], payload)
+	if _, err := stream.Write(frame); err != nil {
+		r.dropStream(key, stream)
+	}
+}
+
 func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	defer udpConn.Close()
 
-	streams := make(map[string]net.Conn)
-	rtTargets := make(map[string]func())
-	var streamsMu sync.Mutex
-
-	var curGD *quic.DatagramClient
-
-	defer func() {
-		streamsMu.Lock()
-		for _, s := range streams {
-			s.Close()
-		}
-		for _, unregister := range rtTargets {
-			unregister()
-		}
-		streamsMu.Unlock()
-	}()
+	r := &udpRelay{
+		module:    m,
+		udpConn:   udpConn,
+		streams:   make(map[string]net.Conn),
+		rtTargets: make(map[string]func()),
+	}
+	defer r.closeAll()
 
 	go func() {
 		buf := make([]byte, 1)
@@ -278,101 +378,25 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	}()
 
 	buf := make([]byte, 65535)
-	var clientAddr *net.UDPAddr
-
 	for {
 		n, addr, err := udpConn.ReadFromUDP(buf)
 		if err != nil {
 			return
 		}
-		if clientAddr == nil {
-			clientAddr = addr
+		if r.clientAddr == nil {
+			r.clientAddr = addr
 		}
-
 		if n < 4 || buf[2] != 0 {
 			continue
 		}
-
 		dstHost, dstPort, payload, err := parseUDPHeader(buf[:n])
 		if err != nil {
 			stdlog.Printf("[SOCKS5-UDP] bad header: %v", err)
 			continue
 		}
-
-		dstKey := fmt.Sprintf("%s:%d", dstHost, dstPort)
-
-		m.mu.RLock()
-		tunnel := m.tunnel
-		m.mu.RUnlock()
-
-		streamsMu.Lock()
-		if tunnel != nil {
-			lane, _ := tunnel.DatagramClient(dstHost)
-			if lane != curGD {
-				for key, unregister := range rtTargets {
-					unregister()
-					delete(rtTargets, key)
-				}
-				curGD = lane
-			}
-		}
-
-		stream, hasStream := streams[dstKey]
-		_, hasRTTarget := rtTargets[dstKey]
-		if !hasStream && !hasRTTarget {
-			if tunnel == nil || !tunnel.IsConnected() {
-				streamsMu.Unlock()
-				continue
-			}
-
-			if curGD != nil {
-				ch, unregister := curGD.RegisterTarget(dstHost, dstPort)
-				rtTargets[dstKey] = unregister
-				hasRTTarget = true
-				go pumpRTDatagramReplies(ch, udpConn, clientAddr, dstHost, dstPort)
-			} else {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				stream, err = tunnel.OpenStream(ctx, 0x11, dstHost, dstPort)
-				cancel()
-				if err != nil {
-					streamsMu.Unlock()
-					stdlog.Printf("[SOCKS5-UDP] DialStream %s: %v", dstKey, err)
-					continue
-				}
-				streams[dstKey] = stream
-
-				go pumpUDPStreamReplies(stream, udpConn, clientAddr, dstHost, dstPort, func() {
-					streamsMu.Lock()
-					delete(streams, dstKey)
-					streamsMu.Unlock()
-					stream.Close()
-				})
-			}
-		}
-		streamsMu.Unlock()
-
-		if hasRTTarget {
-			if curGD == nil {
-				continue
-			}
-			if err := curGD.SendUDP(dstHost, dstPort, payload); err != nil {
-				stdlog.Printf("[SOCKS5-UDP] rt datagram send %s: %v", dstKey, err)
-			}
-			continue
-		}
-
-		frame := make([]byte, 2+len(payload))
-		binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
-		copy(frame[2:], payload)
-		if _, err := stream.Write(frame); err != nil {
-			streamsMu.Lock()
-			delete(streams, dstKey)
-			streamsMu.Unlock()
-			stream.Close()
-		}
+		r.forward(dstHost, dstPort, payload)
 	}
 }
-
 func pumpRTDatagramReplies(ch <-chan []byte, udpConn *net.UDPConn, clientAddr *net.UDPAddr, dstHost string, dstPort uint16) {
 	for respPayload := range ch {
 		if clientAddr != nil {

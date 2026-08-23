@@ -1,7 +1,6 @@
 package buf
 
 import (
-	"errors"
 	"io"
 	"math"
 	"net"
@@ -27,8 +26,6 @@ func PerConnBudget() int {
 	}
 	return int(b)
 }
-
-var ErrShort = errors.New("buf: short write")
 
 type Buffer struct {
 	v        []byte
@@ -187,8 +184,6 @@ type Writer interface {
 	WriteMultiBuffer(MultiBuffer) error
 }
 
-type ReaderFunc func() (MultiBuffer, error)
-
 func NewReader(r io.Reader) Reader {
 	if br, ok := r.(Reader); ok {
 		return br
@@ -200,15 +195,12 @@ type singleReader struct{ r io.Reader }
 
 func (sr *singleReader) ReadMultiBuffer() (MultiBuffer, error) {
 	b := New()
-	if _, err := b.ReadFrom(sr.r); err != nil {
-		b.Release()
-		return nil, err
+	n, err := b.ReadFrom(sr.r)
+	if n > 0 {
+		return MultiBuffer{b}, err
 	}
-	if b.IsEmpty() {
-		b.Release()
-		return nil, nil
-	}
-	return MultiBuffer{b}, nil
+	b.Release()
+	return nil, err
 }
 
 func NewWriter(w io.Writer) Writer {

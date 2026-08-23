@@ -263,7 +263,7 @@ func newDecoyClient(cfg *ClientConfig) (*http.Client, fingerprint.Profile, strin
 		}
 		uCfg := &utls.Config{ServerName: sni, InsecureSkipVerify: true, PreferSkipResumptionOnNilExtension: true}
 		if cfg.ServerCertPin != "" || cfg.ServerIDPub != "" {
-			uCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni)
+			uCfg.VerifyPeerCertificate = certVerifier(cfg.ServerCertPin, cfg.ServerIDPub, sni, nil)
 		}
 		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
 			uCfg.ClientSessionCache = sc

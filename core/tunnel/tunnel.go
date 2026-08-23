@@ -57,12 +57,10 @@ type Manager struct {
 	smClient *xmux.Client
 	smMu     sync.Mutex
 
+	idle idleSet
+
 	connMu    sync.RWMutex
 	sessionID uint32
-
-	tunDevice interfaces.TUNDevice
-	handshake interfaces.HandshakeHandler
-	crypto    interfaces.CryptoProvider
 
 	currentSNI string
 
@@ -70,8 +68,6 @@ type Manager struct {
 	reconnecting      int32
 	bytesUp           uint64
 	bytesDown         uint64
-	lastKeepalive     int64
-	lastPong          int64
 	connectedAt       time.Time
 
 	reconnectDone chan struct{}
@@ -80,28 +76,47 @@ type Manager struct {
 
 	killSwitch killSwitchController
 
-	obfuscator        interfaces.Obfuscator
-	asnBypassDialer   tcpBypassDialer
-	isTransportSecure bool
+	obfuscator      interfaces.Obfuscator
+	asnBypassDialer tcpBypassDialer
 
 	selector *selector
 
 	boFailCount     int32
 	boLastSuccessAt int64
-	boLastErrType   int32
-	tlsErrStreak    int32
-
-	goroutineLimiter *base.GoroutineLimiter
 
 	connCfg connConfig
 
-	lastGoodMu         sync.RWMutex
-	lastGoodSNI        string
-	lastGoodTransport  string
-	lastGoodServerAddr string
+	lastGoodMu        sync.RWMutex
+	lastGoodSNI       string
+	lastGoodTransport string
 
 	qualityRTTEWMA int64
 	missedKAs      int32
+}
+
+func newASNBypassDialer(cfg *Config) *asnbypass.Dialer {
+	return asnbypass.NewDialer(&asnbypass.Config{
+		EnableTLSFragmentation: os.Getenv("WHISPERA_HELLO_FRAG") != "0",
+		TLSFragmentSize:        cfg.TLSFragmentSize,
+	})
+}
+
+func (m *Manager) attachKillSwitch(cfg *Config) {
+	ks, err := killswitch.New(&killswitch.Config{
+		Enabled:      cfg.KillSwitchEnabled,
+		AllowLAN:     cfg.KillSwitchAllowLAN,
+		AllowDNS:     cfg.KillSwitchAllowDNS,
+		PersistRules: false,
+	})
+	if err != nil {
+		return
+	}
+	m.killSwitch = ks
+	ks.OnStateChange(func(state killswitch.State) {
+		m.PublishEvent("killswitch.state_changed", map[string]interface{}{
+			"state": state.String(),
+		})
+	})
 }
 
 func New(cfg *Config) (*Manager, error) {
@@ -112,16 +127,14 @@ func New(cfg *Config) (*Manager, error) {
 		return nil, err
 	}
 
-	var forceObfs int32 = 1
-	if !cfg.ForceObfuscation {
-		forceObfs = 0
-	}
-
 	m := &Manager{
-		Module:           base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
-		config:           cfg,
-		goroutineLimiter: base.NewGoroutineLimiter(1024),
-		reconnectDone:    make(chan struct{}),
+		Module:        base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
+		config:        cfg,
+		reconnectDone: make(chan struct{}),
+	}
+	var forceObfs int32
+	if cfg.ForceObfuscation {
+		forceObfs = 1
 	}
 	m.connCfg.forceObfuscation.Store(forceObfs)
 	m.selector = newSelector(m)
@@ -130,50 +143,10 @@ func New(cfg *Config) (*Manager, error) {
 	close(m.reconnectDone)
 
 	if cfg.EnableASNBypass || cfg.ForceSNI != "" {
-		asnConfig := &asnbypass.Config{
-			Strategy:               cfg.ASNBypassStrategy,
-			TLSFingerprint:         cfg.TLSFingerprint,
-			EnableJA3Randomization: cfg.EnableJA3Randomize,
-			// Splitting the ClientHello across ~13 records of 20-60 bytes, each
-			// a millisecond or four apart, defeats a filter that looks for the
-			// SNI in the first packet — the name never lands in one segment.
-			// It is also unmistakable: no browser sends a hello that way, and it
-			// shows on the first connection without any statistics. Which of the
-			// two matters depends on what is inspecting the link, so it is a
-			// setting rather than a default, and WHISPERA_HELLO_FRAG=0 turns it
-			// off for a link where shape is what gets watched.
-			EnableTLSFragmentation: os.Getenv("WHISPERA_HELLO_FRAG") != "0",
-			TLSFragmentSize: func() int {
-				if cfg.TLSFragmentSize > 0 {
-					return cfg.TLSFragmentSize
-				}
-				return 40
-			}(),
-			ConnectionBurstLimit: 5,
-			ConnectionCooldown:   2 * time.Second,
-			FailoverTimeout:      cfg.ConnectionTimeout,
-			FallbackStrategies:   []asnbypass.Strategy{asnbypass.StrategyTLSMasquerade, asnbypass.StrategyCloudflareBypass},
-		}
-
-		m.asnBypassDialer = asnbypass.NewDialer(asnConfig)
+		m.asnBypassDialer = newASNBypassDialer(cfg)
 	}
-
 	if cfg.KillSwitchEnabled {
-		ksConfig := &killswitch.Config{
-			Enabled:      cfg.KillSwitchEnabled,
-			AllowLAN:     cfg.KillSwitchAllowLAN,
-			AllowDNS:     cfg.KillSwitchAllowDNS,
-			PersistRules: false,
-		}
-
-		if ks, err := killswitch.New(ksConfig); err == nil {
-			m.killSwitch = ks
-			ks.OnStateChange(func(state killswitch.State) {
-				m.PublishEvent("killswitch.state_changed", map[string]interface{}{
-					"state": state.String(),
-				})
-			})
-		}
+		m.attachKillSwitch(cfg)
 	}
 
 	if cfg.CustomSNI != "" {
@@ -184,18 +157,14 @@ func New(cfg *Config) (*Manager, error) {
 			cfg.TransportConfig["sni"] = cfg.CustomSNI
 		}
 	}
-
 	if cfg.RateLimitKB > 0 {
 		m.connCfg.SetRateLimitKB(cfg.RateLimitKB)
 	}
-
 	if cfg.EnableIPSpoof && len(cfg.SpoofSourceIPs) > 0 {
 		m.connCfg.SetSpoofIPs(cfg.SpoofSourceIPs)
 	}
-
 	return m, nil
 }
-
 func (m *Manager) Start() error {
 	if err := m.Module.Start(); err != nil {
 		return err
@@ -223,16 +192,6 @@ func (m *Manager) PreWarm() {
 	})
 }
 
-func (m *Manager) SetDependencies(
-	tun interfaces.TUNDevice,
-	handshake interfaces.HandshakeHandler,
-	crypto interfaces.CryptoProvider,
-) {
-	m.tunDevice = tun
-	m.handshake = handshake
-	m.crypto = crypto
-}
-
 func (m *Manager) Connect(ctx context.Context) error {
 	if _, blocked := m.sm.CompareAndSet(StateConnecting, StateConnecting, StateConnected); blocked {
 		return nil
@@ -257,6 +216,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 }
 
 func (m *Manager) Disconnect() {
+	m.idle.closeAll()
 	m.smMu.Lock()
 	if m.smClient != nil {
 		m.smClient.Close()
@@ -284,6 +244,68 @@ func (m *Manager) waitForOngoingReconnect(ctx context.Context) error {
 	return nil
 }
 
+const reconnectFallbackAfterAttempts = 3
+
+type reconnectState struct {
+	originalTransport string
+	fellBackToAuto    bool
+	zeroRTTSNI        string
+	zeroRTTTransport  string
+	delay             time.Duration
+	attempts          int
+}
+
+func (m *Manager) beginReconnect() (chan struct{}, *reconnectState) {
+	done := make(chan struct{})
+	m.connMu.Lock()
+	m.reconnectDone = done
+	m.connMu.Unlock()
+
+	m.lastGoodMu.RLock()
+	sni, transport := m.lastGoodSNI, m.lastGoodTransport
+	m.lastGoodMu.RUnlock()
+
+	return done, &reconnectState{
+		originalTransport: m.config.Transport,
+		zeroRTTSNI:        sni,
+		zeroRTTTransport:  transport,
+		delay:             m.config.ReconnectInterval,
+	}
+}
+
+func (m *Manager) prepareAttempt(st *reconnectState) {
+	if st.attempts == reconnectFallbackAfterAttempts+1 &&
+		st.originalTransport != "" && st.originalTransport != "auto" && !st.fellBackToAuto {
+		st.fellBackToAuto = true
+		m.config.Transport = "auto"
+	}
+
+	m.Disconnect()
+
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+	if st.attempts == 1 && st.zeroRTTSNI != "" {
+		m.currentSNI = st.zeroRTTSNI
+		if st.zeroRTTTransport != "" {
+			m.config.Transport = st.zeroRTTTransport
+		}
+		return
+	}
+	m.currentSNI = ""
+}
+
+func (m *Manager) nextBackoff(st *reconnectState) time.Duration {
+	wait := st.delay
+	st.delay = time.Duration(float64(st.delay) * 2)
+	if st.delay > m.config.ReconnectMaxDelay {
+		st.delay = m.config.ReconnectMaxDelay
+	}
+	if wait < st.delay {
+		wait = st.delay
+	}
+	return wait
+}
+
 func (m *Manager) Reconnect(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -292,39 +314,23 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		return m.waitForOngoingReconnect(ctx)
 	}
 
-	newDone := make(chan struct{})
-	m.connMu.Lock()
-	m.reconnectDone = newDone
-	m.connMu.Unlock()
-
-	originalTransport := m.config.Transport
-	transportFallbackActivated := false
+	done, st := m.beginReconnect()
 	defer func() {
-		if transportFallbackActivated {
-			m.config.Transport = originalTransport
+		if st.fellBackToAuto {
+			m.config.Transport = st.originalTransport
 		}
-		close(newDone)
+		close(done)
 		atomic.StoreInt32(&m.reconnecting, 0)
 	}()
 
 	if !m.circuitBreakerAllow() {
 		return fmt.Errorf("circuit breaker open")
 	}
-
 	m.setState(StateReconnecting)
-	delay := m.config.ReconnectInterval
-	attempts := 0
-
-	const fallbackAfterAttempts = 3
-
-	m.lastGoodMu.RLock()
-	zeroRTTSNI := m.lastGoodSNI
-	zeroRTTTransport := m.lastGoodTransport
-	m.lastGoodMu.RUnlock()
 
 	for {
-		attempts++
-		atomic.StoreUint32(&m.reconnectAttempts, uint32(attempts))
+		st.attempts++
+		atomic.StoreUint32(&m.reconnectAttempts, uint32(st.attempts))
 
 		select {
 		case <-ctx.Done():
@@ -332,35 +338,17 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		default:
 		}
 
-		if m.config.MaxReconnectAttempts > 0 && attempts > m.config.MaxReconnectAttempts {
+		if m.config.MaxReconnectAttempts > 0 && st.attempts > m.config.MaxReconnectAttempts {
 			err := fmt.Errorf("max reconnect attempts exceeded")
 			m.circuitBreakerFail()
 			m.setError(err)
 			return err
 		}
 
-		if attempts == fallbackAfterAttempts+1 &&
-			originalTransport != "" && originalTransport != "auto" &&
-			!transportFallbackActivated {
-			transportFallbackActivated = true
-			m.config.Transport = "auto"
-		}
-
-		m.Disconnect()
-
-		m.connMu.Lock()
-		if attempts == 1 && zeroRTTSNI != "" {
-			m.currentSNI = zeroRTTSNI
-			if zeroRTTTransport != "" {
-				m.config.Transport = zeroRTTTransport
-			}
-		} else {
-			m.currentSNI = ""
-		}
-		m.connMu.Unlock()
+		m.prepareAttempt(st)
 
 		var err error
-		if attempts == 1 && zeroRTTSNI != "" {
+		if st.attempts == 1 && st.zeroRTTSNI != "" {
 			err = m.connectInternal(ctx, false)
 		} else {
 			err = m.Connect(ctx)
@@ -375,19 +363,10 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		atomic.AddInt32(&m.boFailCount, 1)
 		m.circuitBreakerFail()
 
-		backoffDelay := delay
-		delay = time.Duration(float64(delay) * 2)
-		if delay > m.config.ReconnectMaxDelay {
-			delay = m.config.ReconnectMaxDelay
-		}
-		if backoffDelay < delay {
-			backoffDelay = delay
-		}
-
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(backoffDelay):
+		case <-time.After(m.nextBackoff(st)):
 		}
 	}
 }

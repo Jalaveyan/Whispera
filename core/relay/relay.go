@@ -20,7 +20,6 @@ import (
 	logger "github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
-	"github.com/nekoskin/whispera/common/runtime/registry"
 	"github.com/nekoskin/whispera/core/protocol"
 
 	xmux "github.com/sagernet/sing-mux"
@@ -29,10 +28,6 @@ import (
 	singN "github.com/sagernet/sing/common/network"
 	"golang.org/x/net/proxy"
 )
-
-func init() {
-	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
-}
 
 func isNormalConnClose(err error) bool {
 	if err == nil {
@@ -57,31 +52,21 @@ type ResponseWriter interface {
 	RemoteAddr() net.Addr
 }
 type Config struct {
-	MaxStreams           int
-	EnableTCP            bool
-	EnableUDP            bool
-	Debug                bool
-	SafeMode             bool
-	UpstreamProxy        string
-	MaxConcurrentStreams int
-	PaddingMaxSize       int
+	EnableTCP     bool
+	EnableUDP     bool
+	Debug         bool
+	UpstreamProxy string
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		MaxStreams:           10000,
-		EnableTCP:            true,
-		EnableUDP:            true,
-		Debug:                false,
-		SafeMode:             true,
-		MaxConcurrentStreams: 1024,
+		EnableTCP: true,
+		EnableUDP: true,
+		Debug:     false,
 	}
 }
 
 func (c *Config) Validate() error {
-	if c.MaxStreams <= 0 {
-		c.MaxStreams = 10000
-	}
 	return nil
 }
 
@@ -154,8 +139,6 @@ type Server struct {
 
 	outboundDial func(ctx context.Context, tag, network, addr string) (net.Conn, error)
 
-	streamSem chan struct{}
-
 	log *logger.Logger
 	mu  sync.RWMutex
 }
@@ -174,15 +157,10 @@ func New(cfg *Config) (*Server, error) {
 		return nil, err
 	}
 
-	limit := cfg.MaxConcurrentStreams
-	if limit <= 0 {
-		limit = 1024
-	}
 	s := &Server{
-		Module:    base.NewModule(ModuleName, ModuleVersion, nil),
-		config:    cfg,
-		streamSem: make(chan struct{}, limit),
-		log:       logger.Module("relay"),
+		Module: base.NewModule(ModuleName, ModuleVersion, nil),
+		config: cfg,
+		log:    logger.Module("relay"),
 	}
 
 	s.proxyDialer = proxy.Direct
@@ -247,31 +225,35 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 var tunnelTraceSeq uint64
 
 func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, true, nil)
+	s.serveTunnel(conn, streamObf, nil)
 }
 
 func (s *Server) ServeTunnelRaw(conn net.Conn, streamObf bool) {
-	s.serveTunnel(conn, streamObf, false, nil)
+	s.serveTunnel(conn, streamObf, nil)
 }
 
 func (s *Server) ServeTunnelResilient(conn net.Conn, streamObf bool, secret []byte) {
-	s.serveTunnel(conn, streamObf, true, secret)
+	s.serveTunnel(conn, streamObf, secret)
 }
 
-func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool, secret []byte) {
+func (s *Server) serveTunnel(conn net.Conn, streamObf bool, secret []byte) {
 	clientID := conn.RemoteAddr().String()
 	defer conn.Close()
-	s.runSession(conn, streamObf, usePadding, clientID)
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("PANIC in tunnel session for %s: %v\n%s", clientID, r, debug.Stack())
+		}
+	}()
+	s.runSession(conn, streamObf, clientID)
 }
 
-func (s *Server) runSession(under net.Conn, streamObf bool, usePadding bool, clientID string) {
+func (s *Server) runSession(under net.Conn, streamObf bool, clientID string) {
 	traceID := atomic.AddUint64(&tunnelTraceSeq, 1)
 	logger.Trace().Infow("serve_tunnel_enter",
 		"trace_id", traceID,
 		"client", clientID,
 		"conn_type", fmt.Sprintf("%T", under),
 		"stream_obf", streamObf,
-		"use_padding", usePadding,
 	)
 
 	if tcpConn, ok := under.(*net.TCPConn); ok {
@@ -284,10 +266,19 @@ func (s *Server) runSession(under net.Conn, streamObf bool, usePadding bool, cli
 		s.serveStreamMux(under, clientID, traceID)
 		return
 	}
-	s.handleProxyStream(traceID, clientID, under)
+	wait := proxyHeaderWait
+	for {
+		if !s.handleProxyStream(traceID, clientID, under, wait) {
+			return
+		}
+		wait = 0
+		traceID = atomic.AddUint64(&tunnelTraceSeq, 1)
+	}
 }
 
 const (
+	proxyHeaderWait = 10 * time.Second
+
 	spliceRecordsToPad = 8
 	frameForever       = -1
 	// The largest record TLS 1.3 can put on the wire: 5 header + 16384 plaintext
@@ -297,9 +288,6 @@ const (
 	// its second most common size). Being unable to reach it is itself a tell.
 	spliceWireTarget = 5 + 16384 + 1 + 16
 	spliceMaxData    = spliceWireTarget - 5 - 2
-	spliceMinPad     = 16
-	spliceMaxPad     = 256
-	naturalPad       = 2
 )
 
 type serverSpliceConn struct {
@@ -390,7 +378,7 @@ func (c *serverSpliceConn) spliceFrom(src net.Conn) (int64, error) {
 			return total, rerr
 		}
 	}
-	if dst, s := rawTCP(c.raw), rawTCP(src); dst != nil && s != nil {
+	if dst, s := buf.RawTCP(c.raw), buf.RawTCP(src); dst != nil && s != nil {
 		n, err := dst.ReadFrom(s)
 		c.countTx(int(n))
 		return total + n, err
@@ -410,25 +398,6 @@ func (c *serverSpliceConn) spliceFrom(src net.Conn) (int64, error) {
 // while 14% of real ones are. The bytes we wait for are already in flight — this
 // costs transmission time, not a round trip — and once the origin's own record
 // boundaries survive, our sizes are its sizes.
-func rawTCP(c net.Conn) *net.TCPConn {
-	for c != nil {
-		if tc, ok := c.(*net.TCPConn); ok {
-			return tc
-		}
-		u, ok := c.(interface{ NetConn() net.Conn })
-		if !ok {
-			return nil
-		}
-		next := u.NetConn()
-		if next == c {
-			return nil
-		}
-		c = next
-	}
-	return nil
-}
-
-
 func (s *Server) serveStreamMux(under net.Conn, clientID string, traceID uint64) {
 	svc, err := xmux.NewService(xmux.ServiceOptions{
 		NewStreamContext: func(ctx context.Context, _ net.Conn) context.Context { return ctx },
@@ -554,37 +523,41 @@ func (s *Server) resolveProxyDialer(network, addr string, port uint16) (proxy.Di
 
 func (s *Server) relayUDP(stream, target net.Conn, resCh chan copyResult) {
 	go func() {
-		defer target.Close()
+		res := copyResult{dir: "up"}
 		defer func() {
 			if r := recover(); r != nil {
 				s.log.Error("PANIC in UDP upstream copy: %v\n%s", r, debug.Stack())
+				if res.err == nil {
+					res.err = fmt.Errorf("panic in UDP upstream copy: %v", r)
+				}
 			}
+			resCh <- res
 		}()
+		defer target.Close()
 		bufp := udpCopyBufPool.Get().(*[]byte)
 		defer udpCopyBufPool.Put(bufp)
 		localBuf := *bufp
 		hdr := localBuf[:2]
 		data := localBuf[2:]
-		var n int64
 		for {
 			if _, err := io.ReadFull(stream, hdr); err != nil {
-				resCh <- copyResult{n, err, "up"}
+				res.err = err
 				return
 			}
 			sz := int(binary.BigEndian.Uint16(hdr))
 			if sz == 0 || sz > len(data) {
-				resCh <- copyResult{n, fmt.Errorf("invalid UDP frame size %d", sz), "up"}
+				res.err = fmt.Errorf("invalid UDP frame size %d", sz)
 				return
 			}
 			if _, err := io.ReadFull(stream, data[:sz]); err != nil {
-				resCh <- copyResult{n, err, "up"}
+				res.err = err
 				return
 			}
 			if _, err := target.Write(data[:sz]); err != nil {
-				resCh <- copyResult{n, err, "up"}
+				res.err = err
 				return
 			}
-			n += int64(sz)
+			res.n += int64(sz)
 		}
 	}()
 	func() {
@@ -595,33 +568,39 @@ func (s *Server) relayUDP(stream, target net.Conn, resCh chan copyResult) {
 		var n int64
 		for {
 			r, err := target.Read(localBuf[2:])
+			if r > 0 {
+				binary.BigEndian.PutUint16(localBuf[:2], uint16(r))
+				if _, werr := stream.Write(localBuf[:2+r]); werr != nil {
+					resCh <- copyResult{n, werr, "down"}
+					return
+				}
+				n += int64(r)
+			}
 			if err != nil {
 				resCh <- copyResult{n, err, "down"}
 				return
 			}
-			binary.BigEndian.PutUint16(localBuf[:2], uint16(r))
-			if _, err := stream.Write(localBuf[:2+r]); err != nil {
-				resCh <- copyResult{n, err, "down"}
-				return
-			}
-			n += int64(r)
 		}
 	}()
 }
 
 func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult) {
 	go func() {
-		defer target.Close()
+		res := copyResult{dir: "up"}
 		defer func() {
 			if r := recover(); r != nil {
 				s.log.Error("PANIC in TCP upstream copy: %v\n%s", r, debug.Stack())
+				if res.err == nil {
+					res.err = fmt.Errorf("panic in TCP upstream copy: %v", r)
+				}
 			}
+			resCh <- res
 		}()
-		n, err := buf.Copy(buf.NewReader(stream), buf.NewWriter(target))
+		defer target.Close()
+		res.n, res.err = buf.Copy(buf.NewReader(stream), buf.NewWriter(target))
 		if tc, ok := target.(*net.TCPConn); ok {
 			tc.CloseWrite()
 		}
-		resCh <- copyResult{n, err, "up"}
 	}()
 
 	var n int64
@@ -638,59 +617,123 @@ func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult) {
 	resCh <- copyResult{n, err, "down"}
 }
 
-func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.Conn) {
-	defer stream.Close()
-	defer func() {
-		if r := recover(); r != nil {
-			s.log.Error("PANIC in handleProxyStream: %v\n%s", r, debug.Stack())
-		}
-	}()
+type proxyStreamHeader struct {
+	proto     byte
+	splice    bool
+	frameFull bool
+	keepAlive bool
+	addr      string
+	port      uint16
+}
 
-	stream.SetReadDeadline(time.Now().Add(10 * time.Second))
+func (h proxyStreamHeader) target() string {
+	return net.JoinHostPort(h.addr, strconv.Itoa(int(h.port)))
+}
+
+func (h proxyStreamHeader) network() string {
+	if h.proto == 0x11 {
+		return "udp"
+	}
+	return "tcp"
+}
+
+func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHeader, bool) {
+	if wait > 0 {
+		stream.SetReadDeadline(time.Now().Add(wait))
+		defer stream.SetReadDeadline(time.Time{})
+	}
 
 	hdr := make([]byte, 3)
 	if _, err := io.ReadFull(stream, hdr); err != nil {
-		return
+		return proxyStreamHeader{}, false
 	}
-	proto := hdr[0]
-	splice := proto&protocol.SpliceProtoBit != 0 && protocol.SpliceEnabled()
-	frameFull := proto&protocol.FullFrameProtoBit != 0
-	proto &^= protocol.SpliceProtoBit | protocol.FullFrameProtoBit
 	addrLen := binary.BigEndian.Uint16(hdr[1:3])
 	if addrLen == 0 || addrLen > 255 {
-		return
+		return proxyStreamHeader{}, false
 	}
 
 	rest := make([]byte, int(addrLen)+2)
 	if _, err := io.ReadFull(stream, rest); err != nil {
-		return
+		return proxyStreamHeader{}, false
 	}
-	addr := string(rest[:addrLen])
-	port := binary.BigEndian.Uint16(rest[addrLen:])
 
-	stream.SetReadDeadline(time.Time{})
+	proto := hdr[0]
+	return proxyStreamHeader{
+		proto:     proto &^ (protocol.SpliceProtoBit | protocol.FullFrameProtoBit | protocol.KeepAliveProtoBit),
+		splice:    proto&protocol.SpliceProtoBit != 0 && protocol.SpliceEnabled(),
+		frameFull: proto&protocol.FullFrameProtoBit != 0,
+		keepAlive: proto&protocol.KeepAliveProtoBit != 0,
+		addr:      string(rest[:addrLen]),
+		port:      binary.BigEndian.Uint16(rest[addrLen:]),
+	}, true
+}
+
+func spliceWrap(stream net.Conn, h proxyStreamHeader, tunnelID uint64, targetAddr string) net.Conn {
+	if !h.splice {
+		return stream
+	}
+	raw := protocol.NetConnOf(stream)
+	if raw == nil {
+		return stream
+	}
+	left := spliceRecordsToPad
+	if h.frameFull {
+		left = frameForever
+	}
+	logger.Trace().Infow("proxy_stream_splice", "trace_id", tunnelID, "target", targetAddr)
+	return &serverSpliceConn{Conn: stream, raw: raw, padLeft: left}
+}
+
+func collectCopyResults(resCh chan copyResult) (up, down int64, firstErr error, firstDir string) {
+	for i := 0; i < 2; i++ {
+		r := <-resCh
+		if r.dir == "up" {
+			up = r.n
+		} else {
+			down = r.n
+		}
+		if firstErr == nil && r.err != nil && !errors.Is(r.err, io.EOF) {
+			firstErr, firstDir = r.err, r.dir
+		}
+	}
+	return up, down, firstErr, firstDir
+}
+
+func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.Conn, wait time.Duration) (reusable bool) {
+	defer func() {
+		if !reusable {
+			stream.Close()
+		}
+	}()
+	defer func() {
+		if r := recover(); r != nil {
+			reusable = false
+			s.log.Error("PANIC in handleProxyStream: %v\n%s", r, debug.Stack())
+		}
+	}()
+
+	h, ok := readProxyStreamHeader(stream, wait)
+	if !ok {
+		return false
+	}
+	targetAddr := h.target()
+	network := h.network()
 
 	streamStart := time.Now()
 	logger.Trace().Infow("proxy_stream_start",
 		"trace_id", tunnelID,
 		"client", clientID,
-		"target", fmt.Sprintf("%s:%d", addr, port),
-		"proto", fmt.Sprintf("0x%02x", proto),
+		"target", targetAddr,
+		"proto", fmt.Sprintf("0x%02x", h.proto),
 	)
 
-	network := "tcp"
-	if proto == 0x11 {
-		network = "udp"
-	}
-
-	dialer, outboundTag, blocked := s.resolveProxyDialer(network, addr, port)
+	dialer, outboundTag, blocked := s.resolveProxyDialer(network, h.addr, h.port)
 	if blocked {
-		return
+		return false
 	}
 
-	targetAddr := net.JoinHostPort(addr, strconv.Itoa(int(port)))
 	dialStart := time.Now()
-	target, err := s.dialProxyTarget(outboundTag, network, targetAddr, addr, port, dialer)
+	target, err := s.dialProxyTarget(outboundTag, network, targetAddr, h.addr, h.port, dialer)
 	dialDur := time.Since(dialStart)
 	if err != nil {
 		logger.Trace().Warnw("proxy_stream_dial_fail",
@@ -700,7 +743,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 			"err", err.Error(),
 			"err_type", fmt.Sprintf("%T", err),
 		)
-		return
+		return false
 	}
 	defer target.Close()
 	logger.Trace().Infow("proxy_stream_dial_ok",
@@ -714,63 +757,41 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		tcpTarget.SetKeepAlivePeriod(45 * time.Second)
 	}
 
+	var framed *protocol.FramedConn
+	if h.keepAlive {
+		framed = protocol.NewFramedConn(stream)
+	}
+
 	resCh := make(chan copyResult, 2)
-
-	relayStream := stream
-	if splice {
-		if raw := protocol.NetConnOf(stream); raw != nil {
-			left := spliceRecordsToPad
-			if frameFull {
-				left = frameForever
-			}
-			relayStream = &serverSpliceConn{Conn: stream, raw: raw, padLeft: left}
-			logger.Trace().Infow("proxy_stream_splice", "trace_id", tunnelID, "target", targetAddr)
-		}
-	}
-
-	if network == "udp" {
+	switch {
+	case network == "udp" && framed != nil:
+		s.relayUDP(framed, target, resCh)
+	case network == "udp":
 		s.relayUDP(stream, target, resCh)
-	} else {
-		s.relayTCP(relayStream, target, resCh)
+	case framed != nil:
+		s.relayTCP(framed, target, resCh)
+	default:
+		s.relayTCP(spliceWrap(stream, h, tunnelID, targetAddr), target, resCh)
 	}
-	r1 := <-resCh
-	r2 := <-resCh
-	var up, down int64
-	var firstErr error
-	var firstDir string
-	for _, r := range [2]copyResult{r1, r2} {
-		if r.dir == "up" {
-			up = r.n
-		} else {
-			down = r.n
-		}
-		if firstErr == nil && r.err != nil && !errors.Is(r.err, io.EOF) {
-			firstErr = r.err
-			firstDir = r.dir
-		}
-	}
-	dur := time.Since(streamStart)
+
+	up, down, firstErr, firstDir := collectCopyResults(resCh)
 	errField := ""
 	if firstErr != nil && !isNormalConnClose(firstErr) && !errors.Is(firstErr, io.EOF) {
 		errField = firstErr.Error()
 	}
 	logger.Trace().Infow("proxy_stream_done",
 		"trace_id", tunnelID,
-		"target", fmt.Sprintf("%s:%d", addr, port),
+		"target", targetAddr,
 		"up", up,
 		"down", down,
-		"dur_ms", dur.Milliseconds(),
+		"dur_ms", time.Since(streamStart).Milliseconds(),
 		"err_dir", firstDir,
 		"err", errField,
 	)
-}
 
-func Factory(cfg interface{}) (interfaces.Module, error) {
-	var config *Config
-	if c, ok := cfg.(*Config); ok {
-		config = c
-	} else {
-		config = DefaultConfig()
+	if framed != nil {
+		_ = framed.EndStream()
+		reusable = framed.StreamDone() && firstErr == nil
 	}
-	return New(config)
+	return reusable
 }

@@ -5,6 +5,28 @@ import (
 	"net"
 )
 
+func RawTCP(c net.Conn) *net.TCPConn {
+	for c != nil {
+		if tc, ok := c.(*net.TCPConn); ok {
+			return tc
+		}
+		u, ok := c.(interface{ NetConn() net.Conn })
+		if !ok {
+			return nil
+		}
+		next := u.NetConn()
+		if next == c {
+			return nil
+		}
+		c = next
+	}
+	return nil
+}
+
+type spliceSource interface {
+	SpliceTo(dst net.Conn) (int64, error)
+}
+
 func Relay(a, b net.Conn, aReader, bReader io.Reader) {
 	if aReader == nil {
 		aReader = a
@@ -16,7 +38,11 @@ func Relay(a, b net.Conn, aReader, bReader io.Reader) {
 	done := make(chan struct{}, 2)
 
 	pump := func(dst net.Conn, src io.Reader) {
-		_, _ = Copy(NewReader(src), NewWriter(dst))
+		if s, ok := src.(spliceSource); ok {
+			_, _ = s.SpliceTo(dst)
+		} else {
+			_, _ = Copy(NewReader(src), NewWriter(dst))
+		}
 		done <- struct{}{}
 	}
 

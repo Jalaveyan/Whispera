@@ -9,8 +9,7 @@ import (
 )
 
 type Keys struct {
-	Auth     []byte
-	Behavior []byte
+	Auth []byte
 }
 
 var deriveKeysCache = func() *lru.Cache[[32]byte, *Keys] {
@@ -33,10 +32,7 @@ func DeriveKeys(sharedSecret []byte) *Keys {
 		return k
 	}
 
-	keys := &Keys{
-		Auth:     derive("whispera-auth-v1"),
-		Behavior: derive("whispera-behavior-v1"),
-	}
+	keys := &Keys{Auth: derive("whispera-auth-v1")}
 	deriveKeysCache.Add(cacheKey, keys)
 	return keys
 }

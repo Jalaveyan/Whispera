@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	xmux "github.com/sagernet/sing-mux"
 	singM "github.com/sagernet/sing/common/metadata"
 
+	"github.com/nekoskin/whispera/common/buf"
 	"github.com/nekoskin/whispera/core/protocol"
 )
 
@@ -51,25 +53,42 @@ func (m *Manager) getStreamMuxClient() (*xmux.Client, error) {
 
 type decoyLeaveConn struct {
 	net.Conn
-	m    *Manager
-	once sync.Once
+	m           *Manager
+	once        sync.Once
+	denyChecked bool
+	upLeft      int
+}
+
+func (d *decoyLeaveConn) Read(b []byte) (int, error) {
+	n, err := d.Conn.Read(b)
+	if !d.denyChecked {
+		d.denyChecked = true
+		if msg, ok := protocol.ParseDenial(b[:n]); ok {
+			d.Conn.Close()
+			return 0, errors.New("whispera: " + msg)
+		}
+	}
+	return n, err
 }
 
 func (d *decoyLeaveConn) Write(b []byte) (int, error) {
-	return writeCapped(d.Conn, b)
+	return d.writeShaped(b)
 }
 
-func writeCapped(w io.Writer, b []byte) (int, error) {
+func (d *decoyLeaveConn) writeShaped(b []byte) (int, error) {
 	written := 0
 	for len(b) > 0 {
 		n := len(b)
-		if n > upstreamMaxPayload {
+		if d.upLeft > 0 && n > upstreamMaxPayload {
 			n = upstreamMaxPayload
 		}
-		c, err := w.Write(b[:n])
+		c, err := d.Conn.Write(b[:n])
 		written += c
 		if err != nil {
 			return written, err
+		}
+		if d.upLeft > 0 {
+			d.upLeft--
 		}
 		b = b[n:]
 	}
@@ -113,16 +132,29 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if dial == nil {
 		return nil, fmt.Errorf("direct: no camo dialer")
 	}
-	conn, err := dial(ctx)
-	if err != nil {
-		if ctx.Err() == nil {
-			m.setError(err)
-		}
-		return nil, fmt.Errorf("direct dial: %w", err)
-	}
-
 	wantSplice := proto&protocol.SpliceProtoBit != 0
 	proto &^= protocol.SpliceProtoBit
+
+	keepAlive := !wantSplice && protocol.KeepAliveEnabled()
+
+	var conn net.Conn
+	reused := false
+	if keepAlive {
+		if c := m.idle.take(); c != nil {
+			conn, reused = c, true
+		}
+	}
+	if conn == nil {
+		c, err := dial(ctx)
+		if err != nil {
+			if ctx.Err() == nil {
+				m.setError(err)
+			}
+			return nil, fmt.Errorf("direct dial: %w", err)
+		}
+		conn = c
+	}
+
 	splice := wantSplice && protocol.SpliceEnabled()
 	var raw net.Conn
 	if splice {
@@ -136,6 +168,8 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		if protocol.FullFrameEnabled() {
 			hdrProto |= protocol.FullFrameProtoBit
 		}
+	} else if keepAlive {
+		hdrProto |= protocol.KeepAliveProtoBit
 	}
 
 	addrBytes := []byte(addr)
@@ -152,21 +186,29 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if m.config.DecoyGate != nil {
 		m.config.DecoyGate.Enter()
 	}
-	dl := &decoyLeaveConn{Conn: conn, m: m}
 	if splice {
+		dl := &decoyLeaveConn{Conn: conn, m: m, upLeft: upstreamShapedWrites}
 		left := spliceRecordsToPad
 		if protocol.FullFrameEnabled() {
 			left = frameForever
 		}
 		return &clientSpliceConn{decoyLeaveConn: dl, raw: raw, padLeft: left}, nil
 	}
-	return dl, nil
+	if !keepAlive {
+		return &decoyLeaveConn{Conn: conn, m: m, upLeft: upstreamShapedWrites}, nil
+	}
+	base := conn
+	if !reused {
+		base = &decoyLeaveConn{Conn: conn, m: m, upLeft: upstreamShapedWrites}
+	}
+	return &keepAliveStream{FramedConn: protocol.NewFramedConn(base), m: m, base: base}, nil
 }
 
 const (
-	spliceRecordsToPad = 8
-	upstreamMaxPayload = 480
-	frameForever       = -1
+	spliceRecordsToPad   = 8
+	upstreamMaxPayload   = 480
+	upstreamShapedWrites = 8
+	frameForever         = -1
 )
 
 type clientSpliceConn struct {
@@ -177,7 +219,7 @@ type clientSpliceConn struct {
 }
 
 func (c *clientSpliceConn) Write(b []byte) (int, error) {
-	return writeCapped(c.Conn, b)
+	return c.decoyLeaveConn.writeShaped(b)
 }
 
 func (c *clientSpliceConn) Read(b []byte) (int, error) {
@@ -198,6 +240,35 @@ func (c *clientSpliceConn) Read(b []byte) (int, error) {
 			return n, err
 		}
 	}
+}
+
+func (c *clientSpliceConn) SpliceTo(dst net.Conn) (int64, error) {
+	var total int64
+	pre := make([]byte, upstreamMaxPayload*32)
+	for c.padLeft != 0 || len(c.rbuf) > 0 {
+		rn, rerr := c.Read(pre)
+		if rn > 0 {
+			wn, werr := dst.Write(pre[:rn])
+			total += int64(wn)
+			if werr != nil {
+				return total, werr
+			}
+		}
+		if rerr != nil {
+			return total, rerr
+		}
+	}
+	if d, s := buf.RawTCP(dst), buf.RawTCP(c.raw); d != nil && s != nil {
+		n, err := d.ReadFrom(s)
+		if err != nil {
+			if noter, ok := c.raw.(interface{ Note(error) }); ok {
+				noter.Note(err)
+			}
+		}
+		return total + n, err
+	}
+	n, err := io.Copy(dst, c.raw)
+	return total + n, err
 }
 
 func (c *clientSpliceConn) readRecord(b []byte) (int, error) {
@@ -276,7 +347,7 @@ func (m *Manager) openStreamMux(ctx context.Context, proto byte, addr string, po
 	if m.config.DecoyGate != nil {
 		m.config.DecoyGate.Enter()
 	}
-	return &decoyLeaveConn{Conn: conn, m: m}, nil
+	return &decoyLeaveConn{Conn: conn, m: m, upLeft: upstreamShapedWrites}, nil
 }
 
 func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
