@@ -674,6 +674,37 @@ $INITCWND_SCRIPT 2>/dev/null || true
 EOF
         chmod +x /etc/networkd-dispatcher/routable.d/50-whispera-initcwnd
     fi
+
+    if [[ -d /etc/NetworkManager ]]; then
+        mkdir -p /etc/NetworkManager/dispatcher.d
+        cat > /etc/NetworkManager/dispatcher.d/50-whispera-initcwnd <<EOF
+#!/bin/bash
+case "\$2" in up|dhcp4-change|dhcp6-change|connectivity-change) $INITCWND_SCRIPT 2>/dev/null || true ;; esac
+EOF
+        chmod +x /etc/NetworkManager/dispatcher.d/50-whispera-initcwnd
+    fi
+
+    cat > /etc/systemd/system/whispera-initcwnd.service <<EOF
+[Unit]
+Description=Reapply the TCP initial congestion window to the default route
+
+[Service]
+Type=oneshot
+ExecStart=$INITCWND_SCRIPT
+EOF
+    cat > /etc/systemd/system/whispera-initcwnd.timer <<'EOF'
+[Unit]
+Description=Keep the TCP initial congestion window applied across route changes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload 2>/dev/null
+    systemctl enable --now whispera-initcwnd.timer 2>/dev/null
 }
 
 setup_autoupdate() {
