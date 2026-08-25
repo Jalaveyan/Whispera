@@ -152,16 +152,18 @@ func isTorrentPort(port uint16) bool {
 	return port >= 6881 && port <= 6889
 }
 
-func sniffTLSHello(c net.Conn) (prefix []byte, isTLS bool) {
-	c.SetReadDeadline(time.Now().Add(3 * time.Second))
-	defer c.SetReadDeadline(time.Time{})
+// sniffTLSHello waits for the client to speak first, which on 443 it always
+// does. There is no deadline on purpose: browsers open connections ahead of a
+// click and leave them silent, and a deadline turned every one of those into a
+// tunnel stream and a dial to the site that nobody ever used.
+func sniffTLSHello(c net.Conn) (prefix []byte, isTLS, ok bool) {
 	hdr := make([]byte, 3)
-	n, _ := io.ReadFull(c, hdr)
-	prefix = hdr[:n]
-	if n == 3 && hdr[0] == 0x16 && hdr[1] == 0x03 {
-		isTLS = true
+	n, err := io.ReadFull(c, hdr)
+	if err != nil {
+		return nil, false, false
 	}
-	return
+	prefix = hdr[:n]
+	return prefix, hdr[0] == 0x16 && hdr[1] == 0x03, true
 }
 
 func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, targetPort uint16) error {
@@ -215,7 +217,10 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	proto := byte(0x06)
 	var replay []byte
 	if targetPort == 443 && protocol.SpliceEnabled() {
-		hello, isTLS := sniffTLSHello(clientConn)
+		hello, isTLS, ok := sniffTLSHello(clientConn)
+		if !ok {
+			return nil
+		}
 		replay = hello
 		if isTLS {
 			proto |= protocol.SpliceProtoBit
