@@ -15,17 +15,22 @@ func RunGenDecoyCertCmd() {
 	domain := genCmd.String("domain", "", "Real-world domain to clone the certificate fields from (e.g. example.com)")
 	outCert := genCmd.String("out-cert", config.ServerCert, "Output path for the generated certificate (PEM)")
 	outKey := genCmd.String("out-key", config.ServerKey, "Output path for the generated private key (PEM)")
+	force := genCmd.Bool("force", false, "Rebuild the certificate even if the existing clone is still valid, keeping its key so pinned client keys stay usable")
 
 	genCmd.Parse(os.Args[2:])
 
 	if *domain == "" {
-		fmt.Fprintln(os.Stderr, "whispera gen-decoy-cert -domain <real-domain> [-out-cert <path>] [-out-key <path>]")
+		fmt.Fprintln(os.Stderr, "whispera gen-decoy-cert -domain <real-domain> [-out-cert <path>] [-out-key <path>] [-force]")
 		os.Exit(1)
 	}
 
 	loadCertIdentity()
 
-	info, err := protocol.CloneCertToFiles(*domain, *outCert, *outKey)
+	clone := protocol.CloneCertToFiles
+	if *force {
+		clone = protocol.RecloneCertToFiles
+	}
+	info, err := clone(*domain, *outCert, *outKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to generate decoy certificate: %v\n", err)
 		os.Exit(1)

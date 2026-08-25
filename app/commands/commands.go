@@ -135,7 +135,10 @@ func resolveWhisperaQUICAddr(enableQUIC bool, sc *config.ServerConfig, cfgProvid
 		fmt.Fprintf(os.Stderr, "Warning: invalid whispera.quic_listen_addr %q: %v — key generated without QUIC\n", sc.Whispera.QUICListenAddr, err)
 		return ""
 	}
-	if ip := net.ParseIP(quicHost); quicHost == "" || (ip != nil && ip.IsUnspecified()) {
+	if ip := net.ParseIP(quicHost); quicHost == "" || (ip != nil && (ip.IsUnspecified() || ip.IsLoopback())) {
+		if ip != nil && ip.IsLoopback() {
+			fmt.Fprintf(os.Stderr, "Warning: whispera.quic_listen_addr is bound to %s, which no client can reach — the key points at %s instead, but the server still listens only on loopback\n", quicHost, serverHost)
+		}
 		quicHost = serverHost
 	}
 	effectiveQUICPortStr := quicListenPortStr

@@ -95,8 +95,13 @@ func existingValidClone(domain, certPath, keyPath string) (*ClonedCertInfo, bool
 	if time.Now().After(leaf.NotAfter.Add(-24 * time.Hour)) {
 		return nil, false
 	}
-	if id := activeCertIdentity(); id != nil && !verifyCertBinding(id.PubB64(), domain, leaf) {
-		return nil, false
+	if id := activeCertIdentity(); id != nil {
+		if !verifyCertBinding(id.PubB64(), domain, leaf) {
+			return nil, false
+		}
+		if len(id.SelectorPub()) == 32 && selectorPubFromCert(leaf, id.PubB64()) == "" {
+			return nil, false
+		}
 	}
 	return &ClonedCertInfo{
 		Subject:   leaf.Subject.String(),
@@ -153,8 +158,18 @@ func writePEM(path string, mode os.FileMode, block *pem.Block) error {
 }
 
 func CloneCertToFiles(domain, outCert, outKey string) (*ClonedCertInfo, error) {
-	if info, ok := existingValidClone(domain, outCert, outKey); ok {
-		return info, nil
+	return cloneCertToFiles(domain, outCert, outKey, false)
+}
+
+func RecloneCertToFiles(domain, outCert, outKey string) (*ClonedCertInfo, error) {
+	return cloneCertToFiles(domain, outCert, outKey, true)
+}
+
+func cloneCertToFiles(domain, outCert, outKey string, force bool) (*ClonedCertInfo, error) {
+	if !force {
+		if info, ok := existingValidClone(domain, outCert, outKey); ok {
+			return info, nil
+		}
 	}
 
 	priv, template := reuseExistingClone(outCert, outKey)
@@ -233,7 +248,6 @@ type cachedSNICert struct {
 	cert    *tls.Certificate
 	modTime time.Time
 	size    int64
-	gen     uint64
 }
 
 var (
@@ -242,7 +256,7 @@ var (
 	sniCertLoadFailed sync.Map
 )
 
-func loadSNICert(decoyCertDir, sni string, gen uint64) (*tls.Certificate, bool) {
+func loadSNICert(decoyCertDir, sni string) (*tls.Certificate, bool) {
 	certPath, keyPath, ok := SNICertPaths(decoyCertDir, sni)
 	if !ok {
 		return nil, false
@@ -250,18 +264,10 @@ func loadSNICert(decoyCertDir, sni string, gen uint64) (*tls.Certificate, bool) 
 
 	sniCertCacheMu.RLock()
 	c, found := sniCertCache[sni]
-	fresh := found && c.gen == gen
 	sniCertCacheMu.RUnlock()
-	if fresh {
-		return c.cert, true
-	}
 
 	fi, statErr := os.Stat(certPath)
 	if found && statErr == nil && c.modTime.Equal(fi.ModTime()) && c.size == fi.Size() {
-		sniCertCacheMu.Lock()
-		c.gen = gen
-		sniCertCache[sni] = c
-		sniCertCacheMu.Unlock()
 		return c.cert, true
 	}
 
@@ -285,7 +291,7 @@ func loadSNICert(decoyCertDir, sni string, gen uint64) (*tls.Certificate, bool) 
 		}
 	}
 
-	entry := cachedSNICert{cert: &cert, gen: gen}
+	entry := cachedSNICert{cert: &cert}
 	if fi, err := os.Stat(certPath); err == nil {
 		entry.modTime, entry.size = fi.ModTime(), fi.Size()
 	}
@@ -294,6 +300,38 @@ func loadSNICert(decoyCertDir, sni string, gen uint64) (*tls.Certificate, bool) 
 	sniCertCacheMu.Unlock()
 	sniCertLoadFailed.Delete(sni)
 	return &cert, true
+}
+
+const sniCertSweepEvery = time.Hour
+
+func MaintainSNICerts(ctx context.Context, decoyCertDir string) {
+	EnsureSNICerts(decoyCertDir)
+	ticker := time.NewTicker(sniCertSweepEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			EnsureSNICerts(decoyCertDir)
+		}
+	}
+}
+
+func clonePin(certPath string) string {
+	data, err := os.ReadFile(certPath)
+	if err != nil {
+		return ""
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return ""
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ""
+	}
+	return SPKIPin(leaf)
 }
 
 func EnsureSNICerts(decoyCertDir string) {
@@ -310,9 +348,10 @@ func EnsureSNICerts(decoyCertDir string) {
 		if !ok {
 			continue
 		}
-		if _, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+		if _, ok := existingValidClone(sni, certPath, keyPath); ok {
 			continue
 		}
+		before := clonePin(certPath)
 		info, err := CloneCertToFiles(sni, certPath, keyPath)
 		if err != nil {
 			traceLog.Errorw("decoy_sni_cert_unrepairable", "sni", sni,
@@ -320,7 +359,12 @@ func EnsureSNICerts(decoyCertDir string) {
 				"err", err.Error())
 			continue
 		}
+		if after := clonePin(certPath); before != "" && after == before {
+			traceLog.Infow("decoy_sni_cert_reissued", "sni", sni, "subject", info.Subject,
+				"hint", "the clone was rebuilt to carry the current identity bindings; its key was kept, so pinned client keys keep working")
+			continue
+		}
 		traceLog.Warnw("decoy_sni_cert_reissued", "sni", sni, "subject", info.Subject,
-			"hint", "the clone on disk was unreadable or broken; a fresh one was issued, so keys carrying a cert pin (rather than an identity key) must be reissued")
+			"hint", "the clone on disk was unreadable or broken; a fresh key was issued, so keys carrying a cert pin (rather than an identity key) must be reissued")
 	}
 }

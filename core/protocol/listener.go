@@ -82,11 +82,7 @@ func sniCertResolver(cfg *ServerConfig, static *tls.Certificate) func(*tls.Clien
 			if acmeGet != nil && hello.ServerName == domain {
 				return acmeGet(hello)
 			}
-			var gen uint64
-			if cfg.UsersVersion != nil {
-				gen = cfg.UsersVersion()
-			}
-			if c, ok := loadSNICert(decoyCertDir, hello.ServerName, gen); ok {
+			if c, ok := loadSNICert(decoyCertDir, hello.ServerName); ok {
 				return c, nil
 			}
 		}
@@ -153,9 +149,13 @@ func startQUICServers(ctx context.Context, cfg *ServerConfig, mux *http.ServeMux
 	if cfg.QUICListenAddr == "" || cfg.TLSCert == "" {
 		return nil, nil
 	}
-	_, port, _ := net.SplitHostPort(cfg.QUICListenAddr)
+	host, port, _ := net.SplitHostPort(cfg.QUICListenAddr)
 	if port == "" {
 		port = "443"
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		traceLog.Errorw("quic_listen_loopback_only", "addr", cfg.QUICListenAddr,
+			"hint", "no client can reach this address, so the datagram lane never comes up and all UDP rides the TCP tunnel; bind 0.0.0.0 or the public address, ideally on the same port as TCP")
 	}
 	cfg.altSvcHeader = fmt.Sprintf(`h3=":%s"; ma=2592000`, port)
 

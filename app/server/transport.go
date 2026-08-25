@@ -96,7 +96,7 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 	} else {
 		protocol.SetCertIdentity(id)
 	}
-	go protocol.EnsureSNICerts(whisperaDecoyCertDir)
+	go protocol.MaintainSNICerts(ctx, whisperaDecoyCertDir)
 	go func() {
 		if err := protocol.ListenAndServe(ctx, cCfg); err != nil && ctx.Err() == nil {
 			log.Error("whispera: listener stopped: %v", err)
