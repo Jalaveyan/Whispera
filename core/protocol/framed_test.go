@@ -2,7 +2,16 @@ package protocol
 
 import (
 	"bytes"
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	crand "crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/binary"
 	"io"
+	"math/big"
 	"net"
 	"testing"
 	"time"
@@ -100,4 +109,94 @@ func TestFramedRejectsGarbage(t *testing.T) {
 	if _, err := srv.Read(buf); err == nil {
 		t.Fatal("запись не того типа должна отвергаться")
 	}
+}
+
+func wireTestCert(tb testing.TB) tls.Certificate {
+	tb.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), crand.Reader)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "example.com"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		DNSNames:     []string{"example.com"},
+	}
+	der, err := x509.CreateCertificate(crand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// A full record of ours has to land as exactly one TLS record. Hand the TLS
+// layer one byte more than it can carry and it splits, and every full record
+// arrives trailed by a runt — a shape no real TLS stream produces.
+func TestFramedRecordsFillOneTLSRecord(t *testing.T) {
+	cert := wireTestCert(t)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	sizes := make(chan []int, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			sizes <- nil
+			return
+		}
+		s := tls.Server(c, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13})
+		if err := s.HandshakeContext(context.Background()); err != nil {
+			sizes <- nil
+			return
+		}
+		var out []int
+		hdr := make([]byte, 5)
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		for {
+			if _, err := io.ReadFull(c, hdr); err != nil {
+				break
+			}
+			n := int(binary.BigEndian.Uint16(hdr[3:5]))
+			if _, err := io.CopyN(io.Discard, c, int64(n)); err != nil {
+				break
+			}
+			out = append(out, 5+n)
+		}
+		sizes <- out
+	}()
+
+	raw, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl := tls.Client(raw, &tls.Config{ServerName: "example.com", InsecureSkipVerify: true, MinVersion: tls.VersionTLS13})
+	if err := cl.HandshakeContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fc := NewFramedConn(cl)
+	go func() {
+		_, _ = fc.Write(make([]byte, 4<<20))
+		raw.Close()
+	}()
+
+	got := <-sizes
+	// crypto/tls ramps record size up over the first ~128KB; only the steady
+	// state says anything about our framing.
+	const rampUp = 40
+	if len(got) < rampUp+20 {
+		t.Fatalf("only %d records observed, need the steady state", len(got))
+	}
+	steady := got[rampUp : len(got)-1]
+	for i, n := range steady {
+		if n != framedWireTarget {
+			t.Fatalf("steady-state record %d is %d bytes, want %d: our records no longer line up with TLS records",
+				i, n, framedWireTarget)
+		}
+	}
+	t.Logf("%d steady-state records, all %d bytes", len(steady), framedWireTarget)
 }

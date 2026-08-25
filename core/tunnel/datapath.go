@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -15,7 +14,6 @@ import (
 	xmux "github.com/sagernet/sing-mux"
 	singM "github.com/sagernet/sing/common/metadata"
 
-	"github.com/nekoskin/whispera/common/buf"
 	"github.com/nekoskin/whispera/core/protocol"
 )
 
@@ -53,10 +51,17 @@ func (m *Manager) getStreamMuxClient() (*xmux.Client, error) {
 
 type decoyLeaveConn struct {
 	net.Conn
-	m           *Manager
+	gate        decoyActivity
 	once        sync.Once
 	denyChecked bool
 	upLeft      int
+}
+
+func (d *decoyLeaveConn) NetConn() net.Conn {
+	if nc, ok := d.Conn.(interface{ NetConn() net.Conn }); ok {
+		return nc.NetConn()
+	}
+	return nil
 }
 
 func (d *decoyLeaveConn) Read(b []byte) (int, error) {
@@ -97,8 +102,8 @@ func (d *decoyLeaveConn) writeShaped(b []byte) (int, error) {
 
 func (d *decoyLeaveConn) Close() error {
 	d.once.Do(func() {
-		if d.m.config.DecoyGate != nil {
-			d.m.config.DecoyGate.Leave()
+		if d.gate != nil {
+			d.gate.Leave()
 		}
 	})
 	return d.Conn.Close()
@@ -135,7 +140,7 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	wantSplice := proto&protocol.SpliceProtoBit != 0
 	proto &^= protocol.SpliceProtoBit
 
-	keepAlive := !wantSplice && protocol.KeepAliveEnabled()
+	keepAlive := protocol.KeepAliveEnabled()
 
 	var conn net.Conn
 	reused := false
@@ -155,21 +160,15 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 		conn = c
 	}
 
-	splice := wantSplice && protocol.SpliceEnabled()
-	var raw net.Conn
-	if splice {
-		if raw = protocol.NetConnOf(conn); raw == nil {
-			splice = false
-		}
-	}
+	raw := protocol.NetConnOf(conn)
+	splice := wantSplice && protocol.SpliceEnabled() && raw != nil && !protocol.FullFrameEnabled()
+
 	hdrProto := proto
+	if keepAlive {
+		hdrProto |= protocol.KeepAliveProtoBit
+	}
 	if splice {
 		hdrProto |= protocol.SpliceProtoBit
-		if protocol.FullFrameEnabled() {
-			hdrProto |= protocol.FullFrameProtoBit
-		}
-	} else if keepAlive {
-		hdrProto |= protocol.KeepAliveProtoBit
 	}
 
 	addrBytes := []byte(addr)
@@ -186,121 +185,27 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if m.config.DecoyGate != nil {
 		m.config.DecoyGate.Enter()
 	}
-	if splice {
-		dl := &decoyLeaveConn{Conn: conn, m: m, upLeft: upstreamShapedWrites}
-		left := spliceRecordsToPad
-		if protocol.FullFrameEnabled() {
-			left = frameForever
-		}
-		return &clientSpliceConn{decoyLeaveConn: dl, raw: raw, padLeft: left}, nil
-	}
 	if !keepAlive {
-		return &decoyLeaveConn{Conn: conn, m: m, upLeft: upstreamShapedWrites}, nil
+		return &decoyLeaveConn{Conn: conn, gate: m.config.DecoyGate, upLeft: upstreamShapedWrites}, nil
 	}
 	base := conn
 	if !reused {
-		base = &decoyLeaveConn{Conn: conn, m: m, upLeft: upstreamShapedWrites}
+		base = &decoyLeaveConn{Conn: conn, upLeft: upstreamShapedWrites}
 	}
-	return &keepAliveStream{FramedConn: protocol.NewFramedConn(base), m: m, base: base}, nil
+	up := protocol.NewFramedConn(base)
+	down := up
+	stream := &keepAliveStream{Conn: base, up: up, down: down, m: m, base: base}
+	if splice {
+		stream.down = protocol.NewFramedConn(raw)
+		stream.raw = raw
+	}
+	return stream, nil
 }
 
 const (
-	spliceRecordsToPad   = 8
 	upstreamMaxPayload   = 480
 	upstreamShapedWrites = 8
-	frameForever         = -1
 )
-
-type clientSpliceConn struct {
-	*decoyLeaveConn
-	raw     net.Conn
-	padLeft int
-	rbuf    []byte
-}
-
-func (c *clientSpliceConn) Write(b []byte) (int, error) {
-	return c.decoyLeaveConn.writeShaped(b)
-}
-
-func (c *clientSpliceConn) Read(b []byte) (int, error) {
-	if len(c.rbuf) > 0 {
-		n := copy(b, c.rbuf)
-		c.rbuf = c.rbuf[n:]
-		return n, nil
-	}
-	if c.padLeft == 0 {
-		return c.raw.Read(b)
-	}
-	// The server fills silence with records that carry no data, so the shape of
-	// the stream does not depend on the site having something to say. They are
-	// framing, not payload — read past them.
-	for {
-		n, err := c.readRecord(b)
-		if n > 0 || err != nil || c.padLeft == 0 {
-			return n, err
-		}
-	}
-}
-
-func (c *clientSpliceConn) SpliceTo(dst net.Conn) (int64, error) {
-	var total int64
-	pre := make([]byte, upstreamMaxPayload*32)
-	for c.padLeft != 0 || len(c.rbuf) > 0 {
-		rn, rerr := c.Read(pre)
-		if rn > 0 {
-			wn, werr := dst.Write(pre[:rn])
-			total += int64(wn)
-			if werr != nil {
-				return total, werr
-			}
-		}
-		if rerr != nil {
-			return total, rerr
-		}
-	}
-	if d, s := buf.RawTCP(dst), buf.RawTCP(c.raw); d != nil && s != nil {
-		n, err := d.ReadFrom(s)
-		if err != nil {
-			if noter, ok := c.raw.(interface{ Note(error) }); ok {
-				noter.Note(err)
-			}
-		}
-		return total + n, err
-	}
-	n, err := io.Copy(dst, c.raw)
-	return total + n, err
-}
-
-func (c *clientSpliceConn) readRecord(b []byte) (int, error) {
-	var hdr [5]byte
-	if _, err := io.ReadFull(c.raw, hdr[:]); err != nil {
-		return 0, err
-	}
-	if hdr[0] != 0x17 {
-		return 0, fmt.Errorf("splice: bad record type 0x%02x", hdr[0])
-	}
-	body := int(binary.BigEndian.Uint16(hdr[3:5]))
-	rec := make([]byte, body)
-	if _, err := io.ReadFull(c.raw, rec); err != nil {
-		return 0, err
-	}
-	if c.padLeft > 0 {
-		c.padLeft--
-	}
-	if body < 2 {
-		return 0, fmt.Errorf("splice: short record")
-	}
-	dataLen := int(binary.BigEndian.Uint16(rec[0:2]))
-	if 2+dataLen > body {
-		return 0, fmt.Errorf("splice: bad data len")
-	}
-	data := rec[2 : 2+dataLen]
-	n := copy(b, data)
-	if n < len(data) {
-		c.rbuf = append(c.rbuf[:0], data[n:]...)
-	}
-	return n, nil
-}
 
 func (m *Manager) connectStreamMux(ctx context.Context) error {
 	if _, err := m.getStreamMuxClient(); err != nil {
@@ -347,7 +252,7 @@ func (m *Manager) openStreamMux(ctx context.Context, proto byte, addr string, po
 	if m.config.DecoyGate != nil {
 		m.config.DecoyGate.Enter()
 	}
-	return &decoyLeaveConn{Conn: conn, m: m, upLeft: upstreamShapedWrites}, nil
+	return &decoyLeaveConn{Conn: conn, gate: m.config.DecoyGate, upLeft: upstreamShapedWrites}, nil
 }
 
 func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {

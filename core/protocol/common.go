@@ -43,6 +43,21 @@ var sharedSessionCache = NewSessionCache(256)
 
 func SharedSessionCache() any { return sharedSessionCache }
 
+var learnedSelPub sync.Map
+
+func LearnedSelPub(idPub string) string {
+	v, _ := learnedSelPub.Load(idPub)
+	s, _ := v.(string)
+	return s
+}
+
+func RememberSelPub(idPub, selPub string) {
+	if idPub == "" || selPub == "" {
+		return
+	}
+	learnedSelPub.Store(idPub, selPub)
+}
+
 var decoyGraph = [4][]string{
 	{"/api/v1/config", "/cdn/app/index.js", "/assets/main.css"},
 	{"/static/vendor.js", "/static/app.js", "/assets/theme.css", "/cdn/fonts/roboto.woff2"},
@@ -62,12 +77,6 @@ const perflowPreambleTimeout = 15 * time.Second
 func perflowEnabled() bool { return os.Getenv("WHISPERA_PERFLOW") != "0" }
 
 const SpliceProtoBit byte = 0x80
-
-// FullFrameProtoBit asks the server to keep framing records for the whole
-// session instead of stopping after the first few — a stream that loses TLS
-// record structure halfway through is trivially spotted. On by default; the
-// switch exists because a client newer than its server would break on the bit.
-const FullFrameProtoBit byte = 0x40
 
 func FullFrameEnabled() bool { return os.Getenv("WHISPERA_FULL_FRAME") == "1" }
 

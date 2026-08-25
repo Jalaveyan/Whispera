@@ -87,6 +87,17 @@ func lookupIPCached(host string) ([]net.IP, error) {
 
 const targetDialTimeout = 15 * time.Second
 
+func targetTCPAddr(host string, port uint16) *net.TCPAddr {
+	if ip := net.ParseIP(host); ip != nil {
+		return &net.TCPAddr{IP: ip, Port: int(port)}
+	}
+	ips, err := lookupIPCached(host)
+	if err != nil || len(ips) == 0 {
+		return nil
+	}
+	return &net.TCPAddr{IP: ips[0], Port: int(port)}
+}
+
 func dialTarget(dialer proxy.Dialer, network, host string, port uint16) (net.Conn, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(int(port)))
 	ctx, cancel := context.WithTimeout(context.Background(), targetDialTimeout)
@@ -256,7 +267,7 @@ func (s *Server) runSession(under net.Conn, streamObf bool, clientID string) {
 		"stream_obf", streamObf,
 	)
 
-	if tcpConn, ok := under.(*net.TCPConn); ok {
+	if tcpConn := buf.RawTCP(under); tcpConn != nil {
 		_ = tcpConn.SetNoDelay(true)
 		_ = tcpConn.SetKeepAlive(true)
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
@@ -279,79 +290,21 @@ func (s *Server) runSession(under net.Conn, streamObf bool, clientID string) {
 const (
 	proxyHeaderWait = 10 * time.Second
 
-	spliceRecordsToPad = 8
-	frameForever       = -1
-	// The largest record TLS 1.3 can put on the wire: 5 header + 16384 plaintext
-	// + 1 content type + 16 AEAD tag. This was 16401 — the size of the body, not
-	// of the record — so our biggest record was five bytes short of one a real
-	// server sends, and real traffic has a visible peak exactly there (16406 is
-	// its second most common size). Being unable to reach it is itself a tell.
-	spliceWireTarget = 5 + 16384 + 1 + 16
-	spliceMaxData    = spliceWireTarget - 5 - 2
+	spliceAfterBytes = 256 << 10
+	spliceReadBuf    = 5 + 16384 + 1 + 16
 )
 
 type serverSpliceConn struct {
 	net.Conn
-	raw     net.Conn
-	padLeft int
-	closed  bool
-	batch   []byte
-	wmu     sync.Mutex
+	up   *protocol.FramedConn
+	down *protocol.FramedConn
+	raw  net.Conn
+	left int64
 }
 
-func (c *serverSpliceConn) Read(b []byte) (int, error) { return c.Conn.Read(b) }
+func (c *serverSpliceConn) Read(b []byte) (int, error) { return c.up.Read(b) }
 
-func (c *serverSpliceConn) Write(b []byte) (int, error) { return c.writeShaped(b) }
-
-func (c *serverSpliceConn) markClosed() {
-	c.wmu.Lock()
-	c.closed = true
-	c.wmu.Unlock()
-}
-
-// Records go out in one write per call, not one write each. Once records are cut
-// to the sizes real traffic uses — around 1387 bytes rather than the 16KB
-// maximum — there are a dozen of them per read, and a syscall apiece cost 39% of
-// throughput. What the wire carries is the same either way: TCP coalesces them
-// into segments regardless of how many writes put them there.
-// writeShaped frames the first padLeft records the way the client's splice
-// decoder expects — a 0x17 TLS-application record whose body is a 2-byte data
-// length followed by that many bytes — and then hands the rest straight to the
-// socket. It carries no size shaping or filler: the record framing is the
-// protocol (the client reads records until padLeft is spent), the sizes are not.
-func (c *serverSpliceConn) writeShaped(b []byte) (int, error) {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	sent := 0
-	for len(b) > 0 && c.padLeft != 0 {
-		n := len(b)
-		if n > spliceMaxData {
-			n = spliceMaxData
-		}
-		out := c.batch[:0]
-		out = append(out, 0x17, 0x03, 0x03)
-		out = binary.BigEndian.AppendUint16(out, uint16(2+n))
-		out = binary.BigEndian.AppendUint16(out, uint16(n))
-		out = append(out, b[:n]...)
-		if _, err := c.raw.Write(out); err != nil {
-			c.batch = out[:0]
-			return sent, err
-		}
-		c.batch = out[:0]
-		c.countTx(n)
-		sent += n
-		b = b[n:]
-		if c.padLeft > 0 {
-			c.padLeft--
-		}
-	}
-	if len(b) > 0 {
-		n, err := c.raw.Write(b)
-		c.countTx(n)
-		return sent + n, err
-	}
-	return sent, nil
-}
+func (c *serverSpliceConn) Write(b []byte) (int, error) { return c.down.Write(b) }
 
 func (c *serverSpliceConn) countTx(n int) {
 	if n > 0 {
@@ -363,13 +316,13 @@ func (c *serverSpliceConn) countTx(n int) {
 
 func (c *serverSpliceConn) spliceFrom(src net.Conn) (int64, error) {
 	var total int64
-	pre := make([]byte, spliceMaxData)
-	defer c.markClosed()
-	for c.padLeft != 0 {
+	pre := make([]byte, spliceReadBuf)
+	for c.left > 0 {
 		rn, rerr := src.Read(pre)
 		if rn > 0 {
-			n, werr := c.writeShaped(pre[:rn])
+			n, werr := c.down.Write(pre[:rn])
 			total += int64(n)
+			c.left -= int64(n)
 			if werr != nil {
 				return total, werr
 			}
@@ -377,6 +330,9 @@ func (c *serverSpliceConn) spliceFrom(src net.Conn) (int64, error) {
 		if rerr != nil {
 			return total, rerr
 		}
+	}
+	if err := c.down.SwitchRaw(); err != nil {
+		return total, err
 	}
 	if dst, s := buf.RawTCP(c.raw), buf.RawTCP(src); dst != nil && s != nil {
 		n, err := dst.ReadFrom(s)
@@ -388,16 +344,6 @@ func (c *serverSpliceConn) spliceFrom(src net.Conn) (int64, error) {
 	return total + n, err
 }
 
-// topUp waits a moment for the rest of what the origin is already sending.
-//
-// A read returns whatever has arrived, which for a 16KB record from a real site
-// is the first few TCP segments of it. Shipping that as one record of ours, and
-// the remainder as several more, is why our stream carried 232 records per
-// connection where the origin's carried 63, why 39% of ours were under 64 bytes
-// against the origin's 10%, and why we never emitted a full-size record at all
-// while 14% of real ones are. The bytes we wait for are already in flight — this
-// costs transmission time, not a round trip — and once the origin's own record
-// boundaries survive, our sizes are its sizes.
 func (s *Server) serveStreamMux(under net.Conn, clientID string, traceID uint64) {
 	svc, err := xmux.NewService(xmux.ServiceOptions{
 		NewStreamContext: func(ctx context.Context, _ net.Conn) context.Context { return ctx },
@@ -506,8 +452,7 @@ func (s *Server) resolveProxyDialer(network, addr string, port uint16) (proxy.Di
 	if rtr == nil {
 		return s.proxyDialer, "", false
 	}
-	dstAddr, _ := net.ResolveTCPAddr("tcp", net.JoinHostPort(addr, strconv.Itoa(int(port))))
-	dest, err := rtr.Route(context.Background(), &interfaces.Packet{DstAddr: dstAddr})
+	dest, err := rtr.Route(context.Background(), &interfaces.Packet{DstAddr: targetTCPAddr(addr, port)})
 	if err != nil {
 		return s.proxyDialer, "", false
 	}
@@ -583,7 +528,6 @@ func (s *Server) relayUDP(stream, target net.Conn, resCh chan copyResult) {
 		}
 	}()
 }
-
 func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult) {
 	go func() {
 		res := copyResult{dir: "up"}
@@ -620,7 +564,6 @@ func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult) {
 type proxyStreamHeader struct {
 	proto     byte
 	splice    bool
-	frameFull bool
 	keepAlive bool
 	addr      string
 	port      uint16
@@ -659,29 +602,25 @@ func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHead
 
 	proto := hdr[0]
 	return proxyStreamHeader{
-		proto:     proto &^ (protocol.SpliceProtoBit | protocol.FullFrameProtoBit | protocol.KeepAliveProtoBit),
+		proto:     proto &^ (protocol.SpliceProtoBit | protocol.KeepAliveProtoBit),
 		splice:    proto&protocol.SpliceProtoBit != 0 && protocol.SpliceEnabled(),
-		frameFull: proto&protocol.FullFrameProtoBit != 0,
 		keepAlive: proto&protocol.KeepAliveProtoBit != 0,
 		addr:      string(rest[:addrLen]),
 		port:      binary.BigEndian.Uint16(rest[addrLen:]),
 	}, true
 }
 
-func spliceWrap(stream net.Conn, h proxyStreamHeader, tunnelID uint64, targetAddr string) net.Conn {
+func spliceWrap(stream net.Conn, framed *protocol.FramedConn, h proxyStreamHeader, tunnelID uint64, targetAddr string) (net.Conn, *protocol.FramedConn) {
 	if !h.splice {
-		return stream
+		return framed, framed
 	}
 	raw := protocol.NetConnOf(stream)
 	if raw == nil {
-		return stream
+		return framed, framed
 	}
-	left := spliceRecordsToPad
-	if h.frameFull {
-		left = frameForever
-	}
+	down := protocol.NewFramedConn(raw)
 	logger.Trace().Infow("proxy_stream_splice", "trace_id", tunnelID, "target", targetAddr)
-	return &serverSpliceConn{Conn: stream, raw: raw, padLeft: left}
+	return &serverSpliceConn{Conn: stream, up: framed, down: down, raw: raw, left: spliceAfterBytes}, down
 }
 
 func collectCopyResults(resCh chan copyResult) (up, down int64, firstErr error, firstDir string) {
@@ -762,6 +701,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		framed = protocol.NewFramedConn(stream)
 	}
 
+	var downFramed *protocol.FramedConn
 	resCh := make(chan copyResult, 2)
 	switch {
 	case network == "udp" && framed != nil:
@@ -769,9 +709,11 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	case network == "udp":
 		s.relayUDP(stream, target, resCh)
 	case framed != nil:
-		s.relayTCP(framed, target, resCh)
+		var wrapped net.Conn
+		wrapped, downFramed = spliceWrap(stream, framed, h, tunnelID, targetAddr)
+		s.relayTCP(wrapped, target, resCh)
 	default:
-		s.relayTCP(spliceWrap(stream, h, tunnelID, targetAddr), target, resCh)
+		s.relayTCP(stream, target, resCh)
 	}
 
 	up, down, firstErr, firstDir := collectCopyResults(resCh)
@@ -789,9 +731,9 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		"err", errField,
 	)
 
-	if framed != nil {
-		_ = framed.EndStream()
-		reusable = framed.StreamDone() && firstErr == nil
+	if downFramed != nil {
+		_ = downFramed.EndStream()
+		reusable = framed.StreamDone() && !downFramed.SwitchedRaw() && firstErr == nil
 	}
 	return reusable
 }

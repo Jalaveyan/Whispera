@@ -2,8 +2,11 @@ package tunnel
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"testing"
+
+	"github.com/nekoskin/whispera/core/protocol"
 )
 
 type spliceReadConn struct {
@@ -13,65 +16,144 @@ type spliceReadConn struct {
 
 func (c *spliceReadConn) Read(b []byte) (int, error) { return c.r.Read(b) }
 
-func buildSplicePaddedWire(payloads [][]byte) []byte {
+type spliceWriteConn struct {
+	net.Conn
+	w bytes.Buffer
+}
+
+func (c *spliceWriteConn) Write(b []byte) (int, error) { return c.w.Write(b) }
+
+func framedRecord(data []byte, marker int) []byte {
+	const pad = 20
+	body := 2 + len(data) + pad
+	out := []byte{0x17, 0x03, 0x03, byte(body >> 8), byte(body)}
+	if marker >= 0 {
+		out = append(out, byte(marker>>8), byte(marker))
+	} else {
+		out = append(out, byte(len(data)>>8), byte(len(data)))
+	}
+	out = append(out, data...)
+	return append(out, make([]byte, pad)...)
+}
+
+func buildFramedWire(payloads [][]byte) []byte {
 	var w bytes.Buffer
 	for _, p := range payloads {
-		const pad = 20
-		body := 2 + len(p) + pad
-		w.Write([]byte{0x17, 0x03, 0x03, byte(body >> 8), byte(body)})
-		w.Write([]byte{byte(len(p) >> 8), byte(len(p))})
-		w.Write(p)
-		w.Write(make([]byte, pad))
+		w.Write(framedRecord(p, -1))
 	}
 	return w.Bytes()
 }
 
-func readAllSmall(t *testing.T, c net.Conn, chunk int) []byte {
-	t.Helper()
-	var out bytes.Buffer
-	buf := make([]byte, chunk)
-	for {
-		n, err := c.Read(buf)
-		out.Write(buf[:n])
-		if err != nil {
-			break
-		}
-	}
-	return out.Bytes()
+func newKeepAliveStream(wire []byte) (*keepAliveStream, *spliceWriteConn) {
+	src := &spliceReadConn{r: bytes.NewReader(wire)}
+	fc := protocol.NewFramedConn(src)
+	return &keepAliveStream{Conn: src, up: fc, down: fc, base: src, raw: src}, &spliceWriteConn{}
 }
 
-func newClientSplice(wire []byte) *clientSpliceConn {
-	return &clientSpliceConn{
-		decoyLeaveConn: &decoyLeaveConn{},
-		raw:            &spliceReadConn{r: bytes.NewReader(wire)},
-		padLeft:        spliceRecordsToPad,
-	}
-}
-
-func TestClientSpliceShortResponseSmallBuffers(t *testing.T) {
+func TestKeepAliveStreamShortResponseStaysFramed(t *testing.T) {
 	payloads := [][]byte{[]byte("hello"), []byte("world!!"), bytes.Repeat([]byte("x"), 200)}
-	csc := newClientSplice(buildSplicePaddedWire(payloads))
-	got := readAllSmall(t, csc, 3)
+	ks, dst := newKeepAliveStream(buildFramedWire(payloads))
+
+	if _, err := ks.SpliceTo(dst); err != nil {
+		t.Fatalf("SpliceTo() error = %v", err)
+	}
 	want := bytes.Join(payloads, nil)
-	if !bytes.Equal(got, want) {
-		t.Fatalf("mismatch: got %q, want %q", got, want)
+	if !bytes.Equal(dst.w.Bytes(), want) {
+		t.Fatalf("mismatch: got %q, want %q", dst.w.Bytes(), want)
 	}
 }
 
-func TestClientSplicePaddedThenRaw(t *testing.T) {
-	var payloads [][]byte
-	for i := 0; i < spliceRecordsToPad; i++ {
-		payloads = append(payloads, bytes.Repeat([]byte{byte('a' + i)}, 13))
-	}
-	wire := buildSplicePaddedWire(payloads)
+func TestKeepAliveStreamFollowsSwitchToRaw(t *testing.T) {
+	payloads := [][]byte{[]byte("page"), bytes.Repeat([]byte("y"), 300)}
+	wire := buildFramedWire(payloads)
+	wire = append(wire, framedRecord(nil, 0xFFFF)...)
 	tail := bytes.Repeat([]byte("RAW"), 100)
 	wire = append(wire, tail...)
 
-	csc := newClientSplice(wire)
-	got := readAllSmall(t, csc, 7)
+	ks, dst := newKeepAliveStream(wire)
+
+	if _, err := ks.SpliceTo(dst); err != nil {
+		t.Fatalf("SpliceTo() error = %v", err)
+	}
 	want := append(bytes.Join(payloads, nil), tail...)
-	if !bytes.Equal(got, want) {
-		t.Fatalf("mismatch: got %d bytes, want %d", len(got), len(want))
+	if !bytes.Equal(dst.w.Bytes(), want) {
+		t.Fatalf("mismatch: got %d bytes, want %d", dst.w.Len(), len(want))
+	}
+	if ks.down.StreamDone() {
+		t.Error("stream marked done after following the switch to raw")
+	}
+}
+
+type poolConn struct {
+	net.Conn
+	r      *bytes.Reader
+	closed bool
+}
+
+func (c *poolConn) Read(b []byte) (int, error)  { return c.r.Read(b) }
+func (c *poolConn) Write(b []byte) (int, error) { return len(b), nil }
+func (c *poolConn) Close() error                { c.closed = true; return nil }
+
+// Wire the server sends for a short answer: data records, then the end marker.
+func shortAnswerWire(payloads [][]byte) []byte {
+	var w bytes.Buffer
+	for _, p := range payloads {
+		w.Write(framedRecord(p, -1))
+	}
+	w.Write(framedRecord(nil, 0))
+	return w.Bytes()
+}
+
+func TestKeepAliveStreamReturnsConnectionToPool(t *testing.T) {
+	m := newTestManager(t)
+	base := &poolConn{r: bytes.NewReader(shortAnswerWire([][]byte{[]byte("page"), []byte("body")}))}
+	fc := protocol.NewFramedConn(base)
+	ks := &keepAliveStream{Conn: base, up: fc, down: fc, m: m, base: base}
+
+	var got bytes.Buffer
+	sink := &spliceWriteConn{}
+	if _, err := ks.SpliceTo(sink); err != nil {
+		t.Fatalf("SpliceTo() error = %v", err)
+	}
+	got.Write(sink.w.Bytes())
+	if got.String() != "pagebody" {
+		t.Fatalf("payload = %q, want %q", got.String(), "pagebody")
+	}
+
+	if err := ks.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if base.closed {
+		t.Error("connection was closed instead of pooled")
+	}
+	m.idle.mu.Lock()
+	pooled := len(m.idle.conns)
+	m.idle.mu.Unlock()
+	if pooled != 1 {
+		t.Fatalf("idleSet holds %d connections, want 1: without pooling the next stream pays a full handshake", pooled)
+	}
+}
+
+func TestKeepAliveStreamDiscardsUnfinishedStream(t *testing.T) {
+	m := newTestManager(t)
+	base := &poolConn{r: bytes.NewReader(framedRecord([]byte("partial"), -1))}
+	fc := protocol.NewFramedConn(base)
+	ks := &keepAliveStream{Conn: base, up: fc, down: fc, m: m, base: base}
+
+	var one [4]byte
+	if _, err := ks.Read(one[:]); err != nil && err != io.EOF {
+		t.Fatalf("Read() error = %v", err)
+	}
+	_ = ks.Close()
+
+	if !base.closed {
+		t.Error("connection stayed open after an unfinished stream")
+	}
+	m.idle.mu.Lock()
+	pooled := len(m.idle.conns)
+	m.idle.mu.Unlock()
+	if pooled != 0 {
+		t.Errorf("idleSet holds %d connections: an unfinished stream was pooled and the next user reads someone else's tail", pooled)
 	}
 }
 
