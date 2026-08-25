@@ -18,11 +18,7 @@ func deviceIDPath() string {
 		}
 		return filepath.Join(appData, "whispera", "device.id")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), ".whispera", "device.id")
-	}
-	return filepath.Join(home, ".whispera", "device.id")
+	return statePath("device.id")
 }
 
 func handshakeSignalPath() string {
@@ -33,11 +29,17 @@ func handshakeSignalPath() string {
 		}
 		return filepath.Join(appData, "whispera", "handshake.json")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), ".whispera", "handshake.json")
+	return statePath("handshake.json")
+}
+
+func statePath(name string) string {
+	if home, err := os.UserHomeDir(); err == nil {
+		dir := filepath.Join(home, ".whispera")
+		if err := os.MkdirAll(dir, 0o700); err == nil {
+			return filepath.Join(dir, name)
+		}
 	}
-	return filepath.Join(home, ".whispera", "handshake.json")
+	return filepath.Join(os.TempDir(), ".whispera", name)
 }
 
 func loadOrCreateDeviceID() ([16]byte, error) {
