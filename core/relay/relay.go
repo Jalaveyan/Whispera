@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/url"
 	"runtime/debug"
@@ -16,7 +17,6 @@ import (
 	"time"
 
 	"github.com/nekoskin/whispera/common/buf"
-	"github.com/nekoskin/whispera/common/dns"
 	logger "github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
@@ -77,28 +77,56 @@ var udpCopyBufPool = sync.Pool{
 	},
 }
 
-var dohResolver = dns.NewResolver(dns.DefaultConfig())
+// The server sits in a datacentre, not behind the censor: its own resolver
+// answers from the OS cache in microseconds, while going out to 8.8.8.8 —
+// and falling back to DoH when that is unreachable — spent whole seconds
+// before the stream had dialed anything.
+const routeLookupWait = 300 * time.Millisecond
 
 func lookupIPCached(host string) ([]net.IP, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), routeLookupWait)
 	defer cancel()
-	return dohResolver.Resolve(ctx, host)
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	ips := make([]net.IP, len(addrs))
+	for i, a := range addrs {
+		ips[i] = a.IP
+	}
+	return ips, nil
 }
 
 const targetDialTimeout = 15 * time.Second
 
-func targetTCPAddr(host string, port uint16) *net.TCPAddr {
+// targetIPs resolves a name for the router to decide on. Only the router needs
+// this: dialing by name lets the system resolver do the work, with its own cache
+// and its own happy-eyeballs, and it answers in microseconds where ours went to
+// 8.8.8.8 and, when that is unreachable, sat in a DoH fallback until the 3s
+// budget ran out — once per stream, before a single byte moved.
+func targetIPs(host string) []net.IP {
 	if ip := net.ParseIP(host); ip != nil {
-		return &net.TCPAddr{IP: ip, Port: int(port)}
+		return []net.IP{ip}
 	}
 	ips, err := lookupIPCached(host)
-	if err != nil || len(ips) == 0 {
+	if err != nil {
+		return nil
+	}
+	return ips
+}
+
+// firstTCPAddr returns a net.Addr, not a *net.TCPAddr: a nil pointer put in an
+// interface stops being nil, so every "if addr != nil" downstream would let it
+// through and route on the string "<nil>" — one cache entry shared by every
+// name that failed to resolve.
+func firstTCPAddr(ips []net.IP, port uint16) net.Addr {
+	if len(ips) == 0 {
 		return nil
 	}
 	return &net.TCPAddr{IP: ips[0], Port: int(port)}
 }
 
-func dialTarget(dialer proxy.Dialer, network, host string, port uint16) (net.Conn, error) {
+func dialTarget(dialer proxy.Dialer, network, host string, port uint16, ips []net.IP) (net.Conn, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(int(port)))
 	ctx, cancel := context.WithTimeout(context.Background(), targetDialTimeout)
 	defer cancel()
@@ -108,11 +136,7 @@ func dialTarget(dialer proxy.Dialer, network, host string, port uint16) (net.Con
 		}
 		return dialer.Dial(network, a)
 	}
-	if dialer != proxy.Direct || net.ParseIP(host) != nil {
-		return dial(addr)
-	}
-	ips, err := lookupIPCached(host)
-	if err != nil || len(ips) == 0 {
+	if dialer != proxy.Direct || net.ParseIP(host) != nil || len(ips) == 0 {
 		return dial(addr)
 	}
 	var lastErr error
@@ -290,9 +314,17 @@ func (s *Server) runSession(under net.Conn, streamObf bool, clientID string) {
 const (
 	proxyHeaderWait = 10 * time.Second
 
-	spliceAfterBytes = 256 << 10
+	// Switching to raw costs the connection: a stream that leaves framing can
+	// never be handed back to the pool, and reopening one is two round trips —
+	// about 3 MB of transfer at the rates and latencies we see. Below that the
+	// kernel path saves less CPU than the handshake costs, so ordinary pages,
+	// images and video chunks stay framed and keep their connection.
+	spliceAfterBytes = 4 << 20
 	targetDrainWait  = 5 * time.Second
-	spliceReadBuf    = 5 + 16384 + 1 + 16
+	// Read as much as the copy path does elsewhere. Reading one record's worth at
+	// a time meant four syscalls where one would do, and on short answers — the
+	// whole of a page — that is the entire transfer.
+	spliceReadBuf = 64 << 10
 )
 
 type serverSpliceConn struct {
@@ -317,7 +349,11 @@ func (c *serverSpliceConn) countTx(n int) {
 
 func (c *serverSpliceConn) spliceFrom(src net.Conn) (int64, error) {
 	var total int64
-	pre := make([]byte, spliceReadBuf)
+	// One 64K buffer per stream is 64 MB of garbage per thousand streams, and
+	// the pool already holds buffers of exactly this size.
+	pb := buf.New()
+	defer pb.Release()
+	pre := pb.Extend(spliceReadBuf)
 	for c.left > 0 {
 		rn, rerr := src.Read(pre)
 		if rn > 0 {
@@ -401,12 +437,13 @@ func (h *muxHandler) serveStream(stream net.Conn, dest singM.Socksaddr) {
 	}
 	port := dest.Port
 
-	dialer, outboundTag, blocked := h.s.resolveProxyDialer(network, addr, port)
+	ips := h.s.routeIPs(addr)
+	dialer, outboundTag, blocked := h.s.resolveProxyDialer(network, addr, port, ips)
 	if blocked {
 		return
 	}
 	targetAddr := net.JoinHostPort(addr, strconv.Itoa(int(port)))
-	target, err := h.s.dialProxyTarget(outboundTag, network, targetAddr, addr, port, dialer)
+	target, err := h.s.dialProxyTarget(outboundTag, network, targetAddr, addr, port, dialer, ips)
 	if err != nil {
 		logger.Trace().Warnw("stream_mux_dial_fail", "trace_id", h.traceID, "target", targetAddr, "err", err.Error())
 		return
@@ -428,22 +465,33 @@ func (h *muxHandler) serveStream(stream net.Conn, dest singM.Socksaddr) {
 	<-resCh
 }
 
-func (s *Server) dialProxyTarget(outboundTag, network, targetAddr, addr string, port uint16, dialer proxy.Dialer) (net.Conn, error) {
+func (s *Server) dialProxyTarget(outboundTag, network, targetAddr, addr string, port uint16, dialer proxy.Dialer, ips []net.IP) (net.Conn, error) {
 	if outboundTag == "" {
-		return dialTarget(dialer, network, addr, port)
+		return dialTarget(dialer, network, addr, port, ips)
 	}
 	s.mu.RLock()
 	dialFn := s.outboundDial
 	s.mu.RUnlock()
 	if dialFn == nil {
-		return dialTarget(dialer, network, addr, port)
+		return dialTarget(dialer, network, addr, port, ips)
 	}
 	dctx, dcancel := context.WithTimeout(context.Background(), targetDialTimeout)
 	defer dcancel()
 	return dialFn(dctx, outboundTag, network, targetAddr)
 }
 
-func (s *Server) resolveProxyDialer(network, addr string, port uint16) (proxy.Dialer, string, bool) {
+// routeIPs resolves only when a router is there to route on the answer.
+func (s *Server) routeIPs(host string) []net.IP {
+	s.routerMu.RLock()
+	rtr := s.router
+	s.routerMu.RUnlock()
+	if rtr == nil {
+		return nil
+	}
+	return targetIPs(host)
+}
+
+func (s *Server) resolveProxyDialer(network, addr string, port uint16, ips []net.IP) (proxy.Dialer, string, bool) {
 	if network == "udp" {
 		return proxy.Direct, "", false
 	}
@@ -453,7 +501,7 @@ func (s *Server) resolveProxyDialer(network, addr string, port uint16) (proxy.Di
 	if rtr == nil {
 		return s.proxyDialer, "", false
 	}
-	dest, err := rtr.Route(context.Background(), &interfaces.Packet{DstAddr: targetTCPAddr(addr, port)})
+	dest, err := rtr.Route(context.Background(), &interfaces.Packet{DstAddr: firstTCPAddr(ips, port)})
 	if err != nil {
 		return s.proxyDialer, "", false
 	}
@@ -630,9 +678,18 @@ func spliceWrap(stream net.Conn, framed *protocol.FramedConn, h proxyStreamHeade
 	if raw == nil {
 		return framed, framed
 	}
+	// The client is already reading from the raw socket, so the framing has to
+	// move there either way — that part is agreed in the header and cannot be
+	// declined here. What can be declined is dropping the framing altogether:
+	// that is what costs the connection, and it only pays for itself while the
+	// CPU is the scarce resource.
+	left := int64(math.MaxInt64)
+	if cpuBusy() {
+		left = spliceAfterBytes
+	}
 	down := protocol.NewFramedConn(raw)
-	logger.Trace().Infow("proxy_stream_splice", "trace_id", tunnelID, "target", targetAddr)
-	return &serverSpliceConn{Conn: stream, up: framed, down: down, raw: raw, left: spliceAfterBytes}, down
+	logger.Trace().Infow("proxy_stream_splice", "trace_id", tunnelID, "target", targetAddr, "to_raw_after", left)
+	return &serverSpliceConn{Conn: stream, up: framed, down: down, raw: raw, left: left}, down
 }
 
 func collectCopyResults(resCh chan copyResult) (up, down int64, firstErr error, firstDir string) {
@@ -678,13 +735,14 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		"proto", fmt.Sprintf("0x%02x", h.proto),
 	)
 
-	dialer, outboundTag, blocked := s.resolveProxyDialer(network, h.addr, h.port)
+	ips := s.routeIPs(h.addr)
+	dialer, outboundTag, blocked := s.resolveProxyDialer(network, h.addr, h.port, ips)
 	if blocked {
 		return false
 	}
 
 	dialStart := time.Now()
-	target, err := s.dialProxyTarget(outboundTag, network, targetAddr, h.addr, h.port, dialer)
+	target, err := s.dialProxyTarget(outboundTag, network, targetAddr, h.addr, h.port, dialer, ips)
 	dialDur := time.Since(dialStart)
 	if err != nil {
 		logger.Trace().Warnw("proxy_stream_dial_fail",
@@ -717,6 +775,11 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 	resCh := make(chan copyResult, 2)
 	switch {
 	case network == "udp" && framed != nil:
+		// UDP streams are framed too, so they end the same way and their
+		// connection goes back to the pool. Leaving downFramed nil here had the
+		// server close a connection the client had already pooled, and the next
+		// stream to pick it up found it dead.
+		downFramed = framed
 		s.relayUDP(framed, target, resCh)
 	case network == "udp":
 		s.relayUDP(stream, target, resCh)

@@ -34,6 +34,14 @@ type Config struct {
 	BypassResolver  *net.Resolver
 }
 
+// pending is one upstream query others can wait on, so a page opening twenty
+// streams to the same host asks once instead of twenty times.
+type pending struct {
+	done chan struct{}
+	ips  []net.IP
+	err  error
+}
+
 type Resolver struct {
 	*base.Module
 	config     *Config
@@ -41,6 +49,9 @@ type Resolver struct {
 	upstreamMu sync.RWMutex
 	dialCtx    func(ctx context.Context, network, address string) (net.Conn, error)
 	dialCtxMu  sync.RWMutex
+
+	inflightMu sync.Mutex
+	inflight   map[string]*pending
 
 	fakeIPNet     *net.IPNet
 	fakeIPNext    uint32
@@ -152,17 +163,46 @@ func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error)
 		return []net.IP{ip}, nil
 	}
 
-	ips, err := r.resolveUpstream(ctx, domain)
+	ips, err := r.resolveShared(ctx, domain)
 	if err != nil {
 		atomic.AddUint64(&r.errors, 1)
 		return nil, err
 	}
 
-	if r.config.CacheEnabled && len(ips) > 0 {
-		_ = r.cache.Set(ctx, domain, ips, r.config.CacheTTL)
+	return ips, nil
+}
+
+// resolveShared runs one upstream query per domain at a time; everyone else
+// waits for it and takes the same answer.
+func (r *Resolver) resolveShared(ctx context.Context, domain string) ([]net.IP, error) {
+	r.inflightMu.Lock()
+	if r.inflight == nil {
+		r.inflight = make(map[string]*pending)
+	}
+	if p, ok := r.inflight[domain]; ok {
+		r.inflightMu.Unlock()
+		select {
+		case <-p.done:
+			return p.ips, p.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	p := &pending{done: make(chan struct{})}
+	r.inflight[domain] = p
+	r.inflightMu.Unlock()
+
+	p.ips, p.err = r.resolveUpstream(ctx, domain)
+	if p.err == nil && r.config.CacheEnabled && len(p.ips) > 0 {
+		_ = r.cache.Set(ctx, domain, p.ips, r.config.CacheTTL)
 	}
 
-	return ips, nil
+	r.inflightMu.Lock()
+	delete(r.inflight, domain)
+	r.inflightMu.Unlock()
+	close(p.done)
+
+	return p.ips, p.err
 }
 
 func (r *Resolver) ResolveUpstream(ctx context.Context, domain string) ([]net.IP, error) {
@@ -174,14 +214,7 @@ func (r *Resolver) ResolveUpstream(ctx context.Context, domain string) ([]net.IP
 			return ips, nil
 		}
 	}
-	ips, err := r.resolveUpstream(ctx, domain)
-	if err != nil {
-		return nil, err
-	}
-	if r.config.CacheEnabled && len(ips) > 0 {
-		_ = r.cache.Set(ctx, domain, ips, r.config.CacheTTL)
-	}
-	return ips, nil
+	return r.resolveShared(ctx, domain)
 }
 
 func (r *Resolver) SetDialContext(dialFn func(ctx context.Context, network, address string) (net.Conn, error)) {
