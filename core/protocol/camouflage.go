@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"time"
 
@@ -48,10 +49,17 @@ type peekedHello struct {
 	keyShare []byte
 }
 
+// Room for a ClientHello: the biggest ones we see, with post-quantum key
+// shares, land just under 2 KB.
+const camoHelloHint = 2048
+
 func peekClientHello(conn net.Conn) (*peekedHello, error) {
 	defer conn.SetReadDeadline(time.Time{})
 
-	var raw []byte
+	// A ClientHello arrives in one record and fits here, so the whole peek costs
+	// one allocation. Growing from nil reallocated several times per connection,
+	// and the record body was copied twice on top of that.
+	raw := make([]byte, 0, camoHelloHint)
 	var hs []byte
 
 	for {
@@ -67,12 +75,19 @@ func peekClientHello(conn net.Conn) (*peekedHello, error) {
 		if recLen <= 0 || recLen > 16384 {
 			return &peekedHello{raw: raw}, fmt.Errorf("whispera: invalid TLS record length")
 		}
-		payload := make([]byte, recLen)
-		if _, err := readFullIdle(conn, payload, camoPeekTimeout); err != nil {
+		raw = slices.Grow(raw, recLen)
+		body := raw[len(raw) : len(raw)+recLen]
+		if _, err := readFullIdle(conn, body, camoPeekTimeout); err != nil {
 			return &peekedHello{raw: raw}, fmt.Errorf("%w: %v", errHelloIncomplete, err)
 		}
-		raw = append(raw, payload...)
-		hs = append(hs, payload...)
+		raw = raw[:len(raw)+recLen]
+		if hs == nil {
+			// Capped at its own length: appending to it later must copy, not
+			// write back into raw over the record header that follows.
+			hs = body[:len(body):len(body)]
+		} else {
+			hs = append(hs, body...)
+		}
 
 		if len(hs) > camoMaxHandshake {
 			return &peekedHello{raw: raw}, fmt.Errorf("whispera: ClientHello too large")
@@ -121,22 +136,25 @@ func (c *prefixConn) Read(b []byte) (int, error) {
 	return c.Conn.Read(b)
 }
 
-func relayToOrigin(conn net.Conn, raw []byte, addr string) {
-	defer conn.Close()
+// relayToOrigin hands the connection to the site we hide behind. It reports
+// whether it took the connection over: when it could not, the caller still owes
+// the peer an answer.
+func relayToOrigin(conn net.Conn, raw []byte, addr string) bool {
 	if addr == "" {
-		return
+		return false
 	}
 	dialCtx, cancel := context.WithTimeout(context.Background(), camoDialTimeout)
 	defer cancel()
 	upstream, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", addr)
 	if err != nil {
-		return
+		return false
 	}
+	defer conn.Close()
 	defer upstream.Close()
 
 	if len(raw) > 0 {
 		if _, err := upstream.Write(raw); err != nil {
-			return
+			return true
 		}
 	}
 
@@ -144,6 +162,7 @@ func relayToOrigin(conn net.Conn, raw []byte, addr string) {
 	go func() { io.Copy(upstream, conn); done <- struct{}{} }()
 	go func() { io.Copy(conn, upstream); done <- struct{}{} }()
 	<-done
+	return true
 }
 
 func camoDecoyAddr(decoyOrigin string) func(sni string) string {
@@ -322,7 +341,15 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	target := l.decoyAddr(ph.sni)
 	traceLog.Infow("camo_relay_decoy", "remote", remote, "sni", ph.sni, "hello_err", err,
 		"camo_keys", len(keys), "has_keyshare", len(ph.keyShare) > 0, "target", target)
-	relayToOrigin(conn, ph.raw, target)
+	if relayToOrigin(conn, ph.raw, target) {
+		return
+	}
+	// Nowhere to relay — no decoy origin configured, no usable SNI, or it would
+	// not answer. Dropping the connection here is what a tunnel does; a web
+	// server presents its certificate and serves something. So the handshake
+	// goes on as usual and the decoy pages answer it.
+	traceLog.Infow("camo_serve_local_decoy", "remote", remote, "sni", ph.sni, "target", target)
+	l.pass(conn, ph, "", nil)
 }
 
 func (l *camouflageListener) pass(conn net.Conn, ph *peekedHello, userID string, psk []byte) {
