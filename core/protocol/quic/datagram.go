@@ -18,6 +18,7 @@ const (
 	datagramMaxProtected = 1100
 	fecSweepEvery        = 10 * time.Millisecond
 	udpTargetIdle        = 2 * time.Minute
+	targetDialTimeout    = 5 * time.Second
 )
 
 var fecBlockWait = 30 * time.Millisecond
@@ -402,19 +403,33 @@ func (s *serverSession) handlePayload(payload []byte) {
 
 	s.mu.Lock()
 	uc, exists := s.targets[key]
+	s.mu.Unlock()
+
 	if !exists {
-		var err error
-		uc, err = (&net.Dialer{}).DialContext(context.Background(), "udp", key)
+		// Dialing happens outside the lock: for a name it resolves first, and
+		// holding the session lock through that stalls every other datagram on
+		// this session — on the lane that exists for latency.
+		ctx, cancel := context.WithTimeout(context.Background(), targetDialTimeout)
+		fresh, err := (&net.Dialer{}).DialContext(ctx, "udp", key)
+		cancel()
 		if err != nil {
-			s.mu.Unlock()
 			traceLog.Infow("rt_datagram_target_dial_failed", "target", key, "err", err.Error())
 			return
 		}
-		traceLog.Infow("rt_datagram_target_dial", "target", key)
-		s.targets[key] = uc
-		go s.pumpTargetResponses(uc, key, host, port)
+
+		s.mu.Lock()
+		if existing, raced := s.targets[key]; raced {
+			s.mu.Unlock()
+			fresh.Close()
+			uc = existing
+		} else {
+			s.targets[key] = fresh
+			s.mu.Unlock()
+			uc = fresh
+			traceLog.Infow("rt_datagram_target_dial", "target", key)
+			go s.pumpTargetResponses(fresh, key, host, port)
+		}
 	}
-	s.mu.Unlock()
 	_, _ = uc.Write(udpPayload)
 }
 
