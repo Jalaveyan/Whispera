@@ -39,6 +39,7 @@ type SplitTunnelManager struct {
 	resolve   ResolveFunc
 	byCountry bool
 	verdicts  map[string]verdict
+	pending   map[string]bool
 }
 
 type ResolveFunc func(ctx context.Context, host string) ([]net.IP, error)
@@ -51,6 +52,7 @@ type verdict struct {
 const (
 	verdictTTL      = 10 * time.Minute
 	resolveTimeout  = 3 * time.Second
+	resolveWait     = 300 * time.Millisecond
 	verdictMax      = 4096
 	appRulePriority = 200
 )
@@ -204,13 +206,46 @@ func (stm *SplitTunnelManager) bypassByCountry(hostname string) bool {
 		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
+	// Getting this wrong sends a domestic bank through a foreign address, so the
+	// answer is worth waiting for — but only as long as an answer normally takes.
+	// Past that the connection goes through the tunnel, which is correct if
+	// slower, and the verdict is finished behind it for next time.
+	ctx, cancel := context.WithTimeout(context.Background(), resolveWait)
 	defer cancel()
 	ips, err := resolve(ctx, hostname)
 	if err != nil {
+		stm.learnInBackground(hostname, geo, resolve)
 		return false
 	}
+	return stm.recordCountry(hostname, geo, ips)
+}
 
+func (stm *SplitTunnelManager) learnInBackground(hostname string, geo *GeoIPSet, resolve ResolveFunc) {
+	stm.mu.Lock()
+	if stm.pending == nil {
+		stm.pending = make(map[string]bool)
+	}
+	if stm.pending[hostname] {
+		stm.mu.Unlock()
+		return
+	}
+	stm.pending[hostname] = true
+	stm.mu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
+		defer cancel()
+		ips, err := resolve(ctx, hostname)
+		if err == nil {
+			stm.recordCountry(hostname, geo, ips)
+		}
+		stm.mu.Lock()
+		delete(stm.pending, hostname)
+		stm.mu.Unlock()
+	}()
+}
+
+func (stm *SplitTunnelManager) recordCountry(hostname string, geo *GeoIPSet, ips []net.IP) bool {
 	bypass := false
 	for _, ip := range ips {
 		if geo.Contains(ip) {
