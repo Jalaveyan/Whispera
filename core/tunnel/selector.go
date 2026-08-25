@@ -8,7 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
-	"sync/atomic"
+
 	"time"
 
 	"github.com/nekoskin/whispera/core/protocol"
@@ -61,13 +61,6 @@ type selector struct {
 	sessionCache any
 	lane         datagramLane
 	strategy     *protocol.HandshakeStrategy
-
-	selPub atomic.Value
-}
-
-func (s *selector) learnedSelPub() string {
-	v, _ := s.selPub.Load().(string)
-	return v
 }
 
 func newSelector(m *Manager) *selector {
@@ -114,9 +107,11 @@ func (s *selector) whisperaDial() (func(context.Context) (net.Conn, error), bool
 	return func(ctx context.Context) (net.Conn, error) {
 		c := *cCfg
 		if c.ServerSelPub == "" {
-			c.ServerSelPub = s.learnedSelPub()
+			c.ServerSelPub = protocol.LearnedSelPub(c.ServerIDPub)
 		}
-		c.OnServerSelPub = func(selPub string) { s.selPub.Store(selPub) }
+		c.OnServerSelPub = func(selPub string) {
+			protocol.RememberSelPub(c.ServerIDPub, selPub)
+		}
 		arm := strategy.Select(sni, fingerprint.PresetCount())
 		c.HelloID = fingerprint.PresetAt(arm)
 
