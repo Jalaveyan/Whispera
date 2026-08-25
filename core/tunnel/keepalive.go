@@ -14,6 +14,11 @@ import (
 
 const keepAliveMaxIdle = 16
 
+const (
+	drainWait  = 250 * time.Millisecond
+	drainLimit = 64 << 10
+)
+
 type idleSet struct {
 	mu    sync.Mutex
 	conns []net.Conn
@@ -102,6 +107,33 @@ func (c *keepAliveStream) SpliceTo(dst net.Conn) (int64, error) {
 	return n + m, rerr
 }
 
+// drainToEnd reads what the server still owes us until its end-of-stream marker
+// arrives. Without it the connection is never reusable: we send our marker and
+// check StreamDone() in the same breath, but the server only answers once both
+// of its copies finish, which cannot happen before it sees our marker.
+func (c *keepAliveStream) drainToEnd() bool {
+	if c.down.StreamDone() {
+		return true
+	}
+	if c.down.SwitchedRaw() {
+		return false
+	}
+	if err := c.base.SetReadDeadline(time.Now().Add(drainWait)); err != nil {
+		return false
+	}
+	defer c.base.SetReadDeadline(time.Time{})
+
+	discard := make([]byte, 16<<10)
+	for left := drainLimit; left > 0; {
+		n, err := c.down.Read(discard)
+		if err != nil {
+			return errors.Is(err, io.EOF) && c.down.StreamDone()
+		}
+		left -= n
+	}
+	return false
+}
+
 func (c *keepAliveStream) Close() error {
 	var err error
 	c.once.Do(func() {
@@ -109,7 +141,7 @@ func (c *keepAliveStream) Close() error {
 			defer c.m.config.DecoyGate.Leave()
 		}
 		err = c.up.EndStream()
-		if err != nil || !c.down.StreamDone() {
+		if err != nil || !c.drainToEnd() {
 			c.base.Close()
 			return
 		}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 
 	"github.com/nekoskin/whispera/core/protocol"
 )
@@ -93,6 +94,8 @@ type poolConn struct {
 func (c *poolConn) Read(b []byte) (int, error)  { return c.r.Read(b) }
 func (c *poolConn) Write(b []byte) (int, error) { return len(b), nil }
 func (c *poolConn) Close() error                { c.closed = true; return nil }
+
+func (c *poolConn) SetReadDeadline(time.Time) error { return nil }
 
 // Wire the server sends for a short answer: data records, then the end marker.
 func shortAnswerWire(payloads [][]byte) []byte {

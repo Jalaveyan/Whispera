@@ -291,6 +291,7 @@ const (
 	proxyHeaderWait = 10 * time.Second
 
 	spliceAfterBytes = 256 << 10
+	targetDrainWait  = 5 * time.Second
 	spliceReadBuf    = 5 + 16384 + 1 + 16
 )
 
@@ -538,12 +539,24 @@ func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult) {
 					res.err = fmt.Errorf("panic in TCP upstream copy: %v", r)
 				}
 			}
+			if res.err != nil {
+				target.Close()
+			}
 			resCh <- res
 		}()
-		defer target.Close()
 		res.n, res.err = buf.Copy(buf.NewReader(stream), buf.NewWriter(target))
+		if res.err != nil {
+			return
+		}
+		// Half-close instead of Close: the origin answers our FIN with its own,
+		// which ends the downstream copy cleanly. Closing outright made that copy
+		// fail with "use of closed network connection", and a stream whose copy
+		// ended in an error is never handed back to the pool.
 		if tc, ok := target.(*net.TCPConn); ok {
 			tc.CloseWrite()
+			tc.SetReadDeadline(time.Now().Add(targetDrainWait))
+		} else {
+			target.Close()
 		}
 	}()
 
@@ -557,7 +570,6 @@ func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult) {
 	if tc, ok := stream.(*net.TCPConn); ok {
 		tc.CloseWrite()
 	}
-	stream.Close()
 	resCh <- copyResult{n, err, "down"}
 }
 
