@@ -68,7 +68,10 @@ type FramedConn struct {
 }
 
 func NewFramedConn(c net.Conn) *FramedConn {
-	return &FramedConn{Conn: c, batch: make([]byte, 0, framedPlainTarget), padLeft: shapePadRecords}
+	// The batch buffer is grown on the first write: half of these connections
+	// only ever read — the upstream half of a spliced stream, for one — and a
+	// 16K buffer each adds up once streams come in thousands.
+	return &FramedConn{Conn: c, padLeft: shapePadRecords}
 }
 
 func (c *FramedConn) Write(b []byte) (int, error) {
@@ -76,6 +79,9 @@ func (c *FramedConn) Write(b []byte) (int, error) {
 	defer c.wmu.Unlock()
 	if c.ended {
 		return 0, io.ErrClosedPipe
+	}
+	if c.batch == nil {
+		c.batch = make([]byte, 0, framedPlainTarget)
 	}
 	sent := 0
 	for len(b) > 0 {
