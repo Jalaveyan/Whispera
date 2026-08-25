@@ -123,6 +123,7 @@ func (m *Manager) connectPerFlow(ctx context.Context) error {
 	}
 	probe.Close()
 
+	m.idle.reopen()
 	m.setState(StateConnected)
 	m.connMu.Lock()
 	m.connectedAt = time.Now()
@@ -145,6 +146,7 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	var conn net.Conn
 	reused := false
 	if keepAlive {
+		m.idle.acquire()
 		if c := m.idle.take(); c != nil {
 			conn, reused = c, true
 		}
@@ -152,6 +154,9 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	if conn == nil {
 		c, err := dial(ctx)
 		if err != nil {
+			if keepAlive {
+				m.idle.release()
+			}
 			if ctx.Err() == nil {
 				m.setError(err)
 			}
@@ -178,6 +183,9 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	copy(header[3:], addrBytes)
 	binary.BigEndian.PutUint16(header[3+len(addrBytes):], port)
 	if _, err := conn.Write(header); err != nil {
+		if keepAlive {
+			m.idle.release()
+		}
 		conn.Close()
 		return nil, fmt.Errorf("direct connect header: %w", err)
 	}

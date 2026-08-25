@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -88,12 +89,12 @@ func TestKeepAliveStreamFollowsSwitchToRaw(t *testing.T) {
 type poolConn struct {
 	net.Conn
 	r      *bytes.Reader
-	closed bool
+	closed atomic.Bool
 }
 
 func (c *poolConn) Read(b []byte) (int, error)  { return c.r.Read(b) }
 func (c *poolConn) Write(b []byte) (int, error) { return len(b), nil }
-func (c *poolConn) Close() error                { c.closed = true; return nil }
+func (c *poolConn) Close() error                { c.closed.Store(true); return nil }
 
 func (c *poolConn) SetReadDeadline(time.Time) error { return nil }
 
@@ -126,12 +127,22 @@ func TestKeepAliveStreamReturnsConnectionToPool(t *testing.T) {
 	if err := ks.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if base.closed {
+	// The connection joins the set once the drain finishes, which is off the
+	// closing path.
+	pooled := 0
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		m.idle.mu.Lock()
+		pooled = len(m.idle.conns)
+		m.idle.mu.Unlock()
+		if pooled == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if base.closed.Load() {
 		t.Error("connection was closed instead of pooled")
 	}
-	m.idle.mu.Lock()
-	pooled := len(m.idle.conns)
-	m.idle.mu.Unlock()
 	if pooled != 1 {
 		t.Fatalf("idleSet holds %d connections, want 1: without pooling the next stream pays a full handshake", pooled)
 	}
@@ -149,14 +160,21 @@ func TestKeepAliveStreamDiscardsUnfinishedStream(t *testing.T) {
 	}
 	_ = ks.Close()
 
-	if !base.closed {
+	// Draining happens off the closing path, so give it a moment: an unfinished
+	// stream must end up closed, never in the set where the next user would read
+	// someone else's tail.
+	deadline := time.Now().Add(2 * time.Second)
+	for !base.closed.Load() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !base.closed.Load() {
 		t.Error("connection stayed open after an unfinished stream")
 	}
 	m.idle.mu.Lock()
 	pooled := len(m.idle.conns)
 	m.idle.mu.Unlock()
 	if pooled != 0 {
-		t.Errorf("idleSet holds %d connections: an unfinished stream was pooled and the next user reads someone else's tail", pooled)
+		t.Errorf("idleSet holds %d connections: an unfinished stream was pooled", pooled)
 	}
 }
 

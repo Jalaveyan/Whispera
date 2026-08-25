@@ -12,16 +12,37 @@ import (
 	"github.com/nekoskin/whispera/core/protocol"
 )
 
-const keepAliveMaxIdle = 16
-
 const (
 	drainWait  = 250 * time.Millisecond
 	drainLimit = 64 << 10
 )
 
 type idleSet struct {
-	mu    sync.Mutex
-	conns []net.Conn
+	mu     sync.Mutex
+	conns  []net.Conn
+	inUse  int
+	peak   int
+	closed bool
+}
+
+func (s *idleSet) acquire() {
+	s.mu.Lock()
+	if s.inUse == 0 {
+		s.peak = 0
+	}
+	s.inUse++
+	if s.inUse > s.peak {
+		s.peak = s.inUse
+	}
+	s.mu.Unlock()
+}
+
+func (s *idleSet) release() {
+	s.mu.Lock()
+	if s.inUse > 0 {
+		s.inUse--
+	}
+	s.mu.Unlock()
 }
 
 func idleAlive(c net.Conn) bool {
@@ -57,12 +78,26 @@ func (s *idleSet) take() net.Conn {
 
 func (s *idleSet) put(c net.Conn) {
 	s.mu.Lock()
-	if len(s.conns) >= keepAliveMaxIdle {
+	if s.closed {
 		s.mu.Unlock()
 		c.Close()
 		return
 	}
+	if s.peak > 0 && len(s.conns) >= s.peak {
+		spare := s.conns[0]
+		s.conns = s.conns[1:]
+		s.mu.Unlock()
+		c.Close()
+		spare.Close()
+		return
+	}
 	s.conns = append(s.conns, c)
+	s.mu.Unlock()
+}
+
+func (s *idleSet) reopen() {
+	s.mu.Lock()
+	s.closed = false
 	s.mu.Unlock()
 }
 
@@ -70,6 +105,7 @@ func (s *idleSet) closeAll() {
 	s.mu.Lock()
 	conns := s.conns
 	s.conns = nil
+	s.closed = true
 	s.mu.Unlock()
 	for _, c := range conns {
 		c.Close()
@@ -107,27 +143,20 @@ func (c *keepAliveStream) SpliceTo(dst net.Conn) (int64, error) {
 	return n + m, rerr
 }
 
-// drainToEnd reads what the server still owes us until its end-of-stream marker
-// arrives. Without it the connection is never reusable: we send our marker and
-// check StreamDone() in the same breath, but the server only answers once both
-// of its copies finish, which cannot happen before it sees our marker.
-func (c *keepAliveStream) drainToEnd() bool {
-	if c.down.StreamDone() {
+func drainToEnd(base net.Conn, down *protocol.FramedConn) bool {
+	if down.StreamDone() {
 		return true
 	}
-	if c.down.SwitchedRaw() {
+	if err := base.SetReadDeadline(time.Now().Add(drainWait)); err != nil {
 		return false
 	}
-	if err := c.base.SetReadDeadline(time.Now().Add(drainWait)); err != nil {
-		return false
-	}
-	defer c.base.SetReadDeadline(time.Time{})
+	defer base.SetReadDeadline(time.Time{})
 
 	discard := make([]byte, 16<<10)
 	for left := drainLimit; left > 0; {
-		n, err := c.down.Read(discard)
+		n, err := down.Read(discard)
 		if err != nil {
-			return errors.Is(err, io.EOF) && c.down.StreamDone()
+			return errors.Is(err, io.EOF) && down.StreamDone()
 		}
 		left -= n
 	}
@@ -140,12 +169,20 @@ func (c *keepAliveStream) Close() error {
 		if c.m.config.DecoyGate != nil {
 			defer c.m.config.DecoyGate.Leave()
 		}
+		c.m.idle.release()
 		err = c.up.EndStream()
-		if err != nil || !c.drainToEnd() {
+		if err != nil || c.down.SwitchedRaw() {
 			c.base.Close()
 			return
 		}
-		c.m.idle.put(c.base)
+		base, down := c.base, c.down
+		go func() {
+			if drainToEnd(base, down) {
+				c.m.idle.put(base)
+				return
+			}
+			base.Close()
+		}()
 	})
 	return err
 }
