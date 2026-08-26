@@ -401,6 +401,20 @@ func (m *perflowMux) classify(c net.Conn) {
 			c.Close()
 		}
 	}()
+
+	// The camouflage layer already decided this one is not ours, so there is no
+	// preamble to look for. Handing it over untouched matters: the HTTP server
+	// enables HTTP/2 only for a bare *tls.Conn, and wrapping it to give back a
+	// sniffed byte left ALPN promising h2 that the server then could not speak.
+	if isDecoyConn(c) {
+		select {
+		case m.httpCh <- c:
+		case <-m.closed:
+			c.Close()
+		}
+		return
+	}
+
 	c.SetReadDeadline(time.Now().Add(perflowPreambleTimeout))
 	var first [1]byte
 	if _, err := io.ReadFull(c, first[:]); err != nil {

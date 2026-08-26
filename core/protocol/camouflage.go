@@ -123,6 +123,12 @@ type prefixConn struct {
 
 	knownUser string
 	knownPSK  []byte
+
+	// decoy marks a connection the camouflage layer already judged as not ours.
+	// Nothing downstream needs to sniff it again, and not sniffing is what lets
+	// it reach the HTTP server as a plain *tls.Conn — which is the only form in
+	// which that server turns HTTP/2 on.
+	decoy bool
 }
 
 func (c *prefixConn) NetConn() net.Conn { return c.Conn }
@@ -349,11 +355,19 @@ func (l *camouflageListener) handle(conn net.Conn) {
 	// server presents its certificate and serves something. So the handshake
 	// goes on as usual and the decoy pages answer it.
 	traceLog.Infow("camo_serve_local_decoy", "remote", remote, "sni", ph.sni, "target", target)
-	l.pass(conn, ph, "", nil)
+	l.passAsDecoy(conn, ph)
 }
 
 func (l *camouflageListener) pass(conn net.Conn, ph *peekedHello, userID string, psk []byte) {
-	pc := &prefixConn{Conn: conn, prefix: ph.raw, knownUser: userID, knownPSK: psk}
+	l.handOver(conn, ph, userID, psk, false)
+}
+
+func (l *camouflageListener) passAsDecoy(conn net.Conn, ph *peekedHello) {
+	l.handOver(conn, ph, "", nil, true)
+}
+
+func (l *camouflageListener) handOver(conn net.Conn, ph *peekedHello, userID string, psk []byte, decoy bool) {
+	pc := &prefixConn{Conn: conn, prefix: ph.raw, knownUser: userID, knownPSK: psk, decoy: decoy}
 	select {
 	case l.ready <- pc:
 	case <-l.closed:

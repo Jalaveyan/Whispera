@@ -135,6 +135,15 @@ func knownUserOf(c net.Conn) knownUser {
 	return knownUser{}
 }
 
+func isDecoyConn(c net.Conn) bool {
+	raw := NetConnOf(c)
+	if raw == nil {
+		raw = c
+	}
+	pc, ok := raw.(*prefixConn)
+	return ok && pc.decoy
+}
+
 func resolveSecretFor(cfg *ServerConfig, known knownUser, token string, sessionID []byte) ([]byte, string) {
 	if len(known.psk) == 32 {
 		if VerifyAuthToken(DeriveKeys(known.psk).Auth, token, sessionID) {
