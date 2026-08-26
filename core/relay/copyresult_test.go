@@ -25,7 +25,7 @@ func TestUpstreamPanicStillReportsResult(t *testing.T) {
 	defer b.Close()
 
 	resCh := make(chan copyResult, 2)
-	s.relayTCP(panicConn{}, b, resCh)
+	s.relayTCP(panicConn{}, b, resCh, nil)
 
 	done := make(chan struct{})
 	go func() {

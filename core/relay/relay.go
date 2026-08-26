@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nekoskin/whispera/common/buf"
+	"github.com/nekoskin/whispera/common/cache"
 	logger "github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/common/runtime/base"
 	"github.com/nekoskin/whispera/common/runtime/interfaces"
@@ -77,13 +78,29 @@ var udpCopyBufPool = sync.Pool{
 	},
 }
 
-// The server sits in a datacentre, not behind the censor: its own resolver
-// answers from the OS cache in microseconds, while going out to 8.8.8.8 —
-// and falling back to DoH when that is unreachable — spent whole seconds
-// before the stream had dialed anything.
-const routeLookupWait = 300 * time.Millisecond
+// The server sits in a datacentre, not behind the censor, so the system
+// resolver is the right one to ask — it answers in microseconds where going out
+// to 8.8.8.8, and falling back to DoH when that is unreachable, spent whole
+// seconds before the stream had dialed anything.
+//
+// It gets a cache of our own on top. systemd-resolved honors the TTL to the
+// letter, and a CDN record lives thirty seconds, so on a real server it was
+// missing three times out of four — every miss a query on the path of opening a
+// stream. Holding an answer a little past its TTL costs at most a stale address
+// for a minute; the routing decision it feeds is coarse enough for that.
+const (
+	routeLookupWait = 300 * time.Millisecond
+	routeCacheTTL   = time.Minute
+	routeCacheSize  = 4096
+)
+
+var routeCache = cache.NewLRUCache[[]net.IP](routeCacheSize)
 
 func lookupIPCached(host string) ([]net.IP, error) {
+	if ips, err := routeCache.Get(context.Background(), host); err == nil && len(ips) > 0 {
+		return ips, nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), routeLookupWait)
 	defer cancel()
 	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
@@ -94,10 +111,15 @@ func lookupIPCached(host string) ([]net.IP, error) {
 	for i, a := range addrs {
 		ips[i] = a.IP
 	}
+	_ = routeCache.Set(context.Background(), host, ips, routeCacheTTL)
 	return ips, nil
 }
 
-const targetDialTimeout = 15 * time.Second
+// An address that has not answered in eight seconds will not answer in fifteen:
+// 99% of dials finish inside 100 ms, and the ones that time out are blocked
+// routes. The stream — and the person waiting on it — is held for the whole
+// budget, so it is worth keeping short.
+const targetDialTimeout = 8 * time.Second
 
 // targetIPs resolves a name for the router to decide on. Only the router needs
 // this: dialing by name lets the system resolver do the work, with its own cache
@@ -301,9 +323,13 @@ func (s *Server) runSession(under net.Conn, streamObf bool, clientID string) {
 		s.serveStreamMux(under, clientID, traceID)
 		return
 	}
+	// One padding budget for the whole connection: the streams that follow are
+	// requests on an established socket, and a fresh burst of padded records
+	// after each of them is a pattern of its own.
+	pad := protocol.NewShapeBudget()
 	wait := proxyHeaderWait
 	for {
-		if !s.handleProxyStream(traceID, clientID, under, wait) {
+		if !s.handleProxyStream(traceID, clientID, under, wait, pad) {
 			return
 		}
 		wait = 0
@@ -459,7 +485,7 @@ func (h *muxHandler) serveStream(stream net.Conn, dest singM.Socksaddr) {
 	if network == "udp" {
 		h.s.relayUDP(stream, target, resCh)
 	} else {
-		h.s.relayTCP(stream, target, resCh)
+		h.s.relayTCP(stream, target, resCh, nil)
 	}
 	<-resCh
 	<-resCh
@@ -480,12 +506,17 @@ func (s *Server) dialProxyTarget(outboundTag, network, targetAddr, addr string, 
 	return dialFn(dctx, outboundTag, network, targetAddr)
 }
 
-// routeIPs resolves only when a router is there to route on the answer.
+// routeIPs resolves only when a router is there to route on the answer, and
+// only when its rules actually look at addresses. A ruleset that matches on
+// ports alone needs no lookup at all.
 func (s *Server) routeIPs(host string) []net.IP {
 	s.routerMu.RLock()
 	rtr := s.router
 	s.routerMu.RUnlock()
 	if rtr == nil {
+		return nil
+	}
+	if byAddr, ok := rtr.(interface{ RoutesOnAddress() bool }); ok && !byAddr.RoutesOnAddress() {
 		return nil
 	}
 	return targetIPs(host)
@@ -577,7 +608,12 @@ func (s *Server) relayUDP(stream, target net.Conn, resCh chan copyResult) {
 		}
 	}()
 }
-func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult) {
+
+// relayTCP moves the stream both ways. down reports the end of the answer as
+// soon as the origin has finished, so the caller can say so on the wire without
+// waiting for the client's own marker — that wait cost a round trip after every
+// byte had already arrived, and the connection sat out of the pool for it.
+func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult, downDone func()) {
 	go func() {
 		res := copyResult{dir: "up"}
 		defer func() {
@@ -617,6 +653,9 @@ func (s *Server) relayTCP(stream, target net.Conn, resCh chan copyResult) {
 	}
 	if tc, ok := stream.(*net.TCPConn); ok {
 		tc.CloseWrite()
+	}
+	if downDone != nil && err == nil {
+		downDone()
 	}
 	resCh <- copyResult{n, err, "down"}
 }
@@ -670,7 +709,7 @@ func readProxyStreamHeader(stream net.Conn, wait time.Duration) (proxyStreamHead
 	}, true
 }
 
-func spliceWrap(stream net.Conn, framed *protocol.FramedConn, h proxyStreamHeader, tunnelID uint64, targetAddr string) (net.Conn, *protocol.FramedConn) {
+func spliceWrap(stream net.Conn, framed *protocol.FramedConn, h proxyStreamHeader, tunnelID uint64, targetAddr string, pad *protocol.ShapeBudget) (net.Conn, *protocol.FramedConn) {
 	if !h.splice {
 		return framed, framed
 	}
@@ -687,7 +726,7 @@ func spliceWrap(stream net.Conn, framed *protocol.FramedConn, h proxyStreamHeade
 	if cpuBusy() {
 		left = spliceAfterBytes
 	}
-	down := protocol.NewFramedConn(raw)
+	down := protocol.NewFramedConn(raw, pad)
 	logger.Trace().Infow("proxy_stream_splice", "trace_id", tunnelID, "target", targetAddr, "to_raw_after", left)
 	return &serverSpliceConn{Conn: stream, up: framed, down: down, raw: raw, left: left}, down
 }
@@ -707,7 +746,7 @@ func collectCopyResults(resCh chan copyResult) (up, down int64, firstErr error, 
 	return up, down, firstErr, firstDir
 }
 
-func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.Conn, wait time.Duration) (reusable bool) {
+func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.Conn, wait time.Duration, pad *protocol.ShapeBudget) (reusable bool) {
 	defer func() {
 		if !reusable {
 			stream.Close()
@@ -768,7 +807,7 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 
 	var framed *protocol.FramedConn
 	if h.keepAlive {
-		framed = protocol.NewFramedConn(stream)
+		framed = protocol.NewFramedConn(stream, pad)
 	}
 
 	var downFramed *protocol.FramedConn
@@ -785,10 +824,11 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		s.relayUDP(stream, target, resCh)
 	case framed != nil:
 		var wrapped net.Conn
-		wrapped, downFramed = spliceWrap(stream, framed, h, tunnelID, targetAddr)
-		s.relayTCP(wrapped, target, resCh)
+		wrapped, downFramed = spliceWrap(stream, framed, h, tunnelID, targetAddr, pad)
+		end := downFramed
+		s.relayTCP(wrapped, target, resCh, func() { _ = end.EndStream() })
 	default:
-		s.relayTCP(stream, target, resCh)
+		s.relayTCP(stream, target, resCh, nil)
 	}
 
 	up, down, firstErr, firstDir := collectCopyResults(resCh)

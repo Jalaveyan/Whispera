@@ -117,6 +117,26 @@ func (e *Engine) Stop() error {
 	return e.Module.Stop()
 }
 
+// RoutesOnAddress reports whether any active rule looks at an address at all.
+// Rules match on dst_ip, src_ip, ports and session id — nothing here matches a
+// name — so when no rule mentions an address, the caller can skip resolving one
+// and hand us a packet without it.
+func (e *Engine) RoutesOnAddress() bool {
+	e.mu.RLock()
+	rules := e.rules
+	e.mu.RUnlock()
+
+	for _, rule := range rules {
+		for _, cond := range rule.Conditions {
+			switch cond.Field {
+			case "dst_ip", "src_ip":
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (e *Engine) Route(ctx context.Context, packet *interfaces.Packet) (*interfaces.Destination, error) {
 	e.UpdateActivity()
 
