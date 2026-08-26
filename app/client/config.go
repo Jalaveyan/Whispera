@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	logger "github.com/nekoskin/whispera/common/log"
 	"github.com/nekoskin/whispera/core/config"
@@ -58,14 +57,15 @@ func mlDefaultDataDir() string {
 }
 
 const (
-	logKeepBytes = 256 << 10
-	logTrimEvery = time.Hour
+	logKeepBytes  = 256 << 10
+	logCheckEvery = 64 << 10
 )
 
 type trimmingLog struct {
-	mu   sync.Mutex
-	f    *os.File
-	path string
+	mu      sync.Mutex
+	f       *os.File
+	path    string
+	written int
 }
 
 var (
@@ -89,7 +89,6 @@ func openTrimmingLog(path string) (*trimmingLog, error) {
 		return nil, err
 	}
 	currentLog = t
-	go t.keepTrimmed()
 	return t, nil
 }
 
@@ -119,21 +118,20 @@ func newTrimmingLog(path string) (*trimmingLog, error) {
 func (t *trimmingLog) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.f.Write(p)
-}
 
-func (t *trimmingLog) keepTrimmed() {
-	ticker := time.NewTicker(logTrimEvery)
-	defer ticker.Stop()
-	for range ticker.C {
-		t.trim()
+	n, err := t.f.Write(p)
+	t.written += n
+	// Checked by what has been written rather than by the clock: an hourly timer
+	// let the file grow without bound in between, and a client that is logging
+	// hard is exactly the one that fills a phone.
+	if t.written >= logCheckEvery {
+		t.written = 0
+		t.trimLocked()
 	}
+	return n, err
 }
 
-func (t *trimmingLog) trim() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
+func (t *trimmingLog) trimLocked() {
 	fi, err := t.f.Stat()
 	if err != nil || fi.Size() <= logKeepBytes {
 		return

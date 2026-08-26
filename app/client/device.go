@@ -33,13 +33,28 @@ func handshakeSignalPath() string {
 }
 
 func statePath(name string) string {
+	// On Android there is no home directory and the temp one is not ours to
+	// write in: every save failed and said so in the log, thousands of times.
+	// The log file we were given sits in the app's own directory, so state goes
+	// beside it.
+	if mobileMode && *logFilePath != "" {
+		if dir := filepath.Dir(*logFilePath); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o700); err == nil {
+				return filepath.Join(dir, name)
+			}
+		}
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		dir := filepath.Join(home, ".whispera")
 		if err := os.MkdirAll(dir, 0o700); err == nil {
 			return filepath.Join(dir, name)
 		}
 	}
-	return filepath.Join(os.TempDir(), ".whispera", name)
+	dir := filepath.Join(os.TempDir(), ".whispera")
+	if err := os.MkdirAll(dir, 0o700); err == nil {
+		return filepath.Join(dir, name)
+	}
+	return filepath.Join(os.TempDir(), name)
 }
 
 func loadOrCreateDeviceID() ([16]byte, error) {
