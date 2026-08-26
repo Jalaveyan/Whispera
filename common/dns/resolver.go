@@ -205,6 +205,20 @@ func (r *Resolver) resolveShared(ctx context.Context, domain string) ([]net.IP, 
 	return p.ips, p.err
 }
 
+// ResolveCached answers only from what is already known: the literal address,
+// or a name this resolver has looked up before. It never goes to the network,
+// so a caller on the connection path can ask it without paying for an answer.
+func (r *Resolver) ResolveCached(domain string) ([]net.IP, bool) {
+	if ip := net.ParseIP(domain); ip != nil {
+		return []net.IP{ip}, true
+	}
+	if !r.config.CacheEnabled {
+		return nil, false
+	}
+	ips, _ := r.cache.Get(context.Background(), domain)
+	return ips, len(ips) > 0
+}
+
 func (r *Resolver) ResolveUpstream(ctx context.Context, domain string) ([]net.IP, error) {
 	if ip := net.ParseIP(domain); ip != nil {
 		return []net.IP{ip}, nil

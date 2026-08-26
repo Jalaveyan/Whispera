@@ -113,13 +113,13 @@ func TestBypassByCountryUsesResolvedAddress(t *testing.T) {
 	stm.SetGeoIP(geoWith(t, "176.114.122.0/24"))
 
 	calls := 0
-	stm.SetResolver(func(ctx context.Context, host string) ([]net.IP, error) {
+	setResolvers(stm, func(host string) []net.IP {
 		calls++
 		switch host {
 		case "avito.ru":
-			return []net.IP{net.ParseIP("176.114.122.24")}, nil
+			return []net.IP{net.ParseIP("176.114.122.24")}
 		default:
-			return []net.IP{net.ParseIP("1.1.1.1")}, nil
+			return []net.IP{net.ParseIP("1.1.1.1")}
 		}
 	})
 
@@ -140,8 +140,8 @@ func TestBypassByCountryTunnelsOnResolveFailure(t *testing.T) {
 	stm := NewSplitTunnelManager()
 	stm.SetEnabled(true)
 	stm.SetGeoIP(geoWith(t, "176.114.122.0/24"))
-	stm.SetResolver(func(ctx context.Context, host string) ([]net.IP, error) {
-		return nil, errors.New("no answer")
+	setResolvers(stm, func(host string) []net.IP {
+		return nil
 	})
 
 	if stm.ShouldBypassByHostname("avito.ru") {
@@ -163,8 +163,8 @@ func TestBypassByCountryCoversIPv6(t *testing.T) {
 	stm := NewSplitTunnelManager()
 	stm.SetEnabled(true)
 	stm.SetGeoIP(geoWith(t, "2a02:6b8::/32", "176.114.122.0/24"))
-	stm.SetResolver(func(ctx context.Context, host string) ([]net.IP, error) {
-		return []net.IP{net.ParseIP("2a02:6b8:23::225")}, nil
+	setResolvers(stm, func(host string) []net.IP {
+		return []net.IP{net.ParseIP("2a02:6b8:23::225")}
 	})
 
 	if !stm.ShouldBypassByHostname("yandex.ru") {
@@ -185,8 +185,8 @@ func TestVerdictCacheStaysBounded(t *testing.T) {
 	stm := NewSplitTunnelManager()
 	stm.SetEnabled(true)
 	stm.SetGeoIP(geoWith(t, "176.114.122.0/24"))
-	stm.SetResolver(func(ctx context.Context, host string) ([]net.IP, error) {
-		return []net.IP{net.ParseIP("8.8.8.8")}, nil
+	setResolvers(stm, func(host string) []net.IP {
+		return []net.IP{net.ParseIP("8.8.8.8")}
 	})
 
 	for i := 0; i < verdictMax*2; i++ {
@@ -206,11 +206,11 @@ func TestAppRuleForcesTunnelOverGeoIP(t *testing.T) {
 	stm.SetEnabled(true)
 	stm.CreateDefaultRules()
 	stm.SetGeoIP(geoWith(t, "176.114.122.0/24"))
-	stm.SetResolver(func(ctx context.Context, host string) ([]net.IP, error) {
+	setResolvers(stm, func(host string) []net.IP {
 		if host == "avito.ru" {
-			return []net.IP{net.ParseIP("176.114.122.24")}, nil
+			return []net.IP{net.ParseIP("176.114.122.24")}
 		}
-		return []net.IP{net.ParseIP("1.1.1.1")}, nil
+		return []net.IP{net.ParseIP("1.1.1.1")}
 	})
 
 	if !stm.ShouldBypassByHostname("avito.ru") {
@@ -249,8 +249,8 @@ func geoStm(t *testing.T) *SplitTunnelManager {
 	stm := NewSplitTunnelManager()
 	stm.SetEnabled(true)
 	stm.SetGeoIP(geoWith(t, "176.114.122.0/24"))
-	stm.SetResolver(func(ctx context.Context, host string) ([]net.IP, error) {
-		return []net.IP{net.ParseIP("176.114.122.24")}, nil
+	setResolvers(stm, func(host string) []net.IP {
+		return []net.IP{net.ParseIP("176.114.122.24")}
 	})
 	return stm
 }
@@ -286,4 +286,22 @@ func TestCountryBypassOnByDefault(t *testing.T) {
 	if !stm.ShouldBypassByHostname("avito.ru") {
 		t.Fatal("without any app rules (desktop, CLI) the country list stays on")
 	}
+}
+
+// setResolvers wires both resolvers from one answer table: on a live client the
+// name has just been looked up for the application, so the cache holds it and
+// the verdict costs nothing. The network resolver is what the background
+// learning uses when it does not.
+func setResolvers(stm *SplitTunnelManager, fn func(host string) []net.IP) {
+	stm.SetResolver(func(ctx context.Context, host string) ([]net.IP, error) {
+		ips := fn(host)
+		if len(ips) == 0 {
+			return nil, errors.New("no such host")
+		}
+		return ips, nil
+	})
+	stm.SetCachedResolver(func(host string) ([]net.IP, bool) {
+		ips := fn(host)
+		return ips, len(ips) > 0
+	})
 }

@@ -38,11 +38,18 @@ type SplitTunnelManager struct {
 	geo       *GeoIPSet
 	resolve   ResolveFunc
 	byCountry bool
+	cached    CachedFunc
 	verdicts  map[string]verdict
 	pending   map[string]bool
 }
 
 type ResolveFunc func(ctx context.Context, host string) ([]net.IP, error)
+
+// CachedFunc answers from what the resolver already knows, without going to the
+// network. The country list only matters for addresses inside it, and a name we
+// have not looked up cannot be inside anything — so it goes through the tunnel
+// and nobody waits.
+type CachedFunc func(host string) ([]net.IP, bool)
 
 type verdict struct {
 	bypass  bool
@@ -52,7 +59,6 @@ type verdict struct {
 const (
 	verdictTTL      = 10 * time.Minute
 	resolveTimeout  = 3 * time.Second
-	resolveWait     = 300 * time.Millisecond
 	verdictMax      = 4096
 	appRulePriority = 200
 )
@@ -192,7 +198,7 @@ func (stm *SplitTunnelManager) ShouldBypassByHostname(hostname string) bool {
 
 func (stm *SplitTunnelManager) bypassByCountry(hostname string) bool {
 	stm.mu.RLock()
-	geo, resolve, byCountry := stm.geo, stm.resolve, stm.byCountry
+	geo, resolve, cached, byCountry := stm.geo, stm.resolve, stm.cached, stm.byCountry
 	v, ok := stm.verdicts[hostname]
 	stm.mu.RUnlock()
 
@@ -202,22 +208,24 @@ func (stm *SplitTunnelManager) bypassByCountry(hostname string) bool {
 	if ok && time.Now().Before(v.expires) {
 		return v.bypass
 	}
-	if geo == nil || resolve == nil || geo.Len() == 0 {
+	if geo == nil || geo.Len() == 0 {
 		return false
 	}
 
-	// Getting this wrong sends a domestic bank through a foreign address, so the
-	// answer is worth waiting for — but only as long as an answer normally takes.
-	// Past that the connection goes through the tunnel, which is correct if
-	// slower, and the verdict is finished behind it for next time.
-	ctx, cancel := context.WithTimeout(context.Background(), resolveWait)
-	defer cancel()
-	ips, err := resolve(ctx, hostname)
-	if err != nil {
-		stm.learnInBackground(hostname, geo, resolve)
-		return false
+	// The address is usually known already: our own resolver handled this name
+	// for the application a moment ago. Then the verdict costs a lookup in a
+	// table. Only when it is not known does the question arise at all, and the
+	// answer is not worth a DNS round trip on the connection path — the tunnel
+	// is always correct, and the verdict is learned behind it for next time.
+	if cached != nil {
+		if ips, found := cached(hostname); found {
+			return stm.recordCountry(hostname, geo, ips)
+		}
 	}
-	return stm.recordCountry(hostname, geo, ips)
+	if resolve != nil {
+		stm.learnInBackground(hostname, geo, resolve)
+	}
+	return false
 }
 
 func (stm *SplitTunnelManager) learnInBackground(hostname string, geo *GeoIPSet, resolve ResolveFunc) {
@@ -278,6 +286,12 @@ func (stm *SplitTunnelManager) pruneVerdicts() {
 	if len(stm.verdicts) >= verdictMax {
 		stm.verdicts = make(map[string]verdict)
 	}
+}
+
+func (stm *SplitTunnelManager) SetCachedResolver(fn CachedFunc) {
+	stm.mu.Lock()
+	stm.cached = fn
+	stm.mu.Unlock()
 }
 
 func (stm *SplitTunnelManager) SetResolver(fn ResolveFunc) {

@@ -59,6 +59,7 @@ func startGeoIPRefresh(ctx context.Context, stm *split_tunnel.SplitTunnelManager
 	geo := split_tunnel.NewGeoIPSet()
 	stm.SetGeoIP(geo)
 	stm.SetResolver(dnsMod.ResolveUpstream)
+	stm.SetCachedResolver(dnsMod.ResolveCached)
 
 	client := &http.Client{
 		Timeout:   90 * time.Second,
