@@ -58,13 +58,6 @@ func RememberSelPub(idPub, selPub string) {
 	learnedSelPub.Store(idPub, selPub)
 }
 
-var decoyGraph = [4][]string{
-	{"/api/v1/config", "/cdn/app/index.js", "/assets/main.css"},
-	{"/static/vendor.js", "/static/app.js", "/assets/theme.css", "/cdn/fonts/roboto.woff2"},
-	{"/static/icons/192.png", "/favicon.ico", "/manifest.json", "/robots.txt"},
-	{"/api/v1/health", "/api/v1/status"},
-}
-
 const (
 	rtDatagramTokenHeader   = "X-Client-Data"
 	rtDatagramSessionHeader = "X-Request-Id"

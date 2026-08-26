@@ -104,7 +104,6 @@ type clientRuntime struct {
 	cfg       *config.ClientConfig
 	ctx       context.Context
 	handshake *protocol.HandshakeStrategy
-	decoyGate *protocol.DecoyGate
 	params    *clientRuntimeParams
 	spoofList []string
 }
@@ -116,7 +115,6 @@ func (r *clientRuntime) tunnelCfg(transport, addr string, tc map[string]interfac
 		Transport:         transport,
 		PSK:               r.params.tunnelPSK,
 		KeepaliveInterval: 30 * time.Second,
-		DecoyGate:         r.decoyGate,
 		EnableASNBypass:   r.params.asnBypassEnabled,
 		WhisperaOptions:   whisperaOptions(r.cfg, r.params.whisperaSecret),
 		TransportConfig:   tc,
@@ -165,25 +163,6 @@ func (r *clientRuntime) entryCfg(e *TransportEntry) *tunnel.Config {
 	c.SpoofSourceIPs = r.spoofList
 	c.TLSFragmentSize = *tlsFragSize
 	return c
-}
-
-func (r *clientRuntime) startDecoy() {
-	if len(r.params.whisperaSecret) != 32 {
-		return
-	}
-	addr := r.cfg.WhisperaAddr
-	if addr == "" {
-		addr = r.params.serverAddress
-	}
-	protocol.StartDecoy(r.ctx, r.decoyGate, &protocol.ClientConfig{
-		ServerAddr:    addr,
-		ServerName:    r.cfg.WhisperaSNI,
-		SharedSecret:  r.params.whisperaSecret,
-		ServerCertPin: r.cfg.WhisperaCertPin,
-		ServerIDPub:   r.cfg.WhisperaIDPub,
-		ServerSelPub:  r.cfg.WhisperaSelPub,
-		SessionCache:  protocol.SharedSessionCache(),
-	})
 }
 
 func newPoolEntry(id, transport, server string, status connStatus, m *tunnel.Manager) *TransportEntry {
@@ -429,11 +408,8 @@ func RunMain() {
 		cfg:       cfg,
 		ctx:       ctx,
 		handshake: handshakeSignal,
-		decoyGate: protocol.NewDecoyGate(),
 		params:    resolveRuntimeParams(cfg),
 	}
-	r.startDecoy()
-
 	if r.params.asnBypassEnabled {
 		stdlog.Printf("ASN bypass enabled: ClientHello fragmentation")
 	}

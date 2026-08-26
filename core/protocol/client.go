@@ -29,9 +29,6 @@ import (
 	quicgo "github.com/quic-go/quic-go"
 	http3 "github.com/quic-go/quic-go/http3"
 	utls "github.com/refraction-networking/utls"
-	"golang.org/x/net/http2"
-
-	"github.com/nekoskin/whispera/common/buf"
 )
 
 const dialTimeout = 10 * time.Second
@@ -400,27 +397,6 @@ func (h *HandshakeStrategy) Observe(ctx string, arm int, r HandshakeResult) {
 	traceLog.Infow("handshake_control_observe",
 		"ctx", ctx, "arm", arm,
 		"result", int(r), "reward", reward, "survival_ewma", h.survEWMA)
-}
-
-func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net.Conn, error)) *http2.Transport {
-	budget := buf.PerConnBudget()
-	stub := &http.Transport{
-		HTTP2: &http.HTTP2Config{
-			MaxReceiveBufferPerStream:     budget,
-			MaxReceiveBufferPerConnection: budget,
-		},
-	}
-	h2t, err := http2.ConfigureTransports(stub)
-	if err != nil || h2t == nil {
-		h2t = &http2.Transport{}
-	}
-	h2t.ConnPool = nil
-	h2t.MaxReadFrameSize = 1 << 20
-	h2t.MaxDecoderHeaderTableSize = 65536
-	h2t.MaxHeaderListSize = 262144
-	h2t.DisableCompression = true
-	h2t.DialTLSContext = dial
-	return h2t
 }
 
 func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {

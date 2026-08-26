@@ -60,11 +60,6 @@ type WhisperaOptions struct {
 	YaDiskSessionID  string
 }
 
-type decoyActivity interface {
-	Enter()
-	Leave()
-}
-
 type Config struct {
 	HandshakeStrategy    *protocol.HandshakeStrategy
 	ServerAddr           string
@@ -76,7 +71,6 @@ type Config struct {
 	ReconnectInterval    time.Duration
 	ReconnectMaxDelay    time.Duration
 	MaxReconnectAttempts int
-	DecoyGate            decoyActivity
 	ConnectionTimeout    time.Duration
 	KillSwitchEnabled    bool
 	KillSwitchAllowLAN   bool
