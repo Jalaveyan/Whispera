@@ -48,7 +48,7 @@ func buildFramedWire(payloads [][]byte) []byte {
 
 func newKeepAliveStream(wire []byte) (*keepAliveStream, *spliceWriteConn) {
 	src := &spliceReadConn{r: bytes.NewReader(wire)}
-	fc := protocol.NewFramedConn(src)
+	fc := protocol.NewFramedConn(src, protocol.NewShapeBudget())
 	return &keepAliveStream{Conn: src, up: fc, down: fc, base: src, raw: src}, &spliceWriteConn{}
 }
 
@@ -111,7 +111,7 @@ func shortAnswerWire(payloads [][]byte) []byte {
 func TestKeepAliveStreamReturnsConnectionToPool(t *testing.T) {
 	m := newTestManager(t)
 	base := &poolConn{r: bytes.NewReader(shortAnswerWire([][]byte{[]byte("page"), []byte("body")}))}
-	fc := protocol.NewFramedConn(base)
+	fc := protocol.NewFramedConn(base, protocol.NewShapeBudget())
 	ks := &keepAliveStream{Conn: base, up: fc, down: fc, m: m, base: base}
 
 	var got bytes.Buffer
@@ -151,7 +151,7 @@ func TestKeepAliveStreamReturnsConnectionToPool(t *testing.T) {
 func TestKeepAliveStreamDiscardsUnfinishedStream(t *testing.T) {
 	m := newTestManager(t)
 	base := &poolConn{r: bytes.NewReader(framedRecord([]byte("partial"), -1))}
-	fc := protocol.NewFramedConn(base)
+	fc := protocol.NewFramedConn(base, protocol.NewShapeBudget())
 	ks := &keepAliveStream{Conn: base, up: fc, down: fc, m: m, base: base}
 
 	var one [4]byte

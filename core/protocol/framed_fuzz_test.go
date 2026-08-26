@@ -38,7 +38,7 @@ func FuzzFramedRead(f *testing.F) {
 	f.Add([]byte{0x17, 0x03, 0x03, 0x00, 0x08, 0x00, 0x06, 1, 2, 3})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		fc := NewFramedConn(&fuzzConn{in: data})
+		fc := NewFramedConn(&fuzzConn{in: data}, NewShapeBudget())
 		out := make([]byte, 4096)
 		for i := 0; i < 64; i++ {
 			n, err := fc.Read(out)

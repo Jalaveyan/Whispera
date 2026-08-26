@@ -20,7 +20,7 @@ import (
 func framedPair(t *testing.T) (*FramedConn, *FramedConn, func()) {
 	t.Helper()
 	a, b := net.Pipe()
-	return NewFramedConn(a), NewFramedConn(b), func() { a.Close(); b.Close() }
+	return NewFramedConn(a, NewShapeBudget()), NewFramedConn(b, NewShapeBudget()), func() { a.Close(); b.Close() }
 }
 
 func TestFramedRoundTrip(t *testing.T) {
@@ -69,7 +69,7 @@ func TestFramedCarriesTwoStreamsOverOneConn(t *testing.T) {
 	defer a.Close()
 	defer b.Close()
 
-	cl, srv := NewFramedConn(a), NewFramedConn(b)
+	cl, srv := NewFramedConn(a, NewShapeBudget()), NewFramedConn(b, NewShapeBudget())
 
 	go func() {
 		_, _ = cl.Write([]byte("первый"))
@@ -104,7 +104,7 @@ func TestFramedRejectsGarbage(t *testing.T) {
 		_, _ = a.Write([]byte{0x16, 0x03, 0x03, 0x00, 0x05, 0, 0, 0, 0, 0})
 	}()
 
-	srv := NewFramedConn(b)
+	srv := NewFramedConn(b, NewShapeBudget())
 	buf := make([]byte, 16)
 	if _, err := srv.Read(buf); err == nil {
 		t.Fatal("запись не того типа должна отвергаться")
@@ -178,7 +178,7 @@ func TestFramedRecordsFillOneTLSRecord(t *testing.T) {
 	if err := cl.HandshakeContext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	fc := NewFramedConn(cl)
+	fc := NewFramedConn(cl, NewShapeBudget())
 	go func() {
 		_, _ = fc.Write(make([]byte, 4<<20))
 		raw.Close()

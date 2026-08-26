@@ -166,9 +166,6 @@ func drainToEnd(base net.Conn, down *protocol.FramedConn) bool {
 func (c *keepAliveStream) Close() error {
 	var err error
 	c.once.Do(func() {
-		if c.m.config.DecoyGate != nil {
-			defer c.m.config.DecoyGate.Leave()
-		}
 		c.m.idle.release()
 		err = c.up.EndStream()
 		if err != nil || c.down.SwitchedRaw() {

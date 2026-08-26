@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"sync"
 	"time"
 
 	singlog "github.com/sagernet/sing/common/logger"
@@ -51,10 +50,9 @@ func (m *Manager) getStreamMuxClient() (*xmux.Client, error) {
 
 type decoyLeaveConn struct {
 	net.Conn
-	gate        decoyActivity
-	once        sync.Once
 	denyChecked bool
 	upLeft      int
+	pad         *protocol.ShapeBudget
 }
 
 func (d *decoyLeaveConn) NetConn() net.Conn {
@@ -80,11 +78,16 @@ func (d *decoyLeaveConn) Write(b []byte) (int, error) {
 	return d.writeShaped(b)
 }
 
+// writeShaped cuts the opening writes down to the size of an ordinary request.
+// The budget is spent only on writes that were actually cut: the stream header
+// is thirty bytes and passes through untouched, and it used to consume a share
+// meant for the application's own first bytes.
 func (d *decoyLeaveConn) writeShaped(b []byte) (int, error) {
 	written := 0
 	for len(b) > 0 {
 		n := len(b)
-		if d.upLeft > 0 && n > upstreamMaxPayload {
+		cut := d.upLeft > 0 && n > upstreamMaxPayload
+		if cut {
 			n = upstreamMaxPayload
 		}
 		c, err := d.Conn.Write(b[:n])
@@ -92,7 +95,7 @@ func (d *decoyLeaveConn) writeShaped(b []byte) (int, error) {
 		if err != nil {
 			return written, err
 		}
-		if d.upLeft > 0 {
+		if cut {
 			d.upLeft--
 		}
 		b = b[n:]
@@ -100,14 +103,7 @@ func (d *decoyLeaveConn) writeShaped(b []byte) (int, error) {
 	return written, nil
 }
 
-func (d *decoyLeaveConn) Close() error {
-	d.once.Do(func() {
-		if d.gate != nil {
-			d.gate.Leave()
-		}
-	})
-	return d.Conn.Close()
-}
+func (d *decoyLeaveConn) Close() error { return d.Conn.Close() }
 
 func (m *Manager) connectPerFlow(ctx context.Context) error {
 	dial := m.dial()
@@ -183,28 +179,55 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 	copy(header[3:], addrBytes)
 	binary.BigEndian.PutUint16(header[3+len(addrBytes):], port)
 	if _, err := conn.Write(header); err != nil {
-		if keepAlive {
-			m.idle.release()
-		}
 		conn.Close()
-		return nil, fmt.Errorf("direct connect header: %w", err)
+		// A pooled connection can be gone by the time we write to it — the server
+		// or something between them closed it while it waited, and the header is
+		// where we find out. Losing the request over that is needless: dial once
+		// and send it again.
+		if !reused {
+			if keepAlive {
+				m.idle.release()
+			}
+			return nil, fmt.Errorf("direct connect header: %w", err)
+		}
+		fresh, derr := dial(ctx)
+		if derr != nil {
+			if keepAlive {
+				m.idle.release()
+			}
+			if ctx.Err() == nil {
+				m.setError(derr)
+			}
+			return nil, fmt.Errorf("direct dial: %w", derr)
+		}
+		conn, reused = fresh, false
+		raw = protocol.NetConnOf(conn)
+		splice = wantSplice && protocol.SpliceEnabled() && raw != nil && !protocol.FullFrameEnabled()
+		if _, err := conn.Write(header); err != nil {
+			if keepAlive {
+				m.idle.release()
+			}
+			conn.Close()
+			return nil, fmt.Errorf("direct connect header: %w", err)
+		}
 	}
 
-	if m.config.DecoyGate != nil {
-		m.config.DecoyGate.Enter()
-	}
 	if !keepAlive {
-		return &decoyLeaveConn{Conn: conn, gate: m.config.DecoyGate, upLeft: upstreamShapedWrites}, nil
+		return &decoyLeaveConn{Conn: conn, upLeft: upstreamShapedWrites, pad: protocol.NewShapeBudget()}, nil
 	}
 	base := conn
 	if !reused {
-		base = &decoyLeaveConn{Conn: conn, upLeft: upstreamShapedWrites}
+		base = &decoyLeaveConn{Conn: conn, upLeft: upstreamShapedWrites, pad: protocol.NewShapeBudget()}
 	}
-	up := protocol.NewFramedConn(base)
+	// The shaping budget belongs to the connection, not to the stream: a reused
+	// one has already spent it, and starting over would redraw the same opening
+	// pattern on every request.
+	pad := shapeBudgetOf(base)
+	up := protocol.NewFramedConn(base, pad)
 	down := up
 	stream := &keepAliveStream{Conn: base, up: up, down: down, m: m, base: base}
 	if splice {
-		stream.down = protocol.NewFramedConn(raw)
+		stream.down = protocol.NewFramedConn(raw, pad)
 		stream.raw = raw
 	}
 	return stream, nil
@@ -212,7 +235,7 @@ func (m *Manager) openStreamPerFlow(ctx context.Context, proto byte, addr string
 
 const (
 	upstreamMaxPayload   = 480
-	upstreamShapedWrites = 8
+	upstreamShapedWrites = 3
 )
 
 func (m *Manager) connectStreamMux(ctx context.Context) error {
@@ -257,10 +280,14 @@ func (m *Manager) openStreamMux(ctx context.Context, proto byte, addr string, po
 		conn.Close()
 		return nil, fmt.Errorf("stream-mux proto write: %w", err)
 	}
-	if m.config.DecoyGate != nil {
-		m.config.DecoyGate.Enter()
+	return &decoyLeaveConn{Conn: conn, upLeft: upstreamShapedWrites, pad: protocol.NewShapeBudget()}, nil
+}
+
+func shapeBudgetOf(c net.Conn) *protocol.ShapeBudget {
+	if d, ok := c.(*decoyLeaveConn); ok {
+		return d.pad
 	}
-	return &decoyLeaveConn{Conn: conn, gate: m.config.DecoyGate, upLeft: upstreamShapedWrites}, nil
+	return protocol.NewShapeBudget()
 }
 
 func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {

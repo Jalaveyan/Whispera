@@ -47,7 +47,7 @@ func runSpliceFrom(t *testing.T, payload []byte, left int64) (got []byte, switch
 	t.Helper()
 	wireA, wireB := net.Pipe()
 	srcA, srcB := net.Pipe()
-	sc = &serverSpliceConn{Conn: wireA, up: protocol.NewFramedConn(wireA), down: protocol.NewFramedConn(wireA), raw: wireA, left: left}
+	sc = &serverSpliceConn{Conn: wireA, up: protocol.NewFramedConn(wireA, protocol.NewShapeBudget()), down: protocol.NewFramedConn(wireA, protocol.NewShapeBudget()), raw: wireA, left: left}
 
 	go func() {
 		_, _ = srcB.Write(payload)
@@ -113,7 +113,7 @@ func (c writerConn) Write(p []byte) (int, error) { return c.w.Write(p) }
 // the only place the two sides of the switch are checked against each other.
 func readAsClient(t *testing.T, wire net.Conn, dst io.Writer) {
 	t.Helper()
-	fc := protocol.NewFramedConn(wire)
+	fc := protocol.NewFramedConn(wire, protocol.NewShapeBudget())
 	_, err := buf.Copy(buf.NewReader(fc), buf.NewWriter(writerConn{dst}))
 	if !errors.Is(err, protocol.ErrSwitchRaw) {
 		if err != nil {
@@ -152,7 +152,7 @@ func roundTripOverTCP(t *testing.T, payload []byte) []byte {
 		_ = srcB.Close()
 	}()
 	go func() {
-		sc := &serverSpliceConn{Conn: sv, up: protocol.NewFramedConn(sv), down: protocol.NewFramedConn(sv), raw: sv, left: spliceAfterBytes}
+		sc := &serverSpliceConn{Conn: sv, up: protocol.NewFramedConn(sv, protocol.NewShapeBudget()), down: protocol.NewFramedConn(sv, protocol.NewShapeBudget()), raw: sv, left: spliceAfterBytes}
 		_, _ = sc.spliceFrom(srcA)
 		_ = sc.down.EndStream()
 		_ = sv.Close()
