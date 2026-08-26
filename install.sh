@@ -237,35 +237,55 @@ install_go() {
 
 setup_bbr() {
     log_info "Enabling BBR TCP congestion control..."
-    
-    if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
-        log_info "BBR already enabled"
-        return
-    fi
-    
-    local KERNEL_VER=$(uname -r | cut -d. -f1-2)
-    local KERNEL_MAJOR=$(echo $KERNEL_VER | cut -d. -f1)
-    local KERNEL_MINOR=$(echo $KERNEL_VER | cut -d. -f2)
-    
-    if [[ $KERNEL_MAJOR -lt 4 ]] || [[ $KERNEL_MAJOR -eq 4 && $KERNEL_MINOR -lt 9 ]]; then
-        log_warn "Kernel $KERNEL_VER too old for BBR (requires 4.9+), skipping"
-        return
-    fi
-    
-    modprobe tcp_bbr 2>/dev/null
-    echo "tcp_bbr" > /etc/modules-load.d/whispera-bbr.conf
 
-    cat > /etc/sysctl.d/98-whispera-bbr.conf <<EOF
+    local CURRENT
+    CURRENT=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+
+    # Prefer the newest BBR the kernel actually offers. v2 and v3 answer to loss,
+    # which v1 ignores by design — and a client opening twenty parallel streams
+    # makes its own loss, which v1 then rides straight through.
+    local AVAILABLE WANT=""
+    AVAILABLE=" $(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null) "
+    local CANDIDATE
+    for CANDIDATE in bbr3 bbr2 bbr; do
+        if [[ "$AVAILABLE" == *" $CANDIDATE "* ]]; then
+            WANT="$CANDIDATE"
+            break
+        fi
+        if modprobe "tcp_$CANDIDATE" 2>/dev/null; then
+            AVAILABLE=" $(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null) "
+            if [[ "$AVAILABLE" == *" $CANDIDATE "* ]]; then
+                WANT="$CANDIDATE"
+                break
+            fi
+        fi
+    done
+
+    if [[ -z "$WANT" ]]; then
+        log_warn "No BBR in this kernel, leaving $CURRENT"
+        return
+    fi
+
+    # Never step down: a machine already running v2 or v3 keeps it.
+    if [[ "$CURRENT" == "$WANT" ]] || [[ "$CURRENT" == bbr[23] && "$WANT" == "bbr" ]]; then
+        log_info "BBR already enabled ($CURRENT)"
+        return
+    fi
+
+    echo "tcp_$WANT" > /etc/modules-load.d/whispera-bbr.conf
+
+    cat > /etc/sysctl.d/98-whispera-bbr.conf <<SYSCTL
 net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-EOF
+net.ipv4.tcp_congestion_control = $WANT
+SYSCTL
 
     sysctl --system >/dev/null 2>&1
 
-    if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
-        log_success "BBR enabled"
+    CURRENT=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    if [[ "$CURRENT" == "$WANT" ]]; then
+        log_success "BBR enabled ($WANT)"
     else
-        log_warn "BBR enable failed, kernel may not support it"
+        log_warn "BBR enable failed, kernel reports $CURRENT"
     fi
 }
 
