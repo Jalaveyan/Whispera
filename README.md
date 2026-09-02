@@ -76,6 +76,8 @@ Available options
 
 -transport whispera|grpc|yadisk (default: whispera)
 
+-dropech disable Encrypted Client Hello
+
 -quic enable/disable tunneling over QUIC instead of TCP
 
 -quic-port <port> dedicated QUIC port (0 = reuse shared port)
